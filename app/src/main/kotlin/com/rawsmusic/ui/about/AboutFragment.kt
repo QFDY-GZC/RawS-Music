@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.sp
 import androidx.fragment.app.Fragment
 import androidx.navigation.fragment.NavHostFragment
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.rawsmusic.ui.settings.LiquidGlassCard
 
@@ -64,6 +65,7 @@ fun AboutScreen(onBack: () -> Unit) {
     Box(Modifier.fillMaxSize()) {
         Box(
             Modifier
+                .layerBackdrop(backdrop)
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(

@@ -19,10 +19,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -51,6 +51,7 @@ import androidx.fragment.app.viewModels
 import androidx.navigation.fragment.findNavController
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.rawsmusic.core.common.model.Artist
 import com.rawsmusic.ui.settings.LiquidGlassCard
@@ -134,6 +135,7 @@ fun ArtistsScreen(
     Box(Modifier.fillMaxSize()) {
         Box(
             Modifier
+                .layerBackdrop(backdrop)
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
@@ -222,29 +224,32 @@ fun ArtistsScreen(
 
             Spacer(Modifier.height(4.dp))
 
-            // 艺术家列表
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState()),
+            // 艺术家列表 - 使用 LazyColumn 实现虚拟化渲染
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (filteredArtists.isEmpty()) {
-                    LiquidGlassCard(backdrop) {
-                        Text(
-                            if (searchQuery.isBlank()) "暂无艺术家" else "未找到匹配的艺术家",
-                            fontSize = 14.sp,
-                            color = Color(0xFF79747E),
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                    item {
+                        LiquidGlassCard(backdrop) {
+                            Text(
+                                if (searchQuery.isBlank()) "暂无艺术家" else "未找到匹配的艺术家",
+                                fontSize = 14.sp,
+                                color = Color(0xFF79747E),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
                 } else {
-                    filteredArtists.forEach { artist ->
+                    items(
+                        items = filteredArtists,
+                        key = { it.name }
+                    ) { artist ->
                         ArtistCard(backdrop, artist, onArtistClick)
                     }
                 }
 
-                Spacer(Modifier.height(160.dp))
+                item { Spacer(Modifier.height(160.dp)) }
             }
         }
     }

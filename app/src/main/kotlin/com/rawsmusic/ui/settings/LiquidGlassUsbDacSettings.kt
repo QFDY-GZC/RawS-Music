@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.module.data.prefs.AppPreferences
@@ -50,6 +51,7 @@ fun LiquidGlassUsbDacSettingsScreen(
     Box(Modifier.fillMaxSize()) {
         Box(
             Modifier
+                .layerBackdrop(backdrop)
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(

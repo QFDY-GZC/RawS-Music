@@ -48,6 +48,14 @@
             app:defaultNavHost="true"
             app:navGraph="@navigation/nav_main" />
 
+        <!-- ===== 播放界面触摸拦截层：防止触摸穿透到主界面列表 ===== -->
+        <View
+            android:id="@+id/playerTouchBlocker"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clickable="true"
+            android:visibility="gone" />
+
         <!-- ===== 播放页动态封面背景 ===== -->
         <com.rawsmusic.core.ui.widget.DynamicCoverBackgroundView
             android:id="@+id/playBgView"
@@ -106,26 +114,57 @@
             android:src="@drawable/ic_hires_small"
             android:visibility="gone" />
 
-        <ImageView
-            android:id="@+id/btnPlayMode"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
+        <FrameLayout
+            android:id="@+id/btnPlayModeContainer"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
             android:layout_gravity="top|end"
-            android:layout_marginTop="232dp"
-            android:layout_marginEnd="14dp"
+            android:layout_marginTop="234dp"
+            android:layout_marginEnd="54dp"
+            android:background="@drawable/bg_icon_highlight_container"
             android:clickable="true"
             android:focusable="true"
-            android:padding="4dp"
             android:elevation="8dp"
-            android:src="@drawable/ic_order_play_fill"
-            android:tint="#CCFFFFFF"
-            android:visibility="gone" />
+            android:visibility="gone">
+
+            <ImageView
+                android:id="@+id/btnPlayMode"
+                android:layout_width="31dp"
+                android:layout_height="31dp"
+                android:layout_gravity="center"
+                android:padding="2dp"
+                android:src="@drawable/ic_order_play_fill"
+                android:tint="#CCFFFFFF" />
+        </FrameLayout>
+
+        <FrameLayout
+            android:id="@+id/btnMoreActionContainer"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="234dp"
+            android:layout_marginEnd="23dp"
+            android:background="@drawable/bg_icon_highlight_container"
+            android:clickable="true"
+            android:focusable="true"
+            android:elevation="8dp"
+            android:visibility="gone">
+
+            <ImageView
+                android:id="@+id/btnMoreAction"
+                android:layout_width="31dp"
+                android:layout_height="31dp"
+                android:layout_gravity="center"
+                android:padding="5dp"
+                android:src="@drawable/ic_more_vert"
+                android:tint="#CCFFFFFF" />
+        </FrameLayout>
 
         <LinearLayout
             android:id="@+id/playTitleGroup"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginHorizontal="20dp"
+            android:layout_marginHorizontal="28dp"
             android:layout_marginTop="280dp"
             android:gravity="start"
             android:orientation="vertical"
@@ -140,6 +179,7 @@
                 android:gravity="start"
                 android:marqueeRepeatLimit="marquee_forever"
                 android:maxLines="1"
+                android:paddingEnd="60dp"
                 android:singleLine="true"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
@@ -156,6 +196,7 @@
                 android:gravity="start"
                 android:marqueeRepeatLimit="marquee_forever"
                 android:maxLines="1"
+                android:paddingEnd="60dp"
                 android:singleLine="true"
                 android:focusable="true"
                 android:focusableInTouchMode="true"
@@ -175,7 +216,8 @@
                 android:focusable="true"
                 android:focusableInTouchMode="true"
                 android:textColor="#99FFFFFF"
-                android:textSize="12sp" />
+                android:textSize="12sp"
+                android:visibility="gone" />
 
         </LinearLayout>
 
@@ -186,7 +228,7 @@
             android:layout_height="wrap_content"
             android:layout_gravity="bottom"
             android:layout_marginHorizontal="20dp"
-            android:layout_marginBottom="32dp"
+            android:layout_marginBottom="26dp"
             android:visibility="gone"
             android:elevation="8dp"
             android:clipToPadding="false"
@@ -263,36 +305,60 @@
                     android:gravity="center"
                     android:orientation="horizontal">
 
-                    <ImageView
-                        android:id="@+id/btnPrevious"
-                        android:layout_width="40dp"
-                        android:layout_height="40dp"
-                        android:layout_marginHorizontal="12dp"
+                    <FrameLayout
+                        android:id="@+id/btnPreviousContainer"
+                        android:layout_width="48dp"
+                        android:layout_height="48dp"
+                        android:layout_marginHorizontal="8dp"
+                        android:background="@drawable/bg_icon_highlight_container"
                         android:clickable="true"
-                        android:focusable="true"
-                        android:padding="6dp"
-                        android:src="@drawable/ic_rewind_fill" />
+                        android:focusable="true">
 
-                    <ImageView
-                        android:id="@+id/btnPlayPause"
-                        android:layout_width="38dp"
-                        android:layout_height="38dp"
-                        android:layout_marginHorizontal="12dp"
-                        android:clickable="true"
-                        android:focusable="true"
-                        android:padding="2dp"
-                        android:src="@drawable/ic_play"
-                        android:tint="@color/accent" />
+                        <ImageView
+                            android:id="@+id/btnPrevious"
+                            android:layout_width="40dp"
+                            android:layout_height="40dp"
+                            android:layout_gravity="center"
+                            android:padding="6dp"
+                            android:src="@drawable/ic_rewind_fill" />
+                    </FrameLayout>
 
-                    <ImageView
-                        android:id="@+id/btnNext"
-                        android:layout_width="40dp"
-                        android:layout_height="40dp"
-                        android:layout_marginHorizontal="12dp"
+                    <FrameLayout
+                        android:id="@+id/btnPlayPauseContainer"
+                        android:layout_width="52dp"
+                        android:layout_height="52dp"
+                        android:layout_marginHorizontal="8dp"
+                        android:background="@drawable/bg_icon_highlight_container"
                         android:clickable="true"
-                        android:focusable="true"
-                        android:padding="6dp"
-                        android:src="@drawable/ic_speed_fill" />
+                        android:focusable="true">
+
+                        <ImageView
+                            android:id="@+id/btnPlayPause"
+                            android:layout_width="38dp"
+                            android:layout_height="38dp"
+                            android:layout_gravity="center"
+                            android:padding="2dp"
+                            android:src="@drawable/ic_play"
+                            android:tint="@color/accent" />
+                    </FrameLayout>
+
+                    <FrameLayout
+                        android:id="@+id/btnNextContainer"
+                        android:layout_width="48dp"
+                        android:layout_height="48dp"
+                        android:layout_marginHorizontal="8dp"
+                        android:background="@drawable/bg_icon_highlight_container"
+                        android:clickable="true"
+                        android:focusable="true">
+
+                        <ImageView
+                            android:id="@+id/btnNext"
+                            android:layout_width="40dp"
+                            android:layout_height="40dp"
+                            android:layout_gravity="center"
+                            android:padding="6dp"
+                            android:src="@drawable/ic_speed_fill" />
+                    </FrameLayout>
 
                 </LinearLayout>
 
@@ -316,26 +382,8 @@
                     android:clickable="true"
                     android:focusable="true"
                     android:src="@drawable/ic_equalizer_bars"
-                    android:tint="#B0FFFFFF" />
-
-                <View
-                    android:layout_width="0dp"
-                    android:layout_height="1dp"
-                    android:layout_weight="1" />
-
-                <View
-                    android:layout_width="0dp"
-                    android:layout_height="1dp"
-                    android:layout_weight="1" />
-
-                <ImageView
-                    android:id="@+id/btnMoreAction"
-                    android:layout_width="28dp"
-                    android:layout_height="28dp"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:src="@drawable/ic_more_vert"
-                    android:tint="#B0FFFFFF" />
+                    android:tint="#B0FFFFFF"
+                    android:visibility="gone" />
 
             </LinearLayout>
 
@@ -387,7 +435,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_gravity="bottom"
-                android:layout_marginBottom="24dp"
+                android:layout_marginBottom="19dp"
                 android:paddingHorizontal="20dp"
                 android:paddingVertical="12dp">
 

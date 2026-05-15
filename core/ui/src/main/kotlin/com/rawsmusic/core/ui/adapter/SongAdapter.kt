@@ -103,7 +103,12 @@ class SongAdapter(
             append(AudioUtils.formatDuration(item.duration))
         }
 
-        val coverUri = item.albumArtPath.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
+        // 优先使用 song:// scheme 从歌曲文件本身提取封面
+        val coverUri = if (item.path.isNotBlank()) {
+            Uri.parse("song://${item.path}")
+        } else {
+            item.albumArtPath.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
+        }
         if (coverUri != null) {
             binding.ivCover.visibility = View.VISIBLE
             binding.ivCover.load(coverUri) {

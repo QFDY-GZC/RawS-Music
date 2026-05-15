@@ -18,11 +18,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -51,6 +50,7 @@ import androidx.fragment.app.viewModels
 import androidx.navigation.fragment.NavHostFragment
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.rawsmusic.core.common.model.Album
 import com.rawsmusic.core.common.model.AudioFile
@@ -116,6 +116,7 @@ fun ArtistDetailScreen(
     Box(Modifier.fillMaxSize()) {
         Box(
             Modifier
+                .layerBackdrop(backdrop)
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
@@ -129,101 +130,108 @@ fun ArtistDetailScreen(
                 )
         )
 
-        Column(
+        LazyColumn(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Spacer(Modifier.height(16.dp))
+            item { Spacer(Modifier.height(16.dp)) }
 
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = onBack) {
-                    Text("← 返回", color = Color(0xFF6750A4), fontSize = 16.sp)
+            item {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onBack) {
+                        Text("← 返回", color = Color(0xFF6750A4), fontSize = 16.sp)
+                    }
+                    Text(
+                        artistName,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Color(0xFF1C1B1F),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
-                Text(
-                    artistName,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color(0xFF1C1B1F),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
             }
 
-            LiquidGlassCard(backdrop) {
-                Text(artistName, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1C1B1F))
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "${songs.size} 首歌曲 · ${albums.size} 张专辑",
-                    fontSize = 14.sp, color = Color(0xFF79747E)
-                )
+            item {
+                LiquidGlassCard(backdrop) {
+                    Text(artistName, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1C1B1F))
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "${songs.size} 首歌曲 · ${albums.size} 张专辑",
+                        fontSize = 14.sp, color = Color(0xFF79747E)
+                    )
+                }
             }
 
             if (albums.isNotEmpty()) {
-                LiquidGlassCard(backdrop) {
-                    Text("专辑", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Color(0xFF1C1B1F))
-                    Spacer(Modifier.height(12.dp))
+                item {
+                    LiquidGlassCard(backdrop) {
+                        Text("专辑", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Color(0xFF1C1B1F))
+                        Spacer(Modifier.height(12.dp))
 
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        items(albums) { album ->
-                            AlbumItem(album)
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(albums) { album ->
+                                AlbumItem(album)
+                            }
                         }
                     }
                 }
             }
 
             if (songs.isNotEmpty()) {
-                LiquidGlassCard(backdrop) {
-                    Text("歌曲", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Color(0xFF1C1B1F))
-                    Spacer(Modifier.height(8.dp))
+                item {
+                    LiquidGlassCard(backdrop) {
+                        Text("歌曲", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Color(0xFF1C1B1F))
+                        Spacer(Modifier.height(8.dp))
 
-                    for (song in songs.take(20)) {
-                        TextButton(
-                            onClick = {
-                                if (song.path.isBlank()) return@TextButton
-                                try {
-                                    viewModel.playSong(song)
-                                } catch (_: Exception) {}
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(Modifier.fillMaxWidth()) {
-                                Text(
-                                    song.displayName,
-                                    fontSize = 14.sp,
-                                    color = Color(0xFF1C1B1F),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    song.album.ifBlank { "未知专辑" },
-                                    fontSize = 12.sp,
-                                    color = Color(0xFF79747E),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                        for (song in songs.take(20)) {
+                            TextButton(
+                                onClick = {
+                                    if (song.path.isBlank()) return@TextButton
+                                    try {
+                                        viewModel.playSong(song)
+                                    } catch (_: Exception) {}
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(Modifier.fillMaxWidth()) {
+                                    Text(
+                                        song.displayName,
+                                        fontSize = 14.sp,
+                                        color = Color(0xFF1C1B1F),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        song.album.ifBlank { "未知专辑" },
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF79747E),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                         }
-                    }
 
-                    if (songs.size > 20) {
-                        Spacer(Modifier.height(4.dp))
-                        Text("还有 ${songs.size - 20} 首…", fontSize = 12.sp, color = Color(0xFF79747E))
+                        if (songs.size > 20) {
+                            Spacer(Modifier.height(4.dp))
+                            Text("还有 ${songs.size - 20} 首…", fontSize = 12.sp, color = Color(0xFF79747E))
+                        }
                     }
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
+            item { Spacer(Modifier.height(24.dp)) }
         }
     }
 }

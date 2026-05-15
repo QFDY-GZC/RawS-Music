@@ -115,6 +115,20 @@ object FFmpegBridge {
         return nativeGetMediaInfo(filePath)
     }
 
+    /**
+     * 通过 FFmpeg 直接写入音频文件的元数据标签。
+     * 绕过 MediaStore contentResolver，在 Android 11+ 上可靠工作。
+     *
+     * @param filePath 音频文件的绝对路径
+     * @param metadata 键值对，键为 FFmpeg 标签名（如 "title", "artist", "album", "date", "track", "genre"）
+     * @param cacheDir 应用缓存目录路径，用于写入临时文件
+     * @return 0 成功，负值失败
+     */
+    fun writeMetadata(filePath: String, metadata: Map<String, String>, cacheDir: String): Int {
+        if (!loaded) return -1
+        return nativeWriteMetadata(filePath, metadata, cacheDir)
+    }
+
     // ========== Streaming Decoder API (zero-disk playback) ==========
 
     /**
@@ -192,6 +206,7 @@ object FFmpegBridge {
     private external fun nativeProbeChannelCount(path: String): Int
     private external fun nativeExtractCover(inputPath: String, outputPath: String): Int
     private external fun nativeGetMediaInfo(filePath: String): Map<String, String>?
+    private external fun nativeWriteMetadata(filePath: String, metadata: Map<String, String>, cacheDir: String): Int
 
     // Streaming decoder native methods
     private external fun nativeOpenDecoder(path: String, targetRate: Int, targetBits: Int, channels: Int): Long

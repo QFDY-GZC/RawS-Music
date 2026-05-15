@@ -132,6 +132,11 @@ class PlayerController private constructor(context: Context) {
     /** 优先播放队列 — 队列歌曲优先于"下一首播放" */
     private val priorityQueue = ArrayDeque<AudioFile>()
 
+    /** 随机播放袋子：存放本循环中尚未播放的索引，播完后重新填充 */
+    private val shuffleBag = mutableListOf<Int>()
+    /** 随机播放历史：记录已播放的索引顺序，用于"上一首"回退 */
+    private val shufflePlayedHistory = ArrayDeque<Int>()
+
     /** 回放增益音量系数 — 由 applyReplayGain() 计算后与用户音量合成 */
     private var replayGainVolumeModifier = 1.0f
     private val recoveringUsb = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -139,6 +144,9 @@ class PlayerController private constructor(context: Context) {
     private var audioFocusRequest: AudioFocusRequest? = null
     private var lastPlayRequestPath: String? = null
     private var lastPlayRequestTime = 0L
+    /** 恢复播放位置：当 restoreLastSong() 恢复了位置后，在下次播放同一首歌时自动 seek */
+    private var pendingSeekPosition: Long = -1L
+    private var pendingSeekPath: String? = null
 
     // FFmpeg 播放器回调
     private val playerListener = object : FfmpegAudioPlayer.Listener {
@@ -744,6 +752,10 @@ class PlayerController private constructor(context: Context) {
             if (queue.isNotEmpty()) {
                 val safeIndex = index.coerceIn(0, queue.size - 1)
                 _queue.value = PlayQueue(songs = queue, currentIndex = safeIndex)
+                // 新队列，初始化随机袋子
+                if (_isShuffle.value) {
+                    initShuffleBag(safeIndex)
+                }
             } else {
                 val currentQueue = _queue.value.songs.toMutableList()
                 val existingIndex = currentQueue.indexOfFirst { it.path == song.path }
@@ -788,6 +800,25 @@ class PlayerController private constructor(context: Context) {
             Log.d(TAG, "Starting FFmpeg playback: ${song.path}")
             ffmpegPlayer.play(song.path)
 
+            // 如果有待恢复的播放位置且是同一首歌，自动 seek 到保存位置
+            if (pendingSeekPosition > 0 && pendingSeekPath == song.path) {
+                val seekPos = pendingSeekPosition
+                pendingSeekPosition = -1L
+                pendingSeekPath = null
+                Log.d(TAG, "Restoring playback position: ${seekPos}ms for ${song.title}")
+                scope.launch {
+                    delay(300) // 等待播放器初始化
+                    if (ffmpegPlayer.state == FfmpegAudioPlayer.State.PLAYING ||
+                        ffmpegPlayer.state == FfmpegAudioPlayer.State.PREPARING) {
+                        seekTo(seekPos)
+                    }
+                }
+            } else if (pendingSeekPosition > 0) {
+                // 播放的是不同的歌，清除待恢复状态
+                pendingSeekPosition = -1L
+                pendingSeekPath = null
+            }
+
             precacheNextSong()
 
             saveState()
@@ -804,6 +835,10 @@ class PlayerController private constructor(context: Context) {
         if (songs.isEmpty() || isReleased) return
         val safeIndex = startIndex.coerceIn(0, songs.size - 1)
         _queue.value = PlayQueue(songs = songs, currentIndex = safeIndex)
+        // 新队列，初始化随机袋子
+        if (_isShuffle.value) {
+            initShuffleBag(safeIndex)
+        }
         play(songs[safeIndex], songs, safeIndex)
     }
 
@@ -853,6 +888,7 @@ class PlayerController private constructor(context: Context) {
 
     fun stop() {
         if (isReleased) return
+        savePosition() // 停止前保存当前播放位置
         ffmpegPlayer.stop()
         _playState.value = PlayState.STOPPED
         stopProgressUpdate()
@@ -885,13 +921,16 @@ class PlayerController private constructor(context: Context) {
 
         val nextIndex = when (_playMode.value) {
             PlayMode.SHUFFLE_OFF -> (q.currentIndex + 1) % q.songs.size
-            PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_SONG, PlayMode.SHUFFLE_BOTH -> {
-                if (q.songs.size <= 1) 0
-                else q.songs.indices.filter { it != q.currentIndex }.random()
+            PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_SONG -> {
+                getNextShuffledIndex()
+            }
+            PlayMode.SHUFFLE_BOTH -> {
+                // 单曲循环：手动下一首也重播当前歌曲
+                q.currentIndex
             }
         }
 
-        if (nextIndex !in q.songs.indices) return
+        if (nextIndex < 0 || nextIndex !in q.songs.indices) return
         savePosition()
         val nextSong = q.songs[nextIndex]
         _queue.value = q.copy(currentIndex = nextIndex)
@@ -921,13 +960,16 @@ class PlayerController private constructor(context: Context) {
             PlayMode.SHUFFLE_OFF -> {
                 if (q.currentIndex > 0) q.currentIndex - 1 else q.songs.size - 1
             }
-            else -> {
-                if (q.songs.size <= 1) 0
-                else q.songs.indices.filter { it != q.currentIndex }.random()
+            PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_SONG -> {
+                getPreviousShuffledIndex()
+            }
+            PlayMode.SHUFFLE_BOTH -> {
+                // 单曲循环：手动上一首也重播当前歌曲
+                q.currentIndex
             }
         }
 
-        if (prevIndex !in q.songs.indices) return
+        if (prevIndex < 0 || prevIndex !in q.songs.indices) return
         savePosition()
         val prevSong = q.songs[prevIndex]
         _queue.value = q.copy(currentIndex = prevIndex)
@@ -1144,6 +1186,69 @@ class PlayerController private constructor(context: Context) {
         currentQueue.shuffle()
         currentQueue.add(0, current)
         _queue.value = PlayQueue(songs = currentQueue, currentIndex = 0, isShuffle = true)
+        // 初始化随机袋子：除了当前歌曲外的所有索引
+        initShuffleBag(0)
+    }
+
+    /**
+     * 初始化随机袋子：将除 currentIdx 外的所有索引加入袋子并打乱
+     */
+    private fun initShuffleBag(currentIdx: Int) {
+        shuffleBag.clear()
+        shufflePlayedHistory.clear()
+        val size = _queue.value.songs.size
+        if (size <= 1) return
+        for (i in 0 until size) {
+            if (i != currentIdx) {
+                shuffleBag.add(i)
+            }
+        }
+        shuffleBag.shuffle()
+        shufflePlayedHistory.addLast(currentIdx)
+    }
+
+    /**
+     * 从随机袋子中取下一首索引。袋子为空时重新填充。
+     * 返回 -1 表示队列为空或只有一首歌。
+     */
+    private fun getNextShuffledIndex(): Int {
+        val size = _queue.value.songs.size
+        if (size <= 1) return if (size == 1) 0 else -1
+        if (shuffleBag.isEmpty()) {
+            // 本循环结束，重新填充袋子（排除当前歌曲）
+            val currentIdx = _queue.value.currentIndex
+            for (i in 0 until size) {
+                if (i != currentIdx) {
+                    shuffleBag.add(i)
+                }
+            }
+            shuffleBag.shuffle()
+        }
+        val nextIdx = shuffleBag.removeFirst()
+        shufflePlayedHistory.addLast(nextIdx)
+        // 限制历史长度，避免内存膨胀
+        if (shufflePlayedHistory.size > size * 2) {
+            repeat(size / 2) { shufflePlayedHistory.removeFirst() }
+        }
+        return nextIdx
+    }
+
+    /**
+     * 从随机历史中取上一首索引。历史为空时返回随机索引。
+     */
+    private fun getPreviousShuffledIndex(): Int {
+        val size = _queue.value.songs.size
+        if (size <= 1) return if (size == 1) 0 else -1
+        // 当前歌曲放回袋子头部（下次优先播放）
+        val currentIdx = _queue.value.currentIndex
+        if (currentIdx >= 0) shuffleBag.add(0, currentIdx)
+        if (shufflePlayedHistory.size >= 2) {
+            // 移除当前歌曲的记录
+            shufflePlayedHistory.removeLast()
+            return shufflePlayedHistory.last()
+        }
+        // 历史为空，随机选一个
+        return (0 until size).filter { it != currentIdx }.random()
     }
 
     /** 根据歌曲 ReplayGain 标签和用户设置，计算并应用增益因子 */
@@ -1280,6 +1385,14 @@ class PlayerController private constructor(context: Context) {
 
         _currentSong.value = song
         _duration.value = song.duration
+
+        // 恢复上次播放位置
+        val savedPosition = AppPreferences.Player.lastPosition
+        if (savedPosition > 0) {
+            _position.value = savedPosition
+            pendingSeekPosition = savedPosition
+            pendingSeekPath = song.path
+        }
 
         try {
             val queueJson = AppPreferences.Player.playQueueSongsJson

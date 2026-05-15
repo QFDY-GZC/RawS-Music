@@ -32,7 +32,16 @@ class EmbeddedArtworkFetcher(
 ) : Fetcher {
 
     override suspend fun fetch(): FetchResult = withContext(Dispatchers.IO) {
-        // 尝试提取内嵌高清封面
+        // 支持 song:// scheme：直接从歌曲文件提取封面
+        if (uri.scheme == "song") {
+            val songPath = uri.schemeSpecificPart
+            if (songPath.isNotBlank()) {
+                val result = tryExtractFromSongFile(songPath)
+                if (result != null) return@withContext result
+            }
+        }
+
+        // 尝试提取内嵌高清封面（专辑级）
         val embeddedResult = tryExtractEmbedded()
         if (embeddedResult != null) return@withContext embeddedResult
 
@@ -58,6 +67,55 @@ class EmbeddedArtworkFetcher(
 
         // 所有方法都失败
         throw IllegalStateException("Cannot load cover: $uri")
+    }
+
+    /**
+     * 从特定歌曲文件提取内嵌封面
+     */
+    private fun tryExtractFromSongFile(songPath: String): FetchResult? {
+        val ext = songPath.substringAfterLast(".", "").uppercase()
+        val isWavLike = ext in listOf("WAV", "DSF", "DFF", "AIFF", "AIF")
+
+        if (isWavLike) {
+            // WAV/DSF/DFF/AIFF: 使用 FFmpeg 提取
+            val bitmap = tryFfmpegCover(songPath)
+            if (bitmap != null) {
+                android.util.Log.d("CoverDebug", "tryExtractFromSongFile: FFmpeg extracted cover for $songPath")
+                return DrawableResult(
+                    drawable = BitmapDrawable(context.resources, bitmap),
+                    isSampled = true,
+                    dataSource = DataSource.DISK
+                )
+            }
+        } else {
+            // 其他格式: 使用 MediaMetadataRetriever
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(songPath)
+                val bytes = retriever.embeddedPicture
+                if (bytes != null && bytes.size > 1024) {
+                    val targetSize = options.size
+                    val bitmap = if (targetSize != Size.ORIGINAL) {
+                        val w = (targetSize.width as? Dimension.Pixels)?.px ?: Int.MAX_VALUE
+                        val h = (targetSize.height as? Dimension.Pixels)?.px ?: Int.MAX_VALUE
+                        decodeSampledBitmap(bytes, w, h)
+                    } else {
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    }
+                    if (bitmap != null) {
+                        android.util.Log.d("CoverDebug", "tryExtractFromSongFile: extracted cover from $songPath")
+                        return DrawableResult(
+                            drawable = BitmapDrawable(context.resources, bitmap),
+                            isSampled = true,
+                            dataSource = DataSource.DISK
+                        )
+                    }
+                }
+            } catch (_: Exception) {} finally {
+                try { retriever.release() } catch (_: Exception) {}
+            }
+        }
+        return null
     }
 
     private fun tryExtractEmbedded(): FetchResult? {
@@ -242,7 +300,11 @@ class EmbeddedArtworkFetcher(
 
     class Factory(private val context: Context) : Fetcher.Factory<Uri> {
         override fun create(data: Uri, options: Options, imageLoader: coil.ImageLoader): Fetcher? {
-            // 只拦截 albumart content URI
+            // 拦截 song:// scheme（歌曲文件封面提取）
+            if (data.scheme == "song") {
+                return EmbeddedArtworkFetcher(context.applicationContext, data, options)
+            }
+            // 拦截 albumart content URI（专辑级封面提取）
             if (data.scheme == "content" && data.toString().contains("albumart")) {
                 return EmbeddedArtworkFetcher(context.applicationContext, data, options)
             }

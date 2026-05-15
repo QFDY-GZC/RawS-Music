@@ -113,21 +113,52 @@
                 android:layout_marginEnd="0dp"
                 android:layout_marginBottom="0dp" />
 
-            <ImageView
-                android:id="@+id/btnPlayMode"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
+            <FrameLayout
+                android:id="@+id/btnPlayModeContainer"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:background="@drawable/bg_icon_highlight_container"
                 android:clickable="true"
                 android:focusable="true"
-                android:padding="4dp"
                 android:elevation="8dp"
-                android:src="@drawable/ic_order_play_fill"
-                android:tint="#CCFFFFFF"
                 android:visibility="gone"
-                app:layout_constraintStart_toStartOf="@id/ivPlayCover"
+                app:layout_constraintEnd_toEndOf="@id/ivPlayCover"
                 app:layout_constraintTop_toBottomOf="@id/ivPlayCover"
-                android:layout_marginStart="0dp"
-                android:layout_marginTop="4dp" />
+                android:layout_marginEnd="54dp"
+                android:layout_marginTop="4dp">
+
+                <ImageView
+                    android:id="@+id/btnPlayMode"
+                    android:layout_width="31dp"
+                    android:layout_height="31dp"
+                    android:layout_gravity="center"
+                    android:padding="2dp"
+                    android:src="@drawable/ic_order_play_fill"
+                    android:tint="#CCFFFFFF" />
+            </FrameLayout>
+
+            <FrameLayout
+                android:id="@+id/btnMoreActionContainer"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:background="@drawable/bg_icon_highlight_container"
+                android:clickable="true"
+                android:focusable="true"
+                android:elevation="8dp"
+                android:visibility="gone"
+                app:layout_constraintEnd_toEndOf="@id/ivPlayCover"
+                app:layout_constraintTop_toTopOf="@id/btnPlayModeContainer"
+                android:layout_marginEnd="23dp">
+
+                <ImageView
+                    android:id="@+id/btnMoreAction"
+                    android:layout_width="31dp"
+                    android:layout_height="31dp"
+                    android:layout_gravity="center"
+                    android:padding="5dp"
+                    android:src="@drawable/ic_more_vert"
+                    android:tint="#CCFFFFFF" />
+            </FrameLayout>
 
             <!-- 横屏：右侧控制区 -->
             <LinearLayout
@@ -266,36 +297,60 @@
                     android:gravity="center"
                     android:orientation="horizontal">
 
-                    <ImageView
-                        android:id="@+id/btnPrevious"
-                        android:layout_width="44dp"
-                        android:layout_height="44dp"
-                        android:layout_marginHorizontal="12dp"
+                    <FrameLayout
+                        android:id="@+id/btnPreviousContainer"
+                        android:layout_width="52dp"
+                        android:layout_height="52dp"
+                        android:layout_marginHorizontal="8dp"
+                        android:background="@drawable/bg_icon_highlight_container"
                         android:clickable="true"
-                        android:focusable="true"
-                        android:padding="6dp"
-                        android:src="@drawable/ic_rewind_fill" />
+                        android:focusable="true">
 
-                    <ImageView
-                        android:id="@+id/btnPlayPause"
-                        android:layout_width="40dp"
-                        android:layout_height="40dp"
-                        android:layout_marginHorizontal="12dp"
-                        android:clickable="true"
-                        android:focusable="true"
-                        android:padding="2dp"
-                        android:src="@drawable/ic_play"
-                        android:tint="@color/accent" />
+                        <ImageView
+                            android:id="@+id/btnPrevious"
+                            android:layout_width="44dp"
+                            android:layout_height="44dp"
+                            android:layout_gravity="center"
+                            android:padding="6dp"
+                            android:src="@drawable/ic_rewind_fill" />
+                    </FrameLayout>
 
-                    <ImageView
-                        android:id="@+id/btnNext"
-                        android:layout_width="44dp"
-                        android:layout_height="44dp"
-                        android:layout_marginHorizontal="12dp"
+                    <FrameLayout
+                        android:id="@+id/btnPlayPauseContainer"
+                        android:layout_width="56dp"
+                        android:layout_height="56dp"
+                        android:layout_marginHorizontal="8dp"
+                        android:background="@drawable/bg_icon_highlight_container"
                         android:clickable="true"
-                        android:focusable="true"
-                        android:padding="6dp"
-                        android:src="@drawable/ic_speed_fill" />
+                        android:focusable="true">
+
+                        <ImageView
+                            android:id="@+id/btnPlayPause"
+                            android:layout_width="40dp"
+                            android:layout_height="40dp"
+                            android:layout_gravity="center"
+                            android:padding="2dp"
+                            android:src="@drawable/ic_play"
+                            android:tint="@color/accent" />
+                    </FrameLayout>
+
+                    <FrameLayout
+                        android:id="@+id/btnNextContainer"
+                        android:layout_width="52dp"
+                        android:layout_height="52dp"
+                        android:layout_marginHorizontal="8dp"
+                        android:background="@drawable/bg_icon_highlight_container"
+                        android:clickable="true"
+                        android:focusable="true">
+
+                        <ImageView
+                            android:id="@+id/btnNext"
+                            android:layout_width="44dp"
+                            android:layout_height="44dp"
+                            android:layout_gravity="center"
+                            android:padding="6dp"
+                            android:src="@drawable/ic_speed_fill" />
+                    </FrameLayout>
 
                 </LinearLayout>
 
@@ -314,25 +369,6 @@
                         android:clickable="true"
                         android:focusable="true"
                         android:src="@drawable/ic_equalizer_bars"
-                        android:tint="#B0FFFFFF" />
-
-                    <View
-                        android:layout_width="0dp"
-                        android:layout_height="1dp"
-                        android:layout_weight="1" />
-
-                    <View
-                        android:layout_width="0dp"
-                        android:layout_height="1dp"
-                        android:layout_weight="1" />
-
-                    <ImageView
-                        android:id="@+id/btnMoreAction"
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
-                        android:clickable="true"
-                        android:focusable="true"
-                        android:src="@drawable/ic_more_vert"
                         android:tint="#B0FFFFFF" />
 
                 </LinearLayout>

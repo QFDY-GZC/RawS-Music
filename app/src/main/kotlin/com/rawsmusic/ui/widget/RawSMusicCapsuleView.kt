@@ -309,6 +309,22 @@ class RawSMusicCapsuleView @JvmOverloads constructor(
             .start()
     }
 
+    fun hideNavBar() {
+        navBar.animate()
+            .alpha(0f)
+            .setDuration(200)
+            .withEndAction { navBar.visibility = View.GONE }
+            .start()
+    }
+
+    fun showNavBar() {
+        navBar.visibility = View.VISIBLE
+        navBar.animate()
+            .alpha(1f)
+            .setDuration(200)
+            .start()
+    }
+
     fun updatePlaybackState(isPlaying: Boolean, title: String, artist: String, coverPath: String?) {
         if (alpha == 0f && title.isNotBlank()) {
             animate().alpha(1f).setDuration(300).start()

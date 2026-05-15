@@ -73,6 +73,7 @@ import com.rawsmusic.ui.songs.SongsFragment
 import com.rawsmusic.ui.widget.CapsuleProgressSync
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 class MainActivity : BaseActivity<ActivityMainBinding>() {
@@ -97,6 +98,13 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
     private var isPlayAreaSwipeRight = false
     private var isPlayAreaTracking = false
     private val playAreaCoverLoc = IntArray(2)
+
+    private var lyricHSwipeStartX = 0f
+    private var lyricHSwipeStartY = 0f
+    private var lyricHSwipeActive = false
+    private var lyricHSwipeTracking = false
+    private var lyricHSwipeDragStarted = false
+    private val lyricHSwipeThreshold by lazy { 200f * resources.displayMetrics.density }
 
     /** 是否手动拖拽侧边栏 */
     private var isManualDrawerDrag = false
@@ -541,9 +549,20 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
         // 非沉浸模式...   binding.backgroundView.setDimAmount(0f)
 
+        unifiedContainer.onTransitionProgress = { targetScene, ratio ->
+            // 导航栏始终保持可见，不做任何 alpha/visibility 变化，避免"先淡出再显示"的闪烁
+            // 场景切换的状态由 onSceneChanged 统一管理
+        }
+
         unifiedContainer.onSceneChanged = { newScene, oldScene ->
             android.util.Log.d("SceneTransition", "onSceneChanged: $oldScene -> $newScene")
-            updateStatusBarForLevel(newScene)
+            // 只在状态栏设置实际会改变时才更新，避免 PLAYER↔LYRIC 等切换时触发 insets 重算导致导航栏闪烁
+            val needsUpdate = (oldScene == UnifiedPlayerContainer.Scene.MAIN) != (newScene == UnifiedPlayerContainer.Scene.MAIN)
+            if (needsUpdate) {
+                updateStatusBarForLevel(newScene)
+            }
+            // 触摸拦截层：非 MAIN 场景时阻止触摸穿透到主界面列表
+            binding.playerTouchBlocker?.visibility = if (newScene == UnifiedPlayerContainer.Scene.MAIN) View.GONE else View.VISIBLE
             when (newScene) {
                 UnifiedPlayerContainer.Scene.MAIN -> {
                     val decorView = window.decorView as? android.view.ViewGroup
@@ -566,6 +585,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     // 延迟滚动到当前歌曲，确保 RecyclerView 已准备好
                     binding.root.post { scrollToCurrentSong() }
                     capsuleView.unfold()
+                    capsuleView.showNavBar()
                     binding.miniPlayerBar.visible()
                     binding.miniPlayerBar.alpha = 1f
                     playerController?.currentSong?.value?.let { song ->
@@ -632,6 +652,9 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                         )
                     )
                     capsuleView.fold()
+                    capsuleView.showNavBar()
+                    binding.miniPlayerBar.visible()
+                    binding.miniPlayerBar.alpha = 1f
                     binding.playBottomPanel?.apply {
                         visibility = View.VISIBLE
                         alpha = 1f
@@ -663,6 +686,9 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 }
                 UnifiedPlayerContainer.Scene.LYRIC -> {
                     capsuleView.fold()
+                    capsuleView.showNavBar()
+                    binding.miniPlayerBar.visible()
+                    binding.miniPlayerBar.alpha = 1f
                     val density = resources.displayMetrics.density
                     val coverBottom = getCoverBottomInContainer()
                     val lyricTopPad = (coverBottom + 16 * density).toInt()
@@ -710,6 +736,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     binding.mainBgScrim?.alpha = 0f
                 }
                 UnifiedPlayerContainer.Scene.QUEUE -> {
+                    capsuleView.fold()
+                    capsuleView.showNavBar()
+                    binding.miniPlayerBar.visible()
+                    binding.miniPlayerBar.alpha = 1f
                     binding.playBgScrim?.visibility = View.GONE
                     binding.playBgScrim?.alpha = 0f
                     binding.ivPlayCoverMirror?.visibility = View.GONE
@@ -721,6 +751,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     binding.mainBgScrim?.alpha = 0f
                 }
                 UnifiedPlayerContainer.Scene.ALBUM_DETAIL -> {
+                    capsuleView.fold()
+                    capsuleView.showNavBar()
+                    binding.miniPlayerBar.visible()
+                    binding.miniPlayerBar.alpha = 1f
                     binding.playBgScrim?.visibility = View.GONE
                     binding.playBgScrim?.alpha = 0f
                     binding.ivPlayCoverMirror?.visibility = View.GONE
@@ -833,22 +867,37 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             }
             binding.ivHiresSmall.layoutParams = hiresParams
 
-            val playModeSize = (40 * density).toInt()
-            val playModeParams = android.widget.FrameLayout.LayoutParams(playModeSize, playModeSize)
+            val playModeContainerSize = (38 * density).toInt()
+            val playModeContainerParams = android.widget.FrameLayout.LayoutParams(playModeContainerSize, playModeContainerSize)
+            playModeContainerParams.gravity = android.view.Gravity.TOP or android.view.Gravity.END
             if (isImmersive) {
                 val splitY = (containerHeight * 0.55f).toInt()
-                playModeParams.topMargin = splitY + (4 * density).toInt()
-                playModeParams.marginStart = containerWidth - playModeSize - (8 * density).toInt()
+                playModeContainerParams.topMargin = splitY + (4 * density).toInt()
+                playModeContainerParams.marginEnd = (45 * density).toInt()
             } else {
-                playModeParams.topMargin = coverTop + coverSize + (4 * density).toInt()
-                playModeParams.marginStart = coverLeft + coverSize - playModeSize - (4 * density).toInt()
+                playModeContainerParams.topMargin = coverTop + coverSize + (4 * density).toInt()
+                playModeContainerParams.marginEnd = containerWidth - (coverLeft + coverSize) + (35 * density).toInt()
             }
-            binding.btnPlayMode.layoutParams = playModeParams
+            binding.btnPlayModeContainer.layoutParams = playModeContainerParams
+
+            // btnMoreActionContainer 位于 btnPlayModeContainer 右侧
+            val moreActionContainerSize = (38 * density).toInt()
+            val moreActionContainerParams = android.widget.FrameLayout.LayoutParams(moreActionContainerSize, moreActionContainerSize)
+            moreActionContainerParams.gravity = android.view.Gravity.TOP or android.view.Gravity.END
+            moreActionContainerParams.topMargin = playModeContainerParams.topMargin + (playModeContainerSize - moreActionContainerSize) / 2
+            moreActionContainerParams.marginEnd = playModeContainerParams.marginEnd - playModeContainerSize - (2 * density).toInt()
+            binding.btnMoreActionContainer.layoutParams = moreActionContainerParams
 
             val rightStart = (containerWidth * 0.5f).toInt() + (16 * density).toInt()
             val titleParams = binding.playTitleGroup.layoutParams as android.widget.FrameLayout.LayoutParams
             titleParams.width = containerWidth - rightStart - (16 * density).toInt()
-            titleParams.topMargin = (28 * density).toInt()
+            if (isImmersive) {
+                // 沉浸模式：标题信息下移，与播放偏好、三个点平行（同一水平线）
+                val splitY = (containerHeight * 0.55f).toInt()
+                titleParams.topMargin = splitY + (4 * density).toInt()
+            } else {
+                titleParams.topMargin = (28 * density).toInt()
+            }
             titleParams.marginStart = rightStart
             titleParams.marginEnd = (16 * density).toInt()
             binding.playTitleGroup.layoutParams = titleParams
@@ -860,7 +909,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 gravity = android.view.Gravity.BOTTOM
                 marginStart = (containerWidth * 0.5f + 16 * density).toInt()
                 marginEnd = (16 * density).toInt()
-                bottomMargin = (16 * density).toInt()
+                bottomMargin = if (isImmersive) (-5 * density).toInt() else (4 * density).toInt()
             }
         } else {
             val horizontalPadding = (8 * density).toInt()
@@ -889,21 +938,36 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             }
             binding.ivHiresSmall.layoutParams = hiresParams
 
-            val playModeSize = (40 * density).toInt()
-            val playModeParams = android.widget.FrameLayout.LayoutParams(playModeSize, playModeSize)
+            val playModeContainerSize = (38 * density).toInt()
+            val playModeContainerParams = android.widget.FrameLayout.LayoutParams(playModeContainerSize, playModeContainerSize)
+            playModeContainerParams.gravity = android.view.Gravity.TOP or android.view.Gravity.END
             if (isImmersive) {
                 val splitY = (containerHeight * 0.55f).toInt()
-                playModeParams.topMargin = splitY + (4 * density).toInt()
-                playModeParams.marginStart = containerWidth - playModeSize - (8 * density).toInt()
+                playModeContainerParams.topMargin = splitY + (4 * density).toInt()
+                playModeContainerParams.marginEnd = (45 * density).toInt()
             } else {
-                playModeParams.topMargin = params.topMargin + coverSize + (4 * density).toInt()
-                playModeParams.marginStart = coverMarginStart + coverSize - playModeSize - (4 * density).toInt()
+                playModeContainerParams.topMargin = params.topMargin + coverSize + (4 * density).toInt()
+                playModeContainerParams.marginEnd = containerWidth - (coverMarginStart + coverSize) + (35 * density).toInt()
             }
-            binding.btnPlayMode.layoutParams = playModeParams
+            binding.btnPlayModeContainer.layoutParams = playModeContainerParams
+
+            // btnMoreActionContainer 位于 btnPlayModeContainer 右侧
+            val moreActionContainerSize = (38 * density).toInt()
+            val moreActionContainerParams = android.widget.FrameLayout.LayoutParams(moreActionContainerSize, moreActionContainerSize)
+            moreActionContainerParams.gravity = android.view.Gravity.TOP or android.view.Gravity.END
+            moreActionContainerParams.topMargin = playModeContainerParams.topMargin + (playModeContainerSize - moreActionContainerSize) / 2
+            moreActionContainerParams.marginEnd = playModeContainerParams.marginEnd - playModeContainerSize - (2 * density).toInt()
+            binding.btnMoreActionContainer.layoutParams = moreActionContainerParams
 
             val titleParams = binding.playTitleGroup.layoutParams as android.widget.FrameLayout.LayoutParams
             titleParams.width = android.widget.FrameLayout.LayoutParams.MATCH_PARENT
-            titleParams.topMargin = params.topMargin + coverSize + (12 * density).toInt()
+            if (isImmersive) {
+                // 沉浸模式：标题信息下移，与播放偏好、三个点平行（同一水平线）
+                val splitY = (containerHeight * 0.55f).toInt()
+                titleParams.topMargin = splitY + (4 * density).toInt()
+            } else {
+                titleParams.topMargin = params.topMargin + coverSize + (12 * density).toInt()
+            }
             titleParams.marginStart = (20 * density).toInt()
             titleParams.marginEnd = (72 * density).toInt()
             binding.playTitleGroup.layoutParams = titleParams
@@ -915,7 +979,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 gravity = android.view.Gravity.BOTTOM
                 marginStart = (20 * density).toInt()
                 marginEnd = (20 * density).toInt()
-                bottomMargin = (56 * density).toInt()
+                bottomMargin = if (isImmersive) (-5 * density).toInt() else (24 * density).toInt()
             }
         }
     }
@@ -996,7 +1060,26 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         )
 
         unifiedContainer.registerViewScenes(
-            R.id.btnPlayMode,
+            R.id.btnPlayModeContainer,
+            UnifiedPlayerContainer.Scene.MAIN to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.MAIN,
+                alpha = 0f,
+                visibility = View.GONE
+            ),
+            UnifiedPlayerContainer.Scene.PLAYER to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.PLAYER,
+                alpha = 1f,
+                visibility = View.VISIBLE
+            ),
+            UnifiedPlayerContainer.Scene.LYRIC to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.LYRIC,
+                alpha = 0f,
+                visibility = View.GONE
+            )
+        )
+
+        unifiedContainer.registerViewScenes(
+            R.id.btnMoreActionContainer,
             UnifiedPlayerContainer.Scene.MAIN to UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.MAIN,
                 alpha = 0f,
@@ -1269,6 +1352,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             )
         )
 
+        // 非沉浸模式下，播放页/歌词页需要保留流光背景（playBgScrim 覆盖其上）
+        val bgPlayerAlpha = if (isImmersive) 0f else 1f
         unifiedContainer.registerViewScenes(
             R.id.backgroundView,
             UnifiedPlayerContainer.Scene.MAIN to UnifiedPlayerContainer.SceneParams(
@@ -1278,12 +1363,12 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             ),
             UnifiedPlayerContainer.Scene.PLAYER to UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.PLAYER,
-                alpha = 0f,
+                alpha = bgPlayerAlpha,
                 visibility = View.VISIBLE
             ),
             UnifiedPlayerContainer.Scene.LYRIC to UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.LYRIC,
-                alpha = 0f,
+                alpha = bgPlayerAlpha,
                 visibility = View.VISIBLE
             ),
             UnifiedPlayerContainer.Scene.QUEUE to UnifiedPlayerContainer.SceneParams(
@@ -1390,7 +1475,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             R.id.ivPlayCover,
             R.id.playTitleGroup,
             R.id.playBottomPanel,
-            R.id.btnPlayMode,
+            R.id.btnPlayModeContainer,
+            R.id.btnMoreActionContainer,
             R.id.audioInfoCapsule,
             R.id.playBgView,
             R.id.playBgScrim,
@@ -1501,7 +1587,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 val isPlaying = state == PlayState.PLAYING
                 val song = playerController?.currentSong?.value
                 if (song != null) {
-                    capsuleView.updatePlaybackState(isPlaying, song.title, song.artist, song.albumArtPath)
+                    val coverUri = resolveCoverUri(song)
+                    capsuleView.updatePlaybackState(isPlaying, song.title, song.artist, coverUri.ifBlank { song.albumArtPath })
                 }
                 binding.btnPlayPause.setImageResource(
                     if (isPlaying) R.drawable.ic_pause
@@ -2607,6 +2694,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         }
 
         binding.ivPlayCover.setOnTouchListener(coverTouchHandler)
+        binding.playTitleGroup.setOnTouchListener(coverTouchHandler)
 
         // 沉浸模式播放界面：在沉浸背景的封面区域上滑进入歌词页
         binding.immersiveBackground?.setOnTouchListener { v, event ->
@@ -2980,7 +3068,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             R.id.ivPlayCoverMirror,
             R.id.playTitleGroup,
             R.id.playBottomPanel,
-            R.id.btnPlayMode,
+            R.id.btnPlayModeContainer,
+            R.id.btnMoreActionContainer,
             R.id.audioInfoCapsule,
             R.id.playBgView,
             R.id.playBgScrim
@@ -3352,32 +3441,42 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
     }
 
     private fun setupPlayPageListeners() {
-        binding.btnPlayPause.setOnClickListener {
+        // 播放控制按钮 - 点击事件绑定到容器
+        binding.btnPlayPauseContainer.setOnClickListener {
             ButtonAnimHelper.playPauseAnim(it, true) {
                 playerController?.playPause()
             }
         }
-        binding.btnNext.setOnClickListener {
+        binding.btnNextContainer.setOnClickListener {
             ButtonAnimHelper.pressReleaseAnim(it)
             ButtonAnimHelper.coverSwitchAnim(binding.ivPlayCover, true)
             playerController?.next()
         }
-        binding.btnPrevious.setOnClickListener {
+        binding.btnPreviousContainer.setOnClickListener {
             ButtonAnimHelper.pressReleaseAnim(it)
             ButtonAnimHelper.coverSwitchAnim(binding.ivPlayCover, false)
             playerController?.previous()
         }
-        binding.btnPlayMode.setOnClickListener {
+        
+        // 播放模式按钮 - 点击事件绑定到容器
+        binding.btnPlayModeContainer.setOnClickListener {
             ButtonAnimHelper.secondaryPressAnim(it)
             playerController?.let { ctrl ->
                 ctrl.cyclePlayMode()
                 updatePlayModeIcon(ctrl.playMode.value)
             }
         }
-        binding.btnPlayMode.setOnLongClickListener {
+        binding.btnPlayModeContainer.setOnLongClickListener {
             showPlayModePopup()
             true
         }
+        
+        // 更多按钮 - 点击事件绑定到容器
+        binding.btnMoreActionContainer.setOnClickListener {
+            ButtonAnimHelper.secondaryPressAnim(it)
+            showSongActionSheet()
+        }
+        
         binding.btnMore?.setOnClickListener {
             ButtonAnimHelper.secondaryPressAnim(it)
             (it as? AnimatedMoreButton)?.toggleExpanded()
@@ -3419,10 +3518,6 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 navController.popBackStack(R.id.nav_songs, false)
                 navController.navigate(R.id.nav_audio_settings)
             } catch (_: Exception) {}
-        }
-
-        binding.btnMoreAction.setOnClickListener {
-            showSongActionSheet()
         }
 
         binding.btnQueueBack?.setOnClickListener {
@@ -3567,7 +3662,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         sheet.findViewById<android.widget.TextView>(R.id.btnCoverModify)?.setOnClickListener {
             pickCoverImage()
         }
+        sheet.findViewById<android.widget.TextView>(R.id.actionChangeCover)?.setOnClickListener {
+            pickCoverImage()
+        }
         sheet.findViewById<android.widget.TextView>(R.id.btnCoverRestore)?.setOnClickListener {
+            hideSongActionSheet()
             restoreOriginalCover()
         }
     }
@@ -3584,6 +3683,9 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             .start()
         isSongActionSheetShowing = true
         unifiedContainer.disableGestureIntercept = true
+        // 沉浸模式下隐藏修改专辑图行
+        val coverRow = sheet.findViewById<android.widget.LinearLayout>(R.id.actionCoverRow)
+        coverRow?.visibility = if (unifiedContainer.isImmersiveEnabled) View.GONE else View.VISIBLE
         updateCoverRestoreButton()
     }
 
@@ -3661,6 +3763,116 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         } catch (_: Exception) {}
     }
 
+    // 待写入的元数据缓存（用于权限请求回调后继续写入）
+    private var pendingMetadataUri: android.net.Uri? = null
+    private var pendingMetadataValues: android.content.ContentValues? = null
+    private var pendingMetadataDialog: com.google.android.material.dialog.MaterialAlertDialogBuilder? = null
+
+    // FFmpeg 元数据写入缓存
+    private var pendingFfmpegMeta: Map<String, String>? = null
+    private var pendingFfmpegFilePath: String? = null
+    private var pendingFfmpegUri: android.net.Uri? = null
+    private var pendingFfmpegTitle: String? = null
+    private var pendingFfmpegArtist: String? = null
+    private var pendingFfmpegAlbum: String? = null
+    private var pendingFfmpegDialog: androidx.appcompat.app.AlertDialog? = null
+
+    private val metadataWriteLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            // 权限授予，检查是 FFmpeg 写入还是 MediaStore 写入
+            val ffmpegMeta = pendingFfmpegMeta
+            val ffmpegPath = pendingFfmpegFilePath
+            val ffmpegUri = pendingFfmpegUri
+            if (ffmpegMeta != null && ffmpegPath != null && ffmpegUri != null) {
+                // FFmpeg 元数据写入路径
+                doFfmpegWrite(ffmpegPath, ffmpegMeta, ffmpegUri,
+                    pendingFfmpegTitle ?: "", pendingFfmpegArtist ?: "",
+                    pendingFfmpegAlbum ?: "", pendingFfmpegDialog)
+            } else {
+                // MediaStore 元数据写入路径
+                val uri = pendingMetadataUri ?: return@registerForActivityResult
+                val values = pendingMetadataValues ?: return@registerForActivityResult
+                performMetadataUpdate(uri, values)
+            }
+        } else {
+            Toast.makeText(this, "写入权限被拒绝", Toast.LENGTH_SHORT).show()
+            pendingFfmpegDialog?.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
+        }
+        pendingMetadataUri = null
+        pendingMetadataValues = null
+        pendingFfmpegMeta = null
+        pendingFfmpegFilePath = null
+        pendingFfmpegUri = null
+        pendingFfmpegTitle = null
+        pendingFfmpegArtist = null
+        pendingFfmpegAlbum = null
+        pendingFfmpegDialog = null
+    }
+
+    private fun performMetadataUpdate(uri: android.net.Uri, values: android.content.ContentValues) {
+        try {
+            // 先检查 URI 是否存在
+            var exists = false
+            contentResolver.query(uri, arrayOf(android.provider.MediaStore.Audio.Media._ID), null, null, null)?.use { cursor ->
+                exists = cursor.moveToFirst()
+            }
+            Log.d("EditMetadata", "URI exists: $exists, URI: $uri")
+            
+            if (!exists) {
+                Toast.makeText(this, "歌曲未在 MediaStore 中找到", Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            // 创建新的 ContentValues，只包含确定可写的列
+            val safeValues = android.content.ContentValues()
+            values.getAsString(android.provider.MediaStore.Audio.Media.TITLE)?.let { 
+                safeValues.put(android.provider.MediaStore.Audio.Media.TITLE, it) 
+            }
+            values.getAsString(android.provider.MediaStore.Audio.Media.ARTIST)?.let { 
+                safeValues.put(android.provider.MediaStore.Audio.Media.ARTIST, it) 
+            }
+            values.getAsString(android.provider.MediaStore.Audio.Media.ALBUM)?.let { 
+                safeValues.put(android.provider.MediaStore.Audio.Media.ALBUM, it) 
+            }
+            if (values.containsKey(android.provider.MediaStore.Audio.Media.YEAR)) {
+                safeValues.put(android.provider.MediaStore.Audio.Media.YEAR, values.getAsInteger(android.provider.MediaStore.Audio.Media.YEAR))
+            }
+            if (values.containsKey(android.provider.MediaStore.Audio.Media.TRACK)) {
+                safeValues.put(android.provider.MediaStore.Audio.Media.TRACK, values.getAsInteger(android.provider.MediaStore.Audio.Media.TRACK))
+            }
+            
+            Log.d("EditMetadata", "Safe values: $safeValues")
+            val rows = contentResolver.update(uri, safeValues, null, null)
+            Log.d("EditMetadata", "Updated rows: $rows")
+            
+            if (rows > 0) {
+                val song = playerController?.currentSong?.value ?: return
+                val newTitle = safeValues.getAsString(android.provider.MediaStore.Audio.Media.TITLE) ?: song.title
+                val newArtist = safeValues.getAsString(android.provider.MediaStore.Audio.Media.ARTIST) ?: song.artist
+                val newAlbum = safeValues.getAsString(android.provider.MediaStore.Audio.Media.ALBUM) ?: song.album
+                binding.tvTitle.text = newTitle.ifBlank { song.displayName }
+                binding.tvArtist.text = newArtist
+                binding.tvAlbum.text = newAlbum
+                val coverUri = resolveCoverUri(song)
+                capsuleView.updatePlaybackState(
+                    playerController?.playState?.value == PlayState.PLAYING,
+                    newTitle.ifBlank { song.displayName },
+                    newArtist,
+                    coverUri.ifBlank { song.albumArtPath }
+                )
+                updateCapsuleText()
+                Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "保存失败，MediaStore 更新返回 0", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Log.e("EditMetadata", "Update failed", e)
+            Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun editMetadata() {
         val song = playerController?.currentSong?.value ?: return
         val density = resources.displayMetrics.density
@@ -3683,7 +3895,6 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         )
 
         val editTexts = mutableListOf<com.google.android.material.textfield.TextInputEditText>()
-        val textInputLayouts = mutableListOf<com.google.android.material.textfield.TextInputLayout>()
 
         for (field in fields) {
             val til = com.google.android.material.textfield.TextInputLayout(this).apply {
@@ -3706,7 +3917,6 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             til.addView(et)
             container.addView(til)
             editTexts.add(et)
-            textInputLayouts.add(til)
         }
 
         scrollView.addView(container)
@@ -3728,39 +3938,213 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             val newYear = editTexts[4].text?.toString()?.trim()?.toIntOrNull() ?: 0
             val newTrack = editTexts[5].text?.toString()?.trim()?.toIntOrNull() ?: 0
 
-            var updated = false
-            try {
-                val uri = android.content.ContentUris.withAppendedId(
-                    android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, song.id
-                )
-                val values = android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.Audio.Media.TITLE, newTitle)
-                    put(android.provider.MediaStore.Audio.Media.ARTIST, newArtist)
-                    put(android.provider.MediaStore.Audio.Media.ALBUM, newAlbum)
-                    put(android.provider.MediaStore.Audio.Media.GENRE, newGenre)
-                    if (newYear > 0) put(android.provider.MediaStore.Audio.Media.YEAR, newYear)
-                    if (newTrack > 0) put(android.provider.MediaStore.Audio.Media.TRACK, newTrack)
-                }
-                val rows = contentResolver.update(uri, values, null, null)
-                updated = rows > 0
-            } catch (_: Exception) {}
+            // 构建 FFmpeg 元数据键值对
+            val ffmpegMeta = mutableMapOf<String, String>()
+            if (newTitle.isNotBlank()) ffmpegMeta["title"] = newTitle
+            if (newArtist.isNotBlank()) ffmpegMeta["artist"] = newArtist
+            if (newAlbum.isNotBlank()) ffmpegMeta["album"] = newAlbum
+            if (newGenre.isNotBlank()) ffmpegMeta["genre"] = newGenre
+            if (newYear > 0) ffmpegMeta["date"] = newYear.toString()
+            if (newTrack > 0) ffmpegMeta["track"] = newTrack.toString()
 
-            if (updated) {
-                binding.tvTitle.text = newTitle.ifBlank { song.displayName }
-                binding.tvArtist.text = newArtist
-                binding.tvAlbum.text = newAlbum
-                capsuleView.updatePlaybackState(
-                    playerController?.playState?.value == PlayState.PLAYING,
-                    newTitle.ifBlank { song.displayName },
-                    newArtist,
-                    song.albumArtPath
-                )
-                updateCapsuleText()
-                Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(this, "保存失败，文件可能不支持", Toast.LENGTH_SHORT).show()
+            val filePath = song.path
+            Log.d("EditMetadata", "Save clicked. FFmpeg write to: $filePath, meta=$ffmpegMeta")
+
+            if (filePath.isBlank() || !java.io.File(filePath).exists()) {
+                Toast.makeText(this, "文件不存在: $filePath", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
             }
-            dialog.dismiss()
+
+            // 禁用按钮防止重复点击
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).isEnabled = false
+
+            // Android 11+: 需要通过 MediaStore.createWriteRequest 获取写入权限
+            val uri = android.content.ContentUris.withAppendedId(
+                android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, song.id
+            )
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                try {
+                    val pendingIntent = android.provider.MediaStore.createWriteRequest(
+                        contentResolver, listOf(uri)
+                    )
+                    pendingFfmpegMeta = ffmpegMeta
+                    pendingFfmpegFilePath = filePath
+                    pendingFfmpegUri = uri
+                    pendingFfmpegTitle = newTitle
+                    pendingFfmpegArtist = newArtist
+                    pendingFfmpegAlbum = newAlbum
+                    pendingFfmpegDialog = dialog
+                    metadataWriteLauncher.launch(
+                        androidx.activity.result.IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                    )
+                } catch (e: Exception) {
+                    Log.e("EditMetadata", "createWriteRequest failed", e)
+                    Toast.makeText(this, "权限请求失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                    dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                }
+            } else {
+                // Android 10 及以下: 直接写入
+                doFfmpegWrite(filePath, ffmpegMeta, uri, newTitle, newArtist, newAlbum, dialog)
+            }
+        }
+    }
+
+    /**
+     * 通过 FFmpeg 写入元数据到音频文件，然后将修改后的文件复制回原位置。
+     * 支持 FLAC, MP3, M4A, OGG, WAV, AIFF, WMA, APE 等格式。
+     */
+    private fun doFfmpegWrite(
+        filePath: String,
+        ffmpegMeta: Map<String, String>,
+        uri: android.net.Uri,
+        newTitle: String,
+        newArtist: String,
+        newAlbum: String,
+        dialog: androidx.appcompat.app.AlertDialog?
+    ) {
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val cacheDir = cacheDir.absolutePath
+                val ret = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.writeMetadata(filePath, ffmpegMeta, cacheDir)
+
+                if (ret != 0) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "元数据写入失败 (错误码: $ret)", Toast.LENGTH_SHORT).show()
+                        dialog?.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
+                    }
+                    return@launch
+                }
+
+                // 成功: 将临时文件复制回原位置
+                val ext = filePath.substringAfterLast(".", "").lowercase()
+                val tmpFile = java.io.File(cacheDir, "rawsmeta_tmp.$ext")
+                if (!tmpFile.exists() || tmpFile.length() == 0L) {
+                    Log.e("EditMetadata", "Temp file missing or empty: ${tmpFile.absolutePath}, exists=${tmpFile.exists()}, size=${tmpFile.length()}")
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "临时文件不存在或为空", Toast.LENGTH_SHORT).show()
+                        dialog?.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
+                    }
+                    return@launch
+                }
+
+                val tmpSize = tmpFile.length()
+                val origFile = java.io.File(filePath)
+                val origSize = origFile.length()
+                Log.d("EditMetadata", "Temp file: ${tmpFile.absolutePath}, size=$tmpSize bytes, origSize=$origSize bytes")
+
+                if (tmpSize < origSize / 2) {
+                    Log.e("EditMetadata", "Temp file too small ($tmpSize) vs original ($origSize), aborting")
+                    tmpFile.delete()
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "临时文件异常，中止写入", Toast.LENGTH_SHORT).show()
+                        dialog?.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
+                    }
+                    return@launch
+                }
+
+                // 将临时文件写回原文件 - 优先直接文件 I/O
+                var copySuccess = false
+                var writtenSize = 0L
+
+                // 方式1: 直接文件写入 (最快最可靠，不经过 contentResolver 截断)
+                try {
+                    java.io.FileInputStream(tmpFile).use { input ->
+                        java.io.FileOutputStream(origFile).use { output ->
+                            val buf = ByteArray(65536)
+                            var bytesRead: Int
+                            while (input.read(buf).also { bytesRead = it } != -1) {
+                                output.write(buf, 0, bytesRead)
+                            }
+                            output.flush()
+                            output.fd.sync()
+                            writtenSize = origFile.length()
+                        }
+                    }
+                    Log.d("EditMetadata", "Direct file write: written=$writtenSize bytes")
+                    copySuccess = writtenSize == tmpSize
+                } catch (e: Exception) {
+                    Log.e("EditMetadata", "Direct file write failed", e)
+                }
+
+                // 方式2: 回退 - ParcelFileDescriptor (通过 contentResolver 获取 fd，但不截断)
+                if (!copySuccess) {
+                    try {
+                        contentResolver.openFileDescriptor(uri, "rw")?.use { pfd ->
+                            java.io.FileOutputStream(pfd.fileDescriptor).use { output ->
+                                java.io.FileInputStream(tmpFile).use { input ->
+                                    val buf = ByteArray(65536)
+                                    var bytesRead: Int
+                                    while (input.read(buf).also { bytesRead = it } != -1) {
+                                        output.write(buf, 0, bytesRead)
+                                    }
+                                    output.flush()
+                                    output.fd.sync()
+                                }
+                            }
+                        }
+                        // 验证
+                        writtenSize = origFile.length()
+                        Log.d("EditMetadata", "ParcelFileDescriptor write: written=$writtenSize bytes")
+                        copySuccess = writtenSize == tmpSize
+                    } catch (e2: Exception) {
+                        Log.e("EditMetadata", "ParcelFileDescriptor write failed", e2)
+                    }
+                }
+
+                // 清理临时文件
+                tmpFile.delete()
+
+                if (!copySuccess) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "文件写回失败", Toast.LENGTH_SHORT).show()
+                        dialog?.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
+                    }
+                    return@launch
+                }
+
+                // 更新 MediaStore 中的元数据
+                val safeValues = android.content.ContentValues()
+                if (newTitle.isNotBlank()) safeValues.put(android.provider.MediaStore.Audio.Media.TITLE, newTitle)
+                if (newArtist.isNotBlank()) safeValues.put(android.provider.MediaStore.Audio.Media.ARTIST, newArtist)
+                if (newAlbum.isNotBlank()) safeValues.put(android.provider.MediaStore.Audio.Media.ALBUM, newAlbum)
+                try {
+                    contentResolver.update(uri, safeValues, null, null)
+                } catch (e: Exception) {
+                    Log.w("EditMetadata", "MediaStore update after FFmpeg write failed", e)
+                }
+
+                // 通知 MediaScanner 扫描更新
+                try {
+                    sendBroadcast(android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, uri))
+                } catch (_: Exception) {}
+
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    // 更新 UI
+                    val song = playerController?.currentSong?.value
+                    if (song != null) {
+                        binding.tvTitle.text = newTitle.ifBlank { song.displayName }
+                        binding.tvArtist.text = newArtist
+                        binding.tvAlbum.text = newAlbum
+                        val coverUri = resolveCoverUri(song)
+                        capsuleView.updatePlaybackState(
+                            playerController?.playState?.value == PlayState.PLAYING,
+                            newTitle.ifBlank { song.displayName },
+                            newArtist,
+                            coverUri.ifBlank { song.albumArtPath }
+                        )
+                        updateCapsuleText()
+                    }
+                    Toast.makeText(this@MainActivity, "已保存", Toast.LENGTH_SHORT).show()
+                    dialog?.dismiss()
+                }
+            } catch (e: Exception) {
+                Log.e("EditMetadata", "doFfmpegWrite failed", e)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    Toast.makeText(this@MainActivity, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                    dialog?.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
+                }
+            }
         }
     }
 
@@ -4016,19 +4400,12 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             .show()
     }
 
-    private val COVER_PICK_REQUEST = 10001
-
-    private fun pickCoverImage() {
-        val intent = android.content.Intent(android.content.Intent.ACTION_PICK)
-        intent.type = "image/*"
-        startActivityForResult(intent, COVER_PICK_REQUEST)
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == COVER_PICK_REQUEST && resultCode == android.app.Activity.RESULT_OK) {
-            val uri = data?.data ?: return
-            val song = playerController?.currentSong?.value ?: return
+    private val coverImageLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val uri = result.data?.data ?: return@registerForActivityResult
+            val song = playerController?.currentSong?.value ?: return@registerForActivityResult
             val cacheDir = java.io.File(cacheDir, "custom_covers")
             cacheDir.mkdirs()
             val destFile = java.io.File(cacheDir, "${song.id}.jpg")
@@ -4045,12 +4422,12 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     transformations(SquarePadTransformation())
                 }
                 syncMirrorCover(destFile.absolutePath)
-                val song = playerController?.currentSong?.value
-                if (song != null) {
+                val curSong = playerController?.currentSong?.value
+                if (curSong != null) {
                     capsuleView.updatePlaybackState(
                         playerController?.playState?.value == PlayState.PLAYING,
-                        song.title,
-                        song.artist,
+                        curSong.title,
+                        curSong.artist,
                         destFile.absolutePath
                     )
                 }
@@ -4059,6 +4436,13 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 e.printStackTrace()
             }
         }
+    }
+
+    private fun pickCoverImage() {
+        hideSongActionSheet()
+        val intent = android.content.Intent(android.content.Intent.ACTION_PICK)
+        intent.type = "image/*"
+        coverImageLauncher.launch(intent)
     }
 
     private fun restoreOriginalCover() {
@@ -4604,7 +4988,12 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
         // 根据当前场景调整封面布局参数，确保在不同场景下封面显示正确
         window.statusBarColor = android.graphics.Color.TRANSPARENT
-        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        // 扁平化导航栏：半透明黑色背景，去除系统默认的对比度强制遮罩
+        window.navigationBarColor = android.graphics.Color.parseColor("#66000000")
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
+        }
         UiUtils.setLightStatusBar(window.decorView, !isDarkMode)
         UiUtils.setLightNavigationBar(window.decorView, !isDarkMode)
     }
@@ -4667,41 +5056,19 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
      * API 31+使用RenderEffect实现模糊效果
      */
     /**
-     * 解析封面 URI，对 WAV/DSF/DFF/AIFF 等 MediaStore 不支持的格式
+     * 解析封面 URI，优先从歌曲文件本身提取内嵌封面
      */
     private fun resolveCoverUri(song: AudioFile): String {
         if (song.albumArtPath.startsWith("file://")) {
             val filePath = song.albumArtPath.removePrefix("file://")
             if (java.io.File(filePath).exists()) return song.albumArtPath
         }
-        val ext = song.path.substringAfterLast(".", "").uppercase()
-        val isWavLike = ext in listOf("WAV", "DSF", "DFF", "AIFF", "AIF")
-        // 对非 WAV 类格式优先尝试content:// URI，MediaStore 可能已有缩略图
-        if (!isWavLike && song.albumArtPath.startsWith("content://")) {
-            try {
-                contentResolver.openInputStream(android.net.Uri.parse(song.albumArtPath))?.use { stream ->
-                    if (stream.available() > 0) return song.albumArtPath
-                }
-            } catch (_: Exception) {}
-        }
-        // 对WAV/DSF/DFF/AIFF 等格式，使用FFmpeg 提取嵌入封面
-        if (isWavLike) {
-            try {
-                val coverFile = java.io.File(cacheDir, "albumart/cover_${song.path.hashCode()}.jpg")
-                val coverDir = coverFile.parentFile
-                if (coverDir != null && !coverDir.exists()) coverDir.mkdirs()
-                // 检查缓存
-                if (coverFile.exists() && coverFile.length() > 1024) {
-                    return "file://${coverFile.absolutePath}"
-                }
-                val ret = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.extractCover(song.path, coverFile.absolutePath)
-                if (ret == 0 && coverFile.exists() && coverFile.length() > 1024) {
-                    return "file://${coverFile.absolutePath}"
-                }
-                if (coverFile.exists()) coverFile.delete()
-            } catch (_: Exception) {}
-        }
-        // 如果所有路径都无效的格式，尝试从同目录查找封面文件
+
+        // 优先从歌曲文件本身提取内嵌封面（使用歌曲路径作为缓存键）
+        val extractedCover = extractCoverFromSongFile(song)
+        if (extractedCover != null) return extractedCover
+
+        // 尝试从同目录查找封面文件
         val dir = java.io.File(song.path).parentFile ?: return song.albumArtPath.ifBlank { "" }
         val candidates = listOf("folder.jpg", "Folder.jpg", "cover.jpg", "Cover.jpg", "album.jpg", "Album.jpg",
             "folder.png", "Folder.png", "cover.png", "Cover.png", "album.png", "Album.png",
@@ -4712,50 +5079,63 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 return "file://${file.absolutePath}"
             }
         }
-        // 尝试从同专辑其他格式文件中提取封面
-        if (song.albumId > 0) {
-            try {
-                val projection = arrayOf(android.provider.MediaStore.Audio.Media.DATA)
-                val selection = "${android.provider.MediaStore.Audio.Media.ALBUM_ID} = ?"
-                val selectionArgs = arrayOf(song.albumId.toString())
-                contentResolver.query(
-                    android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                    projection, selection, selectionArgs, null
-                )?.use { cursor ->
-                    while (cursor.moveToNext()) {
-                        val p = cursor.getString(0) ?: continue
-                        val otherExt = p.substringAfterLast(".", "").uppercase()
-                        // 只处理内嵌封面的格式（FLAC/MP3/M4A/APE/OGG/OPUS等）
-                        if (otherExt in listOf("FLAC", "MP3", "M4A", "MP4", "APE", "OGG", "OPUS")) {
-                            try {
-                                val retriever = android.media.MediaMetadataRetriever()
-                                retriever.setDataSource(p)
-                                val art = retriever.embeddedPicture
-                                retriever.release()
-                                if (art != null && art.size > 1024) {
-                                    val cacheDir2 = java.io.File(cacheDir, "albumart")
-                                    if (!cacheDir2.exists()) cacheDir2.mkdirs()
-                                    val cachedCover = java.io.File(cacheDir2, "album_${song.albumId}.jpg")
-                                    if (!cachedCover.exists()) {
-                                        cachedCover.writeBytes(art)
-                                    }
-                                    return "file://${cachedCover.absolutePath}"
-                                }
-                            } catch (_: Exception) {}
-                        }
-                    }
-                }
-            } catch (_: Exception) {}
-        }
-        // WAV 类格式尝试content:// URI，MediaStore 可能有缩略图
-        if (isWavLike && song.albumArtPath.startsWith("content://")) {
+
+        // 回退到 content:// URI（MediaStore 缩略图）
+        if (song.albumArtPath.startsWith("content://")) {
             try {
                 contentResolver.openInputStream(android.net.Uri.parse(song.albumArtPath))?.use { stream ->
                     if (stream.available() > 0) return song.albumArtPath
                 }
             } catch (_: Exception) {}
         }
+
         return song.albumArtPath.ifBlank { "" }
+    }
+
+    /**
+     * 从歌曲文件本身提取内嵌封面
+     * 使用歌曲文件路径的 hashCode 作为缓存键，确保每首歌曲有自己的封面
+     */
+    private fun extractCoverFromSongFile(song: AudioFile): String? {
+        try {
+            val cacheKey = "song_${song.path.hashCode()}"
+            val coverFile = java.io.File(cacheDir, "albumart/${cacheKey}.jpg")
+            val coverDir = coverFile.parentFile
+            if (coverDir != null && !coverDir.exists()) coverDir.mkdirs()
+
+            // 检查缓存
+            if (coverFile.exists() && coverFile.length() > 1024) {
+                return "file://${coverFile.absolutePath}"
+            }
+
+            val ext = song.path.substringAfterLast(".", "").uppercase()
+            val isWavLike = ext in listOf("WAV", "DSF", "DFF", "AIFF", "AIF")
+
+            if (isWavLike) {
+                // WAV/DSF/DFF/AIFF: 使用 FFmpeg 提取
+                val ret = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.extractCover(song.path, coverFile.absolutePath)
+                if (ret == 0 && coverFile.exists() && coverFile.length() > 1024) {
+                    return "file://${coverFile.absolutePath}"
+                }
+            } else {
+                // 其他格式: 使用 MediaMetadataRetriever
+                val retriever = android.media.MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(song.path)
+                    val art = retriever.embeddedPicture
+                    if (art != null && art.size > 1024) {
+                        coverFile.writeBytes(art)
+                        return "file://${coverFile.absolutePath}"
+                    }
+                } catch (_: Exception) {} finally {
+                    try { retriever.release() } catch (_: Exception) {}
+                }
+            }
+
+            // 当前文件无封面，清理缓存文件
+            if (coverFile.exists()) coverFile.delete()
+        } catch (_: Exception) {}
+        return null
     }
 
     /**
@@ -4777,6 +5157,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             binding.playBgView.clearArtwork()
             binding.lyricBgView.clearArtwork()
             binding.backgroundView.clearArtwork()
+            // 非沉浸模式下无封面时隐藏默认黑色背景
+            if (!unifiedContainer.isImmersiveEnabled) {
+                binding.backgroundView.visibility = View.GONE
+            }
             binding.immersiveBackground?.clear()
             binding.mainPersistentCover?.clear()
             return
@@ -4812,6 +5196,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                             binding.playBgView.setArtwork(bitmap)
                             binding.lyricBgView.setArtwork(bitmap)
                             binding.backgroundView.setArtwork(bitmap)
+                            binding.backgroundView.visibility = View.VISIBLE
                             unifiedContainer.updateImmersiveCover(path)
                             // 更新主界面常驻封面
                             binding.mainPersistentCover?.setCover(path)
@@ -4834,6 +5219,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
     private fun applyDefaultColors() {
         coverColors = CoverColorExtractor.CoverColors()
         applyCoverColors()
+        // 非沉浸模式下无封面时隐藏默认黑色背景
+        if (!unifiedContainer.isImmersiveEnabled) {
+            binding.backgroundView.visibility = View.GONE
+        }
     }
 
     /**
@@ -5055,7 +5444,15 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             val touchOnCover = ev.rawX >= playAreaCoverLoc[0] + shrink && ev.rawX <= coverRight - shrink &&
                     ev.rawY >= playAreaCoverLoc[1] + shrink && ev.rawY <= coverBottom - shrink
 
-            if (!touchOnCover) {
+            val titleGroup = binding.playTitleGroup
+            val titleGroupLoc = IntArray(2)
+            titleGroup.getLocationOnScreen(titleGroupLoc)
+            val titleGroupRight = titleGroupLoc[0] + titleGroup.width
+            val titleGroupBottom = titleGroupLoc[1] + titleGroup.height
+            val touchOnTitleGroup = ev.rawX >= titleGroupLoc[0] && ev.rawX <= titleGroupRight &&
+                    ev.rawY >= titleGroupLoc[1] && ev.rawY <= titleGroupBottom
+
+            if (!touchOnCover || touchOnTitleGroup) {
                 val leftEdgeZone = 24 * resources.displayMetrics.density
                 val touchOnLeftEdge = ev.rawX < leftEdgeZone
 
@@ -5111,10 +5508,58 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 isPlayAreaTracking = false
             }
         }
-        if (unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.LYRIC && !unifiedContainer.isTransitioning) {
+        if (unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.LYRIC &&
+            (!unifiedContainer.isTransitioning || lyricHSwipeDragStarted)) {
+            // 歌词页横向滑动返回播放界面（跟手）
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    lyricHSwipeStartX = ev.rawX
+                    lyricHSwipeStartY = ev.rawY
+                    lyricHSwipeActive = false
+                    lyricHSwipeTracking = true
+                    lyricHSwipeDragStarted = false
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    if (lyricHSwipeTracking && !lyricHSwipeActive) {
+                        val dx = ev.rawX - lyricHSwipeStartX
+                        val dy = ev.rawY - lyricHSwipeStartY
+                        val slop = ViewConfiguration.get(this).scaledTouchSlop * 1.5f
+                        if (abs(dx) > slop && abs(dx) > abs(dy) * 0.7f) {
+                            lyricHSwipeActive = true
+                            // 开始跟手拖拽
+                            binding.playBgView.syncFrom(binding.lyricBgView)
+                            binding.playBgView.resumeAnimations()
+                            unifiedContainer.startCoverSwipeUpDrag()
+                            lyricHSwipeDragStarted = true
+                        }
+                    }
+                    if (lyricHSwipeActive && lyricHSwipeDragStarted) {
+                        val dx = ev.rawX - lyricHSwipeStartX
+                        val ratio = (abs(dx) / lyricHSwipeThreshold).coerceIn(0f, 1f)
+                        unifiedContainer.updateCoverSwipeUpDrag(ratio)
+                        return true
+                    }
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    if (lyricHSwipeTracking && lyricHSwipeActive && lyricHSwipeDragStarted) {
+                        val dx = ev.rawX - lyricHSwipeStartX
+                        val ratio = (abs(dx) / lyricHSwipeThreshold).coerceIn(0f, 1f)
+                        val shouldOpen = ratio > 0.4f
+                        unifiedContainer.endCoverSwipeUpDrag(shouldOpen)
+                        lyricHSwipeActive = false
+                        lyricHSwipeTracking = false
+                        lyricHSwipeDragStarted = false
+                        return true
+                    }
+                    lyricHSwipeActive = false
+                    lyricHSwipeTracking = false
+                    lyricHSwipeDragStarted = false
+                }
+            }
+            // 歌词页底部区域下滑打开队列（仅在横向滑动未激活时）
             val screenHeight = resources.displayMetrics.heightPixels
             val bottomZone = screenHeight * 0.66f
-            if (ev.rawY > bottomZone) {
+            if (ev.rawY > bottomZone && !lyricHSwipeActive && !lyricHSwipeDragStarted) {
                 when (ev.actionMasked) {
                     android.view.MotionEvent.ACTION_DOWN -> {
                         playAreaSwipeStartX = ev.rawX
@@ -5168,6 +5613,15 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         unifiedContainer.post {
             setupCoverLayoutParams()
             updateHiresBadge()
+
+            // 歌词场景下重新注册封面参数并重置 pivot，防止从后台恢复后封面放大
+            val currentScene = unifiedContainer.currentScene
+            if (currentScene == UnifiedPlayerContainer.Scene.LYRIC) {
+                binding.ivPlayCover.pivotX = 0f
+                binding.ivPlayCover.pivotY = 0f
+                registerCoverLyricParams()
+                unifiedContainer.forceReapplyCurrentScene()
+            }
         }
 
         val song = playerController?.currentSong?.value

@@ -96,7 +96,7 @@ class SongsFragment : BaseFragment<FragmentSongsBinding>() {
             setHasFixedSize(true)
         }
 
-        binding.btnHamburger.setOnClickListener {
+        binding.btnHamburgerContainer.setOnClickListener {
             (activity as? com.rawsmusic.MainActivity)?.toggleSideMenu()
         }
 

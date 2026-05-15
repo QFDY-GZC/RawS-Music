@@ -20,12 +20,23 @@
             android:orientation="horizontal"
             android:paddingHorizontal="4dp">
 
-            <ImageView
-                android:id="@+id/btnHamburger"
-                android:layout_width="44dp"
-                android:layout_height="44dp"
-                android:padding="10dp"
-                android:src="@drawable/ic_order_play_fill" />
+            <FrameLayout
+                android:id="@+id/btnHamburgerContainer"
+                android:layout_width="45dp"
+                android:layout_height="45dp"
+                android:background="@drawable/bg_icon_highlight_container"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:id="@+id/btnHamburger"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_gravity="center"
+                    android:padding="4dp"
+                    android:src="@drawable/ic_menu"
+                    android:tint="@color/text_primary" />
+            </FrameLayout>
 
             <TextView
                 android:id="@+id/tvPageTitle"

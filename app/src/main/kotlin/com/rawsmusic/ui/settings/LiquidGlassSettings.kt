@@ -411,15 +411,23 @@ fun LiquidGlassSettingsScreen(
  * 可能因 GPU 驱动不兼容而导致原生崩溃。
  */
 private val isBackdropSupported: Boolean by lazy {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return@lazy false
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+        android.util.Log.d("BackdropCompat", "Not supported: API ${Build.VERSION.SDK_INT} < S")
+        return@lazy false
+    }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         try {
             android.graphics.RuntimeShader("half4 main(float2 c) { return half4(1.0); }")
+            android.util.Log.d("BackdropCompat", "Supported: RuntimeShader test passed on API ${Build.VERSION.SDK_INT}")
             true
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            android.util.Log.e("BackdropCompat", "Not supported: RuntimeShader test failed", e)
             false
         }
-    } else true
+    } else {
+        android.util.Log.d("BackdropCompat", "Supported: API ${Build.VERSION.SDK_INT} between S and TIRAMISU")
+        true
+    }
 }
 
 @Composable

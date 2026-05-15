@@ -10,7 +10,7 @@
     android:layout_marginBottom="8dp"
     android:orientation="vertical"
     android:paddingHorizontal="14dp"
-    android:paddingVertical="10dp">
+    android:paddingVertical="8dp">
 
     <com.rawsmusic.ui.widget.NavbarExtension
         android:id="@+id/fold_container"
@@ -257,8 +257,10 @@
     <androidx.constraintlayout.widget.ConstraintLayout
         android:id="@+id/nav_bar"
         android:layout_width="match_parent"
-        android:layout_height="40dp"
-        android:layout_marginTop="4dp">
+        android:layout_height="32dp"
+        android:layout_marginTop="3dp"
+        android:clickable="true"
+        android:focusable="true">
 
         <!-- 左侧参考线：往外靠，减少内边距 -->
         <androidx.constraintlayout.widget.Guideline

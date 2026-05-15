@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string>
+#include <vector>
+#include <signal.h>
+#include <setjmp.h>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -14,10 +17,45 @@ extern "C" {
 #include <libswresample/swresample.h>
 }
 
+// ==========================
+// SIGABRT protection for FFmpeg 6.0+ assertion failures
+// ==========================
 #define LOG_TAG "FFmpegBridge"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+static thread_local sigjmp_buf s_abort_jmp_buf;
+static thread_local volatile sig_atomic_t s_abort_caught = 0;
+
+static void abort_signal_handler(int sig) {
+    s_abort_caught = 1;
+    siglongjmp(s_abort_jmp_buf, 1);
+}
+
+/**
+ * Safe wrapper for avcodec_send_packet that catches SIGABRT from FFmpeg 6.0+ assertion failures.
+ * Returns the normal avcodec_send_packet result, or -100 if SIGABRT was caught.
+ */
+static int sendPacketSafe(AVCodecContext *ctx, AVPacket *pkt) {
+    struct sigaction sa_old, sa_new;
+    sa_new.sa_handler = abort_signal_handler;
+    sigemptyset(&sa_new.sa_mask);
+    sa_new.sa_flags = 0;
+    s_abort_caught = 0;
+
+    sigaction(SIGABRT, &sa_new, &sa_old);
+    if (sigsetjmp(s_abort_jmp_buf, 1) == 0) {
+        int ret = avcodec_send_packet(ctx, pkt);
+        sigaction(SIGABRT, &sa_old, nullptr);
+        return ret;
+    } else {
+        // SIGABRT was caught — restore old handler
+        sigaction(SIGABRT, &sa_old, nullptr);
+        LOGE("sendPacketSafe: caught SIGABRT from avcodec_send_packet, returning error");
+        return -100;
+    }
+}
 
 // ==========================
 // Helper functions for PCM output
@@ -290,7 +328,8 @@ static int convert_to_wav(const char *input_path, const char *output_path,
 
         while (av_read_frame(fmt_ctx, pkt) >= 0) {
             if (pkt->stream_index == audio_stream_idx) {
-                ret = avcodec_send_packet(codec_ctx, pkt);
+                ret = sendPacketSafe(codec_ctx, pkt);
+                if (ret == -100) { LOGE("convert_to_wav: SIGABRT caught, aborting"); goto cleanup; }
                 while (ret >= 0) {
                     ret = avcodec_receive_frame(codec_ctx, frame);
                     if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
@@ -321,7 +360,8 @@ static int convert_to_wav(const char *input_path, const char *output_path,
 
         // 刷出解码器中剩余帧
         {
-            ret = avcodec_send_packet(codec_ctx, nullptr);
+            ret = sendPacketSafe(codec_ctx, nullptr);
+            if (ret == -100) { LOGE("convert_to_wav: SIGABRT during flush, aborting"); goto cleanup; }
             while (ret >= 0) {
                 ret = avcodec_receive_frame(codec_ctx, frame);
                 if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
@@ -520,7 +560,8 @@ static int convert_to_raw_pcm(
         uint64_t total_data_size = 0;
         while (av_read_frame(fmt_ctx, pkt) >= 0) {
             if (pkt->stream_index == audio_stream_idx) {
-                ret = avcodec_send_packet(codec_ctx, pkt);
+                ret = sendPacketSafe(codec_ctx, pkt);
+                if (ret == -100) { LOGE("convert_to_raw_pcm: SIGABRT caught, aborting"); goto cleanup_pcm; }
                 while (ret >= 0) {
                     ret = avcodec_receive_frame(codec_ctx, frame);
                     if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
@@ -561,7 +602,8 @@ static int convert_to_raw_pcm(
         }
 
         // 刷出解码器剩余帧
-        ret = avcodec_send_packet(codec_ctx, nullptr);
+        ret = sendPacketSafe(codec_ctx, nullptr);
+        if (ret == -100) { LOGE("convert_to_raw_pcm: SIGABRT during flush, aborting"); goto cleanup_pcm; }
         while (ret >= 0) {
             ret = avcodec_receive_frame(codec_ctx, frame);
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
@@ -1049,7 +1091,12 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
                 if (ret < 0) {
                     if (ret == AVERROR_EOF) {
                         // Flush decoder
-                        avcodec_send_packet(sd->codec_ctx, nullptr);
+                        int send_ret = sendPacketSafe(sd->codec_ctx, nullptr);
+                        if (send_ret == -100) {
+                            LOGE("stream_decoder_read: SIGABRT caught during flush, aborting");
+                            sd->eof_reached = true;
+                            break;
+                        }
                         sd->flushed_decoder = true;
                         continue;
                     }
@@ -1061,8 +1108,13 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
                     av_packet_unref(sd->pkt);
                     continue;
                 }
-                ret = avcodec_send_packet(sd->codec_ctx, sd->pkt);
+                ret = sendPacketSafe(sd->codec_ctx, sd->pkt);
                 av_packet_unref(sd->pkt);
+                if (ret == -100) {
+                    LOGE("stream_decoder_read: SIGABRT caught in avcodec_send_packet, aborting");
+                    sd->eof_reached = true;
+                    break;
+                }
                 if (ret < 0) {
                     LOGE("stream_decoder_read: avcodec_send_packet failed: %d", ret);
                     sd->eof_reached = true;
@@ -1391,4 +1443,494 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfo(
 
     avformat_close_input(&fmt_ctx);
     return map;
+}
+
+// ========================== Write Metadata directly ==========================
+
+// Helper: read little-endian 32-bit unsigned
+static uint32_t read_le32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+// Helper: write little-endian 32-bit unsigned
+static void write_le32(uint8_t *p, uint32_t v) {
+    p[0] = v & 0xFF;
+    p[1] = (v >> 8) & 0xFF;
+    p[2] = (v >> 16) & 0xFF;
+    p[3] = (v >> 24) & 0xFF;
+}
+
+// Helper: read big-endian 24-bit unsigned
+static uint32_t read_be24(const uint8_t *p) {
+    return ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[2];
+}
+
+// Helper: write big-endian 24-bit unsigned
+static void write_be24(uint8_t *p, uint32_t v) {
+    p[0] = (v >> 16) & 0xFF;
+    p[1] = (v >> 8) & 0xFF;
+    p[2] = v & 0xFF;
+}
+
+/**
+ * Write metadata to FLAC file by modifying VORBIS_COMMENT block.
+ * Preserves all other metadata blocks (STREAMINFO, PICTURE, etc.) exactly.
+ * Returns 0 on success, negative on error.
+ */
+static int writeFlacMetadata(const char *filePath, const char *tmpPath,
+                              const char **keys, const char **values, int tagCount) {
+    FILE *fin = fopen(filePath, "rb");
+    if (!fin) { LOGE("writeFlac: cannot open input %s", filePath); return -10; }
+
+    // Get file size
+    fseek(fin, 0, SEEK_END);
+    long fileSize = ftell(fin);
+    fseek(fin, 0, SEEK_SET);
+
+    if (fileSize < 4) { fclose(fin); return -11; }
+
+    // Read entire file
+    uint8_t *data = (uint8_t *)malloc(fileSize);
+    if (!data) { fclose(fin); return -12; }
+    size_t readCount = fread(data, 1, fileSize, fin);
+    fclose(fin);
+    if ((long)readCount != fileSize) { free(data); return -13; }
+
+    // Verify FLAC marker
+    if (memcmp(data, "fLaC", 4) != 0) {
+        LOGE("writeFlac: not a FLAC file");
+        free(data);
+        return -14;
+    }
+
+    // Parse metadata blocks to find VORBIS_COMMENT and the end of all metadata
+    size_t pos = 4;
+    size_t vorbisBlockStart = 0;
+    size_t vorbisBlockEnd = 0;
+    size_t metadataEnd = 0; // end of ALL metadata blocks (start of audio data)
+    bool foundVorbis = false;
+
+    while (pos + 4 <= (size_t)fileSize) {
+        uint8_t headerByte = data[pos];
+        bool isLast = (headerByte & 0x80) != 0;
+        uint8_t blockType = headerByte & 0x7F;
+        uint32_t blockLen = read_be24(data + pos + 1);
+
+        size_t blockDataStart = pos + 4;
+        size_t blockDataEnd = blockDataStart + blockLen;
+
+        if (blockDataEnd > (size_t)fileSize) {
+            LOGE("writeFlac: block extends beyond file at pos=%zu", pos);
+            break;
+        }
+
+        if (blockType == 4) { // VORBIS_COMMENT
+            foundVorbis = true;
+            vorbisBlockStart = pos;
+            vorbisBlockEnd = blockDataEnd;
+            LOGI("writeFlac: found VORBIS_COMMENT at %zu, len=%u", pos, blockLen);
+        }
+
+        metadataEnd = blockDataEnd;
+        if (isLast) break;
+        pos = blockDataEnd;
+    }
+
+    if (!foundVorbis) {
+        LOGE("writeFlac: VORBIS_COMMENT block not found");
+        free(data);
+        return -15;
+    }
+
+    // Build new VORBIS_COMMENT block
+    const char *vendor = "RawSMusic";
+    uint32_t vendorLen = (uint32_t)strlen(vendor);
+
+    // Read existing comments to preserve ones we're not changing
+    std::vector<std::pair<std::string, std::string>> existingComments;
+    if (vorbisBlockStart > 0) {
+        size_t cp = vorbisBlockStart + 4; // skip block header
+        if (cp + 4 <= vorbisBlockEnd) {
+            uint32_t oldVendorLen = read_le32(data + cp);
+            cp += 4 + oldVendorLen;
+            if (cp + 4 <= vorbisBlockEnd) {
+                uint32_t oldCommentCount = read_le32(data + cp);
+                cp += 4;
+                for (uint32_t i = 0; i < oldCommentCount && cp + 4 <= vorbisBlockEnd; i++) {
+                    uint32_t cLen = read_le32(data + cp);
+                    cp += 4;
+                    if (cp + cLen <= vorbisBlockEnd) {
+                        std::string comment((const char *)(data + cp), cLen);
+                        size_t eqPos = comment.find('=');
+                        if (eqPos != std::string::npos) {
+                            std::string cKey = comment.substr(0, eqPos);
+                            std::string cKeyUpper = cKey;
+                            for (auto &ch : cKeyUpper) ch = toupper(ch);
+                            existingComments.push_back({cKeyUpper, comment.substr(eqPos + 1)});
+                        }
+                    }
+                    cp += cLen;
+                }
+            }
+        }
+    }
+
+    // Merge: new values override existing
+    std::vector<std::pair<std::string, std::string>> finalComments;
+
+    for (auto &ec : existingComments) {
+        bool overwritten = false;
+        for (int i = 0; i < tagCount; i++) {
+            std::string keyUpper = keys[i];
+            for (auto &ch : keyUpper) ch = toupper(ch);
+            if (ec.first == keyUpper) { overwritten = true; break; }
+        }
+        if (!overwritten) {
+            finalComments.push_back(ec);
+        }
+    }
+
+    for (int i = 0; i < tagCount; i++) {
+        if (values[i] && strlen(values[i]) > 0) {
+            std::string keyUpper = keys[i];
+            for (auto &ch : keyUpper) ch = toupper(ch);
+            finalComments.push_back({keyUpper, values[i]});
+        }
+    }
+
+    // Calculate new VORBIS_COMMENT block size
+    uint32_t commentDataSize = 4 + vendorLen + 4; // vendor_len + vendor + comment_count
+    for (auto &fc : finalComments) {
+        commentDataSize += 4 + (uint32_t)(fc.first.length() + 1 + fc.second.length());
+    }
+    uint32_t newVorbisBlockLen = commentDataSize;
+    size_t newVorbisBlockSize = 4 + newVorbisBlockLen;
+
+    // Build new file:
+    // [metadata blocks before VORBIS] + [new VORBIS_COMMENT] + [metadata blocks after VORBIS] + [audio data]
+    size_t beforeVorbis = vorbisBlockStart;
+    size_t afterVorbis = vorbisBlockEnd;
+    size_t audioStart = metadataEnd; // audio data starts after ALL metadata blocks
+    size_t audioDataSize = fileSize - audioStart;
+    size_t newFileSize = beforeVorbis + newVorbisBlockSize + (metadataEnd - afterVorbis) + audioDataSize;
+
+    uint8_t *newData = (uint8_t *)malloc(newFileSize);
+    if (!newData) { free(data); return -16; }
+
+    // 1. Copy metadata blocks before VORBIS_COMMENT, clearing is_last flags
+    memcpy(newData, data, beforeVorbis);
+    size_t clearPos = 4;
+    while (clearPos + 4 <= beforeVorbis) {
+        newData[clearPos] &= 0x7F; // clear is_last bit
+        uint32_t bLen = read_be24(newData + clearPos + 1);
+        clearPos += 4 + bLen;
+    }
+
+    // 2. Write new VORBIS_COMMENT block (NOT last yet)
+    size_t wp = beforeVorbis;
+    newData[wp] = 0x04; // type 4, is_last=0
+    write_be24(newData + wp + 1, newVorbisBlockLen);
+    wp += 4;
+    write_le32(newData + wp, vendorLen);
+    wp += 4;
+    memcpy(newData + wp, vendor, vendorLen);
+    wp += vendorLen;
+    write_le32(newData + wp, (uint32_t)finalComments.size());
+    wp += 4;
+    for (auto &fc : finalComments) {
+        std::string entry = fc.first + "=" + fc.second;
+        uint32_t entryLen = (uint32_t)entry.length();
+        write_le32(newData + wp, entryLen);
+        wp += 4;
+        memcpy(newData + wp, entry.c_str(), entryLen);
+        wp += entryLen;
+    }
+
+    // 3. Copy metadata blocks AFTER VORBIS_COMMENT (e.g. PICTURE), clearing is_last flags
+    size_t afterVorbisBlocks = afterVorbis;
+    if (afterVorbis < metadataEnd) {
+        memcpy(newData + wp, data + afterVorbis, metadataEnd - afterVorbis);
+        // Clear is_last flags on these copied blocks
+        size_t cp2 = wp;
+        while (cp2 + 4 <= wp + (metadataEnd - afterVorbis)) {
+            newData[cp2] &= 0x7F; // clear is_last bit
+            uint32_t bLen = read_be24(newData + cp2 + 1);
+            cp2 += 4 + bLen;
+        }
+        wp += (metadataEnd - afterVorbis);
+    }
+
+    // 4. Set is_last flag on the LAST metadata block in the new data
+    size_t mp = 4;
+    while (mp + 4 <= wp) {
+        uint32_t bLen = read_be24(newData + mp + 1);
+        size_t bEnd = mp + 4 + bLen;
+        if (bEnd >= wp) {
+            newData[mp] |= 0x80; // set is_last flag
+            break;
+        }
+        mp = bEnd;
+    }
+
+    // 5. Copy audio data
+    memcpy(newData + wp, data + audioStart, audioDataSize);
+    wp += audioDataSize;
+
+    free(data);
+
+    // Write to temp file
+    FILE *fout = fopen(tmpPath, "wb");
+    if (!fout) { free(newData); return -17; }
+    fwrite(newData, 1, newFileSize, fout);
+    fclose(fout);
+    free(newData);
+
+    LOGI("writeFlac: success, wrote %zu bytes to %s (original=%ld)", newFileSize, tmpPath, fileSize);
+    return 0;
+}
+
+/**
+ * Write metadata to any audio format using FFmpeg remuxing.
+ * Works for MP3, M4A/AAC, OGG/Opus, WAV, AIFF, WMA, APE, etc.
+ * Preserves all audio streams and existing data; only updates metadata tags.
+ * Returns 0 on success, negative on error.
+ */
+static int writeMetadataGeneric(const char *inputPath, const char *tmpPath,
+                                 const char **keys, const char **values, int tagCount) {
+    AVFormatContext *ifmt_ctx = nullptr;
+    AVFormatContext *ofmt_ctx = nullptr;
+    int ret = 0;
+
+    // Open input
+    ret = avformat_open_input(&ifmt_ctx, inputPath, nullptr, nullptr);
+    if (ret < 0) {
+        LOGE("writeMetaGeneric: avformat_open_input failed: %d", ret);
+        return -30;
+    }
+
+    ret = avformat_find_stream_info(ifmt_ctx, nullptr);
+    if (ret < 0) {
+        LOGE("writeMetaGeneric: avformat_find_stream_info failed: %d", ret);
+        avformat_close_input(&ifmt_ctx);
+        return -31;
+    }
+
+    // Create output context (guess format from tmpPath extension)
+    ret = avformat_alloc_output_context2(&ofmt_ctx, nullptr, nullptr, tmpPath);
+    if (ret < 0 || !ofmt_ctx) {
+        LOGE("writeMetaGeneric: avformat_alloc_output_context2 failed: %d", ret);
+        avformat_close_input(&ifmt_ctx);
+        return -32;
+    }
+
+    // Copy streams
+    for (unsigned int i = 0; i < ifmt_ctx->nb_streams; i++) {
+        AVStream *in_stream = ifmt_ctx->streams[i];
+        AVStream *out_stream = avformat_new_stream(ofmt_ctx, nullptr);
+        if (!out_stream) {
+            LOGE("writeMetaGeneric: avformat_new_stream failed for stream %u", i);
+            ret = -33;
+            goto cleanup;
+        }
+
+        ret = avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
+        if (ret < 0) {
+            LOGE("writeMetaGeneric: avcodec_parameters_copy failed: %d", ret);
+            goto cleanup;
+        }
+        out_stream->codecpar->codec_tag = 0;
+
+        // Copy time base
+        out_stream->time_base = in_stream->time_base;
+    }
+
+    // Set new metadata on output context
+    // First copy existing metadata
+    if (ifmt_ctx->metadata) {
+        av_dict_copy(&ofmt_ctx->metadata, ifmt_ctx->metadata, 0);
+    }
+    // Then overwrite with new values
+    for (int i = 0; i < tagCount; i++) {
+        if (values[i] && strlen(values[i]) > 0) {
+            av_dict_set(&ofmt_ctx->metadata, keys[i], values[i], 0);
+            LOGI("writeMetaGeneric: set %s=%s", keys[i], values[i]);
+        }
+    }
+
+    // Open output file
+    if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
+        ret = avio_open(&ofmt_ctx->pb, tmpPath, AVIO_FLAG_WRITE);
+        if (ret < 0) {
+            LOGE("writeMetaGeneric: avio_open failed: %d", ret);
+            goto cleanup;
+        }
+    }
+
+    // Write header
+    ret = avformat_write_header(ofmt_ctx, nullptr);
+    if (ret < 0) {
+        LOGE("writeMetaGeneric: avformat_write_header failed: %d", ret);
+        goto cleanup;
+    }
+
+    // Remux packets
+    {
+        AVPacket *pkt = av_packet_alloc();
+        if (!pkt) {
+            ret = -34;
+            goto cleanup;
+        }
+
+        while (true) {
+            ret = av_read_frame(ifmt_ctx, pkt);
+            if (ret < 0) break; // EOF or error
+
+            AVStream *in_stream = ifmt_ctx->streams[pkt->stream_index];
+            AVStream *out_stream = ofmt_ctx->streams[pkt->stream_index];
+
+            // Rescale timestamps
+            pkt->pts = av_rescale_q_rnd(pkt->pts, in_stream->time_base, out_stream->time_base,
+                                         (AVRounding)(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
+            pkt->dts = av_rescale_q_rnd(pkt->dts, in_stream->time_base, out_stream->time_base,
+                                         (AVRounding)(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
+            pkt->duration = av_rescale_q(pkt->duration, in_stream->time_base, out_stream->time_base);
+            pkt->pos = -1;
+
+            ret = av_interleaved_write_frame(ofmt_ctx, pkt);
+            if (ret < 0) {
+                LOGE("writeMetaGeneric: av_interleaved_write_frame failed: %d", ret);
+                av_packet_free(&pkt);
+                goto cleanup;
+            }
+            av_packet_unref(pkt);
+        }
+        av_packet_free(&pkt);
+    }
+
+    // Write trailer
+    ret = av_write_trailer(ofmt_ctx);
+    if (ret < 0) {
+        LOGE("writeMetaGeneric: av_write_trailer failed: %d", ret);
+        goto cleanup;
+    }
+
+    ret = 0;
+    LOGI("writeMetaGeneric: success, wrote to %s", tmpPath);
+
+cleanup:
+    if (ofmt_ctx) {
+        if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE) && ofmt_ctx->pb) {
+            avio_closep(&ofmt_ctx->pb);
+        }
+        avformat_free_context(ofmt_ctx);
+    }
+    avformat_close_input(&ifmt_ctx);
+    return ret;
+}
+
+/**
+ * Write metadata to audio file.
+ * FLAC: direct binary VORBIS_COMMENT editing (fast, lossless).
+ * Other formats (MP3, M4A, OGG, WAV, AIFF, WMA, APE, etc.): FFmpeg remuxing.
+ * Returns 0 on success, negative on error.
+ */
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeWriteMetadata(
+    JNIEnv *env, jobject, jstring jpath, jobject metadataMap, jstring jcacheDir) {
+
+    const char *inputPath = env->GetStringUTFChars(jpath, nullptr);
+    if (!inputPath) return -1;
+
+    const char *cacheDir = env->GetStringUTFChars(jcacheDir, nullptr);
+
+    // Get file extension
+    std::string inputPathStr(inputPath);
+    std::string ext = "";
+    size_t dotPos = inputPathStr.rfind('.');
+    if (dotPos != std::string::npos) {
+        ext = inputPathStr.substr(dotPos);
+        for (auto &c : ext) c = tolower(c);
+    }
+    std::string tmpPath = std::string(cacheDir ? cacheDir : "/data/local/tmp") + "/rawsmeta_tmp" + ext;
+
+    LOGI("writeMetadata: input=%s, tmp=%s, ext=%s", inputPath, tmpPath.c_str(), ext.c_str());
+
+    // Read Java HashMap into arrays
+    jclass mapClass = env->GetObjectClass(metadataMap);
+    jmethodID entrySetMethod = env->GetMethodID(mapClass, "entrySet", "()Ljava/util/Set;");
+    jobject entrySet = env->CallObjectMethod(metadataMap, entrySetMethod);
+
+    jclass setClass = env->GetObjectClass(entrySet);
+    jmethodID iteratorMethod = env->GetMethodID(setClass, "iterator", "()Ljava/util/Iterator;");
+    jobject iterator = env->CallObjectMethod(entrySet, iteratorMethod);
+
+    jclass iterClass = env->GetObjectClass(iterator);
+    jmethodID hasNextMethod = env->GetMethodID(iterClass, "hasNext", "()Z");
+    jmethodID nextMethod = env->GetMethodID(iterClass, "next", "()Ljava/lang/Object;");
+
+    jclass entryClass = env->FindClass("java/util/Map$Entry");
+    jmethodID getKeyMethod = env->GetMethodID(entryClass, "getKey", "()Ljava/lang/Object;");
+    jmethodID getValueMethod = env->GetMethodID(entryClass, "getValue", "()Ljava/lang/Object;");
+
+    // Collect tags (max 32)
+    const char *keys[32];
+    const char *values[32];
+    jstring jkeys[32];
+    jstring jvals[32];
+    int tagCount = 0;
+
+    while (env->CallBooleanMethod(iterator, hasNextMethod) && tagCount < 32) {
+        jobject entry = env->CallObjectMethod(iterator, nextMethod);
+        jstring jkey = (jstring) env->CallObjectMethod(entry, getKeyMethod);
+        jstring jval = (jstring) env->CallObjectMethod(entry, getValueMethod);
+
+        keys[tagCount] = env->GetStringUTFChars(jkey, nullptr);
+        values[tagCount] = env->GetStringUTFChars(jval, nullptr);
+        jkeys[tagCount] = jkey;
+        jvals[tagCount] = jval;
+        tagCount++;
+
+        env->DeleteLocalRef(entry);
+    }
+
+    int result = -99;
+
+    if (ext == ".flac") {
+        // Fast path: direct binary VORBIS_COMMENT editing for FLAC (preserves audio data exactly)
+        result = writeFlacMetadata(inputPath, tmpPath.c_str(), keys, values, tagCount);
+        if (result != 0) {
+            LOGI("writeMetadata: FLAC binary edit failed (%d), trying generic remux", result);
+            remove(tmpPath.c_str());
+            result = writeMetadataGeneric(inputPath, tmpPath.c_str(), keys, values, tagCount);
+        }
+    } else {
+        // Generic path: FFmpeg remuxing for MP3, M4A, OGG, WAV, AIFF, WMA, APE, etc.
+        result = writeMetadataGeneric(inputPath, tmpPath.c_str(), keys, values, tagCount);
+    }
+
+    // Release strings
+    for (int i = 0; i < tagCount; i++) {
+        env->ReleaseStringUTFChars(jkeys[i], keys[i]);
+        env->ReleaseStringUTFChars(jvals[i], values[i]);
+    }
+
+    if (result == 0) {
+        // Verify temp file exists and has reasonable size
+        FILE *check = fopen(tmpPath.c_str(), "rb");
+        if (check) {
+            fseek(check, 0, SEEK_END);
+            long tmpSize = ftell(check);
+            fclose(check);
+            LOGI("writeMetadata: temp file ready at %s (size=%ld bytes)", tmpPath.c_str(), tmpSize);
+        } else {
+            LOGE("writeMetadata: temp file missing after successful write!");
+            result = -99;
+        }
+    } else {
+        remove(tmpPath.c_str());
+    }
+
+    env->ReleaseStringUTFChars(jpath, inputPath);
+    if (cacheDir) env->ReleaseStringUTFChars(jcacheDir, cacheDir);
+    return result;
 }
