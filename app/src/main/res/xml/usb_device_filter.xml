@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 按类匹配：所有 USB 音频设备 -->
+    <usb-device class="1" subclass="1" />
+    <usb-device class="1" subclass="2" />
+
+    <!-- MOONDROP Dawn Pro: 0x2FC6 / 0xF06A -->
+    <usb-device vendor-id="12230" product-id="61546" />
+    <!-- MOONDROP 全系列（如果不知道具体 PID，可以只写 VID） -->
+    <usb-device vendor-id="12230" />
+</resources>

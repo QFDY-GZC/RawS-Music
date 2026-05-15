@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="text_primary">#FFFFFFFF</color>
+    <color name="text_secondary">#CCFFFFFF</color>
+    <color name="icon_muted">#FF857367</color>
+    <color name="add_btn_bg">#1A000000</color>
+</resources>

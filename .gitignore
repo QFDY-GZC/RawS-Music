@@ -1,0 +1,31 @@
+# Gradle
+.gradle/
+build/
+*/build/
+*/.gradle/
+
+# Local configuration
+local.properties
+/local.properties
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Android
+/captures
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+
+# Node
+node_modules/
+
+# Misc
+app (2).zip

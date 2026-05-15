@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 选择框状态列表 drawable，使用 选择.svg 图标 -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_checked="true" android:drawable="@drawable/ic_select_checked" />
+    <item android:drawable="@drawable/ic_select_unchecked" />
+</selector>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <declare-styleable name="LiquidGlassView">
+        <attr name="cornerRadius" format="dimension" />
+        <attr name="surfaceColor" format="color" />
+        <attr name="blurRadius" format="dimension" />
+        <attr name="highlightAlpha" format="float" />
+    </declare-styleable>
+</resources>

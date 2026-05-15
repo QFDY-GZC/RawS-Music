@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/nav_main"
+    app:startDestination="@id/nav_songs">
+
+    <fragment
+        android:id="@+id/nav_songs"
+        android:name="com.rawsmusic.ui.songs.SongsFragment"
+        android:label="Songs" />
+
+    <fragment
+        android:id="@+id/nav_albums"
+        android:name="com.rawsmusic.ui.albums.AlbumsFragment"
+        android:label="Albums" />
+
+    <fragment
+        android:id="@+id/nav_album_detail"
+        android:name="com.rawsmusic.ui.albums.AlbumDetailFragment"
+        android:label="Album Detail" />
+
+    <fragment
+        android:id="@+id/nav_artists"
+        android:name="com.rawsmusic.ui.artists.ArtistsFragment"
+        android:label="Artists" />
+
+    <fragment
+        android:id="@+id/nav_artist_detail"
+        android:name="com.rawsmusic.ui.artists.ArtistDetailFragment"
+        android:label="Artist Detail" />
+
+    <fragment
+        android:id="@+id/nav_settings"
+        android:name="com.rawsmusic.ui.settings.SettingsFragment"
+        android:label="Settings" />
+
+    <fragment
+        android:id="@+id/nav_audio_settings"
+        android:name="com.rawsmusic.ui.settings.AudioSettingsFragment"
+        android:label="Audio Settings" />
+
+    <fragment
+        android:id="@+id/nav_about"
+        android:name="com.rawsmusic.ui.about.AboutFragment"
+        android:label="About" />
+
+    <fragment
+        android:id="@+id/nav_spatial_sound"
+        android:name="com.rawsmusic.ui.settings.SpatialSoundFragment"
+        android:label="音效设置" />
+
+    <fragment
+        android:id="@+id/nav_song_stats"
+        android:name="com.rawsmusic.ui.stats.SongStatsFragment"
+        android:label="歌曲统计" />
+
+    <fragment
+        android:id="@+id/nav_usb_dac_settings"
+        android:name="com.rawsmusic.ui.settings.UsbDacSettingsFragment"
+        android:label="USB DAC 设置" />
+
+    <action
+        android:id="@+id/action_global_artist_detail"
+        app:destination="@id/nav_artist_detail" />
+
+    <action
+        android:id="@+id/action_global_album_detail"
+        app:destination="@id/nav_album_detail" />
+
+    <action
+        android:id="@+id/action_global_audio_settings"
+        app:destination="@id/nav_audio_settings" />
+
+    <action
+        android:id="@+id/action_global_settings"
+        app:destination="@id/nav_settings" />
+
+    <action
+        android:id="@+id/action_global_about"
+        app:destination="@id/nav_about" />
+
+</navigation>

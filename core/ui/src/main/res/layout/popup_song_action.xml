@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="200dp"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@drawable/bg_popup_song"
+    android:paddingVertical="4dp"
+    android:elevation="8dp">
+
+    <TextView
+        android:id="@+id/tvPlayNext"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:gravity="center_vertical"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:text="下一首播放"
+        android:textColor="#FF1C1B1F"
+        android:textSize="14sp"
+        android:background="?attr/selectableItemBackground" />
+
+    <TextView
+        android:id="@+id/tvAddToPlaylist"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:gravity="center_vertical"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:text="添加到歌单"
+        android:textColor="#FF1C1B1F"
+        android:textSize="14sp"
+        android:background="?attr/selectableItemBackground" />
+
+    <TextView
+        android:id="@+id/tvDelete"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:gravity="center_vertical"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:text="删除该歌曲"
+        android:textColor="#FFE53935"
+        android:textSize="14sp"
+        android:background="?attr/selectableItemBackground" />
+
+</LinearLayout>
