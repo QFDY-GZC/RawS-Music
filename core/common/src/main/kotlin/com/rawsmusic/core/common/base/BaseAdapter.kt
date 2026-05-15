@@ -1,6 +1,7 @@
 package com.rawsmusic.core.common.base
 
 import android.view.ViewGroup
+import androidx.recyclerview.widget.AsyncListDiffer
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewbinding.ViewBinding
@@ -9,7 +10,18 @@ abstract class BaseAdapter<T, VB : ViewBinding>(
     private val bindingInflater: (ViewGroup, Boolean) -> VB
 ) : RecyclerView.Adapter<BaseAdapter<T, VB>.BaseViewHolder>() {
 
-    protected val items = mutableListOf<T>()
+    // 使用 AsyncListDiffer 在后台线程计算 Diff，避免阻塞主线程
+    private val differ = AsyncListDiffer(this, object : DiffUtil.ItemCallback<T>() {
+        override fun areItemsTheSame(oldItem: T & Any, newItem: T & Any): Boolean =
+            areItemsSame(oldItem, newItem)
+
+        override fun areContentsTheSame(oldItem: T & Any, newItem: T & Any): Boolean =
+            areContentsSame(oldItem, newItem)
+    })
+
+    // 兼容旧代码：提供 items 访问
+    protected val items: List<T>
+        get() = differ.currentList
 
     inner class BaseViewHolder(val binding: VB) : RecyclerView.ViewHolder(binding.root)
 
@@ -19,27 +31,22 @@ abstract class BaseAdapter<T, VB : ViewBinding>(
     }
 
     override fun onBindViewHolder(holder: BaseViewHolder, position: Int) {
-        if (position in items.indices) {
-            onBind(holder.binding, items[position], position)
+        val currentList = differ.currentList
+        if (position in currentList.indices) {
+            onBind(holder.binding, currentList[position], position)
         }
     }
 
-    override fun getItemCount(): Int = items.size
+    override fun getItemCount(): Int = differ.currentList.size
 
     protected abstract fun onBind(binding: VB, item: T, position: Int)
 
+    /**
+     * 提交新列表，Diff 计算在后台线程异步执行。
+     * 1000+ 首歌曲时不会阻塞主线程。
+     */
     open fun submitList(newItems: List<T>) {
-        val diffResult = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
-            override fun getOldListSize(): Int = items.size
-            override fun getNewListSize(): Int = newItems.size
-            override fun areItemsTheSame(oldPos: Int, newPos: Int): Boolean =
-                areItemsSame(items[oldPos], newItems[newPos])
-            override fun areContentsTheSame(oldPos: Int, newPos: Int): Boolean =
-                areContentsSame(items[oldPos], newItems[newPos])
-        })
-        items.clear()
-        items.addAll(newItems)
-        diffResult.dispatchUpdatesTo(this)
+        differ.submitList(newItems)
     }
 
     open fun areItemsSame(oldItem: T, newItem: T): Boolean = oldItem == newItem
@@ -47,24 +54,22 @@ abstract class BaseAdapter<T, VB : ViewBinding>(
     open fun areContentsSame(oldItem: T, newItem: T): Boolean = oldItem == newItem
 
     fun getItem(position: Int): T? =
-        if (position in items.indices) items[position] else null
+        differ.currentList.getOrNull(position)
 
     fun addAll(newItems: List<T>) {
-        val startPos = items.size
-        items.addAll(newItems)
-        notifyItemRangeInserted(startPos, newItems.size)
+        val combined = differ.currentList + newItems
+        differ.submitList(combined)
     }
 
     fun clear() {
-        val size = items.size
-        items.clear()
-        notifyItemRangeRemoved(0, size)
+        differ.submitList(emptyList())
     }
 
     fun removeAt(position: Int) {
-        if (position in items.indices) {
-            items.removeAt(position)
-            notifyItemRemoved(position)
+        val currentList = differ.currentList.toMutableList()
+        if (position in currentList.indices) {
+            currentList.removeAt(position)
+            differ.submitList(currentList)
         }
     }
 }

@@ -133,15 +133,14 @@ object MediaStoreScanner {
                     else -> fileExt.ifBlank { mimeType.substringAfter("/").uppercase() }
                 }
 
-                // QuickScan 也需要读取标签（流派、作曲、年份等 MediaStore 不提供的字段）
-                val tagData = try { FfmpegMetadataReader.readTags(data) } catch (_: Exception) { FfmpegMetadataReader.ExtendedTags() }
-
+                // QuickScan 完全跳过 FFmpeg 调用，仅使用 MediaStore 数据
+                // genre/composer/bpm 等字段留空，用户点击时按需通过 enrichSong() 加载
                 return AudioFile(
                     id = id,
                     path = data,
-                    title = title.ifBlank { tagData.title },
-                    artist = if (artist.isBlank() || artist == "<unknown>") tagData.artist else artist,
-                    album = if (album.isBlank() || album == "<unknown>") tagData.album else album,
+                    title = title,
+                    artist = if (artist.isBlank() || artist == "<unknown>") "" else artist,
+                    album = if (album.isBlank() || album == "<unknown>") "" else album,
                     albumId = albumId,
                     duration = duration.coerceAtLeast(0),
                     sampleRate = 0,
@@ -150,21 +149,21 @@ object MediaStoreScanner {
                     format = displayFormat,
                     fileSize = size,
                     trackNumber = track,
-                    year = if (year > 0) year else tagData.year,
+                    year = year,
                     dateAdded = dateAdded * 1000,
                     dateModified = dateModified * 1000,
                     albumArtPath = albumArtUri.toString(),
-                    genre = tagData.genre,
-                    composer = tagData.composer,
-                    discNumber = tagData.discNumber,
+                    genre = "",
+                    composer = "",
+                    discNumber = 0,
                     channelCount = 0,
-                    bpm = tagData.bpm,
-                    albumArtist = tagData.albumArtist,
+                    bpm = 0,
+                    albumArtist = "",
                     encodingFormat = displayFormat,
-                    trackGain = tagData.trackGain,
-                    trackPeak = tagData.trackPeak,
-                    albumGain = tagData.albumGain,
-                    albumPeak = tagData.albumPeak
+                    trackGain = 0f,
+                    trackPeak = 1.0f,
+                    albumGain = 0f,
+                    albumPeak = 1.0f
                 )
             }
 

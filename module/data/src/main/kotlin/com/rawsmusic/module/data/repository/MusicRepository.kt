@@ -22,6 +22,13 @@ object MusicRepository {
     private const val KEY_SONGS = "music_songs"
     private const val KEY_FAVORITES = "music_favorites"
 
+    // 内存缓存：避免每次调用 getAllSongs() 都从 MMKV 读取并反序列化 JSON
+    @Volatile
+    private var cachedSongs: List<AudioFile>? = null
+    // 索引缓存：加速按 id/path 查询
+    private var cachedById: Map<Long, AudioFile> = emptyMap()
+    private var cachedByPath: Map<String, AudioFile> = emptyMap()
+
     private val _songs = MutableStateFlow<List<AudioFile>>(emptyList())
     val songs: StateFlow<List<AudioFile>> = _songs.asStateFlow()
 
@@ -57,8 +64,42 @@ object MusicRepository {
         kv.encode(KEY_FAVORITES, gson.toJson(favorites))
     }
 
+    /**
+     * 从 MMKV 加载歌曲列表并更新缓存。
+     * 仅在缓存为空时才读取 MMKV，否则直接返回缓存。
+     */
+    private fun loadSongsFromStorage(): List<AudioFile> {
+        cachedSongs?.let { return it }
+        val json = kv.decodeString(KEY_SONGS, "") ?: return emptyList()
+        if (json.isBlank()) return emptyList()
+        return try {
+            val type = object : TypeToken<List<AudioFile>>() {}.type
+            val songs: List<AudioFile> = gson.fromJson(json, type) ?: emptyList()
+            updateCache(songs)
+            songs
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    /** 更新内存缓存和索引 */
+    private fun updateCache(songs: List<AudioFile>) {
+        cachedSongs = songs
+        cachedById = songs.associateBy { it.id }
+        cachedByPath = songs.associateBy { it.path }
+    }
+
+    /** 清除缓存，下次访问时重新从 MMKV 加载 */
+    private fun invalidateCache() {
+        cachedSongs = null
+        cachedById = emptyMap()
+        cachedByPath = emptyMap()
+    }
+
     fun refreshAll() {
-        val allSongs = getAllSongs()
+        // 刷新时强制重新加载
+        invalidateCache()
+        val allSongs = loadSongsFromStorage()
         _songs.value = allSongs
         _artists.value = buildArtists(allSongs)
         _albums.value = buildAlbums(allSongs)
@@ -67,45 +108,41 @@ object MusicRepository {
     }
 
     fun getAllSongs(sortOrder: SortOrder = SortOrder.TITLE_ASC): List<AudioFile> {
-        val json = kv.decodeString(KEY_SONGS, "") ?: return emptyList()
-        if (json.isBlank()) return emptyList()
-        return try {
-            val type = object : TypeToken<List<AudioFile>>() {}.type
-            val songs: List<AudioFile> = gson.fromJson(json, type) ?: emptyList()
-            sortSongs(songs, sortOrder)
-        } catch (_: Exception) {
-            emptyList()
-        }
+        val songs = loadSongsFromStorage()
+        return sortSongs(songs, sortOrder)
     }
 
     fun getSongById(songId: Long): AudioFile? {
-        return getAllSongs().find { it.id == songId }
+        // 优先使用索引缓存 O(1) 查询
+        cachedById[songId]?.let { return it }
+        // 索引未命中时从列表查找（首次加载场景）
+        return loadSongsFromStorage().find { it.id == songId }
     }
 
     fun getSongsByArtist(artist: String): List<AudioFile> {
-        return getAllSongs().filter { it.artist == artist }
+        return loadSongsFromStorage().filter { it.artist == artist }
     }
 
     fun getSongsByAlbum(album: String): List<AudioFile> {
-        return getAllSongs().filter { it.album == album }
+        return loadSongsFromStorage().filter { it.album == album }
     }
 
     fun getSongsByGenre(genre: String): List<AudioFile> {
-        return getAllSongs().filter { it.genre == genre }
+        return loadSongsFromStorage().filter { it.genre == genre }
     }
 
     fun getSongsByFolder(folderPath: String): List<AudioFile> {
-        return getAllSongs().filter { it.path.startsWith(folderPath) }
+        return loadSongsFromStorage().filter { it.path.startsWith(folderPath) }
     }
 
     fun getFavorites(): List<AudioFile> {
-        return getAllSongs().filter { favorites.contains(it.id) }
+        return loadSongsFromStorage().filter { favorites.contains(it.id) }
     }
 
     fun searchSongs(query: String): List<AudioFile> {
         if (query.isBlank()) return emptyList()
         val lowerQuery = query.lowercase()
-        return getAllSongs().filter {
+        return loadSongsFromStorage().filter {
             it.title.lowercase().contains(lowerQuery) ||
             it.artist.lowercase().contains(lowerQuery) ||
             it.album.lowercase().contains(lowerQuery)
@@ -113,7 +150,7 @@ object MusicRepository {
     }
 
     fun insertSongs(songs: List<AudioFile>): Int {
-        val existing = getAllSongs().associateBy { it.path }.toMutableMap()
+        val existing = loadSongsFromStorage().associateBy { it.path }.toMutableMap()
         var count = 0
         songs.forEach { song ->
             if (!existing.containsKey(song.path)) {
@@ -121,7 +158,9 @@ object MusicRepository {
                 count++
             }
         }
-        kv.encode(KEY_SONGS, gson.toJson(existing.values.toList()))
+        val newList = existing.values.toList()
+        kv.encode(KEY_SONGS, gson.toJson(newList))
+        updateCache(newList)
         refreshAll()
         return count
     }
@@ -137,25 +176,27 @@ object MusicRepository {
     }
 
     fun removeSong(path: String) {
-        val songs = getAllSongs().filter { it.path != path }
+        val songs = loadSongsFromStorage().filter { it.path != path }
         kv.encode(KEY_SONGS, gson.toJson(songs))
+        updateCache(songs)
         refreshAll()
     }
 
     fun updateSong(updated: AudioFile) {
-        val songs = getAllSongs().toMutableList()
+        val songs = loadSongsFromStorage().toMutableList()
         val index = songs.indexOfFirst { it.path == updated.path }
         if (index >= 0) {
             songs[index] = updated
             kv.encode(KEY_SONGS, gson.toJson(songs))
+            updateCache(songs)
             _songs.value = songs
         }
     }
 
-    /** 清除所有歌曲数据（版本更新时调用，触发重新扫描以获取完整元数据） */
     /** 完全替换所有歌曲（用户触发重新扫描后使用） */
     fun replaceAllSongs(songs: List<AudioFile>) {
         kv.encode(KEY_SONGS, gson.toJson(songs))
+        updateCache(songs)
         refreshAll()
     }
 
@@ -163,11 +204,12 @@ object MusicRepository {
         kv.remove(KEY_SONGS)
         favorites.clear()
         saveFavorites()
+        invalidateCache()
         refreshAll()
     }
 
     fun getPlayStats(): PlayStats {
-        val allSongs = getAllSongs()
+        val allSongs = loadSongsFromStorage()
         return PlayStats(
             totalSongs = allSongs.size,
             totalDuration = allSongs.sumOf { it.duration },
