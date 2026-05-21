@@ -281,13 +281,17 @@ class ParametricEQ {
     int m_numFilters = 0;
     int m_sampleRate = 44100;
     bool m_enabled = false;
-    float m_preampDB = 0.0f;  // 前置放大器增益 (dB)
+    float m_preampDB = 0.0f;       // 前置放大器增益 (dB)
+    float m_preampLinear = 1.0f;   // 缓存线性增益，避免每次process计算powf
+    int m_enabledIndices[MAX_FILTERS]; // 预计算启用的滤波器索引
+    int m_numEnabled = 0;          // 启用的滤波器数量
 
 public:
     ParametricEQ() {
         for (int i = 0; i < MAX_FILTERS; i++) {
             m_params[i] = {FILTER_PEAK, 1000.0f, 0.0f, 1.0f, false};
         }
+        m_numEnabled = 0;
     }
 
     void setSampleRate(int sampleRate) {
@@ -305,6 +309,7 @@ public:
 
     void setPreamp(float gainDB) {
         m_preampDB = gainDB;
+        m_preampLinear = powf(10.0f, gainDB / 20.0f);
     }
 
     float getPreamp() const { return m_preampDB; }
@@ -321,6 +326,7 @@ public:
         if (index >= m_numFilters) {
             m_numFilters = index + 1;
         }
+        rebuildEnabledIndices();
     }
 
     FilterParams getFilter(int index) const {
@@ -340,6 +346,7 @@ public:
         m_numFilters--;
         m_params[m_numFilters] = {FILTER_PEAK, 1000.0f, 0.0f, 1.0f, false};
         m_filters[m_numFilters].reset();
+        rebuildEnabledIndices();
     }
 
     void clearAll() {
@@ -348,17 +355,20 @@ public:
             m_params[i] = {FILTER_PEAK, 1000.0f, 0.0f, 1.0f, false};
             m_filters[i].reset();
         }
+        m_numEnabled = 0;
     }
 
     // 计算总频率响应 (用于绘制曲线)
     void calcFrequencyResponse(float* frequencies, float* magnitudes, int numPoints) const {
-        for (int i = 0; i < numPoints; i++) {
-            float totalMag = m_preampDB;  // 前置放大器增益
+        const int numEnabled = m_numEnabled;
+        const int* indices = m_enabledIndices;
+        const float preamp = m_preampDB;
 
-            for (int f = 0; f < MAX_FILTERS; f++) {
-                if (m_params[f].enabled) {
-                    totalMag += m_filters[f].calcMagnitude(frequencies[i], m_sampleRate);
-                }
+        for (int i = 0; i < numPoints; i++) {
+            float totalMag = preamp;  // 前置放大器增益
+
+            for (int f = 0; f < numEnabled; f++) {
+                totalMag += m_filters[indices[f]].calcMagnitude(frequencies[i], m_sampleRate);
             }
 
             magnitudes[i] = totalMag;
@@ -369,17 +379,16 @@ public:
     void process(float* samples, int numFrames, int channels) {
         if (!m_enabled) return;
 
-        // 计算前置放大器线性增益: gain = 10^(dB/20)
-        float preampGain = powf(10.0f, m_preampDB / 20.0f);
+        const int numEnabled = m_numEnabled;
+        const int* indices = m_enabledIndices;
+        const float gain = m_preampLinear;
 
         for (int i = 0; i < numFrames; i++) {
             for (int ch = 0; ch < channels; ch++) {
-                float sample = samples[i * channels + ch] * preampGain;  // 应用前置放大器
-                // 依次通过所有激活的滤波器
-                for (int f = 0; f < MAX_FILTERS; f++) {
-                    if (m_params[f].enabled) {
-                        sample = m_filters[f].processSample(sample, ch > 0);
-                    }
+                float sample = samples[i * channels + ch] * gain;  // 应用前置放大器(已缓存)
+                // 仅遍历启用的滤波器(预计算索引)
+                for (int f = 0; f < numEnabled; f++) {
+                    sample = m_filters[indices[f]].processSample(sample, ch);
                 }
                 samples[i * channels + ch] = sample;
             }
@@ -387,6 +396,15 @@ public:
     }
 
 private:
+    void rebuildEnabledIndices() {
+        m_numEnabled = 0;
+        for (int i = 0; i < m_numFilters; i++) {
+            if (m_params[i].enabled) {
+                m_enabledIndices[m_numEnabled++] = i;
+            }
+        }
+    }
+
     void updateFilterCoeff(int index) {
         if (index < 0 || index >= MAX_FILTERS) return;
 
@@ -440,6 +458,7 @@ class Crossfeed {
     float m_lowCutFreq = 300.0f;    // 高通截止频率 (Hz)
     float m_highCutFreq = 2000.0f;  // 低通截止频率 (Hz)
     float m_attenuationDB = 6.0f;   // 互馈衰减量 (dB)
+    float m_crossGainLinear = powf(10.0f, -6.0f / 20.0f); // 缓存线性增益
 
     void updateCoeffs() {
         // Q=0.707 巴特沃斯响应
@@ -489,6 +508,7 @@ public:
     void setAttenuationDB(float db) {
         db = (db < 0.0f) ? 0.0f : (db > 15.0f) ? 15.0f : db;
         m_attenuationDB = db;
+        m_crossGainLinear = powf(10.0f, -db / 20.0f);
     }
 
     float getLowCutFreq() const { return m_lowCutFreq; }
@@ -499,8 +519,7 @@ public:
     void process(float* samples, int numFrames, int channels) {
         if (!m_enabled || channels < 2) return;
 
-        // 衰减量转线性增益: gain = 10^(-dB/20)
-        float crossGain = powf(10.0f, -m_attenuationDB / 20.0f);
+        const float crossGain = m_crossGainLinear; // 已缓存
 
         for (int i = 0; i < numFrames; i++) {
             float L = samples[i * 2];

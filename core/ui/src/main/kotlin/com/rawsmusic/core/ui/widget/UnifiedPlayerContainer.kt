@@ -307,6 +307,8 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         const val TRANSLATION_Y = 1 shl 4   // 16    - translationY 参与
         const val VISIBILITY = 1 shl 5      // 32    - visibility 参与
         const val CORNER_RADIUS = 1 shl 6   // 64    - cornerRadius 参与
+        const val ROTATION = 1 shl 7        // 128   - rotation 参与
+        const val ALPHA_MULTIPLIER = 1 shl 8 // 256  - alpha 乘以场景系数
     }
 
     // ==================== 场景参数数据类（对标 z3） ====================
@@ -318,7 +320,9 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         val scaleX: Float = 1f,
         val scaleY: Float = 1f,
         var visibility: Int = View.VISIBLE,
-        val cornerRadius: Float = -1f
+        val cornerRadius: Float = -1f,
+        val rotation: Float = 0f,
+        val alphaMultiplier: Float = 1f
     )
 
     // ==================== 动画参数（对标 q4 StateAnimParams） ====================
@@ -330,7 +334,6 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         val view: View,
         var flags: Int = 0
     ) {
-        // from 值（动画开始前捕获的当前属性）
         var fromAlpha: Float = 1f
         var fromScaleX: Float = 1f
         var fromScaleY: Float = 1f
@@ -338,8 +341,9 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         var fromTranslationY: Float = 0f
         var fromVisibility: Int = View.VISIBLE
         var fromCornerRadius: Float = -1f
+        var fromRotation: Float = 0f
+        var fromAlphaMultiplier: Float = 1f
 
-        // to 值（目标场景的属性）
         var toAlpha: Float = 1f
         var toScaleX: Float = 1f
         var toScaleY: Float = 1f
@@ -347,6 +351,8 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         var toTranslationY: Float = 0f
         var toVisibility: Int = View.VISIBLE
         var toCornerRadius: Float = -1f
+        var toRotation: Float = 0f
+        var toAlphaMultiplier: Float = 1f
     }
 
     // ==================== 场景注册表 ====================
@@ -704,6 +710,22 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 animParams.toCornerRadius = tp.cornerRadius
             }
 
+            // Rotation
+            if (fp.rotation != tp.rotation) {
+                flags = flags or PropFlag.ROTATION
+                animParams.fromRotation = view.rotation
+                animParams.toRotation = tp.rotation
+            } else if (view.rotation != tp.rotation) {
+                view.rotation = tp.rotation
+            }
+
+            // AlphaMultiplier
+            if (fp.alphaMultiplier != tp.alphaMultiplier) {
+                flags = flags or PropFlag.ALPHA_MULTIPLIER
+                animParams.fromAlphaMultiplier = fp.alphaMultiplier
+                animParams.toAlphaMultiplier = tp.alphaMultiplier
+            }
+
             if (flags != 0) {
                 animParams.flags = flags
                 result.add(animParams)
@@ -724,48 +746,53 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
             val view = ap.view
             val flags = ap.flags
 
-            // Visibility-Alpha 联动（对标 Poweramp e4.m2825）：
-            // 从不可见→可见：ratio > 0 就设 VISIBLE（让 alpha 动画可见）
+            val isEntering = ap.toVisibility == View.VISIBLE && ap.fromVisibility != View.VISIBLE
+            val isExiting = ap.fromVisibility == View.VISIBLE && ap.toVisibility != View.VISIBLE
+
             if ((flags and PropFlag.VISIBILITY) != 0) {
-                if (ap.toVisibility == View.VISIBLE && ratio > 0f && view.visibility != View.VISIBLE) {
+                if (isEntering && ratio > 0f && view.visibility != View.VISIBLE) {
                     view.visibility = View.VISIBLE
-                } else if (ap.toVisibility != View.VISIBLE && ap.fromVisibility == View.VISIBLE && ratio >= 1f && view.visibility != ap.toVisibility) {
+                } else if (isExiting && ratio >= 1f && view.visibility != ap.toVisibility) {
                     view.visibility = ap.toVisibility
                 }
             }
-            // 如果 visibility 没变但 to 是 VISIBLE 且当前不可见，也设 VISIBLE
             if ((flags and PropFlag.VISIBILITY) == 0 && view.visibility != View.VISIBLE) {
                 if (ap.toVisibility == View.VISIBLE && ratio > 0f) {
                     view.visibility = View.VISIBLE
                 }
             }
 
-            // Alpha 插值（对标 e4.r: ((toAlpha - fromAlpha) * ratio) + fromAlpha）
             if ((flags and PropFlag.ALPHA) != 0) {
-                view.alpha = lerp(ap.fromAlpha, ap.toAlpha, ratio)
+                val baseAlpha = lerp(ap.fromAlpha, ap.toAlpha, ratio)
+                val multiplier = if ((flags and PropFlag.ALPHA_MULTIPLIER) != 0) {
+                    lerp(ap.fromAlphaMultiplier, ap.toAlphaMultiplier, ratio)
+                } else 1f
+                view.alpha = baseAlpha * multiplier
+            } else if ((flags and PropFlag.ALPHA_MULTIPLIER) != 0) {
+                val multiplier = lerp(ap.fromAlphaMultiplier, ap.toAlphaMultiplier, ratio)
+                view.alpha = ap.fromAlpha * multiplier
             }
 
-            // ScaleX
             if ((flags and PropFlag.SCALE_X) != 0) {
                 view.scaleX = lerp(ap.fromScaleX, ap.toScaleX, ratio)
             }
 
-            // ScaleY
             if ((flags and PropFlag.SCALE_Y) != 0) {
                 view.scaleY = lerp(ap.fromScaleY, ap.toScaleY, ratio)
             }
 
-            // TranslationX
             if ((flags and PropFlag.TRANSLATION_X) != 0) {
                 view.translationX = lerp(ap.fromTranslationX, ap.toTranslationX, ratio)
             }
 
-            // TranslationY
             if ((flags and PropFlag.TRANSLATION_Y) != 0) {
                 view.translationY = lerp(ap.fromTranslationY, ap.toTranslationY, ratio)
             }
 
-            // CornerRadius
+            if ((flags and PropFlag.ROTATION) != 0) {
+                view.rotation = lerp(ap.fromRotation, ap.toRotation, ratio)
+            }
+
             if ((flags and PropFlag.CORNER_RADIUS) != 0) {
                 val radius = lerp(ap.fromCornerRadius, ap.toCornerRadius, ratio)
                 when (view) {
@@ -781,17 +808,14 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 }
             }
 
-            // 动画结束后设最终 visibility（对标 e4.a() 直接应用）
             if (ratio >= 1f && (flags and PropFlag.VISIBILITY) != 0) {
                 view.visibility = ap.toVisibility
             }
-            // 兜底：如果没参与动画，但目标场景要求 GONE，强制设为 GONE
             else if (ratio >= 1f && ap.toVisibility == View.GONE && view.visibility != View.GONE) {
                 view.visibility = View.GONE
             }
         }
 
-        // 动画结束后，强制将所有参与/未参与的 View 设定为目标场景的最终 Visibility
         if (ratio >= 1f) {
             for (ap in params) {
                 val view = ap.view
@@ -805,6 +829,134 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     /** 线性插值（对标 e4.r 中的 (to-from)*f+from 和 Utils.X） */
     private fun lerp(from: Float, to: Float, ratio: Float): Float {
         return from + (to - from) * ratio
+    }
+
+    /**
+     * 速度自适应动画时长（对标 Poweramp b4 的 velocity-aware duration）
+     *
+     * 公式：duration = |1 / (1/baseDuration + |velocity|)|
+     * - velocity=0 时退化为 baseDuration * ratioDelta
+     * - velocity 越大，时长越短（fling 快速收尾）
+     * - clamp 到 [VELOCITY_ADAPT_MIN_MS, VELOCITY_ADAPT_MAX_MS] 防止极端值
+     */
+    private fun calcVelocityAdaptedDuration(baseDuration: Long, ratioDelta: Float, velocity: Float): Long {
+        if (ratioDelta <= 0f) return VELOCITY_ADAPT_MIN_MS
+        val baseMs = (baseDuration * ratioDelta).coerceAtLeast(VELOCITY_ADAPT_MIN_MS.toFloat())
+        if (velocity == 0f) return baseMs.toLong()
+        val absVel = abs(velocity)
+        val adapted = abs(1f / (1f / baseMs + absVel * VELOCITY_SENSITIVITY))
+        return adapted.coerceIn(VELOCITY_ADAPT_MIN_MS.toFloat(), VELOCITY_ADAPT_MAX_MS.toFloat()).toLong()
+    }
+
+    // ==================== StateAnim 状态动画系统（对标 Poweramp q4 微交互动画） ====================
+
+    private val stateAnimMap = mutableMapOf<Int, ValueAnimator>()
+
+    fun startStateAnim(
+        view: View,
+        targetAlpha: Float? = null,
+        targetScaleX: Float? = null,
+        targetScaleY: Float? = null,
+        targetTranslationX: Float? = null,
+        targetTranslationY: Float? = null,
+        targetRotation: Float? = null,
+        duration: Long = STATE_ANIM_DEFAULT_DURATION,
+        interpolator: android.animation.TimeInterpolator? = DecelerateInterpolator(STATE_ANIM_DECELERATE),
+        onUpdate: ((Float) -> Unit)? = null,
+        onEnd: (() -> Unit)? = null
+    ) {
+        val viewId = view.id
+        stateAnimMap[viewId]?.cancel()
+        val hasAlpha = targetAlpha != null
+        val hasScaleX = targetScaleX != null
+        val hasScaleY = targetScaleY != null
+        val hasTransX = targetTranslationX != null
+        val hasTransY = targetTranslationY != null
+        val hasRotation = targetRotation != null
+        val fromAlpha = if (hasAlpha) view.alpha else 0f
+        val fromScaleX = if (hasScaleX) view.scaleX else 0f
+        val fromScaleY = if (hasScaleY) view.scaleY else 0f
+        val fromTransX = if (hasTransX) view.translationX else 0f
+        val fromTransY = if (hasTransY) view.translationY else 0f
+        val fromRotation = if (hasRotation) view.rotation else 0f
+
+        val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            this.duration = duration
+            if (interpolator != null) this.interpolator = interpolator
+            addUpdateListener { anim ->
+                val f = anim.animatedFraction
+                if (hasAlpha) view.alpha = lerp(fromAlpha, targetAlpha!!, f)
+                if (hasScaleX) view.scaleX = lerp(fromScaleX, targetScaleX!!, f)
+                if (hasScaleY) view.scaleY = lerp(fromScaleY, targetScaleY!!, f)
+                if (hasTransX) view.translationX = lerp(fromTransX, targetTranslationX!!, f)
+                if (hasTransY) view.translationY = lerp(fromTransY, targetTranslationY!!, f)
+                if (hasRotation) view.rotation = lerp(fromRotation, targetRotation!!, f)
+                onUpdate?.invoke(f)
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    stateAnimMap.remove(viewId)
+                    onEnd?.invoke()
+                }
+                override fun onAnimationCancel(animation: android.animation.Animator) {
+                    stateAnimMap.remove(viewId)
+                }
+            })
+            start()
+        }
+        stateAnimMap[viewId] = animator
+    }
+
+    fun cancelStateAnim(view: View) {
+        stateAnimMap[view.id]?.cancel()
+        stateAnimMap.remove(view.id)
+    }
+
+    fun cancelAllStateAnims() {
+        stateAnimMap.values.forEach { it.cancel() }
+        stateAnimMap.clear()
+    }
+
+    /**
+     * 按钮按压弹回动画（对标 ButtonAnimHelper.pressReleaseAnim 的 StateAnim 版本）
+     * scale 缩小到 pressScale 再回弹到 1.0f，带弹性效果
+     */
+    fun buttonPressAnim(view: View, pressScale: Float = BUTTON_PRESS_SCALE, duration: Long = BUTTON_PRESS_DURATION) {
+        startStateAnim(view,
+            targetScaleX = pressScale, targetScaleY = pressScale,
+            duration = duration / 2,
+            onUpdate = { if (it >= 0.8f) cancelStateAnim(view) },
+            onEnd = {
+                startStateAnim(view,
+                    targetScaleX = 1f, targetScaleY = 1f,
+                    duration = duration,
+                    interpolator = DecelerateInterpolator(SPRING_DAMPING * 3f))
+            })
+    }
+
+    /**
+     * 弹性回弹动画（对标 Poweramp 的 spring settle）
+     * 使用阻尼振荡插值器模拟弹簧物理：阻尼 SPRING_DAMPING、刚度 SPRING_STIFFNESS
+     * 用于封面拖拽释放后的回弹和场景切换回弹
+     */
+    fun springSettleAnim(
+        view: View,
+        targetScaleX: Float = 1f,
+        targetScaleY: Float = 1f,
+        targetTranslationX: Float = 0f,
+        targetTranslationY: Float = 0f,
+        targetAlpha: Float? = null,
+        duration: Long = SPRING_SETTLE_DURATION
+    ) {
+        startStateAnim(view,
+            targetAlpha = targetAlpha,
+            targetScaleX = targetScaleX,
+            targetScaleY = targetScaleY,
+            targetTranslationX = targetTranslationX,
+            targetTranslationY = targetTranslationY,
+            duration = duration,
+            interpolator = DecelerateInterpolator(SPRING_STIFFNESS)
+        )
     }
 
     // ==================== 捕获当前属性（对标 e4.m2821） ====================
@@ -887,7 +1039,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
      * @param shouldClose 是否应关闭到 MAIN 场景
      * @param duration 动画时长
      */
-    fun endCoverDrag(shouldClose: Boolean, duration: Long = SCENE_ANIM_DURATION) {
+    fun endCoverDrag(shouldClose: Boolean, duration: Long = SCENE_ANIM_DURATION, velocity: Float = 0f) {
         if (!isCoverDragging) return
         isCoverDragging = false
 
@@ -915,7 +1067,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
             return
         }
         val ratioDelta = abs(endRatio - startRatio)
-        val animDuration = (duration * ratioDelta).toLong().coerceAtLeast(80L)
+        val animDuration = calcVelocityAdaptedDuration(duration, ratioDelta, velocity)
 
         val animator = ValueAnimator.ofFloat(startRatio, endRatio).apply {
             this.duration = animDuration
@@ -1036,7 +1188,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
      * 结束封面上滑拖拽
      * @param shouldOpen true=过渡到toScene，false=回到fromScene
      */
-    fun endCoverSwipeUpDrag(shouldOpen: Boolean, duration: Long = SCENE_ANIM_DURATION) {
+    fun endCoverSwipeUpDrag(shouldOpen: Boolean, duration: Long = SCENE_ANIM_DURATION, velocity: Float = 0f) {
         if (!isCoverSwipeUpDragging) return
         isCoverSwipeUpDragging = false
 
@@ -1067,7 +1219,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
             return
         }
         val ratioDelta = abs(endRatio - startRatio)
-        val animDuration = (duration * ratioDelta).toLong().coerceAtLeast(80L)
+        val animDuration = calcVelocityAdaptedDuration(duration, ratioDelta, velocity)
 
         val animator = ValueAnimator.ofFloat(startRatio, endRatio).apply {
             this.duration = animDuration
@@ -1458,39 +1610,39 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 if (shouldGoToTarget) {
                     if (dragToScene == Scene.EFFECTS) {
                         Log.d("SceneTransition", "handleDragRelease PLAYER→EFFECTS settle")
-                        settleFromCurrentRatio(Scene.EFFECTS, transitionRatio, 1f)
+                        settleFromCurrentRatio(Scene.EFFECTS, transitionRatio, 1f, vx)
                     } else {
                         Log.d("SceneTransition", "handleDragRelease PLAYER→LYRIC settle")
-                        settleFromCurrentRatio(dragToScene, transitionRatio, 1f)
+                        settleFromCurrentRatio(dragToScene, transitionRatio, 1f, vx)
                     }
                 } else {
                     Log.d("SceneTransition", "handleDragRelease PLAYER REVERT → $dragFromScene settle(ratio=$transitionRatio, 0f)")
-                    settleFromCurrentRatio(dragFromScene, transitionRatio, 0f)
+                    settleFromCurrentRatio(dragFromScene, transitionRatio, 0f, vx)
                 }
             }
             Scene.LYRIC -> {
                 val shouldGoBack = transitionRatio > SWIPE_THRESHOLD_RATIO || isFlingRight
                 Log.d("SceneTransition", "handleDragRelease LYRIC: shouldGoBack=$shouldGoBack, ratio=$transitionRatio, isFlingRight=$isFlingRight")
                 if (shouldGoBack) {
-                    settleFromCurrentRatio(Scene.PLAYER, transitionRatio, 1f)
+                    settleFromCurrentRatio(Scene.PLAYER, transitionRatio, 1f, vx)
                 } else {
-                    settleFromCurrentRatio(Scene.LYRIC, transitionRatio, 0f)
+                    settleFromCurrentRatio(Scene.LYRIC, transitionRatio, 0f, vx)
                 }
             }
             Scene.QUEUE, Scene.ALBUM_DETAIL -> {
                 val shouldGoBack = transitionRatio > SWIPE_THRESHOLD_RATIO || isFlingRight
                 if (shouldGoBack) {
-                    settleFromCurrentRatio(Scene.PLAYER, transitionRatio, 1f)
+                    settleFromCurrentRatio(Scene.PLAYER, transitionRatio, 1f, vx)
                 } else {
-                    settleFromCurrentRatio(currentScene, transitionRatio, 0f)
+                    settleFromCurrentRatio(currentScene, transitionRatio, 0f, vx)
                 }
             }
             Scene.EFFECTS -> {
                 val shouldGoBack = transitionRatio > SWIPE_THRESHOLD_RATIO || isFlingRight
                 if (shouldGoBack) {
-                    settleFromCurrentRatio(Scene.PLAYER, transitionRatio, 1f)
+                    settleFromCurrentRatio(Scene.PLAYER, transitionRatio, 1f, vx)
                 } else {
-                    settleFromCurrentRatio(Scene.EFFECTS, transitionRatio, 0f)
+                    settleFromCurrentRatio(Scene.EFFECTS, transitionRatio, 0f, vx)
                 }
             }
             Scene.MAIN -> {
@@ -1515,7 +1667,8 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     private fun settleFromCurrentRatio(
         targetScene: Scene,
         startRatio: Float,
-        endRatio: Float
+        endRatio: Float,
+        velocity: Float = 0f
     ) {
         val params = activeAnimParams ?: run {
             Log.w("SceneTransition", "settleFromCurrentRatio: activeAnimParams is NULL, returning early! targetScene=$targetScene")
@@ -1550,7 +1703,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
 
         isTransitioning = true
         val ratioDelta = abs(endRatio - startRatio)
-        val duration = (SCENE_ANIM_DURATION * ratioDelta).toLong().coerceAtLeast(100L)
+        val duration = calcVelocityAdaptedDuration(SCENE_ANIM_DURATION, ratioDelta, velocity)
 
         val gen = sceneAnimGeneration
         val animator = ValueAnimator.ofFloat(startRatio, endRatio).apply {
@@ -1773,6 +1926,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         super.onDetachedFromWindow()
         sceneAnimator?.cancel()
         sceneAnimator = null
+        cancelAllStateAnims()
         resetTouch()
         velocityTracker?.recycle()
         velocityTracker = null
@@ -1794,8 +1948,20 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         private const val LEFT_EDGE_ZONE_DP = 24f
         private const val SWIPE_THRESHOLD_RATIO = 0.30f
 
-        // Poweramp-style decelerate + 500ms for calmer transitions
         private const val PAGE_DECELERATE = 2.0f
         private const val SCENE_ANIM_DURATION = 500L
+
+        private const val VELOCITY_ADAPT_MIN_MS = 120L
+        private const val VELOCITY_ADAPT_MAX_MS = 500L
+        private const val VELOCITY_SENSITIVITY = 0.002f
+
+        private const val SPRING_DAMPING = 0.35f
+        private const val SPRING_STIFFNESS = 2.0f
+        private const val SPRING_SETTLE_DURATION = 350L
+
+        private const val STATE_ANIM_DEFAULT_DURATION = 200L
+        private const val STATE_ANIM_DECELERATE = 2.0f
+        private const val BUTTON_PRESS_SCALE = 0.85f
+        private const val BUTTON_PRESS_DURATION = 150L
     }
 }
