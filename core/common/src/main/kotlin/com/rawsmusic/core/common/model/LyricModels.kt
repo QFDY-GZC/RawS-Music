@@ -1,13 +1,10 @@
 package com.rawsmusic.core.common.model
 
-/**
- * 逐字/逐词时间信息（增强型LRC、TTML）
- */
 data class LyricWord(
+    val text: String = "",
     val begin: Long = 0,
     val end: Long = 0,
-    val duration: Long = if (end > begin) end - begin else 0,
-    val text: String = ""
+    val duration: Long = if (end > begin) end - begin else 0
 )
 
 data class LyricLine(
@@ -15,10 +12,14 @@ data class LyricLine(
     val text: String,
     val translation: String = "",
     val romanization: String = "",
-    /** 逐字/逐词时间轴（增强型LRC <mm:ss.xx>、TTML <span>） */
     val words: List<LyricWord> = emptyList(),
-    /** 结束时间（TTML/增强型LRC可用） */
-    val endTime: Long = 0L
+    val endTime: Long = 0L,
+    val skipAnimation: Boolean = false,
+    val agent: String? = null,
+    val backgroundText: String? = null,
+    val backgroundWords: List<LyricWord> = emptyList(),
+    val backgroundTranslation: String? = null,
+    val isTtml: Boolean = false
 ) : Comparable<LyricLine> {
 
     override fun compareTo(other: LyricLine): Int {
@@ -29,12 +30,8 @@ data class LyricLine(
         return currentMs in timeStamp until nextLineMs
     }
 
-    /** 是否有逐字时间轴 */
     val hasWordTiming: Boolean get() = words.isNotEmpty()
 
-    /**
-     * 根据播放位置获取当前行内的逐字高亮进度 [0f, 1f]
-     */
     fun getWordProgress(positionMs: Long): Float {
         if (words.isEmpty()) {
             val end = if (endTime > 0) endTime else timeStamp + 3000L
@@ -49,27 +46,49 @@ data class LyricLine(
         return progress.coerceIn(0f, 1f)
     }
 
-    /**
-     * 根据播放位置获取当前行内已高亮的字符数
-     */
     fun getHighlightedCharCount(positionMs: Long): Int {
         if (words.isEmpty()) return if (positionMs >= timeStamp) text.length else 0
         var count = 0
+        var lastEnd = 0L
         for (word in words) {
+            val timeGap = word.begin - lastEnd
+            val isTooClose = timeGap in 0..999
+
             if (positionMs >= word.end) {
                 count += word.text.length
             } else if (positionMs >= word.begin) {
-                // 部分高亮
-                val wordProgress = if (word.duration > 0) {
-                    (positionMs - word.begin).toFloat() / word.duration.toFloat()
-                } else 1f
-                count += (word.text.length * wordProgress.coerceIn(0f, 1f)).toInt()
+                if (isTooClose) {
+                    count += word.text.length
+                } else {
+                    val wordProgress = if (word.duration > 0) {
+                        (positionMs - word.begin).toFloat() / word.duration.toFloat()
+                    } else 1f
+                    count += (word.text.length * wordProgress.coerceIn(0f, 1f)).toInt()
+                }
                 break
+            } else {
+                if (isTooClose && count > 0 && positionMs >= lastEnd) {
+                    count += word.text.length
+                } else {
+                    break
+                }
+            }
+            lastEnd = word.end
+        }
+        return count.coerceAtMost(text.length)
+    }
+
+    fun getCurrentWordText(positionMs: Long): String {
+        if (words.isEmpty()) return text
+        val sb = StringBuilder()
+        for (word in words) {
+            if (positionMs >= word.begin) {
+                sb.append(word.text)
             } else {
                 break
             }
         }
-        return count.coerceAtMost(text.length)
+        return sb.toString().trim()
     }
 }
 
@@ -84,18 +103,62 @@ data class LyricData(
 ) {
     val isEmpty: Boolean get() = lines.isEmpty()
 
-    fun findCurrentLine(positionMs: Long): Int {
-        if (lines.isEmpty()) return -1
-        val adjusted = positionMs + offset
-        var index = -1
-        for (i in lines.indices) {
-            if (lines[i].timeStamp <= adjusted) {
-                index = i
+    /**
+     * 预处理动画标记：计算哪些行与上一行 timeStamp 间隔<1秒，需要跳过动画
+     * 返回新的 LyricData，其中每行的 skipAnimation 字段已设置
+     */
+    fun withAnimationFlags(): LyricData {
+        if (lines.size <= 1) return this
+        // 飞入动画时长1200ms，行持续时间小于此值时跳过动画
+        val flyInDuration = 1200L
+        val processedLines = lines.mapIndexed { index, line ->
+            if (index == 0) {
+                // 第一行总是有动画
+                line
             } else {
-                break
+                val prevLine = lines[index - 1]
+                // 条件1: 与上一行 timeStamp 间隔 < 1秒
+                val timeGap = line.timeStamp - prevLine.timeStamp
+                val gapTooShort = timeGap in 0 until 1000
+                // 条件2: 行持续时间 < 飞入动画时长（动画还没播完歌词就结束了）
+                val lineDuration = line.getEffectiveDuration()
+                val durationTooShort = lineDuration in 1 until flyInDuration
+                val shouldSkip = gapTooShort || durationTooShort
+                if (shouldSkip) line.copy(skipAnimation = true) else line
             }
         }
-        return index
+        return copy(lines = processedLines)
+    }
+
+    /**
+     * 获取歌词行的有效持续时间（毫秒）
+     * 优先使用 endTime，其次使用最后一个 word 的 end，否则返回 0（未知）
+     */
+    private fun LyricLine.getEffectiveDuration(): Long {
+        if (endTime > timeStamp) return endTime - timeStamp
+        if (words.isNotEmpty()) {
+            val lastWordEnd = words.last().end
+            if (lastWordEnd > timeStamp) return lastWordEnd - timeStamp
+        }
+        return 0L  // 无法确定持续时间，不参与判断
+    }
+
+    fun findCurrentLine(positionMs: Long, advanceMs: Long = 0L): Int {
+        if (lines.isEmpty()) return -1
+        val adjusted = positionMs + offset - advanceMs
+        var low = 0
+        var high = lines.size - 1
+        var result = -1
+        while (low <= high) {
+            val mid = (low + high) ushr 1
+            if (lines[mid].timeStamp <= adjusted) {
+                result = mid
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        return result
     }
 
     fun getLine(index: Int): LyricLine? {

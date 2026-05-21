@@ -55,6 +55,8 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.rawsmusic.core.common.model.Album
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.ui.settings.LiquidGlassCard
+import com.rawsmusic.ui.settings.themeColors
+import com.rawsmusic.core.ui.theme.ThemeManager
 import com.rawsmusic.ui.songs.PlayerHolder
 import com.rawsmusic.module.player.PlayerController
 
@@ -106,6 +108,8 @@ fun ArtistDetailScreen(
 ) {
     val context = LocalContext.current
     val backdrop = rememberLayerBackdrop()
+    val colors = themeColors()
+    val isDark = ThemeManager.isDarkMode(context)
     val songs by viewModel.songs.observeAsState(emptyList())
     val albums by viewModel.albums.observeAsState(emptyList())
 
@@ -120,7 +124,10 @@ fun ArtistDetailScreen(
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        colors = listOf(
+                        colors = if (isDark) listOf(
+                            Color(0xFF1A1A1A),
+                            Color(0xFF2A2A2A)
+                        ) else listOf(
                             Color(0xFFF2F1F0),
                             Color(0xFFE8E7E5),
                             Color(0xFFD1D0CD).copy(alpha = 0.3f),
@@ -146,13 +153,13 @@ fun ArtistDetailScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     TextButton(onClick = onBack) {
-                        Text("← 返回", color = Color(0xFF6750A4), fontSize = 16.sp)
+                        Text("← 返回", color = colors.primary, fontSize = 16.sp)
                     }
                     Text(
                         artistName,
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Medium,
-                        color = Color(0xFF1C1B1F),
+                        color = colors.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
@@ -162,11 +169,11 @@ fun ArtistDetailScreen(
 
             item {
                 LiquidGlassCard(backdrop) {
-                    Text(artistName, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1C1B1F))
+                    Text(artistName, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = colors.onSurface)
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "${songs.size} 首歌曲 · ${albums.size} 张专辑",
-                        fontSize = 14.sp, color = Color(0xFF79747E)
+                        fontSize = 14.sp, color = colors.secondaryText
                     )
                 }
             }
@@ -174,7 +181,7 @@ fun ArtistDetailScreen(
             if (albums.isNotEmpty()) {
                 item {
                     LiquidGlassCard(backdrop) {
-                        Text("专辑", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Color(0xFF1C1B1F))
+                        Text("专辑", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = colors.onSurface)
                         Spacer(Modifier.height(12.dp))
 
                         LazyRow(
@@ -191,7 +198,7 @@ fun ArtistDetailScreen(
             if (songs.isNotEmpty()) {
                 item {
                     LiquidGlassCard(backdrop) {
-                        Text("歌曲", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Color(0xFF1C1B1F))
+                        Text("歌曲", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = colors.onSurface)
                         Spacer(Modifier.height(8.dp))
 
                         for (song in songs.take(20)) {
@@ -208,14 +215,14 @@ fun ArtistDetailScreen(
                                     Text(
                                         song.displayName,
                                         fontSize = 14.sp,
-                                        color = Color(0xFF1C1B1F),
+                                        color = colors.onSurface,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
                                         song.album.ifBlank { "未知专辑" },
                                         fontSize = 12.sp,
-                                        color = Color(0xFF79747E),
+                                        color = colors.secondaryText,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -225,7 +232,7 @@ fun ArtistDetailScreen(
 
                         if (songs.size > 20) {
                             Spacer(Modifier.height(4.dp))
-                            Text("还有 ${songs.size - 20} 首…", fontSize = 12.sp, color = Color(0xFF79747E))
+                            Text("还有 ${songs.size - 20} 首…", fontSize = 12.sp, color = colors.secondaryText)
                         }
                     }
                 }
@@ -238,6 +245,7 @@ fun ArtistDetailScreen(
 
 @Composable
 private fun AlbumItem(album: Album) {
+    val colors = themeColors()
     val coverSize = 120.dp
     Column(
         modifier = Modifier.width(coverSize),
@@ -259,7 +267,7 @@ private fun AlbumItem(album: Album) {
         Text(
             album.name.ifBlank { "未知专辑" },
             fontSize = 12.sp,
-            color = Color(0xFF1C1B1F),
+            color = colors.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
@@ -269,7 +277,7 @@ private fun AlbumItem(album: Album) {
             Text(
                 "${album.year}",
                 fontSize = 11.sp,
-                color = Color(0xFF79747E)
+                color = colors.secondaryText
             )
         }
     }

@@ -2,6 +2,7 @@ package com.rawsmusic.module.scanner
 
 import android.util.Log
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
+import com.rawsmusic.core.common.taglib.TagLibBridge
 import java.io.RandomAccessFile
 
 /**
@@ -54,10 +55,20 @@ object FfmpegMetadataReader {
 
     /**
      * 一次性读取音频文件的完整元数据（标签 + 流信息）。
-     * 只调用一次 FFprobeKit，高效且全面。
+     * WAV 文件优先使用 TagLib 解析（更全面的 RIFF INFO + ID3v2 支持），
+     * 其他格式使用 FFmpeg 解析。
      */
     fun readFullInfo(filePath: String): FullAudioInfo {
         return try {
+            // WAV 文件优先使用 TagLib 解析
+            val isWav = filePath.endsWith(".wav", ignoreCase = true) && TagLibBridge.isLoaded()
+            if (isWav && TagLibBridge.isWavFile(filePath)) {
+                Log.d(TAG, "readFullInfo: Using TagLib for WAV file: $filePath")
+                return readFullInfoFromTagLib(filePath)
+            }
+
+            // 其他格式使用 FFmpeg 解析
+            Log.d(TAG, "readFullInfo: Using FFmpeg for file: $filePath")
             val info = FFmpegBridge.getMediaInfo(filePath)
             if (info == null) {
                 Log.e(TAG, "readFullInfo: FFmpegBridge.getMediaInfo returned NULL for $filePath")
@@ -91,13 +102,99 @@ object FfmpegMetadataReader {
     }
 
     /**
+     * 使用 TagLib 读取 WAV 文件的完整元数据。
+     */
+    private fun readFullInfoFromTagLib(filePath: String): FullAudioInfo {
+        return try {
+            val metadata = TagLibBridge.readWavMetadata(filePath)
+            if (metadata.isEmpty()) {
+                Log.w(TAG, "readFullInfoFromTagLib: TagLib returned empty metadata for $filePath")
+                return FullAudioInfo()
+            }
+
+            Log.d(TAG, "readFullInfoFromTagLib: file=$filePath, totalKeys=${metadata.size}")
+            for ((key, value) in metadata) {
+                Log.d(TAG, "  TAG: $key = '$value'")
+            }
+
+            val tags = parseTagLibTags(metadata)
+            val stream = parseTagLibStreamInfo(metadata)
+
+            Log.d(TAG, "readFullInfoFromTagLib parsed tags: title='${tags.title}', artist='${tags.artist}', " +
+                    "album='${tags.album}', genre='${tags.genre}', year=${tags.year}, track=${tags.trackNumber}")
+            Log.d(TAG, "readFullInfoFromTagLib result: sr=${stream.sampleRate}, bps=${stream.bitsPerSample}, " +
+                    "br=${stream.bitRate}, ch=${stream.channels}, codec=${stream.codecName}")
+
+            FullAudioInfo(tags = tags, stream = stream)
+        } catch (e: Exception) {
+            Log.w(TAG, "readFullInfoFromTagLib failed for $filePath: ${e.message}")
+            FullAudioInfo()
+        }
+    }
+
+    /**
      * 仅读取标签（向后兼容）
      */
     fun readTags(filePath: String): ExtendedTags {
         return readFullInfo(filePath).tags
     }
 
-    // ==================== 标签解析 ====================
+    // ==================== TagLib 标签解析 ====================
+
+    /**
+     * 解析 TagLib 返回的 WAV 元数据到 ExtendedTags。
+     */
+    private fun parseTagLibTags(metadata: Map<String, String>): ExtendedTags {
+        fun tag(vararg keys: String): String {
+            for (key in keys) {
+                val v = metadata[key]
+                if (!v.isNullOrBlank()) return v
+            }
+            return ""
+        }
+
+        return ExtendedTags(
+            title = tag("TIT2", "INAM", "title"),
+            artist = tag("TPE1", "IART", "artist"),
+            album = tag("TALB", "IPRD", "album"),
+            genre = tag("TCON", "IGNR", "genre"),
+            composer = tag("TCOM", "IMUS", "composer"),
+            albumArtist = tag("TPE2", "IART", "artist"),
+            encoder = tag("TSSE", "ISFT", "IENG", "encoder"),
+            lyrics = tag("USLT"),
+            isrc = tag("TSRC", "isrc"),
+            grouping = tag("TIT1"),
+            trackNumber = tag("TRCK", "IPRT", "track").split("/").firstOrNull()?.toIntOrNull() ?: 0,
+            discNumber = tag("TPOS", "part").split("/").firstOrNull()?.toIntOrNull() ?: 1,
+            discTotal = tag("TPOS", "part").split("/").let {
+                if (it.size > 1) it[1].toIntOrNull() ?: 1 else 1
+            },
+            bpm = tag("TBPM", "IBPM", "bpm").toIntOrNull() ?: 0,
+            year = tag("TYER", "TDRC", "ICRD", "year").substringBefore("-").toIntOrNull() ?: 0,
+            trackGain = parseReplayGain(metadata["replaygain_track_gain"]),
+            trackPeak = parseReplayGainPeak(metadata["replaygain_track_peak"]),
+            albumGain = parseReplayGain(metadata["replaygain_album_gain"]),
+            albumPeak = parseReplayGainPeak(metadata["replaygain_album_peak"])
+        )
+    }
+
+    /**
+     * 解析 TagLib 返回的 WAV 音频属性到 AudioStreamInfo。
+     */
+    private fun parseTagLibStreamInfo(metadata: Map<String, String>): AudioStreamInfo {
+        return AudioStreamInfo(
+            durationMs = metadata["duration_ms"]?.toLongOrNull() ?: 0L,
+            sampleRate = metadata["sample_rate"]?.toIntOrNull() ?: 0,
+            channels = metadata["channels"]?.toIntOrNull() ?: 0,
+            bitsPerSample = metadata["bits_per_sample"]?.toIntOrNull() ?: 0,
+            bitRate = metadata["bit_rate"]?.toIntOrNull() ?: 0,
+            codecName = metadata["codec_name"] ?: "",
+            codecLongName = "",
+            formatName = metadata["format_name"] ?: ""
+        )
+    }
+
+    // ==================== FFmpeg 标签解析 ====================
 
     private fun parseTags(info: Map<String, String>): ExtendedTags {
         val lookupCache = HashMap<String, String>()
@@ -270,6 +367,11 @@ object FfmpegMetadataReader {
             codecName.contains("vorbis", true) -> "Vorbis"
             codecName.contains("aac", true) -> "AAC"
             codecName.contains("mp3", true) || codecName.contains("mp3float", true) -> "MP3"
+            codecName.contains("pcm_f32", true) || codecName.contains("pcm_f64", true) -> when (ext) {
+                "WAV" -> "WAV Float"
+                "AIFF", "AIF" -> "AIFF Float"
+                else -> ext.ifBlank { "PCM Float" }
+            }
             codecName.contains("pcm", true) -> when (ext) {
                 "WAV" -> "WAV"
                 "AIFF", "AIF" -> "AIFF"

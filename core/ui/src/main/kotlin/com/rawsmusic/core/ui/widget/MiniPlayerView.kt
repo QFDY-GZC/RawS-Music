@@ -1,5 +1,6 @@
 package com.rawsmusic.core.ui.widget
 
+import android.animation.ObjectAnimator
 import android.content.Context
 import android.graphics.Color
 import android.util.AttributeSet
@@ -43,6 +44,24 @@ class MiniPlayerView @JvmOverloads constructor(
     private var isHorizontalSwipe = false
 
     private var isChineseLyric = false
+    private var isRotating = false
+
+    private val rotateAnimator by lazy {
+        ObjectAnimator.ofFloat(ivCover, View.ROTATION, 0f, 360f).apply {
+            duration = 20000L
+            repeatCount = ObjectAnimator.INFINITE
+            interpolator = android.view.animation.LinearInterpolator()
+        }
+    }
+
+    private val isDarkMode: Boolean
+        get() = com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(context)
+
+    private val textPrimary: Int
+        get() = if (isDarkMode) 0xFFE6E1DD.toInt() else 0xFF1C1B1F.toInt()
+
+    private val textSecondary: Int
+        get() = if (isDarkMode) 0xFF9F8D80.toInt() else 0xFF49454F.toInt()
 
     init {
         val coverSize = (52 * density).toInt()
@@ -69,10 +88,9 @@ class MiniPlayerView @JvmOverloads constructor(
             layoutParams = LinearLayout.LayoutParams(coverSize, coverSize)
             scaleType = ImageView.ScaleType.CENTER_CROP
             setImageDrawable(null)
-            val cr = (12 * density).toInt()
             outlineProvider = object : android.view.ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: android.graphics.Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, cr.toFloat())
+                    outline.setOval(0, 0, view.width, view.height)
                 }
             }
             clipToOutline = true
@@ -88,7 +106,7 @@ class MiniPlayerView @JvmOverloads constructor(
         }
 
         tvLyricOriginal = TextView(context).apply {
-            setTextColor(0xFF1C1B1F.toInt())
+            setTextColor(textPrimary)
             textSize = 14f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             maxLines = 1
@@ -103,7 +121,7 @@ class MiniPlayerView @JvmOverloads constructor(
         }
 
         tvLyricTranslation = TextView(context).apply {
-            setTextColor(0xFF49454F.toInt())
+            setTextColor(textSecondary)
             textSize = 11f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             maxLines = 1
@@ -119,7 +137,7 @@ class MiniPlayerView @JvmOverloads constructor(
         }
 
         tvRemainingTime = TextView(context).apply {
-            setTextColor(0xFF49454F.toInt())
+            setTextColor(textSecondary)
             textSize = 10f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             text = ""
@@ -132,7 +150,7 @@ class MiniPlayerView @JvmOverloads constructor(
 
         btnPlayPause = ImageView(context).apply {
             setImageResource(R.drawable.ic_play)
-            setColorFilter(0xFF1C1B1F.toInt())
+            setColorFilter(textPrimary)
             layoutParams = LinearLayout.LayoutParams(touchArea, touchArea)
             setPadding((touchArea - iconSize) / 2, (touchArea - iconSize) / 2, (touchArea - iconSize) / 2, (touchArea - iconSize) / 2)
             setOnClickListener {
@@ -252,6 +270,13 @@ class MiniPlayerView @JvmOverloads constructor(
             if (isPlaying) R.drawable.ic_pause
             else R.drawable.ic_play
         )
+        if (isPlaying && !isRotating) {
+            isRotating = true
+            rotateAnimator.start()
+        } else if (!isPlaying && isRotating) {
+            isRotating = false
+            rotateAnimator.cancel()
+        }
     }
 
     fun setSongInfo(title: String, artist: String) {

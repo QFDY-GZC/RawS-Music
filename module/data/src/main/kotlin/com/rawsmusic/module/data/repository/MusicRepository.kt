@@ -9,6 +9,7 @@ import com.rawsmusic.core.common.model.Folder
 import com.rawsmusic.core.common.model.Genre
 import com.rawsmusic.core.common.model.PlayStats
 import com.rawsmusic.core.common.model.SortOrder
+import com.rawsmusic.core.common.utils.CjkSortUtils
 import com.tencent.mmkv.MMKV
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -182,6 +183,32 @@ object MusicRepository {
         refreshAll()
     }
 
+    fun deleteSongFromDevice(context: android.content.Context, song: AudioFile): Boolean {
+        var deleted = false
+        if (song.id > 0) {
+            try {
+                val uri = android.content.ContentUris.withAppendedId(
+                    android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, song.id
+                )
+                val rows = context.contentResolver.delete(uri, null, null)
+                if (rows > 0) deleted = true
+            } catch (_: Exception) {}
+        }
+        if (!deleted) {
+            try {
+                val file = java.io.File(song.path)
+                if (file.exists() && file.delete()) deleted = true
+            } catch (_: Exception) {}
+        }
+        if (deleted) {
+            removeSong(song.path)
+            try {
+                android.media.MediaScannerConnection.scanFile(context, arrayOf(song.path), null, null)
+            } catch (_: Exception) {}
+        }
+        return deleted
+    }
+
     fun updateSong(updated: AudioFile) {
         val songs = loadSongsFromStorage().toMutableList()
         val index = songs.indexOfFirst { it.path == updated.path }
@@ -232,14 +259,13 @@ object MusicRepository {
                     albumCount = list.map { it.album }.distinct().size,
                     coverPath = list.firstOrNull { it.albumArtPath.isNotBlank() }?.albumArtPath ?: ""
                 )
-            }.sortedBy { it.name.lowercase() }
+            }.sortedBy { CjkSortUtils.sortKey(it.name) }
     }
 
     private fun buildAlbums(songs: List<AudioFile>): List<Album> {
         return songs.filter { it.album.isNotBlank() }
             .groupBy { it.album }
             .map { (albumName, list) ->
-                // 取最常见的艺术家名，避免同专辑因艺术家标签微小差异被拆分
                 val mostCommonArtist = list.groupBy { it.artist }
                     .maxByOrNull { it.value.size }?.key ?: list.first().artist
                 Album(
@@ -250,14 +276,14 @@ object MusicRepository {
                     coverPath = list.firstOrNull { it.albumArtPath.isNotBlank() }?.albumArtPath ?: list.first().albumArtPath,
                     hasHiRes = list.any { it.isHiRes }
                 )
-            }.sortedBy { it.name.lowercase() }
+            }.sortedBy { CjkSortUtils.sortKey(it.name) }
     }
 
     private fun buildGenres(songs: List<AudioFile>): List<Genre> {
         return songs.filter { it.genre.isNotBlank() }
             .groupBy { it.genre }
             .map { (name, list) -> Genre(name = name, songCount = list.size) }
-            .sortedBy { it.name.lowercase() }
+            .sortedBy { CjkSortUtils.sortKey(it.name) }
     }
 
     private fun buildFolders(songs: List<AudioFile>): List<Folder> {
@@ -269,17 +295,17 @@ object MusicRepository {
                     name = path.substringAfterLast("/"),
                     songCount = list.size
                 )
-            }.sortedBy { it.name.lowercase() }
+            }.sortedBy { CjkSortUtils.sortKey(it.name) }
     }
 
     private fun sortSongs(songs: List<AudioFile>, order: SortOrder): List<AudioFile> {
         return when (order) {
-            SortOrder.TITLE_ASC -> songs.sortedBy { it.title.lowercase() }
-            SortOrder.TITLE_DESC -> songs.sortedByDescending { it.title.lowercase() }
-            SortOrder.ARTIST_ASC -> songs.sortedBy { it.artist.lowercase() }
-            SortOrder.ARTIST_DESC -> songs.sortedByDescending { it.artist.lowercase() }
-            SortOrder.ALBUM_ASC -> songs.sortedBy { it.album.lowercase() }
-            SortOrder.ALBUM_DESC -> songs.sortedByDescending { it.album.lowercase() }
+            SortOrder.TITLE_ASC -> songs.sortedBy { CjkSortUtils.sortKey(it.title) }
+            SortOrder.TITLE_DESC -> songs.sortedByDescending { CjkSortUtils.sortKey(it.title) }
+            SortOrder.ARTIST_ASC -> songs.sortedBy { CjkSortUtils.sortKey(it.artist) }
+            SortOrder.ARTIST_DESC -> songs.sortedByDescending { CjkSortUtils.sortKey(it.artist) }
+            SortOrder.ALBUM_ASC -> songs.sortedBy { CjkSortUtils.sortKey(it.album) }
+            SortOrder.ALBUM_DESC -> songs.sortedByDescending { CjkSortUtils.sortKey(it.album) }
             SortOrder.DATE_ADDED_ASC -> songs.sortedBy { it.dateAdded }
             SortOrder.DATE_ADDED_DESC -> songs.sortedByDescending { it.dateAdded }
             SortOrder.DURATION_ASC -> songs.sortedBy { it.duration }

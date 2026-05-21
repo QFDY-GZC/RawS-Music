@@ -4,11 +4,14 @@ import android.net.Uri
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
+import android.graphics.Outline
 import coil.load
 import com.rawsmusic.core.common.base.BaseAdapter
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.ui.databinding.ItemSongBinding
+import com.rawsmusic.core.ui.theme.ThemeManager
 
 class SongAdapter(
     private val onSongClick: (AudioFile, Int) -> Unit,
@@ -19,6 +22,13 @@ class SongAdapter(
         ItemSongBinding.inflate(LayoutInflater.from(parent.context), parent, false)
     }
 ) {
+
+    private val roundedOutlineProvider = object : ViewOutlineProvider() {
+        override fun getOutline(view: View, outline: Outline) {
+            val cornerPx = (10 * view.resources.displayMetrics.density).toInt()
+            outline.setRoundRect(0, 0, view.width, view.height, cornerPx.toFloat())
+        }
+    }
 
     var currentPlayingId: Long = -1
         set(value) {
@@ -43,6 +53,42 @@ class SongAdapter(
 
     private val _selectedIds = mutableSetOf<Long>()
     val selectedIds: Set<Long> get() = _selectedIds
+
+    var isLightBackground: Boolean = false
+
+    var fontApplier: ((android.widget.TextView) -> Unit)? = null
+
+    private var recyclerView: androidx.recyclerview.widget.RecyclerView? = null
+
+    override fun onAttachedToRecyclerView(recyclerView: androidx.recyclerview.widget.RecyclerView) {
+        super.onAttachedToRecyclerView(recyclerView)
+        this.recyclerView = recyclerView
+    }
+
+    override fun onDetachedFromRecyclerView(recyclerView: androidx.recyclerview.widget.RecyclerView) {
+        super.onDetachedFromRecyclerView(recyclerView)
+        this.recyclerView = null
+    }
+
+    fun notifyVisibleItemsChanged() {
+        updateVisibleTextColors()
+    }
+
+    private fun updateVisibleTextColors() {
+        val rv = recyclerView ?: return
+        val lm = rv.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager ?: return
+        val first = lm.findFirstVisibleItemPosition()
+        val last = lm.findLastVisibleItemPosition()
+        if (first == androidx.recyclerview.widget.RecyclerView.NO_POSITION) return
+        for (i in first..last) {
+            val holder = rv.findViewHolderForAdapterPosition(i) ?: continue
+            val binding = try {
+                ItemSongBinding.bind(holder.itemView)
+            } catch (_: Exception) { continue }
+            val isPlaying = items.getOrNull(i)?.id == currentPlayingId
+            applyTextColor(binding, isPlaying)
+        }
+    }
 
     fun enterEditMode(firstItemId: Long) {
         if (isEditMode) return
@@ -99,11 +145,17 @@ class SongAdapter(
         binding.tvTitle.text = item.displayName
         binding.tvArtist.text = buildString {
             append(item.artist.ifBlank { "Unknown Artist" })
-            append(" · ")
-            append(AudioUtils.formatDuration(item.duration))
+            if (item.album.isNotBlank()) {
+                append(" · ")
+                append(item.album)
+            }
         }
+        binding.tvMeta.text = buildMetaText(item)
 
-        // 优先使用 song:// scheme 从歌曲文件本身提取封面
+        fontApplier?.invoke(binding.tvTitle)
+        fontApplier?.invoke(binding.tvArtist)
+        fontApplier?.invoke(binding.tvMeta)
+
         val coverUri = if (item.path.isNotBlank()) {
             Uri.parse("song://${item.path}")
         } else {
@@ -111,6 +163,8 @@ class SongAdapter(
         }
         if (coverUri != null) {
             binding.ivCover.visibility = View.VISIBLE
+            binding.ivCover.outlineProvider = roundedOutlineProvider
+            binding.ivCover.clipToOutline = true
             binding.ivCover.load(coverUri) {
                 crossfade(true)
             }
@@ -122,12 +176,9 @@ class SongAdapter(
         val isSelected = item.id in _selectedIds
 
         binding.tvTitle.isSelected = true
+        binding.tvArtist.isSelected = true
 
-        if (isPlaying) {
-            binding.tvTitle.setTextColor(0xFFFFFFFF.toInt())
-        } else {
-            binding.tvTitle.setTextColor(0xFFFFFFFF.toInt())
-        }
+        applyTextColor(binding, isPlaying)
 
         binding.root.alpha = if (currentPlayingId != -1L && !isPlaying) 0.85f else 1f
 
@@ -141,6 +192,38 @@ class SongAdapter(
             binding.root.setOnClickListener { onSongClick.invoke(item, position) }
             binding.root.setOnLongClickListener { onLongClick?.invoke(item, position) ?: false }
         }
+    }
+
+    private fun applyTextColor(binding: ItemSongBinding, isPlaying: Boolean) {
+        val isLight = ThemeManager.isLightBackground
+        val primaryColor = if (isLight) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+        val secondaryColor = if (isLight) 0xCC000000.toInt() else 0xCCFFFFFF.toInt()
+        val tertiaryColor = if (isLight) 0x99000000.toInt() else 0x99FFFFFF.toInt()
+
+        binding.tvTitle.setTextColor(if (isPlaying) primaryColor else primaryColor)
+        binding.tvArtist.setTextColor(secondaryColor)
+        binding.tvMeta.setTextColor(tertiaryColor)
+    }
+
+    private fun buildMetaText(item: AudioFile): String {
+        val parts = mutableListOf<String>()
+        if (item.isHiRes) {
+            parts.add("Hi·Res")
+        }
+        if (item.bitsPerSample > 0) {
+            parts.add("${item.bitsPerSample}bit")
+        }
+        if (item.sampleRate > 0) {
+            val kHz = item.sampleRate / 1000.0
+            val kHzStr = if (item.sampleRate % 1000 == 0) {
+                "${item.sampleRate / 1000}kHz"
+            } else {
+                String.format("%.1fkHz", kHz)
+            }
+            parts.add(kHzStr)
+        }
+        parts.add(AudioUtils.formatDuration(item.duration))
+        return parts.joinToString(" | ")
     }
 
     private fun toggleSelection(id: Long) {

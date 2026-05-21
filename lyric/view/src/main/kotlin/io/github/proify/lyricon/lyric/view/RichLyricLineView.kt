@@ -217,7 +217,7 @@ class RichLyricLineView(
             )
         )
 
-        main.syllable.isScrollOnly = true
+        main.syllable.isScrollOnly = processedWords.isNullOrEmpty()
         updateSustainGlowState()
     }
 
@@ -287,7 +287,7 @@ class RichLyricLineView(
         secondary.visibleIfChanged = alwaysShowSecondary
 
         secondary.setLyric(newLine)
-        secondary.syllable.isScrollOnly = true
+        secondary.syllable.isScrollOnly = newLine.words.isNullOrEmpty()
         isSecondaryGeneratedWords = isGenerated
         updateSustainGlowState()
     }

@@ -4,6 +4,7 @@ import android.app.Application
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import com.rawsmusic.core.common.CoreInit
+import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.DataModule
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.FontManager
@@ -13,8 +14,14 @@ class RawSMusicApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            AppLogger.e("Crash", "${thread.name}: ${throwable.message}", throwable)
+            previousHandler?.uncaughtException(thread, throwable)
+        }
         CoreInit.init(this)
         DataModule.init(this)
+        AppLogger.init()
 
         // 版本更新检查：覆盖安装后清除旧歌曲数据，强制重新扫描以获取完整元数据
         val currentVersion = try {

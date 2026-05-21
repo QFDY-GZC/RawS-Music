@@ -1,9 +1,10 @@
 package com.rawsmusic.ui.settings
 
-import android.content.Intent
 import android.os.Build
-import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,396 +21,342 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
-import com.kyant.backdrop.backdrops.LayerBackdrop
-import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.Shadow
-import com.rawsmusic.module.data.prefs.AppPreferences
-import com.rawsmusic.module.data.prefs.FontManager
-import com.rawsmusic.module.player.GlobalSettingsViewModel
-import com.rawsmusic.module.player.LyriconProviderManager
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+
+@Composable
+internal fun themeColors(): ThemeColors {
+    val context = LocalContext.current
+    val isDark = com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(context)
+    return if (isDark) ThemeColors(
+        background = Color(0xFF2A2624),
+        surface = Color(0xFF353130),
+        onSurface = Color.White,
+        onSurfaceVariant = Color(0xCCFFFFFF),
+        outline = Color(0xFF9F8D80),
+        primary = Color.White,
+        onPrimary = Color(0xFF3E2D1A),
+        primaryContainer = Color(0xFF57432E),
+        onPrimaryContainer = Color.White,
+        secondaryText = Color(0xCCFFFFFF)
+    ) else ThemeColors(
+        background = Color(0xFFFFFFFF),
+        surface = Color(0xFFF5F5F5),
+        onSurface = Color.Black,
+        onSurfaceVariant = Color(0x8A000000),
+        outline = Color(0xFF857367),
+        primary = Color.Black,
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFFFFDCC4),
+        onPrimaryContainer = Color.Black,
+        secondaryText = Color(0x8A000000)
+    )
+}
+
+internal data class ThemeColors(
+    val background: Color,
+    val surface: Color,
+    val onSurface: Color,
+    val onSurfaceVariant: Color,
+    val outline: Color,
+    val primary: Color,
+    val onPrimary: Color,
+    val primaryContainer: Color,
+    val onPrimaryContainer: Color,
+    val secondaryText: Color
+)
+
+@Composable
+internal fun appFontFamily(): FontFamily {
+    val tf = com.rawsmusic.module.data.prefs.FontManager.typeface
+    return if (tf != null) FontFamily(tf) else FontFamily.Default
+}
+
+@Composable
+internal fun SettingsPage(
+    title: String,
+    onBack: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val colors = themeColors()
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(colors.background)
+            .verticalScroll(rememberScrollState())
+            .statusBarsPadding()
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(0.dp)
+    ) {
+        Spacer(Modifier.height(16.dp))
+        if (onBack == null) {
+            Text(
+                title,
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Medium,
+                color = colors.onSurface,
+                fontFamily = appFontFamily()
+            )
+        } else {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onBack) {
+                    Text("← 返回", color = colors.primary, fontSize = 16.sp, fontFamily = appFontFamily())
+                }
+                Text(
+                    title,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = colors.onSurface,
+                    fontFamily = appFontFamily()
+                )
+                Spacer(Modifier.weight(1f))
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+        content()
+        Spacer(Modifier.height(48.dp))
+    }
+}
+
+@Composable
+internal fun SettingsActionRow(
+    title: String,
+    description: String? = null,
+    onClick: () -> Unit
+) {
+    SettingsEntryRow(title, description.orEmpty(), onClick)
+}
 
 @Composable
 fun LiquidGlassSettingsScreen(
+    onNavigateToLyricManagement: () -> Unit,
+    onNavigateToStatusBarLyric: () -> Unit,
+    onNavigateToAppearance: () -> Unit,
     onNavigateToAudioSettings: () -> Unit,
-    onPickFolder: () -> Unit,
-    onPickFont: () -> Unit = {}
+    onNavigateToAudioEffects: () -> Unit,
+    onNavigateToPlayerInterface: () -> Unit,
+    onNavigateToUsbDac: () -> Unit,
+    onNavigateToGlobalFont: () -> Unit,
+    onWebDavBackup: () -> Unit
 ) {
-    val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-    val backdrop = rememberLayerBackdrop()
-
-    val lyriconPrefs = AppPreferences.Lyricon
-    var lyriconEnabled by remember { mutableStateOf(lyriconPrefs.enabled) }
-    var lyriconTranslation by remember { mutableStateOf(lyriconPrefs.displayTranslation) }
-    var lyriconRoma by remember { mutableStateOf(lyriconPrefs.displayRoma) }
-    var lyriconStatus by remember { mutableStateOf(if (!lyriconEnabled) "未启用" else if (LyriconProviderManager.isConnected()) "已连接" else "未连接") }
-
-    var scanPaths by remember { mutableStateOf(AppPreferences.UI.scanPaths) }
-    var isScanning by remember { mutableStateOf(false) }
-
-    LaunchedEffect(lyriconEnabled) {
-        if (lyriconEnabled) {
-            LyriconProviderManager.onConnectionStatusChanged = { status ->
-                lyriconStatus = when {
-                    !AppPreferences.Lyricon.enabled -> "未启用"
-                    status == io.github.proify.lyricon.provider.ConnectionStatus.CONNECTED -> "已连接"
-                    status == io.github.proify.lyricon.provider.ConnectionStatus.CONNECTING -> "连接中…"
-                    else -> "未连接"
-                }
-            }
-        } else {
-            LyriconProviderManager.onConnectionStatusChanged = null
-        }
-    }
-
-    Box(Modifier.fillMaxSize()) {
-        Box(
-            Modifier
-                .layerBackdrop(backdrop)
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFFF2F1F0),
-                            Color(0xFFE8E7E5),
-                            Color(0xFFD1D0CD).copy(alpha = 0.3f),
-                            Color(0xFFB0AFA8).copy(alpha = 0.1f)
-                        )
-                    )
-                )
-        )
-
-        Column(
-            Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Spacer(Modifier.height(16.dp))
-
-            Text(
-                "设置",
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Medium,
-                color = Color(0xFF1C1B1F)
+    SettingsPage(title = "设置") {
+        SettingsCard {
+            SettingsEntryRow(
+                title = "歌词管理",
+                description = "词幕、歌词字体设置",
+                onClick = onNavigateToLyricManagement
             )
 
-            Spacer(Modifier.height(8.dp))
+            SettingsEntryRow(
+                title = "状态栏歌词",
+                description = "Flyme、三星、蓝牙、Lyric Getter",
+                onClick = onNavigateToStatusBarLyric
+            )
+        }
 
-            LiquidGlassCard(backdrop) {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "词幕（Lyricon）",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = Color(0xFF1C1B1F)
-                        )
-                        Text(
-                            lyriconStatus,
-                            fontSize = 12.sp,
-                            color = Color(0xFF79747E)
-                        )
-                    }
-                }
+        Spacer(Modifier.height(12.dp))
 
-                Spacer(Modifier.height(4.dp))
+        SettingsCard {
+            SettingsEntryRow(
+                title = "外观主题",
+                description = "主题模式",
+                onClick = onNavigateToAppearance
+            )
 
-                Text(
-                    "向系统状态栏推送歌词显示。需要安装词幕中央服务才能连接。",
-                    fontSize = 12.sp,
-                    color = Color(0xFF79747E)
-                )
+            SettingsEntryRow(
+                title = "全局字体",
+                description = "字体大小、字重、斜体",
+                onClick = onNavigateToGlobalFont
+            )
 
-                Spacer(Modifier.height(12.dp))
+            SettingsEntryRow(
+                title = "播放界面",
+                description = "沉浸、常驻封面、信笺、流动光、界面记忆",
+                onClick = onNavigateToPlayerInterface
+            )
+        }
 
-                SwitchRow("启用词幕推送", lyriconEnabled) { checked ->
-                    lyriconEnabled = checked
-                    lyriconPrefs.enabled = checked
-                    if (checked) {
-                        LyriconProviderManager.init(context.applicationContext, com.rawsmusic.R.mipmap.ic_launcher)
-                        lyriconStatus = if (LyriconProviderManager.isConnected()) "已连接" else "未连接"
-                    } else {
-                        LyriconProviderManager.stopPositionSync()
-                        LyriconProviderManager.destroy()
-                        lyriconStatus = "未启用"
-                    }
-                }
+        Spacer(Modifier.height(12.dp))
 
-                SwitchRow("显示翻译", lyriconTranslation, enabled = lyriconEnabled) { checked ->
-                    lyriconTranslation = checked
-                    LyriconProviderManager.setDisplayTranslation(checked)
-                }
+        SettingsCard {
+            SettingsEntryRow(
+                title = "音质设置",
+                description = "采样率、位深、输出模式",
+                onClick = onNavigateToAudioSettings
+            )
 
-                SwitchRow("显示罗马音", lyriconRoma, enabled = lyriconEnabled) { checked ->
-                    lyriconRoma = checked
-                    LyriconProviderManager.setDisplayRoma(checked)
-                }
-            }
+            SettingsEntryRow(
+                title = "音效设置",
+                description = "参量均衡器、立体声扩展",
+                onClick = onNavigateToAudioEffects
+            )
 
-            LiquidGlassCard(backdrop) {
-                Text(
-                    "音质设置",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color(0xFF1C1B1F)
-                )
-                Spacer(Modifier.height(12.dp))
-                GlassButton(onClick = onNavigateToAudioSettings) {
-                    Text("进入音质设置", color = Color(0xFF6750A4), fontSize = 14.sp)
-                }
-            }
+            SettingsEntryRow(
+                title = "USB DAC",
+                description = "USB 独占模式设置",
+                onClick = onNavigateToUsbDac
+            )
+        }
 
-            var immersiveEnabled by remember { mutableStateOf(AppPreferences.UI.isImmersiveEnabled) }
-            var miniCoverEnabled by remember { mutableStateOf(AppPreferences.UI.isMiniCoverEnabled) }
-            LiquidGlassCard(backdrop) {
-                Text(
-                    "播放界面",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color(0xFF1C1B1F)
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "自定义播放界面的视觉效果",
-                    fontSize = 12.sp,
-                    color = Color(0xFF79747E)
-                )
-                Spacer(Modifier.height(12.dp))
-                SwitchRow("沉浸模式", immersiveEnabled) { checked ->
-                    immersiveEnabled = checked
-                    AppPreferences.UI.isImmersiveEnabled = checked
-                    android.content.Intent("com.rawsmusic.action.IMMERSIVE_SETTING_CHANGED").also {
-                        it.setPackage(context.packageName)
-                        context.sendBroadcast(it)
-                    }
-                }
-                Text(
-                    "进入播放界面时显示专辑封面背景",
-                    fontSize = 11.sp,
-                    color = Color(0xFF79747E)
-                )
-                Spacer(Modifier.height(8.dp))
-                SwitchRow("主界面常驻封面", miniCoverEnabled) { checked ->
-                    miniCoverEnabled = checked
-                    AppPreferences.UI.isMiniCoverEnabled = checked
-                    android.content.Intent("com.rawsmusic.action.MINI_COVER_SETTING_CHANGED").also {
-                        it.setPackage(context.packageName)
-                        context.sendBroadcast(it)
-                    }
-                }
-                Text(
-                    "在主界面胶囊栏显示专辑封面",
-                    fontSize = 11.sp,
-                    color = Color(0xFF79747E)
-                )
-            }
+        Spacer(Modifier.height(12.dp))
 
-            LiquidGlassCard(backdrop) {
-                Text(
-                    "扫描文件夹",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color(0xFF1C1B1F)
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    if (scanPaths.isEmpty()) "未指定则扫描全部音乐" else "仅扫描以下文件夹",
-                    fontSize = 12.sp,
-                    color = Color(0xFF79747E)
-                )
-
-                if (scanPaths.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    for (path in scanPaths) {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                path.substringAfterLast("/"),
-                                fontSize = 14.sp,
-                                color = Color(0xFF49454F),
-                                modifier = Modifier.weight(1f)
-                            )
-                            TextButton(onClick = {
-                                val current = AppPreferences.UI.scanPaths.toMutableList()
-                                current.remove(path)
-                                AppPreferences.UI.scanPaths = current
-                                scanPaths = current
-                            }) {
-                                Text("移除", color = Color(0xFFFF5722), fontSize = 13.sp)
-                            }
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(8.dp))
-                GlassButton(onClick = onPickFolder) {
-                    Text("添加文件夹", color = Color(0xFF6750A4), fontSize = 14.sp)
-                }
-            }
-
-            LiquidGlassCard(backdrop) {
-                Text(
-                    "重新扫描",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color(0xFF1C1B1F)
-                )
-                Spacer(Modifier.height(12.dp))
-                GlassButton(
-                    onClick = {
-                        if (isScanning) return@GlassButton
-                        isScanning = true
-                        coroutineScope.launch {
-                            try {
-                                val result = withContext(Dispatchers.IO) {
-                                    com.rawsmusic.module.data.repository.MusicRepository.clearAll()
-                                    val customPaths = AppPreferences.UI.scanPaths
-                                    val songs = mutableListOf<com.rawsmusic.core.common.model.AudioFile>()
-                                    com.rawsmusic.module.scanner.MediaStoreScanner.scan(context, customPaths, quickScan = false)
-                                        .collect { progress ->
-                                            when (progress) {
-                                                is com.rawsmusic.module.scanner.ScanProgress.Completed -> {
-                                                    songs.addAll(progress.songs)
-                                                }
-                                                else -> {}
-                                            }
-                                        }
-                                    com.rawsmusic.module.data.repository.MusicRepository.replaceAllSongs(songs)
-                                    songs.size
-                                }
-                                Toast.makeText(context, "扫描完成，共 $result 首歌曲", Toast.LENGTH_SHORT).show()
-                            } catch (e: Exception) {
-                                Toast.makeText(context, "扫描失败: ${e.message}", Toast.LENGTH_SHORT).show()
-                            } finally {
-                                isScanning = false
-                            }
-                        }
-                    }
-                ) {
-                    Text(
-                        if (isScanning) "扫描中…" else "重新扫描",
-                        color = Color(0xFF6750A4),
-                        fontSize = 14.sp
-                    )
-                }
-            }
-
-            var customFontPath by remember { mutableStateOf(AppPreferences.UI.customFontPath) }
-            var fontWeight by remember { mutableStateOf(AppPreferences.UI.fontWeight) }
-            var fontItalic by remember { mutableStateOf(AppPreferences.UI.fontItalic) }
-            val fontContext = LocalContext.current
-
-            LiquidGlassCard(backdrop) {
-                Text(
-                    "自定义字体",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color(0xFF1C1B1F)
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    if (customFontPath.isBlank()) "使用系统默认字体" else customFontPath.substringAfterLast("/"),
-                    fontSize = 12.sp,
-                    color = Color(0xFF79747E)
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GlassButton(onClick = onPickFont) {
-                        Text("选择字体文件", color = Color(0xFF6750A4), fontSize = 14.sp)
-                    }
-                    if (customFontPath.isNotBlank()) {
-                        GlassButton(onClick = {
-                            customFontPath = ""
-                            AppPreferences.UI.customFontPath = ""
-                        }) {
-                            Text("重置", color = Color(0xFFFF5722), fontSize = 14.sp)
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(12.dp))
-                Text("字重: ${String.format("%.1f", fontWeight)}", fontSize = 13.sp, color = Color(0xFF49454F))
-                Slider(
-                    value = fontWeight,
-                    onValueChange = {
-                        fontWeight = it
-                        AppPreferences.UI.fontWeight = it
-                        FontManager.init(fontContext)
-                    },
-                    valueRange = 0.5f..2f,
-                    colors = SliderDefaults.colors(thumbColor = Color(0xFF6750A4), activeTrackColor = Color(0xFF6750A4))
-                )
-
-                Text("斜体: ${String.format("%.1f", fontItalic)}", fontSize = 13.sp, color = Color(0xFF49454F))
-                Slider(
-                    value = fontItalic,
-                    onValueChange = {
-                        fontItalic = it
-                        AppPreferences.UI.fontItalic = it
-                        FontManager.init(fontContext)
-                    },
-                    valueRange = -0.5f..0.5f,
-                    colors = SliderDefaults.colors(thumbColor = Color(0xFF6750A4), activeTrackColor = Color(0xFF6750A4))
-                )
-            }
-
-            Spacer(Modifier.height(24.dp))
+        SettingsCard {
+            SettingsEntryRow(
+                title = "WebDAV 备份",
+                description = "备份与恢复歌单、统计数据",
+                onClick = onWebDavBackup
+            )
         }
     }
 }
 
-/**
- * 检测设备是否支持 backdrop 渲染效果。
- * 在某些定制 ROM（如澎湃3/HyperOS 3）上，AGSL RuntimeShader 或 RenderEffect 链
- * 可能因 GPU 驱动不兼容而导致原生崩溃。
- */
+@Composable
+private fun SettingsEntryRow(
+    title: String,
+    description: String,
+    onClick: () -> Unit
+) {
+    val colors = themeColors()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium,
+                color = colors.onSurface,
+                fontFamily = appFontFamily()
+            )
+            Text(
+                description,
+                fontSize = 13.sp,
+                color = colors.secondaryText,
+                modifier = Modifier.padding(top = 2.dp),
+                fontFamily = appFontFamily()
+            )
+        }
+        Text(
+            "→",
+            fontSize = 18.sp,
+            color = colors.outline,
+            modifier = Modifier.padding(start = 8.dp)
+        )
+    }
+    Divider()
+}
+
+// ==================== 通用组件 ====================
+
+@Composable
+internal fun SectionHeader(title: String) {
+    val colors = themeColors()
+    Text(
+        title,
+        fontSize = 16.sp,
+        fontWeight = FontWeight.Medium,
+        color = colors.onSurface,
+        modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+        fontFamily = appFontFamily()
+    )
+}
+
+@Composable
+internal fun Divider() {
+}
+
+@Composable
+internal fun SettingsCard(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val colors = themeColors()
+    val isDark = colors.onSurface == Color.White
+    val cardColor = if (isDark) Color(0xFF1D1D21) else Color(0xFFFFFFFF)
+    Column(
+        modifier
+            .fillMaxWidth()
+            .padding(bottom = 14.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(cardColor)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        content = content
+    )
+}
+
+@Composable
+fun SwitchRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val colors = themeColors()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(48.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            fontSize = 14.sp,
+            color = if (enabled) colors.onSurfaceVariant else colors.outline,
+            fontFamily = appFontFamily()
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color(0xFFFFFFFF),
+                checkedTrackColor = Color(0xFF4285F4),
+                uncheckedThumbColor = Color(0xFFF1F1F1),
+                uncheckedTrackColor = Color(0xFF9AA0A6)
+            )
+        )
+    }
+}
+
+// ==================== 液态玻璃组件（保留供后续扩展） ====================
+
 private val isBackdropSupported: Boolean by lazy {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
         android.util.Log.d("BackdropCompat", "Not supported: API ${Build.VERSION.SDK_INT} < S")
@@ -430,6 +377,8 @@ private val isBackdropSupported: Boolean by lazy {
     }
 }
 
+private const val USE_FALLBACK_CARDS = true
+
 @Composable
 fun LiquidGlassCard(
     backdrop: Backdrop,
@@ -437,13 +386,12 @@ fun LiquidGlassCard(
     lightweight: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    if (!isBackdropSupported) {
+    if (USE_FALLBACK_CARDS || !isBackdropSupported) {
         LiquidGlassCardFallback(modifier, content)
         return
     }
 
     if (lightweight) {
-        // 轻量模式：跳过昂贵的 lens AGSL shader，只用 blur + vibrancy
         LiquidGlassCardLightweight(backdrop, modifier, content)
         return
     }
@@ -518,10 +466,6 @@ fun LiquidGlassCard(
     )
 }
 
-/**
- * 轻量级 backdrop 卡片：只用 blur + vibrancy，跳过昂贵的 lens AGSL shader。
- * 适用于滚动列表中的卡片，避免大量卡片同时渲染导致卡顿。
- */
 @Composable
 private fun LiquidGlassCardLightweight(
     backdrop: Backdrop,
@@ -546,53 +490,20 @@ private fun LiquidGlassCardLightweight(
     )
 }
 
-/**
- * 不支持 backdrop 渲染时的降级卡片，使用简单半透明背景+阴影
- */
 @Composable
 private fun LiquidGlassCardFallback(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val colors = themeColors()
     Column(
         modifier
             .shadow(4.dp, RoundedCornerShape(24.dp), ambientColor = Color(0x1A000000))
             .clip(RoundedCornerShape(24.dp))
-            .background(Color.White.copy(alpha = 0.85f))
+            .background(colors.surface.copy(alpha = 0.85f))
             .padding(16.dp),
         content = content
     )
-}
-
-@Composable
-fun SwitchRow(
-    label: String,
-    checked: Boolean,
-    enabled: Boolean = true,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .height(48.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            label,
-            fontSize = 14.sp,
-            color = if (enabled) Color(0xFF49454F) else Color(0xFF79747E)
-        )
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            enabled = enabled,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color(0xFF6750A4),
-                checkedTrackColor = Color(0xFFD0BCFF)
-            )
-        )
-    }
 }
 
 @Composable

@@ -70,16 +70,31 @@ class ImmersiveBackgroundView @JvmOverloads constructor(
     private var mutedColor: Int = Color.GRAY
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val mirrorMatrix = Matrix()
+    private val fadePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val srcRect = Rect()
+    private val dstRect = RectF()
 
     private var coverGeneration = 0
     private var currentPath: String? = null
 
+    // 缓存 RenderNode 对象，避免每帧 new 导致 GPU 资源抖动
+    // display list 每帧重新录制（beginRecording/endRecording 很便宜）
+    private var cachedBlurNode: android.graphics.RenderNode? = null
+    private var cachedBlurNodeWidth = 0
+    private var cachedBlurNodeHeight = 0
+
     fun setCover(path: String?) {
-        if (path == currentPath) {
+        val needReload = path != currentPath ||
+                         sourceBitmap == null ||
+                         sourceBitmap?.isRecycled == true
+
+        currentPath = path
+
+        if (!needReload && path != null) {
             invalidate()
             return
         }
-        currentPath = path
 
         if (path.isNullOrBlank()) {
             sourceBitmap = null
@@ -171,7 +186,7 @@ class ImmersiveBackgroundView @JvmOverloads constructor(
             // 步骤2：绘制底部镜像图（从 splitY 到屏幕底部）
             canvas.save()
             canvas.clipRect(0f, splitY, w, h)
-            val mirrorMatrix = Matrix()
+            mirrorMatrix.reset()
             mirrorMatrix.setScale(1f, -1f, w / 2f, splitY)
             canvas.concat(mirrorMatrix)
             canvas.drawBitmap(bmp, coverSrcRect, RectF(0f, 0f, w, splitY), paint)
@@ -181,19 +196,31 @@ class ImmersiveBackgroundView @JvmOverloads constructor(
             // 注意：drawRenderNode 需要硬件加速，软件渲染模式下跳过模糊效果
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && canvas.isHardwareAccelerated) {
                 val blurRadius = 150f
-                val blurEffect = RenderEffect.createBlurEffect(blurRadius, blurRadius, Shader.TileMode.CLAMP)
+                val blur = blurRadius.toInt()
+                val extW = w.toInt() + blur * 2
+                val extH = h.toInt() + blur * 2
 
-                val blurNode = android.graphics.RenderNode("fullBlur")
-                blurNode.setPosition(0, 0, w.toInt(), h.toInt())
-                val rnCanvas = blurNode.beginRecording(w.toInt(), h.toInt())
-                rnCanvas.drawBitmap(bmp, fullSrcRect, RectF(0f, 0f, w, h), paint)
+                // 复用缓存的 RenderNode 对象，仅在尺寸变化时重建
+                val blurNode = cachedBlurNode?.takeIf {
+                    cachedBlurNodeWidth == extW && cachedBlurNodeHeight == extH
+                } ?: run {
+                    val node = android.graphics.RenderNode("fullBlur")
+                    node.setPosition(-blur, -blur, w.toInt() + blur, h.toInt() + blur)
+                    node.setRenderEffect(RenderEffect.createBlurEffect(blurRadius, blurRadius, Shader.TileMode.CLAMP))
+                    cachedBlurNode = node
+                    cachedBlurNodeWidth = extW
+                    cachedBlurNodeHeight = extH
+                    node
+                }
+
+                // 每帧重新录制 display list（便宜操作，确保后台恢复后内容正确）
+                val rnCanvas = blurNode.beginRecording(extW, extH)
+                rnCanvas.drawBitmap(bmp, fullSrcRect, RectF(0f, 0f, extW.toFloat(), extH.toFloat()), paint)
                 blurNode.endRecording()
-                blurNode.setRenderEffect(blurEffect)
 
                 val saveCount = canvas.saveLayer(0f, 0f, w, h, null)
                 canvas.drawRenderNode(blurNode)
 
-                val fadePaint = Paint(Paint.ANTI_ALIAS_FLAG)
                 fadePaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
                 val fullGradient = LinearGradient(
                     0f, 0f, 0f, h,
@@ -270,4 +297,29 @@ class ImmersiveBackgroundView @JvmOverloads constructor(
     }
 
     private fun dpToPx(dp: Float): Float = dp * context.resources.displayMetrics.density
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        cachedBlurNode?.discardDisplayList()
+        cachedBlurNode = null
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        // 不清除 cachedBlurNode，让它在下次 onDraw 时重新录制
+        if (sourceBitmap != null && sourceBitmap?.isRecycled != true) {
+            post { invalidate() }
+        } else if (currentPath != null) {
+            setCover(currentPath)
+        }
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // 尺寸变化时清除缓存的 RenderNode，下次 onDraw 会重建
+        if (w > 0 && h > 0) {
+            cachedBlurNode = null
+            invalidate()
+        }
+    }
 }

@@ -1,5 +1,6 @@
 package com.rawsmusic.ui.widget
 
+import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.drawable.Drawable
@@ -58,6 +59,15 @@ class RawSMusicCapsuleView @JvmOverloads constructor(
     private var isSeekingByUser = false
     private var currentNavId: Int = R.id.nav_library
     private var expandedCard: ExpandedCard = ExpandedCard.NONE
+    private var isRotating = false
+
+    private val rotateAnimator by lazy {
+        ObjectAnimator.ofFloat(ivCover, View.ROTATION, 0f, 360f).apply {
+            duration = 20000L
+            repeatCount = ObjectAnimator.INFINITE
+            interpolator = android.view.animation.LinearInterpolator()
+        }
+    }
 
     enum class ExpandedCard { NONE, LIBRARY, EQ, SETTINGS }
 
@@ -343,6 +353,14 @@ class RawSMusicCapsuleView @JvmOverloads constructor(
             }
         } else {
             ivCover.setImageResource(R.drawable.ic_music_note)
+        }
+
+        if (isPlaying && !isRotating) {
+            isRotating = true
+            rotateAnimator.start()
+        } else if (!isPlaying && isRotating) {
+            isRotating = false
+            rotateAnimator.cancel()
         }
     }
 

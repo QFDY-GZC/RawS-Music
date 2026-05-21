@@ -7,6 +7,7 @@ import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.widget.FrameLayout
+import com.rawsmusic.core.common.utils.CjkSortUtils
 
 /**
  * 动态索引侧边栏 — 自动适配中文/日文(平假名/片假名)/数字/英文/特殊符号
@@ -88,13 +89,9 @@ class AlphabetIndexView @JvmOverloads constructor(
             c in 'A'..'Z' -> c.toString()
             c in 'a'..'z' -> c.uppercaseChar().toString()
             c in '0'..'9' -> "0-9"
-            // 平假名 あ-ん (U+3040-U+309F)
             c in '\u3040'..'\u309F' -> categorizeHiragana(c)
-            // 片假名 ア-ン (U+30A0-U+30FF)
             c in '\u30A0'..'\u30FF' -> categorizeKatakana(c)
-            // CJK统一汉字 — 转拼音首字母
-            c in '\u4E00'..'\u9FFF' -> getPinyinInitial(c)
-            // 其他特殊符号
+            c in '\u4E00'..'\u9FFF' -> CjkSortUtils.getPinyinInitial(c)
             else -> "#"
         }
     }
@@ -137,63 +134,6 @@ class AlphabetIndexView @JvmOverloads constructor(
             if (c in chars) return label
         }
         return "ア"
-    }
-
-    /** 中文转拼音首字母 — 简化实现 */
-    private fun getPinyinInitial(c: Char): String {
-        // 简化拼音首字母映射 — 基于Unicode区间
-        val code = c.code
-        return when {
-            code in 0x4E00..0x4E53 -> "A"
-            code in 0x4E54..0x4E87 -> "B"
-            code in 0x4E88..0x4EA0 -> "C"
-            code in 0x4EA1..0x4EFB -> "D"
-            code in 0x4EFC..0x4F15 -> "E"
-            code in 0x4F16..0x4F59 -> "F"
-            code in 0x4F5A..0x4FAD -> "G"
-            code in 0x4FAE..0x4FDF -> "H"
-            code in 0x4FE0..0x4FF9 -> "J"
-            code in 0x4FFA..0x503F -> "K"
-            code in 0x5040..0x5085 -> "L"
-            code in 0x5086..0x50BD -> "M"
-            code in 0x50BE..0x5101 -> "N"
-            code in 0x5102..0x5148 -> "O"
-            code in 0x5149..0x5175 -> "P"
-            code in 0x5176..0x5199 -> "Q"
-            code in 0x519A..0x51CF -> "R"
-            code in 0x51D0..0x5235 -> "S"
-            code in 0x5236..0x5269 -> "T"
-            code in 0x526A..0x5291 -> "W"
-            code in 0x5292..0x52C2 -> "X"
-            code in 0x52C3..0x52F2 -> "Y"
-            code in 0x52F3..0x5394 -> "Z"
-            else -> {
-                // 更精确的拼音首字母 — 使用字符串比较
-                getPinyinInitialFallback(c)
-            }
-        }
-    }
-
-    /** 拼音首字母回退方案 — 常见汉字 */
-    private fun getPinyinInitialFallback(c: Char): String {
-        val pinyinMap = mapOf(
-            '一' to "Y", '二' to "E", '三' to "S", '四' to "S", '五' to "W",
-            '六' to "L", '七' to "Q", '八' to "B", '九' to "J", '十' to "S",
-            '百' to "B", '千' to "Q", '万' to "W", '年' to "N", '月' to "Y",
-            '日' to "R", '时' to "S", '分' to "F", '秒' to "M", '大' to "D",
-            '小' to "X", '中' to "Z", '国' to "G", '人' to "R", '我' to "W",
-            '你' to "N", '他' to "T", '她' to "T", '它' to "T", '们' to "M",
-            '爱' to "A", '好' to "H", '美' to "M", '天' to "T", '地' to "D",
-            '风' to "F", '花' to "H", '雪' to "X", '雨' to "Y", '山' to "S",
-            '水' to "S", '火' to "H", '心' to "X", '梦' to "M", '歌' to "G",
-            '乐' to "Y", '曲' to "Q", '音' to "Y", '声' to "S", '情' to "Q",
-            '思' to "S", '念' to "N", '回' to "H", '忆' to "Y", '春' to "C",
-            '夏' to "X", '秋' to "Q", '冬' to "D", '星' to "X", '光' to "G",
-            '影' to "Y", '夜' to "Y", '明' to "M", '暗' to "A", '黑' to "H",
-            '白' to "B", '红' to "H", '蓝' to "L", '绿' to "L", '金' to "J",
-            '银' to "Y", '青' to "Q", '紫' to "Z", '灰' to "H"
-        )
-        return pinyinMap[c] ?: "#"
     }
 
     /** 索引排序键 */

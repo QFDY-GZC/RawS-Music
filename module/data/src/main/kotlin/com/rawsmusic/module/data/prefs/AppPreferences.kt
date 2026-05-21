@@ -122,6 +122,18 @@ object AppPreferences {
             get() = kv.decodeBool("player_gapless", true)
             set(value) { kv.encode("player_gapless", value) }
 
+        var sleepTimerMode: Int
+            get() = kv.decodeInt("player_sleep_timer_mode", 0)
+            set(value) { kv.encode("player_sleep_timer_mode", value) }
+
+        var sleepTimerMinutes: Int
+            get() = kv.decodeInt("player_sleep_timer_minutes", 30)
+            set(value) { kv.encode("player_sleep_timer_minutes", value) }
+
+        var stopAfterCurrent: Boolean
+            get() = kv.decodeBool("player_stop_after_current", false)
+            set(value) { kv.encode("player_stop_after_current", value) }
+
         /** USB DAC Bit-perfect 模式：不改 PCM，不做软件音量，不碰 Feature Unit */
         var bitPerfectEnabled: Boolean
             get() = kv.decodeBool("player_bit_perfect", false)
@@ -219,6 +231,24 @@ object AppPreferences {
             }
             set(value) { kv.encode("ui_scan_paths", gson.toJson(value)) }
 
+        /** 用户添加的原始根目录（用于重建目录树，保留父子关系） */
+        var rootScanPaths: List<String>
+            get() {
+                val json = kv.decodeString("ui_root_scan_paths", "") ?: ""
+                if (json.isBlank()) return emptyList()
+                return try {
+                    val type = object : TypeToken<List<String>>() {}.type
+                    gson.fromJson(json, type)
+                } catch (e: Exception) {
+                    emptyList()
+                }
+            }
+            set(value) { kv.encode("ui_root_scan_paths", gson.toJson(value)) }
+
+        var lastSelectedFolderPath: String
+            get() = kv.decodeString("ui_last_selected_folder", "") ?: ""
+            set(value) { kv.encode("ui_last_selected_folder", value) }
+
         var lastScanTime: Long
             get() = kv.decodeLong("ui_last_scan_time", 0)
             set(value) { kv.encode("ui_last_scan_time", value) }
@@ -232,13 +262,17 @@ object AppPreferences {
             get() = kv.decodeString("ui_custom_font_path", "") ?: ""
             set(value) { kv.encode("ui_custom_font_path", value) }
 
-        var fontWeight: Float
-            get() = kv.decodeFloat("ui_font_weight", 1f)
-            set(value) { kv.encode("ui_font_weight", value) }
+        var fontWeight: Int
+            get() = kv.decodeInt("ui_font_weight_v2", 400)
+            set(value) { kv.encode("ui_font_weight_v2", value) }
 
-        var fontItalic: Float
-            get() = kv.decodeFloat("ui_font_italic", 0f)
-            set(value) { kv.encode("ui_font_italic", value) }
+        var fontItalic: Boolean
+            get() = kv.decodeBool("ui_font_italic_v2", false)
+            set(value) { kv.encode("ui_font_italic_v2", value) }
+
+        var fontSizeScale: Int
+            get() = kv.decodeInt("ui_font_size_scale", 100)
+            set(value) { kv.encode("ui_font_size_scale", value) }
 
         var isImmersiveEnabled: Boolean
             get() = kv.decodeBool("ui_immersive_enabled", true)
@@ -247,6 +281,24 @@ object AppPreferences {
         var isMiniCoverEnabled: Boolean
             get() = kv.decodeBool("ui_mini_cover_enabled", true)
             set(value) { kv.encode("ui_mini_cover_enabled", value) }
+
+        var isPlayPageMemoryEnabled: Boolean
+            get() = kv.decodeBool("ui_play_page_memory_enabled", true)
+            set(value) { kv.encode("ui_play_page_memory_enabled", value) }
+
+        /** 信笺模式：弧形轮播+单行歌词飞入+音频可视化 */
+        var isLetterModeEnabled: Boolean
+            get() = kv.decodeBool("ui_letter_mode_enabled", false)
+            set(value) { kv.encode("ui_letter_mode_enabled", value) }
+
+        /** 关闭流动光效果 */
+        var isFlowingLightDisabled: Boolean
+            get() = kv.decodeBool("ui_flowing_light_disabled", false)
+            set(value) { kv.encode("ui_flowing_light_disabled", value) }
+
+        var lastScene: String
+            get() = kv.decodeString("ui_last_scene", "MAIN") ?: "MAIN"
+            set(value) { kv.encode("ui_last_scene", value) }
     }
 
     object Equalizer {
@@ -286,6 +338,56 @@ object AppPreferences {
         var loudnessEnhance: Int
             get() = kv.decodeInt("eq_loudness", 0)
             set(value) { kv.encode("eq_loudness", value) }
+
+        // ========== 互馈 (Crossfeed) ==========
+        var crossfeedEnabled: Boolean
+            get() = kv.decodeBool("eq_crossfeed_enabled", false)
+            set(value) { kv.encode("eq_crossfeed_enabled", value) }
+
+        /** 高通截止频率 (Hz)，默认 300 */
+        var crossfeedLowCut: Int
+            get() = kv.decodeInt("eq_crossfeed_low_cut", 300)
+            set(value) { kv.encode("eq_crossfeed_low_cut", value) }
+
+        /** 低通截止频率 (Hz)，默认 2000 */
+        var crossfeedHighCut: Int
+            get() = kv.decodeInt("eq_crossfeed_high_cut", 2000)
+            set(value) { kv.encode("eq_crossfeed_high_cut", value) }
+
+        /** 衰减量 (dB * 10)，默认 60 (即 6.0dB) */
+        var crossfeedAttenuation: Int
+            get() = kv.decodeInt("eq_crossfeed_attenuation", 60)
+            set(value) { kv.encode("eq_crossfeed_attenuation", value) }
+    }
+
+    object Lyrics {
+        var tickerEnabled: Boolean
+            get() = kv.decodeBool("lyrics_ticker_enabled", false)
+            set(value) { kv.encode("lyrics_ticker_enabled", value) }
+
+        var tickerHideNotification: Boolean
+            get() = kv.decodeBool("lyrics_ticker_hide_notification", false)
+            set(value) { kv.encode("lyrics_ticker_hide_notification", value) }
+
+        var samsungFloatingLyricTranslation: Boolean
+            get() = kv.decodeBool("lyrics_samsung_floating_translation", false)
+            set(value) { kv.encode("lyrics_samsung_floating_translation", value) }
+
+        var lyricGetterEnabled: Boolean
+            get() = kv.decodeBool("lyrics_lyric_getter_enabled", false)
+            set(value) { kv.encode("lyrics_lyric_getter_enabled", value) }
+
+        var bluetoothLyricEnabled: Boolean
+            get() = kv.decodeBool("lyrics_bluetooth_enabled", false)
+            set(value) { kv.encode("lyrics_bluetooth_enabled", value) }
+
+        var bluetoothLyricTranslation: Boolean
+            get() = kv.decodeBool("lyrics_bluetooth_translation", false)
+            set(value) { kv.encode("lyrics_bluetooth_translation", value) }
+
+        var latencyOffset: Int
+            get() = kv.decodeInt("lyrics_latency_offset", 0)
+            set(value) { kv.encode("lyrics_latency_offset", value) }
     }
 
     object Lyricon {
@@ -300,5 +402,63 @@ object AppPreferences {
         var displayRoma: Boolean
             get() = kv.decodeBool("lyricon_display_roma", false)
             set(value) { kv.encode("lyricon_display_roma", value) }
+    }
+
+    object LyricFont {
+        var fontName: String
+            get() = kv.decodeString("lyric_font_name", "") ?: ""
+            set(value) { kv.encode("lyric_font_name", value) }
+
+        var fontPath: String
+            get() = kv.decodeString("lyric_font_path", "") ?: ""
+            set(value) { kv.encode("lyric_font_path", value) }
+
+        var fontWeight: Int
+            get() = kv.decodeInt("lyric_font_weight", 800).coerceIn(100, 900)
+            set(value) { kv.encode("lyric_font_weight", value.coerceIn(100, 900)) }
+
+        var fontScale: Int
+            get() = kv.decodeInt("lyric_font_scale", 100).coerceIn(75, 130)
+            set(value) { kv.encode("lyric_font_scale", value.coerceIn(75, 130)) }
+    }
+
+    object PEQ {
+        var isEnabled: Boolean
+            get() = kv.decodeBool("peq_enabled", false)
+            set(value) { kv.encode("peq_enabled", value) }
+
+        var filtersJson: String
+            get() = kv.decodeString("peq_filters_json", "") ?: ""
+            set(value) { kv.encode("peq_filters_json", value) }
+
+        var preamp: Float
+            get() = kv.decodeFloat("peq_preamp", 0f)
+            set(value) { kv.encode("peq_preamp", value) }
+
+        var presetName: String
+            get() = kv.decodeString("peq_preset_name", "自定义") ?: "自定义"
+            set(value) { kv.encode("peq_preset_name", value) }
+    }
+
+    object WebDav {
+        var url: String
+            get() = kv.decodeString("webdav_url", "") ?: ""
+            set(value) { kv.encode("webdav_url", value) }
+
+        var username: String
+            get() = kv.decodeString("webdav_username", "") ?: ""
+            set(value) { kv.encode("webdav_username", value) }
+
+        var password: String
+            get() = kv.decodeString("webdav_password", "") ?: ""
+            set(value) { kv.encode("webdav_password", value) }
+
+        var lastUrl: String
+            get() = kv.decodeString("webdav_last_url", "") ?: ""
+            set(value) { kv.encode("webdav_last_url", value) }
+
+        var authMode: Int
+            get() = kv.decodeInt("webdav_auth_mode", 0)
+            set(value) { kv.encode("webdav_auth_mode", value) }
     }
 }

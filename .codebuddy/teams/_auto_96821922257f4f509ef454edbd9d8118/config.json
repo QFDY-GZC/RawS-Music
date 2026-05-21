@@ -1,0 +1,18 @@
+{
+  "name": "_auto_96821922257f4f509ef454edbd9d8118",
+  "leadAgentId": "96821922257f4f509ef454edbd9d8118",
+  "workspacePath": "d:\\RawSMusic",
+  "createdAt": "2026-05-19T08:55:51.762Z",
+  "options": {
+    "workspacePath": "d:\\RawSMusic",
+    "isAutoTeam": true
+  },
+  "members": [
+    {
+      "memberId": "team-lead@_auto_96821922257f4f509ef454edbd9d8118",
+      "name": "team-lead",
+      "role": "Team Lead - coordinates the team and interacts with the user"
+    }
+  ],
+  "isAutoTeam": true
+}

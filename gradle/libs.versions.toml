@@ -36,6 +36,7 @@ renderscript-toolkit = "0.8.0"
 kotlinx-serialization = "1.6.2"
 androidx-interpolator = "1.0.0"
 compose-bom = "2025.10.01"
+okhttp = "4.12.0"
 
 [libraries]
 kotlin-stdlib = { group = "org.jetbrains.kotlin", name = "kotlin-stdlib", version.ref = "kotlin" }
@@ -98,9 +99,11 @@ compose-foundation = { group = "androidx.compose.foundation", name = "foundation
 compose-ui = { group = "androidx.compose.ui", name = "ui" }
 compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+compose-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core" }
 compose-material-ripple = { group = "androidx.compose.material", name = "material-ripple" }
 activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "androidx-activity" }
 compose-runtime-livedata = { group = "androidx.compose.runtime", name = "runtime-livedata" }
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

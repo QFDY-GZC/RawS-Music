@@ -14,6 +14,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import coil.imageLoader
 import coil.load
+import com.rawsmusic.core.ui.util.AdaptivePadTransformation
 import kotlin.math.abs
 
 /**
@@ -39,7 +40,8 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         PLAYER,         // 播放界面
         LYRIC,          // 歌词界面
         QUEUE,          // 队列界面
-        ALBUM_DETAIL    // 专辑详情界面
+        ALBUM_DETAIL,   // 专辑详情界面
+        EFFECTS         // 音效/EQ界面
     }
 
     var currentScene: Scene = Scene.MAIN
@@ -47,7 +49,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
 
     // ==================== 沉浸模式 ====================
     private var immersiveBackground: ImmersiveBackgroundView? = null
-    private var originalCoverImageView: ImageView? = null
+    private var originalCoverImageView: View? = null
     private var miniCoverView: View? = null // 主界面专属的迷你封面层级
     private var playBgScrim: View? = null
     var isImmersiveEnabled = true
@@ -60,7 +62,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
 
     fun initImmersiveViews(
         immersiveBg: ImmersiveBackgroundView,
-        coverImg: ImageView,
+        coverImg: View,
         playScrim: View? = null,
         miniCover: View? = null, // 新增参数：主界面的迷你封面 View
         isImmersiveEnabled: Boolean = true,
@@ -101,7 +103,8 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                     Scene.PLAYER to SceneParams(Scene.PLAYER, alpha = immersiveAlpha, visibility = immersiveVisibility),
                     Scene.LYRIC to SceneParams(Scene.LYRIC, alpha = immersiveAlpha, visibility = immersiveVisibility),
                     Scene.QUEUE to SceneParams(Scene.QUEUE, alpha = immersiveAlpha, visibility = immersiveVisibility),
-                    Scene.ALBUM_DETAIL to SceneParams(Scene.ALBUM_DETAIL, alpha = immersiveAlpha, visibility = immersiveVisibility)
+                    Scene.ALBUM_DETAIL to SceneParams(Scene.ALBUM_DETAIL, alpha = immersiveAlpha, visibility = immersiveVisibility),
+                    Scene.EFFECTS to SceneParams(Scene.EFFECTS, alpha = immersiveAlpha, visibility = immersiveVisibility)
                 )
                 immersiveBackground?.elevation = 1f // 位于流光之上，但低于播放控制键
             }
@@ -119,7 +122,8 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                         Scene.PLAYER to SceneParams(Scene.PLAYER, alpha = 0f, visibility = View.INVISIBLE),
                         Scene.LYRIC to SceneParams(Scene.LYRIC, alpha = 0f, visibility = View.INVISIBLE),
                         Scene.QUEUE to SceneParams(Scene.QUEUE, alpha = 0f, visibility = View.INVISIBLE),
-                        Scene.ALBUM_DETAIL to SceneParams(Scene.ALBUM_DETAIL, alpha = 0f, visibility = View.INVISIBLE)
+                        Scene.ALBUM_DETAIL to SceneParams(Scene.ALBUM_DETAIL, alpha = 0f, visibility = View.INVISIBLE),
+                        Scene.EFFECTS to SceneParams(Scene.EFFECTS, alpha = 0f, visibility = View.INVISIBLE)
                     )
                     miniCover.elevation = 0f // 位于歌曲列表之下，流光背景之上
 
@@ -145,6 +149,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 coverScenes[Scene.LYRIC] = SceneParams(Scene.LYRIC, alpha = playerCoverAlpha, visibility = playerCoverVisibility)
                 coverScenes[Scene.QUEUE] = SceneParams(Scene.QUEUE, alpha = playerCoverAlpha, visibility = playerCoverVisibility)
                 coverScenes[Scene.ALBUM_DETAIL] = SceneParams(Scene.ALBUM_DETAIL, alpha = playerCoverAlpha, visibility = playerCoverVisibility)
+                coverScenes[Scene.EFFECTS] = SceneParams(Scene.EFFECTS, alpha = playerCoverAlpha, visibility = playerCoverVisibility)
 
                 coverImg.elevation = 10f // 位于沉浸背景之上
             }
@@ -160,7 +165,8 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                         Scene.PLAYER to SceneParams(Scene.PLAYER, alpha = scrimAlpha, visibility = scrimVisibility),
                         Scene.LYRIC to SceneParams(Scene.LYRIC, alpha = scrimAlpha, visibility = scrimVisibility),
                         Scene.QUEUE to SceneParams(Scene.QUEUE, alpha = scrimAlpha, visibility = scrimVisibility),
-                        Scene.ALBUM_DETAIL to SceneParams(Scene.ALBUM_DETAIL, alpha = scrimAlpha, visibility = scrimVisibility)
+                        Scene.ALBUM_DETAIL to SceneParams(Scene.ALBUM_DETAIL, alpha = scrimAlpha, visibility = scrimVisibility),
+                        Scene.EFFECTS to SceneParams(Scene.EFFECTS, alpha = scrimAlpha, visibility = scrimVisibility)
                     )
                 }
             }
@@ -235,9 +241,14 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     }
 
     fun updateImmersiveCover(path: String?) {
-        originalCoverImageView?.load(path) {
-            crossfade(true)
-            transformations(com.rawsmusic.core.ui.util.SquarePadTransformation())
+        originalCoverImageView?.let { coverImg ->
+            when (coverImg) {
+                is CoverImageView -> coverImg.loadCover(path)
+                is ImageView -> coverImg.load(path) {
+                    crossfade(true)
+                    // 不限制尺寸，使用原分辨率；不使用 transformation，由 FIT_CENTER 直接显示
+                }
+            }
         }
         immersiveBackground?.setCover(path)
         // 更新主界面常驻封面
@@ -251,10 +262,10 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     fun updateMiniCoverEnabled(enabled: Boolean) {
         if (isMiniCoverEnabled == enabled) return
         isMiniCoverEnabled = enabled
-        // 更新主界面常驻封面的启用状态
+        immersiveBackground?.isMiniCoverEnabled = enabled
         miniCoverView?.let { miniCover ->
             if (miniCover is ImmersiveBackgroundView) {
-                miniCover.isImmersiveEnabled = enabled
+                miniCover.isMiniCoverEnabled = enabled
             }
         }
         applyImmersiveSceneParams()
@@ -278,12 +289,12 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     fun refreshImmersiveState(isImmersive: Boolean) {
         isImmersiveEnabled = isImmersive
         immersiveBackground?.isImmersiveEnabled = isImmersive
-        // 更新主界面常驻封面
         miniCoverView?.let { miniCover ->
             if (miniCover is ImmersiveBackgroundView) {
                 miniCover.isImmersiveEnabled = isImmersive
             }
         }
+        immersiveBackground?.isMiniCoverEnabled = isMiniCoverEnabled
         applyImmersiveSceneParams()
     }
 
@@ -380,8 +391,8 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     var onSceneChanged: ((newScene: Scene, oldScene: Scene) -> Unit)? = null
     var onTransitionProgress: ((Scene, Float) -> Unit)? = null
 
-    /** PLAYER→MAIN 过渡前的封面参数准备回调（外部注册封面到列表位置的参数） */
-    var onPreparePlayerToMain: (() -> Unit)? = null
+    /** PLAYER→MAIN 过渡前的封面参数准备回调（外部注册封面到列表位置的参数，完成后调用 onReady） */
+    var onPreparePlayerToMain: ((onReady: () -> Unit) -> Unit)? = null
 
     /** PLAYER→LYRIC 过渡前的封面参数准备回调（外部注册封面到歌词页位置的参数） */
     var onPreparePlayerToLyric: (() -> Unit)? = null
@@ -391,6 +402,9 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
 
     /** PLAYER→ALBUM_DETAIL 过渡前的准备回调 */
     var onPreparePlayerToAlbumDetail: (() -> Unit)? = null
+
+    /** PLAYER→EFFECTS 过渡前的准备回调 */
+    var onPreparePlayerToEffects: (() -> Unit)? = null
 
     /** MAIN→PLAYER 过渡前的准备回调（外部恢复封面可见性等） */
     var onPrepareMainToPlayer: (() -> Unit)? = null
@@ -753,12 +767,17 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
 
             // CornerRadius
             if ((flags and PropFlag.CORNER_RADIUS) != 0) {
-                if (view is com.google.android.material.imageview.ShapeableImageView) {
-                    val radius = lerp(ap.fromCornerRadius, ap.toCornerRadius, ratio)
-                    view.shapeAppearanceModel = view.shapeAppearanceModel
-                        .toBuilder()
-                        .setAllCornerSizes(radius)
-                        .build()
+                val radius = lerp(ap.fromCornerRadius, ap.toCornerRadius, ratio)
+                when (view) {
+                    is com.google.android.material.imageview.ShapeableImageView -> {
+                        view.shapeAppearanceModel = view.shapeAppearanceModel
+                            .toBuilder()
+                            .setAllCornerSizes(radius)
+                            .build()
+                    }
+                    is CoverImageView -> {
+                        view.cornerRadius = radius
+                    }
                 }
             }
 
@@ -1255,10 +1274,11 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
      */
     private fun checkSwipeAccepted(dx: Float): Boolean {
         return when (currentScene) {
-            Scene.PLAYER -> isEdgeDrag && dx > 0
+            Scene.PLAYER -> dx > 0
             Scene.LYRIC -> isEdgeDrag && dx > 0
             Scene.QUEUE -> isEdgeDrag && dx > 0
             Scene.ALBUM_DETAIL -> isEdgeDrag && dx > 0
+            Scene.EFFECTS -> isEdgeDrag && dx > 0
             Scene.MAIN -> {
                 if (isDeepHomePage) {
                     !disableDeepPageSwipe || isEdgeDrag
@@ -1315,12 +1335,13 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                     dragFromScene = Scene.PLAYER
                     dragToScene = Scene.LYRIC
                     onPreparePlayerToLyric?.invoke()
+                    activeAnimParams = buildAnimParams(dragFromScene, dragToScene)
                 } else if (!directionLeft) {
                     dragFromScene = Scene.PLAYER
-                    dragToScene = Scene.MAIN
-                    onPreparePlayerToMain?.invoke()
+                    dragToScene = Scene.EFFECTS
+                    onPreparePlayerToEffects?.invoke()
+                    activeAnimParams = buildAnimParams(dragFromScene, dragToScene)
                 }
-                activeAnimParams = buildAnimParams(dragFromScene, dragToScene)
                 Log.d("SceneTransition", "onDragStart PLAYER: dragFromScene=$dragFromScene → dragToScene=$dragToScene")
             }
             Scene.LYRIC -> {
@@ -1335,6 +1356,11 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
             }
             Scene.ALBUM_DETAIL -> {
                 dragFromScene = Scene.ALBUM_DETAIL
+                dragToScene = Scene.PLAYER
+                activeAnimParams = buildAnimParams(dragFromScene, dragToScene)
+            }
+            Scene.EFFECTS -> {
+                dragFromScene = Scene.EFFECTS
                 dragToScene = Scene.PLAYER
                 activeAnimParams = buildAnimParams(dragFromScene, dragToScene)
             }
@@ -1383,6 +1409,15 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                     }
                 }
             }
+            Scene.EFFECTS -> {
+                if (dx > 0) {
+                    val ratio = (dx / width.toFloat()).coerceIn(0f, 1f)
+                    if (activeAnimParams != null) {
+                        transitionRatio = ratio
+                        applyRatio(activeAnimParams!!, ratio)
+                    }
+                }
+            }
             Scene.MAIN -> {
                 if (isDeepHomePage) {
                     if (dx > 0) {
@@ -1415,17 +1450,15 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         when (currentScene) {
             Scene.PLAYER -> {
                 val shouldGoToTarget = transitionRatio > SWIPE_THRESHOLD_RATIO ||
-                    (dragToScene == Scene.MAIN && isFlingRight) ||
+                    (dragToScene == Scene.EFFECTS && isFlingRight) ||
                     (dragToScene == Scene.LYRIC && isFlingLeft)
 
                 Log.d("SceneTransition", "handleDragRelease PLAYER: dragToScene=$dragToScene, shouldGoToTarget=$shouldGoToTarget, ratio=$transitionRatio, threshold=$SWIPE_THRESHOLD_RATIO")
 
                 if (shouldGoToTarget) {
-                    if (dragToScene == Scene.MAIN) {
-                        // 🚨 修复：不再重复调用 onPreparePlayerToMain 和重新 buildAnimParams
-                        // 直接沿用 onDragStart 时准备好的参数，避免状态被覆盖导致跳变
-                        Log.d("SceneTransition", "handleDragRelease PLAYER→MAIN settle")
-                        settleFromCurrentRatio(Scene.MAIN, transitionRatio, 1f)
+                    if (dragToScene == Scene.EFFECTS) {
+                        Log.d("SceneTransition", "handleDragRelease PLAYER→EFFECTS settle")
+                        settleFromCurrentRatio(Scene.EFFECTS, transitionRatio, 1f)
                     } else {
                         Log.d("SceneTransition", "handleDragRelease PLAYER→LYRIC settle")
                         settleFromCurrentRatio(dragToScene, transitionRatio, 1f)
@@ -1450,6 +1483,14 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                     settleFromCurrentRatio(Scene.PLAYER, transitionRatio, 1f)
                 } else {
                     settleFromCurrentRatio(currentScene, transitionRatio, 0f)
+                }
+            }
+            Scene.EFFECTS -> {
+                val shouldGoBack = transitionRatio > SWIPE_THRESHOLD_RATIO || isFlingRight
+                if (shouldGoBack) {
+                    settleFromCurrentRatio(Scene.PLAYER, transitionRatio, 1f)
+                } else {
+                    settleFromCurrentRatio(Scene.EFFECTS, transitionRatio, 0f)
                 }
             }
             Scene.MAIN -> {
@@ -1645,8 +1686,9 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     fun closePlayPageWithCoverAlign(animated: Boolean = true) {
         if (currentScene != Scene.PLAYER) return
         if (animated) {
-            onPreparePlayerToMain?.invoke()
-            transitionToScene(Scene.MAIN)
+            onPreparePlayerToMain?.invoke {
+                transitionToScene(Scene.MAIN)
+            } ?: transitionToScene(Scene.MAIN)
         } else {
             switchToSceneSilent(Scene.MAIN)
         }
@@ -1680,6 +1722,9 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 if (animated) postDelayed({ closePlayPage(animated) }, 350)
                 else closePlayPage(false)
             }
+            Scene.EFFECTS -> {
+                closeEffectsPage(animated)
+            }
             Scene.PLAYER -> closePlayPage(animated)
             Scene.MAIN -> {}
         }
@@ -1704,6 +1749,17 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
 
     fun closeAlbumDetailPage(animated: Boolean = true) {
         if (currentScene != Scene.ALBUM_DETAIL) return
+        if (animated) transitionToScene(Scene.PLAYER) else switchToSceneSilent(Scene.PLAYER)
+    }
+
+    fun openEffectsPage(animated: Boolean = true) {
+        if (currentScene != Scene.PLAYER) return
+        onPreparePlayerToEffects?.invoke()
+        if (animated) transitionToScene(Scene.EFFECTS) else switchToSceneSilent(Scene.EFFECTS)
+    }
+
+    fun closeEffectsPage(animated: Boolean = true) {
+        if (currentScene != Scene.EFFECTS) return
         if (animated) transitionToScene(Scene.PLAYER) else switchToSceneSilent(Scene.PLAYER)
     }
 

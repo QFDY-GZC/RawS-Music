@@ -43,7 +43,7 @@ echo "Configuring FFmpeg..."
     --enable-decoder=wavpack \
     --enable-decoder=tta \
     --enable-decoder=wmalossless,wmapro,wmav1,wmav2,wmavoice \
-    --enable-decoder=pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be \
+    --enable-decoder=pcm_s16le,pcm_s16be,pcm_u16le,pcm_u16be,pcm_s24le,pcm_s24be,pcm_u24le,pcm_u24be,pcm_s32le,pcm_s32be,pcm_u32le,pcm_u32be,pcm_f32le,pcm_f32be,pcm_f64le,pcm_f64be \
     --enable-decoder=pcm_u8,pcm_s24daud,pcm_zork \
     --enable-decoder=dsd_lsbf_planar,dsd_msbf_planar,dsd_lsbf,dsd_msbf \
     --enable-decoder=opus \
@@ -78,8 +78,8 @@ echo "Configuring FFmpeg..."
     --enable-demuxer=mpc,mpc8 \
     --enable-demuxer=mp4,mov \
     --enable-demuxer=matroska \
-    --enable-demuxer=pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le \
-    --enable-demuxer=pcm_s16be,pcm_s24be,pcm_s32be,pcm_f32be \
+    --enable-demuxer=pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le \
+    --enable-demuxer=pcm_s16be,pcm_s24be,pcm_s32be,pcm_f32be,pcm_f64be \
     --enable-demuxer=amr \
     --enable-demuxer=rm \
     --enable-demuxer=xwma \

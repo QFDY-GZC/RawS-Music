@@ -13,6 +13,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
+import androidx.lifecycle.LifecycleEventObserver
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -26,10 +27,12 @@ import com.rawsmusic.core.common.base.BaseFragment
 import com.rawsmusic.core.common.ext.fadeIn
 import com.rawsmusic.core.common.ext.fadeOut
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.utils.CjkSortUtils
 import com.rawsmusic.core.ui.R as UiR
 import com.rawsmusic.core.ui.adapter.SongAdapter
 import com.rawsmusic.databinding.FragmentSongsBinding
 import com.rawsmusic.ui.songs.PlayerHolder
+import com.rawsmusic.module.data.prefs.FontManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -47,6 +50,7 @@ class SongsFragment : BaseFragment<FragmentSongsBinding>() {
     val isSearchMode: Boolean get() = _isSearchMode
     private var searchEditText: EditText? = null
     private var importDialog: ImportMusicDialog? = null
+    private var searchOriginallyVisible = false
 
     private val folderPickerLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -86,6 +90,8 @@ class SongsFragment : BaseFragment<FragmentSongsBinding>() {
                 updateEditCount(selectedIds.size)
             }
         )
+
+        songAdapter.fontApplier = { FontManager.applyToTextView(it) }
 
         // 注册手势返回回调
         requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner, editModeBackCallback)
@@ -131,6 +137,16 @@ class SongsFragment : BaseFragment<FragmentSongsBinding>() {
 
     override fun initData() {
         viewModel.loadSongs()
+
+        val bgListener: (Boolean) -> Unit = { _ ->
+            songAdapter.notifyVisibleItemsChanged()
+        }
+        com.rawsmusic.core.ui.theme.ThemeManager.addOnBackgroundChangeListener(bgListener)
+        viewLifecycleOwner.lifecycle.addObserver(LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_DESTROY) {
+                com.rawsmusic.core.ui.theme.ThemeManager.removeOnBackgroundChangeListener(bgListener)
+            }
+        })
     }
 
     override fun initObserver() {
@@ -193,6 +209,10 @@ class SongsFragment : BaseFragment<FragmentSongsBinding>() {
             importDialog?.show()
         }
 
+        binding.btnFolder.setOnClickListener {
+            importDialog?.show()
+        }
+
         binding.btnSearch.setOnClickListener {
             toggleSearch()
         }
@@ -221,12 +241,9 @@ class SongsFragment : BaseFragment<FragmentSongsBinding>() {
         }
         var deletedCount = 0
         selectedSongs.forEach { song ->
-            try {
-                val file = java.io.File(song.path)
-                if (file.exists() && file.delete()) {
-                    deletedCount++
-                }
-            } catch (_: Exception) {}
+            if (com.rawsmusic.module.data.repository.MusicRepository.deleteSongFromDevice(requireContext(), song)) {
+                deletedCount++
+            }
         }
         songAdapter.exitEditMode()
         updateEditBar()
@@ -257,8 +274,7 @@ class SongsFragment : BaseFragment<FragmentSongsBinding>() {
 
         popupView.findViewById<View>(UiR.id.tvAddToPlaylist).setOnClickListener {
             popup.dismiss()
-            PlayerHolder.controller?.addToQueue(song)
-            Toast.makeText(ctx, "已添加到播放队列", Toast.LENGTH_SHORT).show()
+            showAddToPlaylistDialog(song)
         }
 
         popupView.findViewById<View>(UiR.id.tvDelete).setOnClickListener {
@@ -284,14 +300,32 @@ class SongsFragment : BaseFragment<FragmentSongsBinding>() {
             .setTitle("删除歌曲")
             .setMessage("确定要删除「${song.title}」吗？此操作不可撤销。")
             .setPositiveButton("删除") { _, _ ->
-                try {
-                    val file = java.io.File(song.path)
-                    if (file.exists()) file.delete()
-                    com.rawsmusic.module.data.repository.MusicRepository.removeSong(song.path)
-                    viewModel.loadSongs()
-                    Toast.makeText(requireContext(), "已删除", Toast.LENGTH_SHORT).show()
-                } catch (_: Exception) {
-                    Toast.makeText(requireContext(), "删除失败", Toast.LENGTH_SHORT).show()
+                val deleted = com.rawsmusic.module.data.repository.MusicRepository.deleteSongFromDevice(requireContext(), song)
+                viewModel.loadSongs()
+                Toast.makeText(requireContext(), if (deleted) "已删除" else "删除失败", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showAddToPlaylistDialog(song: AudioFile) {
+        val ctx = context ?: return
+        val playlistStore = com.rawsmusic.module.data.prefs.PlaylistStore.getInstance(ctx)
+        val playlists = playlistStore.playlists.value
+        if (playlists.isEmpty()) {
+            Toast.makeText(ctx, "暂无歌单", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val names = playlists.map { it.name }.toTypedArray()
+        AlertDialog.Builder(ctx)
+            .setTitle("添加到歌单")
+            .setItems(names) { _, which ->
+                val playlist = playlists[which]
+                lifecycleScope.launch {
+                    playlistStore.addSongToPlaylist(playlist.id, song)
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(ctx, "已添加到「${playlist.name}」", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
             .setNegativeButton("取消", null)
@@ -304,14 +338,17 @@ class SongsFragment : BaseFragment<FragmentSongsBinding>() {
 
     fun enterSearch() {
         _isSearchMode = true
+        searchOriginallyVisible = binding.btnSearch.visibility == View.VISIBLE
         binding.tvPageTitle.visibility = View.GONE
         binding.btnSearch.visibility = View.GONE
+        binding.btnFolder.visibility = View.GONE
 
         if (searchEditText == null) {
             searchEditText = EditText(requireContext()).apply {
                 hint = "搜索歌曲、歌手"
-                setHintTextColor(0xFF9A9490.toInt())
-                setTextColor(0xFFF0EBE8.toInt())
+                val isDark = com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(requireContext())
+                setHintTextColor(if (isDark) 0xFF9F8D80.toInt() else 0xFF9A9490.toInt())
+                setTextColor(if (isDark) 0xFFE6E1DD.toInt() else 0xFF1C1B1F.toInt())
                 textSize = 15f
                 background = null
                 setSingleLine(true)
@@ -348,7 +385,8 @@ class SongsFragment : BaseFragment<FragmentSongsBinding>() {
             searchEditText?.let { (it.parent as? ViewGroup)?.removeView(it) }
         } catch (_: Exception) {}
         binding.tvPageTitle.visibility = View.VISIBLE
-        binding.btnSearch.visibility = View.VISIBLE
+        binding.btnSearch.visibility = if (searchOriginallyVisible) View.VISIBLE else View.GONE
+        binding.btnFolder.visibility = View.VISIBLE
 
         try {
             val imm = requireContext().getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
@@ -373,16 +411,6 @@ class SongsFragment : BaseFragment<FragmentSongsBinding>() {
         songAdapter.submitList(filtered)
     }
 
-    private fun deleteSongFile(song: AudioFile) {
-        try {
-            val file = java.io.File(song.path)
-            if (file.exists() && file.delete()) {
-                viewModel.loadSongs()
-                Toast.makeText(requireContext(), "已删除", Toast.LENGTH_SHORT).show()
-            }
-        } catch (_: Exception) {}
-    }
-
     fun getRecyclerView(): androidx.recyclerview.widget.RecyclerView {
         return binding.recyclerView
     }
@@ -394,7 +422,7 @@ class SongsFragment : BaseFragment<FragmentSongsBinding>() {
             c in '0'..'9' -> "0-9"
             c in '\u3040'..'\u309F' -> categorizeHiragana(c)
             c in '\u30A0'..'\u30FF' -> categorizeKatakana(c)
-            c in '\u4E00'..'\u9FFF' -> getPinyinInitial(c)
+            c in '\u4E00'..'\u9FFF' -> CjkSortUtils.getPinyinInitial(c)
             else -> "#"
         }
     }
@@ -433,33 +461,4 @@ class SongsFragment : BaseFragment<FragmentSongsBinding>() {
         return "ア"
     }
 
-    private fun getPinyinInitial(c: Char): String {
-        val code = c.code
-        return when {
-            code in 0x4E00..0x4E53 -> "A"
-            code in 0x4E54..0x4E87 -> "B"
-            code in 0x4E88..0x4EA0 -> "C"
-            code in 0x4EA1..0x4EFB -> "D"
-            code in 0x4EFC..0x4F15 -> "E"
-            code in 0x4F16..0x4F59 -> "F"
-            code in 0x4F5A..0x4FAD -> "G"
-            code in 0x4FAE..0x4FDF -> "H"
-            code in 0x4FE0..0x4FF9 -> "J"
-            code in 0x4FFA..0x503F -> "K"
-            code in 0x5040..0x5085 -> "L"
-            code in 0x5086..0x50BD -> "M"
-            code in 0x50BE..0x5101 -> "N"
-            code in 0x5102..0x5148 -> "O"
-            code in 0x5149..0x5175 -> "P"
-            code in 0x5176..0x5199 -> "Q"
-            code in 0x519A..0x51CF -> "R"
-            code in 0x51D0..0x5235 -> "S"
-            code in 0x5236..0x5269 -> "T"
-            code in 0x526A..0x5291 -> "W"
-            code in 0x5292..0x52C2 -> "X"
-            code in 0x52C3..0x52F2 -> "Y"
-            code in 0x52F3..0x5394 -> "Z"
-            else -> "#"
-        }
-    }
 }

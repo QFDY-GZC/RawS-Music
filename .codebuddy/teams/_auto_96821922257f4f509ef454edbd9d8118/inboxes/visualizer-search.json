@@ -1,0 +1,11 @@
+[
+  {
+    "id": "shutdown-1779183300502",
+    "from": "team-lead",
+    "to": "visualizer-search",
+    "type": "shutdown_request",
+    "content": "{\"type\":\"shutdown_request\",\"request_id\":\"shutdown-1779183300502\",\"reason\":\"当前任务已完成，请收尾并关闭会话。\",\"from\":\"team-lead\",\"timestamp\":\"2026-05-19T09:35:00.502Z\"}",
+    "timestamp": "2026-05-19T09:35:00.502Z",
+    "read": true
+  }
+]

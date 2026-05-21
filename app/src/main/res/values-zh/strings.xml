@@ -48,4 +48,15 @@
     <string name="login">登录</string>
     <string name="register">注册</string>
     <string name="logout">退出登录</string>
+    <string name="webdav_music_library">WebDAV 音乐库</string>
+    <string name="webdav_settings">WebDAV 设置</string>
+    <string name="webdav_url_hint">WebDAV 地址 (如 https://dav.example.com/music/)</string>
+    <string name="webdav_username_hint">用户名 (可选)</string>
+    <string name="webdav_password_hint">密码 (可选)</string>
+    <string name="webdav_test_connection">测试连接</string>
+    <string name="webdav_save">保存</string>
+    <string name="webdav_empty">暂无内容</string>
+    <string name="webdav_configure_hint">点击右上角设置按钮配置 WebDAV 连接</string>
+    <string name="webdav_folder">文件夹</string>
+    <string name="webdav_added_to_queue">已添加到播放队列</string>
 </resources>

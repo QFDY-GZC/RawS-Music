@@ -108,6 +108,22 @@
             android:background="?attr/selectableItemBackground" />
 
         <TextView
+            android:id="@+id/actionSleepTimer"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:gravity="center_vertical"
+            android:text="睡眠定时"
+            android:textColor="#E0FFFFFF"
+            android:textSize="15sp"
+            android:paddingStart="8dp"
+            android:drawableStart="@drawable/ic_moon_fill"
+            android:drawableTint="#E0FFFFFF"
+            android:drawablePadding="12dp"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?attr/selectableItemBackground" />
+
+        <TextView
             android:id="@+id/actionDelete"
             android:layout_width="match_parent"
             android:layout_height="48dp"

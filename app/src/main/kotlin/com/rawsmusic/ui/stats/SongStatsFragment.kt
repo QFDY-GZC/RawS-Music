@@ -32,11 +32,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -44,11 +44,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.Fragment
 import androidx.navigation.fragment.NavHostFragment
-import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.module.data.repository.MusicRepository
-import com.rawsmusic.ui.settings.LiquidGlassCard
+import com.rawsmusic.ui.settings.Divider
+import com.rawsmusic.ui.settings.SectionHeader
+import com.rawsmusic.ui.settings.themeColors
+import com.rawsmusic.core.ui.theme.ThemeManager
 
 class SongStatsFragment : Fragment() {
 
@@ -105,34 +106,35 @@ private fun buildStats(songs: List<AudioFile>): List<StatsItem> {
 
     return listOf(
         StatsItem(
-            label = "有损",
+            label = "\u6709\u635f",
             count = lossy,
             percentage = lossy.toFloat() / total * 100f,
             color = Color(0xFF7D5260),
-            description = "MP3 / AAC / OGG 等压缩音频"
+            description = "MP3 / AAC / OGG \u7b49\u538b\u7f29\u97f3\u9891"
         ),
         StatsItem(
-            label = "无损",
+            label = "\u65e0\u635f",
             count = lossless,
             percentage = lossless.toFloat() / total * 100f,
             color = Color(0xFF6750A4),
-            description = "FLAC / WAV / ALAC / APE 等 CD 规格无损"
+            description = "FLAC / WAV / ALAC / APE \u7b49 CD \u89c4\u683c\u65e0\u635f"
         ),
         StatsItem(
-            label = "母带",
+            label = "\u6bcd\u5e26",
             count = master,
             percentage = master.toFloat() / total * 100f,
             color = Color(0xFFB3261E),
-            description = "Hi-Res / DSD / 24bit 或高采样率音频"
+            description = "Hi-Res / DSD / 24bit \u6216\u9ad8\u91c7\u6837\u7387\u97f3\u9891"
         )
     )
 }
 
 @Composable
 fun SongStatsScreen(onBack: () -> Unit) {
-    val backdrop = rememberLayerBackdrop()
     var stats by remember { mutableStateOf<List<StatsItem>>(emptyList()) }
     var totalSongs by remember { mutableStateOf(0) }
+    val colors = themeColors()
+    val isDark = ThemeManager.isDarkMode(LocalContext.current)
 
     LaunchedEffect(Unit) {
         val songs = MusicRepository.getAllSongs()
@@ -140,169 +142,140 @@ fun SongStatsScreen(onBack: () -> Unit) {
         stats = buildStats(songs)
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(if (isDark) Color(0xFF1A1A1A) else Color.White)
+            .verticalScroll(rememberScrollState())
+            .statusBarsPadding()
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(0.dp)
+    ) {
+        Spacer(Modifier.height(16.dp))
+
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onBack) {
+                Text("← 返回", color = colors.primary, fontSize = 16.sp)
+            }
+            Text(
+                "歌曲统计",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Medium,
+                color = colors.onSurface
+            )
+            Spacer(Modifier.weight(1f))
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        if (stats.isNotEmpty()) {
+            SectionHeader("音质统计")
+            Text(
+                "共 $totalSongs 首歌曲",
+                fontSize = 13.sp,
+                color = colors.secondaryText,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+            Spacer(Modifier.height(16.dp))
+            DonutChart(
+                items = stats,
+                isDark = isDark,
+                modifier = Modifier
+                    .size(200.dp)
+                    .align(Alignment.CenterHorizontally)
+            )
+
+            Divider()
+
+            stats.forEach { item ->
+                QualityStatsRow(item, isDark)
+            }
+        } else {
+            SectionHeader("音质统计")
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "暂无可统计的歌曲",
+                fontSize = 14.sp,
+                color = colors.secondaryText
+            )
+        }
+
+        Spacer(Modifier.height(32.dp))
+    }
+}
+
+@Composable
+private fun QualityStatsRow(item: StatsItem, isDark: Boolean) {
+    val colors = themeColors()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Box(
             Modifier
-                .layerBackdrop(backdrop)
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFFF2F1F0),
-                            Color(0xFFE8E7E5),
-                            Color(0xFFD1D0CD).copy(alpha = 0.3f),
-                            Color(0xFFB0AFA8).copy(alpha = 0.1f)
-                        )
-                    )
-                )
+                .size(44.dp)
+                .drawBehind {
+                    drawCircle(color = item.color.copy(alpha = 0.18f))
+                    drawCircle(color = item.color, radius = 5.dp.toPx())
+                }
         )
-
-        Column(
-            Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Spacer(Modifier.height(16.dp))
-
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = onBack) {
-                    Text("← 返回", color = Color(0xFF6750A4), fontSize = 16.sp)
-                }
                 Text(
-                    "歌曲统计",
-                    fontSize = 20.sp,
+                    item.label,
+                    fontSize = 16.sp,
                     fontWeight = FontWeight.Medium,
-                    color = Color(0xFF1C1B1F)
+                    color = colors.onSurface
+                )
+                Text(
+                    "${item.count} 首",
+                    fontSize = 14.sp,
+                    color = colors.onSurfaceVariant
                 )
             }
-
+            Spacer(Modifier.height(4.dp))
+            Text(
+                item.description,
+                fontSize = 12.sp,
+                color = colors.secondaryText
+            )
             Spacer(Modifier.height(8.dp))
-
-            if (stats.isNotEmpty()) {
-                LiquidGlassCard(backdrop) {
-                    Text(
-                        "音质统计",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF1C1B1F)
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "共 $totalSongs 首歌曲",
-                        fontSize = 14.sp,
-                        color = Color(0xFF79747E)
-                    )
-                    Spacer(Modifier.height(18.dp))
-                    DonutChart(
-                        items = stats,
-                        modifier = Modifier
-                            .size(200.dp)
-                            .align(Alignment.CenterHorizontally)
-                    )
-                }
-
-                Column(
-                    Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    stats.forEach { item ->
-                        QualityStatsCard(backdrop, item)
-                    }
-                }
-            } else {
-                LiquidGlassCard(backdrop) {
-                    Text(
-                        "暂无可统计的歌曲",
-                        fontSize = 14.sp,
-                        color = Color(0xFF79747E),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(24.dp))
-        }
-    }
-}
-
-@Composable
-private fun QualityStatsCard(
-    backdrop: com.kyant.backdrop.Backdrop,
-    item: StatsItem
-) {
-    LiquidGlassCard(backdrop) {
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
             Box(
                 Modifier
-                    .size(44.dp)
+                    .fillMaxWidth()
+                    .height(6.dp)
                     .drawBehind {
-                        drawCircle(color = item.color.copy(alpha = 0.18f))
-                        drawCircle(color = item.color, radius = 5.dp.toPx())
+                        val barWidth = size.width * (item.percentage / 100f)
+                        drawRoundRect(
+                            color = item.color.copy(alpha = 0.18f),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(3.dp.toPx())
+                        )
+                        drawRoundRect(
+                            color = item.color,
+                            size = Size(barWidth, size.height),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(3.dp.toPx())
+                        )
                     }
             )
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        item.label,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF1C1B1F)
-                    )
-                    Text(
-                        "${item.count} 首",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = Color(0xFF49454F)
-                    )
-                }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    item.description,
-                    fontSize = 12.sp,
-                    color = Color(0xFF79747E)
-                )
-                Spacer(Modifier.height(10.dp))
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(6.dp)
-                        .drawBehind {
-                            val barWidth = size.width * (item.percentage / 100f)
-                            drawRoundRect(
-                                color = item.color.copy(alpha = 0.18f),
-                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(3.dp.toPx())
-                            )
-                            drawRoundRect(
-                                color = item.color,
-                                size = Size(barWidth, size.height),
-                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(3.dp.toPx())
-                            )
-                        }
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "${String.format("%.1f", item.percentage)}%",
-                    fontSize = 12.sp,
-                    color = Color(0xFF79747E),
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.End
-                )
-            }
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "${String.format("%.1f", item.percentage)}%",
+                fontSize = 12.sp,
+                color = colors.secondaryText,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.End
+            )
         }
     }
 }
@@ -310,8 +283,10 @@ private fun QualityStatsCard(
 @Composable
 private fun DonutChart(
     items: List<StatsItem>,
+    isDark: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val colors = themeColors()
     val totalAngle = 360f
     var currentAngle = -90f
 
@@ -342,12 +317,12 @@ private fun DonutChart(
                 "3 类",
                 fontSize = 28.sp,
                 fontWeight = FontWeight.Bold,
-                color = Color(0xFF1C1B1F)
+                color = colors.onSurface
             )
             Text(
                 "音质",
                 fontSize = 12.sp,
-                color = Color(0xFF79747E)
+                color = colors.secondaryText
             )
         }
     }

@@ -50,6 +50,14 @@
                 android:textStyle="bold" />
 
             <ImageView
+                android:id="@+id/btnFolder"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:padding="10dp"
+                android:src="@drawable/ic_folder_2_fill"
+                android:tint="@color/text_primary" />
+
+            <ImageView
                 android:id="@+id/btnSearch"
                 android:layout_width="44dp"
                 android:layout_height="44dp"

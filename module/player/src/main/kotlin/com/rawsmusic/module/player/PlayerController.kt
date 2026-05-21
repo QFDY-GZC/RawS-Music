@@ -1,6 +1,7 @@
 package com.rawsmusic.module.player
 
 import android.content.Context
+import android.os.SystemClock
 import android.hardware.usb.UsbDevice
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
@@ -13,6 +14,7 @@ import com.rawsmusic.core.common.model.PlayQueue
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.core.common.model.RepeatMode
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.player.dsp.ParametricEQController
 import com.rawsmusic.module.player.usb.UsbAudioEngine
 import com.rawsmusic.module.player.usb.UsbExclusiveManager
 import com.rawsmusic.module.player.usb.UsbVolumeController
@@ -60,10 +62,50 @@ class PlayerController private constructor(context: Context) {
      * 外部（如 EqualizerViewModel）应监听此回调并重新初始化音效引擎
      */
     var onAudioSessionChanged: ((newSessionId: Int) -> Unit)? = null
+    var onPcmWaveformFrame: ((buffer: ByteArray, read: Int, channels: Int, sampleRate: Int, bitsPerSample: Int) -> Unit)? = null
 
     // FFmpeg + AudioTrack 播放器
     private var ffmpegPlayer = FfmpegAudioPlayer(context)
     val ffmpegPlayerRef: FfmpegAudioPlayer get() = ffmpegPlayer
+
+    init {
+        ffmpegPlayer.onDspEngineReinit = {
+            ensurePEQConnected()
+        }
+    }
+
+    // PEQ 控制器单例（延迟初始化，首次访问时从 DSP 引擎创建）
+    private var _peqController: com.rawsmusic.module.player.dsp.ParametricEQController? = null
+    val peqController: com.rawsmusic.module.player.dsp.ParametricEQController
+        get() {
+            if (_peqController == null) {
+                val engine = ffmpegPlayer.dspEngine
+                _peqController = if (engine != null) {
+                    com.rawsmusic.module.player.dsp.ParametricEQController(engine)
+                } else {
+                    Log.w(TAG, "DSP engine not available for PEQ, creating stub")
+                    com.rawsmusic.module.player.dsp.ParametricEQController(
+                        com.rawsmusic.module.player.dsp.NativeDSPEngine()
+                    )
+                }
+            }
+            return _peqController!!
+        }
+
+    /**
+     * 确保 PEQ 控制器已连接到实际的 DSP 引擎
+     * 在进入 PEQ 界面时调用，将 stub 引擎替换为已初始化的真实引擎
+     */
+    fun ensurePEQConnected() {
+        val engine = ffmpegPlayer.dspEngine
+        if (engine != null && engine.isInitialized()) {
+            if (_peqController == null) {
+                _peqController = ParametricEQController(engine)
+            } else {
+                _peqController!!.connectEngine(engine)
+            }
+        }
+    }
 
     val usbExclusiveManager = UsbExclusiveManager(context)
     private val sharedUsbAudioEngine = UsbAudioEngine
@@ -106,6 +148,158 @@ class PlayerController private constructor(context: Context) {
     private val _duration = MutableStateFlow(0L)
     val duration: StateFlow<Long> = _duration.asStateFlow()
 
+    val latencyMs: Int
+        get() {
+            val trackLatency = ffmpegPlayer.latencyMs
+            val offset = AppPreferences.Lyrics.latencyOffset
+            return if (isBluetoothOutput) {
+                trackLatency + offset
+            } else {
+                trackLatency + offset
+            }
+        }
+
+    @Volatile
+    var isBluetoothOutput: Boolean = false
+        private set
+    @Volatile
+    private var lastDetectedCodecType: Int = -1
+    private var bluetoothLatencyJob: Job? = null
+
+    private var sleepTimerJob: Job? = null
+    private val _sleepTimerRemaining = MutableStateFlow(0L)
+    val sleepTimerRemaining: StateFlow<Long> = _sleepTimerRemaining.asStateFlow()
+    private var sleepTimerEndTime: Long = 0L
+    private var stopAfterCurrentSong: Boolean = false
+    private var songsUntilStop: Int = 0
+
+    private fun startBluetoothLatencyMonitor() {
+        bluetoothLatencyJob?.cancel()
+        bluetoothLatencyJob = scope.launch {
+            Log.d(TAG, "Bluetooth latency monitor started")
+            while (isActive) {
+                try {
+                    checkBluetoothOutput()
+                } catch (e: Exception) {
+                    Log.e(TAG, "checkBluetoothOutput error: ${e.message}")
+                }
+                delay(3000)
+            }
+        }
+    }
+
+    private fun checkBluetoothOutput() {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+
+        val isBluetooth = if (android.os.Build.VERSION.SDK_INT >= 23) {
+            val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            val btDevice = devices.firstOrNull {
+                it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                it.type == 26
+            }
+            if (btDevice != null) {
+                Log.d(TAG, "BT device found: type=${btDevice.type} name=${btDevice.productName}")
+            }
+            btDevice != null
+        } else false
+
+        if (isBluetooth != isBluetoothOutput) {
+            isBluetoothOutput = isBluetooth
+            if (isBluetooth) {
+                val codecType = detectBluetoothCodecTypeSync()
+                lastDetectedCodecType = codecType
+                Log.d(TAG, "BT connected, codecType=$codecType (${codecTypeName(codecType)}), AudioTrack latency=${ffmpegPlayer.latencyMs}ms")
+            } else {
+                lastDetectedCodecType = -1
+                Log.d(TAG, "BT disconnected, using AudioTrack latency")
+            }
+        }
+    }
+
+    private fun detectBluetoothCodecTypeSync(): Int {
+        return try {
+            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+            if (adapter == null) {
+                Log.w(TAG, "detectCodec: BluetoothAdapter is null")
+                return -1
+            }
+            val profileProxy = arrayOfNulls<android.bluetooth.BluetoothProfile>(1)
+            val lock = java.util.concurrent.CountDownLatch(1)
+
+            adapter.getProfileProxy(context, object : android.bluetooth.BluetoothProfile.ServiceListener {
+                override fun onServiceConnected(profile: Int, proxy: android.bluetooth.BluetoothProfile) {
+                    profileProxy[0] = proxy
+                    lock.countDown()
+                }
+                override fun onServiceDisconnected(profile: Int) {
+                    lock.countDown()
+                }
+            }, android.bluetooth.BluetoothProfile.A2DP)
+
+            if (!lock.await(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                Log.w(TAG, "detectCodec: A2DP profile proxy timeout")
+                return -1
+            }
+
+            val a2dp = profileProxy[0]
+            if (a2dp == null) {
+                Log.w(TAG, "detectCodec: A2DP proxy is null")
+                return -1
+            }
+            val connectedDevices = a2dp.connectedDevices
+            if (connectedDevices.isNullOrEmpty()) {
+                Log.w(TAG, "detectCodec: no connected A2DP devices")
+                try { adapter.closeProfileProxy(android.bluetooth.BluetoothProfile.A2DP, a2dp) } catch (_: Exception) {}
+                return -1
+            }
+
+            val codecType = try {
+                val method = a2dp.javaClass.getMethod("getCodecStatus", android.bluetooth.BluetoothDevice::class.java)
+                val codecStatus = method.invoke(a2dp, connectedDevices[0])
+                if (codecStatus != null) {
+                    val getConfig = codecStatus.javaClass.getMethod("getCodecConfig")
+                    val codecConfig = getConfig.invoke(codecStatus)
+                    if (codecConfig != null) {
+                        val getType = codecConfig.javaClass.getMethod("getCodecType")
+                        getType.invoke(codecConfig) as? Int ?: -1
+                    } else -1
+                } else -1
+            } catch (e: Exception) {
+                Log.w(TAG, "detectCodec: getCodecStatus failed: ${e.message}")
+                -1
+            }
+
+            try { adapter.closeProfileProxy(android.bluetooth.BluetoothProfile.A2DP, a2dp) } catch (_: Exception) {}
+            Log.d(TAG, "detectCodec: result=$codecType (${codecTypeName(codecType)})")
+            codecType
+        } catch (e: Exception) {
+            Log.e(TAG, "detectCodec: unexpected error: ${e.message}")
+            -1
+        }
+    }
+
+    private fun codecTypeName(codecType: Int): String = when (codecType) {
+        0 -> "SBC"
+        1 -> "AAC"
+        2 -> "aptX"
+        3 -> "aptX HD"
+        4 -> "LDAC"
+        5 -> "LHDC"
+        6 -> "LC3"
+        7 -> "aptX Adaptive"
+        8 -> "LHDC V5"
+        1000 -> "LHDC"
+        else -> "Unknown"
+    }
+
+    fun getBluetoothLatencyInfo(): String {
+        if (!isBluetoothOutput) return ""
+        val codecName = codecTypeName(lastDetectedCodecType)
+        val trackLatency = ffmpegPlayer.latencyMs
+        return if (lastDetectedCodecType >= 0) "$codecName" else "BT ${trackLatency}ms"
+    }
+
     private val _repeatMode = MutableStateFlow(AppPreferences.Player.repeatMode)
     val repeatMode: StateFlow<RepeatMode> = _repeatMode.asStateFlow()
 
@@ -117,8 +311,14 @@ class PlayerController private constructor(context: Context) {
 
     private var progressJob: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    init {
+        startBluetoothLatencyMonitor()
+    }
+
     private var isReleased = false
     private var consecutiveFailures = 0
+    private var enrichJob: Job? = null
     @Volatile
     private var lastPlayerError: String? = null
     private val transportMutex = Mutex()
@@ -173,6 +373,9 @@ class PlayerController private constructor(context: Context) {
     init {
         Log.i(TAG, "PlayerController created: ${System.identityHashCode(this)}")
         ffmpegPlayer.listener = playerListener
+        ffmpegPlayer.onPcmWaveformFrame = { buffer, read, channels, sampleRate, bitsPerSample ->
+            onPcmWaveformFrame?.invoke(buffer, read, channels, sampleRate, bitsPerSample)
+        }
         initDspPipeline()
         restoreState()
         usbExclusiveManager.onDeviceReady = { device ->
@@ -654,6 +857,11 @@ class PlayerController private constructor(context: Context) {
                 try { ffmpegPlayer.stop() } catch (_: Throwable) {}
                 try { sharedUsbAudioEngine.release() } catch (_: Throwable) {}
                 try { usbExclusiveManager.release() } catch (_: Throwable) {}
+
+                // ① 清除旧状态，否则 activateUsbEngine 的 sameDeviceAlreadyActive 检查会直接跳过
+                currentUsbDevice = null
+                _usbExclusiveActive.value = false
+
                 delay(600)
                 val device = usbExclusiveManager.findUsbAudioDevice()
                 if (device == null) {
@@ -667,7 +875,9 @@ class PlayerController private constructor(context: Context) {
                     usbExclusiveManager.requestPermissionSafely(device)
                     return@launch
                 }
-                activateUsbEngine(device)
+                // ② 通过 requestPermissionSafely 重新设置 currentDevice（权限已有时同步完成）
+                //    它会触发 onDeviceReady → activateUsbEngine，完成全部初始化
+                usbExclusiveManager.requestPermissionSafely(device)
                 Log.i(TAG, "USB recovery success, device ready for playback")
                 if (wasPlaying && currentSong != null) {
                     try {
@@ -697,6 +907,21 @@ class PlayerController private constructor(context: Context) {
         Log.d(TAG, "play() called: title=${song.title}, path=${song.path}, isReleased=$isReleased")
         if (isReleased) {
             Log.w(TAG, "play() skip: isReleased")
+            return
+        }
+        // USB recovery 进行中，等待完成后再播放
+        if (recoveringUsb.get()) {
+            Log.w(TAG, "play() deferred: USB recovery in progress")
+            scope.launch(Dispatchers.IO) {
+                var waitMs = 0
+                while (recoveringUsb.get() && waitMs < 5000) {
+                    delay(100)
+                    waitMs += 100
+                }
+                if (!recoveringUsb.get() && !isReleased) {
+                    playInternal(song, queue, index)
+                }
+            }
             return
         }
         // 500ms 防抖：同一首歌在 PREPARING 状态下重复请求则忽略
@@ -729,7 +954,8 @@ class PlayerController private constructor(context: Context) {
         } catch (_: Exception) {
         }
 
-        if (song.path.isBlank() || !java.io.File(song.path).exists()) {
+        val isRemoteUrl = song.path.startsWith("http://") || song.path.startsWith("https://")
+        if (song.path.isBlank() || (!isRemoteUrl && !java.io.File(song.path).exists())) {
             Log.w(TAG, "play() skip: file not found: ${song.path}")
             consecutiveFailures++
             if (consecutiveFailures > 5) {
@@ -772,33 +998,88 @@ class PlayerController private constructor(context: Context) {
             _duration.value = 0L
             applyReplayGain(song)
 
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    val enriched = com.rawsmusic.module.scanner.MediaStoreScanner.enrichSong(song)
-                    val changed = enriched.sampleRate != song.sampleRate ||
-                        enriched.bitRate != song.bitRate ||
-                        enriched.bitsPerSample != song.bitsPerSample ||
-                        enriched.channelCount != song.channelCount ||
-                        enriched.encodingFormat != song.encodingFormat
-                    if (changed) {
-                        com.rawsmusic.module.data.repository.MusicRepository.updateSong(enriched)
-                        withContext(Dispatchers.Main) {
-                            _currentSong.value = enriched
+            enrichJob?.cancel()
+            if (!isRemoteUrl) {
+                enrichJob = scope.launch(Dispatchers.IO) {
+                    try {
+                        val enriched = com.rawsmusic.module.scanner.MediaStoreScanner.enrichSong(song)
+                        val changed = enriched.sampleRate != song.sampleRate ||
+                            enriched.bitRate != song.bitRate ||
+                            enriched.bitsPerSample != song.bitsPerSample ||
+                            enriched.channelCount != song.channelCount ||
+                            enriched.encodingFormat != song.encodingFormat
+                        if (changed) {
+                            com.rawsmusic.module.data.repository.MusicRepository.updateSong(enriched)
+                            withContext(Dispatchers.Main) {
+                                _currentSong.value = enriched
+                            }
+                            val q = _queue.value
+                            val idx = q.songs.indexOfFirst { it.path == song.path }
+                            if (idx >= 0) {
+                                val newList = q.songs.toMutableList()
+                                newList[idx] = enriched
+                                _queue.value = q.copy(songs = newList)
+                            }
                         }
-                        val q = _queue.value
-                        val idx = q.songs.indexOfFirst { it.path == song.path }
-                        if (idx >= 0) {
-                            val newList = q.songs.toMutableList()
-                            newList[idx] = enriched
-                            _queue.value = q.copy(songs = newList)
+
+                        val nextIdx = _queue.value.currentIndex + 1
+                        if (nextIdx < _queue.value.songs.size) {
+                            val nextSong = _queue.value.songs[nextIdx]
+                            if (nextSong.sampleRate == 0 || nextSong.bitsPerSample == 0) {
+                                try {
+                                    val nextEnriched = com.rawsmusic.module.scanner.MediaStoreScanner.enrichSong(nextSong)
+                                    val nextChanged = nextEnriched.sampleRate != nextSong.sampleRate ||
+                                        nextEnriched.bitsPerSample != nextSong.bitsPerSample
+                                    if (nextChanged) {
+                                        com.rawsmusic.module.data.repository.MusicRepository.updateSong(nextEnriched)
+                                        withContext(Dispatchers.Main) {
+                                            val q2 = _queue.value
+                                            val idx2 = q2.songs.indexOfFirst { it.path == nextSong.path }
+                                            if (idx2 >= 0) {
+                                                val newList2 = q2.songs.toMutableList()
+                                                newList2[idx2] = nextEnriched
+                                                _queue.value = q2.copy(songs = newList2)
+                                            }
+                                        }
+                                    }
+                                } catch (_: Exception) {}
+                            }
                         }
+
+                        scope.launch(Dispatchers.IO) {
+                            val q3 = _queue.value
+                            for (( idx, s) in q3.songs.withIndex()) {
+                                if (idx == _queue.value.currentIndex || idx == nextIdx) continue
+                                if (s.sampleRate > 0 && s.bitsPerSample > 0) continue
+                                try {
+                                    val e = com.rawsmusic.module.scanner.MediaStoreScanner.enrichSong(s)
+                                    if (e.sampleRate != s.sampleRate || e.bitsPerSample != s.bitsPerSample) {
+                                        com.rawsmusic.module.data.repository.MusicRepository.updateSong(e)
+                                        withContext(Dispatchers.Main) {
+                                            val q4 = _queue.value
+                                            val idx4 = q4.songs.indexOfFirst { it.path == s.path }
+                                            if (idx4 >= 0) {
+                                                val nl = q4.songs.toMutableList()
+                                                nl[idx4] = e
+                                                _queue.value = q4.copy(songs = nl)
+                                            }
+                                        }
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                        }
+                    } catch (_: Exception) {
                     }
-                } catch (_: Exception) {
                 }
             }
 
             Log.d(TAG, "Starting FFmpeg playback: ${song.path}")
             ffmpegPlayer.play(song.path)
+
+            scope.launch {
+                delay(1000)
+                checkBluetoothOutput()
+            }
 
             // 如果有待恢复的播放位置且是同一首歌，自动 seek 到保存位置
             if (pendingSeekPosition > 0 && pendingSeekPath == song.path) {
@@ -857,7 +1138,7 @@ class PlayerController private constructor(context: Context) {
         }
         if (nextIdx !in q.songs.indices) return
         val nextSong = q.songs[nextIdx]
-        precacheJob = CoroutineScope(Dispatchers.IO).launch {
+        precacheJob = scope.launch(Dispatchers.IO) {
             // 流式解码器模式（USB 和 AudioTrack 均使用），无需预缓存文件
             Log.d(TAG, "precacheNextSong: streaming decoder mode, skip file-based precache")
         }
@@ -1159,6 +1440,21 @@ class PlayerController private constructor(context: Context) {
 
     private fun handlePlaybackComplete() {
         if (isReleased) return
+        if (stopAfterCurrentSong) {
+            stopAfterCurrentSong = false
+            AppPreferences.Player.stopAfterCurrent = false
+            AppPreferences.Player.sleepTimerMode = 0
+            pause()
+            return
+        }
+        if (songsUntilStop > 0) {
+            songsUntilStop--
+            if (songsUntilStop <= 0) {
+                AppPreferences.Player.sleepTimerMode = 0
+                pause()
+                return
+            }
+        }
         when (_repeatMode.value) {
             RepeatMode.ONE -> {
                 _currentSong.value?.let { play(it) }
@@ -1171,10 +1467,61 @@ class PlayerController private constructor(context: Context) {
                 if (q.currentIndex < q.songs.size - 1) {
                     next()
                 }
-                // 最后一首播放完毕，停止
             }
         }
     }
+
+    fun startSleepTimer(minutes: Int) {
+        sleepTimerJob?.cancel()
+        sleepTimerEndTime = SystemClock.elapsedRealtime() + minutes * 60_000L
+        _sleepTimerRemaining.value = minutes * 60_000L
+        AppPreferences.Player.sleepTimerMode = 1
+        AppPreferences.Player.sleepTimerMinutes = minutes
+        sleepTimerJob = scope.launch {
+            while (isActive) {
+                val remaining = sleepTimerEndTime - SystemClock.elapsedRealtime()
+                if (remaining <= 0) {
+                    _sleepTimerRemaining.value = 0
+                    pause()
+                    cancelSleepTimer()
+                    break
+                }
+                _sleepTimerRemaining.value = remaining
+                delay(1000)
+            }
+        }
+    }
+
+    fun startSleepTimerSongs(count: Int) {
+        cancelSleepTimer()
+        songsUntilStop = count
+        AppPreferences.Player.sleepTimerMode = 2
+        stopAfterCurrentSong = false
+    }
+
+    fun enableStopAfterCurrent() {
+        cancelSleepTimer()
+        stopAfterCurrentSong = true
+        AppPreferences.Player.sleepTimerMode = 3
+        AppPreferences.Player.stopAfterCurrent = true
+    }
+
+    fun cancelSleepTimer() {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        sleepTimerEndTime = 0L
+        _sleepTimerRemaining.value = 0L
+        stopAfterCurrentSong = false
+        songsUntilStop = 0
+        AppPreferences.Player.sleepTimerMode = 0
+        AppPreferences.Player.stopAfterCurrent = false
+    }
+
+    fun isSleepTimerActive(): Boolean {
+        return sleepTimerJob?.isActive == true || stopAfterCurrentSong || songsUntilStop > 0
+    }
+
+    fun getSleepTimerMode(): Int = AppPreferences.Player.sleepTimerMode
 
     private fun shuffleQueue() {
         val currentSong = _currentSong.value
@@ -1303,7 +1650,7 @@ class PlayerController private constructor(context: Context) {
                 } catch (e: Exception) {
                     break
                 }
-                delay(200)
+                delay(50)
             }
         }
     }
@@ -1312,6 +1659,8 @@ class PlayerController private constructor(context: Context) {
         progressJob?.cancel()
         progressJob = null
     }
+
+    private var saveStateJob: Job? = null
 
     private fun saveState() {
         _currentSong.value?.let {
@@ -1325,26 +1674,30 @@ class PlayerController private constructor(context: Context) {
             AppPreferences.Player.lastSongAlbumId = it.albumId
         }
         savePosition()
-        // 保存队列信息
-        try {
-            val q = _queue.value
-            AppPreferences.Player.currentQueueIndex = q.currentIndex
-            val arr = org.json.JSONArray()
-            for (s in q.songs) {
-                val obj = org.json.JSONObject().apply {
-                    put("id", s.id)
-                    put("path", s.path)
-                    put("title", s.title)
-                    put("artist", s.artist)
-                    put("album", s.album)
-                    put("albumId", s.albumId)
-                    put("duration", s.duration)
-                    put("albumArtPath", s.albumArtPath ?: "")
+        val q = _queue.value
+        val songsSnapshot = q.songs.toList()
+        val currentIndex = q.currentIndex
+        saveStateJob?.cancel()
+        saveStateJob = scope.launch(Dispatchers.IO) {
+            try {
+                AppPreferences.Player.currentQueueIndex = currentIndex
+                val arr = org.json.JSONArray()
+                for (s in songsSnapshot) {
+                    val obj = org.json.JSONObject().apply {
+                        put("id", s.id)
+                        put("path", s.path)
+                        put("title", s.title)
+                        put("artist", s.artist)
+                        put("album", s.album)
+                        put("albumId", s.albumId)
+                        put("duration", s.duration)
+                        put("albumArtPath", s.albumArtPath ?: "")
+                    }
+                    arr.put(obj)
                 }
-                arr.put(obj)
-            }
-            AppPreferences.Player.playQueueSongsJson = arr.toString()
-        } catch (_: Exception) {}
+                AppPreferences.Player.playQueueSongsJson = arr.toString()
+            } catch (_: Exception) {}
+        }
     }
 
     private fun savePosition() {
@@ -1360,6 +1713,8 @@ class PlayerController private constructor(context: Context) {
         if (savedVirtualizer > 0) {
             ffmpegPlayer.stereoWidenFactor = savedVirtualizer / 1000f
         }
+        // 恢复互馈设置
+        restoreCrossfeedSettings()
     }
 
     /**
@@ -1370,7 +1725,8 @@ class PlayerController private constructor(context: Context) {
         if (lastPath.isBlank()) return null
 
         val allRepoSongs = com.rawsmusic.module.data.repository.MusicRepository.getAllSongs()
-        val repoSong = allRepoSongs.find { it.path == lastPath }
+        val repoSongMap = allRepoSongs.associateBy { it.path }
+        val repoSong = repoSongMap[lastPath]
 
         val song = repoSong ?: AudioFile(
             id = AppPreferences.Player.lastSongId,
@@ -1404,7 +1760,7 @@ class PlayerController private constructor(context: Context) {
                         val obj = arr.getJSONObject(i)
                         val path = obj.optString("path", "")
                         if (path.isBlank()) continue
-                        val repoQueueSong = allRepoSongs.find { it.path == path }
+                        val repoQueueSong = repoSongMap[path]
                         if (repoQueueSong != null) {
                             savedSongs.add(repoQueueSong)
                         } else {
@@ -1487,6 +1843,46 @@ class PlayerController private constructor(context: Context) {
         Log.w(TAG, "setStereoWidenFactor: input=$factor, coerced=$coerced, playerState=${ffmpegPlayer.state}")
         ffmpegPlayer.stereoWidenFactor = coerced
         AppPreferences.Equalizer.virtualizer = (coerced * 1000f).toInt().coerceIn(0, 1000)
+    }
+
+    // ========== 互馈 (Crossfeed) ==========
+
+    /** 启用/禁用互馈 */
+    fun setCrossfeedEnabled(enabled: Boolean) {
+        val engine = ffmpegPlayer.dspEngine ?: return
+        if (!engine.isInitialized()) return
+        engine.setCrossfeedEnabled(enabled)
+        AppPreferences.Equalizer.crossfeedEnabled = enabled
+        Log.d(TAG, "setCrossfeedEnabled: $enabled")
+    }
+
+    /**
+     * 设置互馈参数
+     * @param lowCutFreq 高通截止频率 (Hz)，50-1000
+     * @param highCutFreq 低通截止频率 (Hz)，500-8000
+     * @param attenuationDB 衰减量 (dB)，0.0-15.0
+     */
+    fun setCrossfeedParams(lowCutFreq: Float, highCutFreq: Float, attenuationDB: Float) {
+        val engine = ffmpegPlayer.dspEngine ?: return
+        if (!engine.isInitialized()) return
+        engine.setCrossfeedParams(lowCutFreq, highCutFreq, attenuationDB)
+        AppPreferences.Equalizer.crossfeedLowCut = lowCutFreq.toInt()
+        AppPreferences.Equalizer.crossfeedHighCut = highCutFreq.toInt()
+        AppPreferences.Equalizer.crossfeedAttenuation = (attenuationDB * 10f).toInt()
+        Log.d(TAG, "setCrossfeedParams: lowCut=$lowCutFreq, highCut=$highCutFreq, atten=$attenuationDB")
+    }
+
+    /** 恢复互馈设置（从持久化存储） */
+    fun restoreCrossfeedSettings() {
+        val engine = ffmpegPlayer.dspEngine ?: return
+        if (!engine.isInitialized()) return
+        val enabled = AppPreferences.Equalizer.crossfeedEnabled
+        val lowCut = AppPreferences.Equalizer.crossfeedLowCut.toFloat()
+        val highCut = AppPreferences.Equalizer.crossfeedHighCut.toFloat()
+        val atten = AppPreferences.Equalizer.crossfeedAttenuation / 10f
+        engine.setCrossfeedParams(lowCut, highCut, atten)
+        engine.setCrossfeedEnabled(enabled)
+        Log.d(TAG, "restoreCrossfeedSettings: enabled=$enabled, lowCut=$lowCut, highCut=$highCut, atten=$atten")
     }
 
     /** 初始化 DSP 管线 */

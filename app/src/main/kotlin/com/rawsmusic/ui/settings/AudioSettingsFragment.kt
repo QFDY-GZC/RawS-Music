@@ -20,18 +20,6 @@ class AudioSettingsFragment : Fragment() {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
             setContent {
                 LiquidGlassAudioSettingsScreen(
-                    onNavigateToSpatialSound = {
-                        try {
-                            NavHostFragment.findNavController(this@AudioSettingsFragment)
-                                .navigate(com.rawsmusic.R.id.nav_spatial_sound)
-                        } catch (_: Exception) {}
-                    },
-                    onNavigateToUsbDac = {
-                        try {
-                            NavHostFragment.findNavController(this@AudioSettingsFragment)
-                                .navigate(com.rawsmusic.R.id.nav_usb_dac_settings)
-                        } catch (_: Exception) {}
-                    },
                     onBack = {
                         try {
                             NavHostFragment.findNavController(this@AudioSettingsFragment).navigateUp()

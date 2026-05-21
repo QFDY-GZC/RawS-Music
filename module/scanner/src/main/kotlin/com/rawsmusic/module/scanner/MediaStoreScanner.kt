@@ -139,8 +139,8 @@ object MediaStoreScanner {
                     id = id,
                     path = data,
                     title = title,
-                    artist = if (artist.isBlank() || artist == "<unknown>") "" else artist,
-                    album = if (album.isBlank() || album == "<unknown>") "" else album,
+                    artist = if (artist.isBlank() || artist.equals("<unknown>", ignoreCase = true)) "" else artist,
+                    album = if (album.isBlank() || album.equals("<unknown>", ignoreCase = true) || album.equals("music", ignoreCase = true)) "" else album,
                     albumId = albumId,
                     duration = duration.coerceAtLeast(0),
                     sampleRate = 0,
@@ -189,8 +189,8 @@ object MediaStoreScanner {
                 id = id,
                 path = data,
                 title = title.ifBlank { tagData.title },
-                artist = if (artist.isBlank() || artist == "<unknown>") tagData.artist else artist,
-                album = if (album.isBlank() || album == "<unknown>") tagData.album else album,
+                artist = if (artist.isBlank() || artist.equals("<unknown>", ignoreCase = true)) tagData.artist else artist,
+                album = if (album.isBlank() || album.equals("<unknown>", ignoreCase = true) || album.equals("music", ignoreCase = true)) tagData.album else album,
                 albumId = albumId,
                 duration = duration.coerceAtLeast(0),
                 sampleRate = sampleRate,
@@ -227,21 +227,27 @@ object MediaStoreScanner {
             val streamInfo = fullInfo.stream
             android.util.Log.d("EnrichSong", "path=${song.path}, FFmpeg: sr=${streamInfo.sampleRate}, br=${streamInfo.bitRate}, " +
                     "bps=${streamInfo.bitsPerSample}, ch=${streamInfo.channels}, codec=${streamInfo.codecName}")
+            
+            // 辅助函数：判断值是否为 MediaStore 默认值（应被覆盖）
+            fun String.isMediaStoreDefault(): Boolean {
+                return isBlank() || equals("music", ignoreCase = true) || equals("<unknown>", ignoreCase = true)
+            }
+            
             song.copy(
                 sampleRate = if (streamInfo.sampleRate > 0) streamInfo.sampleRate else song.sampleRate,
                 bitRate = if (streamInfo.bitRate > 0) streamInfo.bitRate else song.bitRate,
                 bitsPerSample = if (streamInfo.bitsPerSample > 0) streamInfo.bitsPerSample else song.bitsPerSample,
                 channelCount = if (streamInfo.channels > 0) streamInfo.channels else song.channelCount,
                 encodingFormat = if (streamInfo.codecName.isNotBlank()) FfmpegMetadataReader.mapCodecToFormat(streamInfo.codecName, song.path) else song.encodingFormat,
-                title = tagData.title.ifBlank { song.title },
-                artist = tagData.artist.ifBlank { song.artist },
-                album = tagData.album.ifBlank { song.album },
-                genre = tagData.genre.ifBlank { song.genre },
-                composer = tagData.composer.ifBlank { song.composer },
+                title = if (!tagData.title.isMediaStoreDefault()) tagData.title else song.title,
+                artist = if (!tagData.artist.isMediaStoreDefault()) tagData.artist else song.artist,
+                album = if (!tagData.album.isMediaStoreDefault()) tagData.album else if (song.album.isMediaStoreDefault()) "" else song.album,
+                genre = if (!tagData.genre.isMediaStoreDefault()) tagData.genre else song.genre,
+                composer = if (!tagData.composer.isMediaStoreDefault()) tagData.composer else song.composer,
                 year = if (tagData.year > 0) tagData.year else song.year,
                 discNumber = if (tagData.discNumber > 1) tagData.discNumber else song.discNumber,
                 bpm = if (tagData.bpm > 0) tagData.bpm else song.bpm,
-                albumArtist = tagData.albumArtist.ifBlank { song.albumArtist },
+                albumArtist = if (!tagData.albumArtist.isMediaStoreDefault()) tagData.albumArtist else song.albumArtist,
                 trackGain = if (tagData.trackGain != 0f) tagData.trackGain else song.trackGain,
                 trackPeak = if (tagData.trackPeak != 1.0f) tagData.trackPeak else song.trackPeak,
                 albumGain = if (tagData.albumGain != 0f) tagData.albumGain else song.albumGain,

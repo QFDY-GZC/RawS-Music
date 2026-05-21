@@ -15,6 +15,7 @@
         android:layout_height="28dp"
         android:padding="4dp"
         android:src="@android:drawable/arrow_down_float"
+        android:tint="#CCFFFFFF"
         android:visibility="invisible" />
 
     <!-- 目录图标 -->
@@ -23,7 +24,8 @@
         android:layout_width="24dp"
         android:layout_height="24dp"
         android:layout_marginStart="4dp"
-        android:src="@android:drawable/ic_menu_view" />
+        android:src="@drawable/ic_folder_2_fill"
+        android:tint="#CCFFFFFF" />
 
     <!-- 目录名 -->
     <TextView
@@ -35,7 +37,7 @@
         android:ellipsize="middle"
         android:maxLines="1"
         android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
-        android:textColor="#FF1C1B1F" />
+        android:textColor="#FFFFFFFF" />
 
     <!-- 勾选框 -->
     <CheckBox
@@ -43,6 +45,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginStart="8dp"
+        android:buttonTint="#FFFFFFFF"
         android:checked="true" />
 
 </LinearLayout>

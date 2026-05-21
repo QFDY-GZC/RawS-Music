@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <item name="nav_qq_group" type="id"/>
+    <item name="nav_webdav" type="id"/>
+    <item name="nav_playlist" type="id"/>
+    <item name="nav_playlist_detail" type="id"/>
+    <item name="nav_webdav_backup" type="id"/>
+    <item name="nav_log_viewer" type="id"/>
 </resources>

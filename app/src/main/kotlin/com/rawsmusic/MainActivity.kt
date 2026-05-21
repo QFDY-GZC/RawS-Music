@@ -32,8 +32,8 @@ import androidx.activity.viewModels
 import androidx.navigation.NavController
 import androidx.navigation.fragment.NavHostFragment
 import coil.Coil
+import coil.imageLoader
 import coil.load
-import com.rawsmusic.core.ui.util.SquarePadTransformation
 import com.rawsmusic.core.common.base.BaseActivity
 import com.rawsmusic.core.common.ext.isDarkMode
 import com.rawsmusic.core.common.ext.visible
@@ -42,6 +42,7 @@ import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.common.model.PlayMode
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.core.common.model.toLyriconSong
+import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.common.utils.UiUtils
 import com.rawsmusic.core.ui.R as UiR
@@ -59,18 +60,23 @@ import com.rawsmusic.databinding.ActivityMainBinding
 import com.rawsmusic.module.data.repository.MusicRepository
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.FontManager
+import com.rawsmusic.module.data.prefs.PlaybackStatsStore
 import com.rawsmusic.module.player.GlobalSettingsViewModel
 import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.LyriconProviderManager
 import com.rawsmusic.module.player.PlayerController
 import com.rawsmusic.module.player.PlayerEventBus
 import com.rawsmusic.module.player.PlayerService
+import com.rawsmusic.module.player.lyrics.BluetoothLyricBridge
+import com.rawsmusic.module.player.lyrics.LyricGetterBridge
+import com.rawsmusic.module.player.lyrics.TickerBridge
 import com.rawsmusic.module.scanner.LyricReader
 import com.rawsmusic.module.scanner.MediaStoreScanner
 import com.rawsmusic.module.scanner.ScanProgress
 import com.rawsmusic.ui.songs.PlayerHolder
 import com.rawsmusic.ui.songs.SongsFragment
 import com.rawsmusic.ui.widget.CapsuleProgressSync
+import com.rawsmusic.core.ui.util.AdaptivePadTransformation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -82,6 +88,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
     private val lyricPlayerView: LyricPlayerView get() = binding.lyricView as LyricPlayerView
     private val capsuleView: com.rawsmusic.ui.widget.RawSMusicCapsuleView get() = binding.miniPlayerBar as com.rawsmusic.ui.widget.RawSMusicCapsuleView
+    private val playCoverView: com.rawsmusic.core.ui.widget.CoverImageView get() = binding.ivPlayCover as com.rawsmusic.core.ui.widget.CoverImageView
     private var currentLyricData: LyricData = LyricData()
 
     private lateinit var navController: NavController
@@ -111,6 +118,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
     private var isSideMenuOpen = false
     private var isCoverAnimActive = false
     private var frozenContainerLoc: IntArray? = null
+
+    /** 已加载封面图片的实际尺寸，用于动态计算容器宽高比 */
+    private var loadedCoverImageWidth = 0
+    private var loadedCoverImageHeight = 0
 
     /*观察播放器动作（通过 PlayerEventBus）*/
     private fun observePlayerActions() {
@@ -159,6 +170,21 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                         unifiedContainer.post {
                             setupCoverLayoutParams()
                             updateHiresBadge()
+                        }
+                    }
+                }
+                "com.rawsmusic.action.LETTER_MODE_SETTING_CHANGED" -> {
+                    if (::unifiedContainer.isInitialized) {
+                        unifiedContainer.post {
+                            setupSceneParams()
+                            unifiedContainer.forceReapplyCurrentScene()
+                        }
+                    }
+                }
+                "com.rawsmusic.action.FLOWING_LIGHT_SETTING_CHANGED" -> {
+                    if (::unifiedContainer.isInitialized) {
+                        unifiedContainer.post {
+                            unifiedContainer.forceReapplyCurrentScene()
                         }
                     }
                 }
@@ -215,6 +241,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         val filter = android.content.IntentFilter().apply {
             addAction("com.rawsmusic.action.IMMERSIVE_SETTING_CHANGED")
             addAction("com.rawsmusic.action.MINI_COVER_SETTING_CHANGED")
+            addAction("com.rawsmusic.action.LETTER_MODE_SETTING_CHANGED")
+            addAction("com.rawsmusic.action.FLOWING_LIGHT_SETTING_CHANGED")
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(settingsChangeReceiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
@@ -325,7 +353,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         if (isLandscape) {
             setupCoverLayoutParams()
 
-            binding.lyricContentContainer.setPadding(0, (40 * density).toInt(), 0, (60 * density).toInt())
+            // 使用屏幕高度的 8% 和 12% 作为歌词容器 padding
+            val screenHeight = resources.displayMetrics.heightPixels
+            val lyricTopPad = (screenHeight * 0.08f).toInt()
+            val lyricBottomPad = (screenHeight * 0.12f).toInt()
+            binding.lyricContentContainer.setPadding(0, lyricTopPad, 0, lyricBottomPad)
         } else {
             setupCoverLayoutParams()
 
@@ -334,7 +366,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             titleParams.width = android.widget.FrameLayout.LayoutParams.MATCH_PARENT
             binding.playTitleGroup.layoutParams = titleParams
 
-            binding.lyricContentContainer.setPadding(0, (140 * density).toInt(), 0, (120 * density).toInt())
+            // 使用屏幕高度的 20% 和 15% 作为歌词容器 padding
+            val screenHeight = resources.displayMetrics.heightPixels
+            val lyricTopPad = (screenHeight * 0.20f).toInt()
+            val lyricBottomPad = (screenHeight * 0.15f).toInt()
+            binding.lyricContentContainer.setPadding(0, lyricTopPad, 0, lyricBottomPad)
         }
     }
 
@@ -355,6 +391,14 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         setupDrawerLayout()
         setupSideMenu()
         setupMiniPlayerListeners()
+        playerController?.setEqualizerController { newSessionId ->
+            binding.audioVisualizer?.bindAudioSession(newSessionId)
+        }
+        playerController?.onPcmWaveformFrame = { buffer, read, channels, sampleRate, bitsPerSample ->
+            binding.audioVisualizer?.post {
+                binding.audioVisualizer?.updatePcmWaveform(buffer, read, channels, sampleRate, bitsPerSample)
+            }
+        }
         CapsuleProgressSync.start(playerController, capsuleView)
         setupPlayPageListeners()
         setupLyricPageListeners()
@@ -368,6 +412,15 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
         LyriconProviderManager.init(this, R.mipmap.ic_launcher)
         playerController?.let { LyriconProviderManager.startPositionSync(it) }
+
+        LyricGetterBridge.init(this)
+
+        LyriconProviderManager.onProviderConnected = {
+            val currentSong = playerController?.currentSong?.value
+            val isPlaying = playerController?.playState?.value == PlayState.PLAYING
+            LyriconProviderManager.setSong(currentSong, if (currentLyricData.isEmpty) null else currentLyricData)
+            LyriconProviderManager.setPlaybackState(isPlaying)
+        }
     }
 
     /**
@@ -424,24 +477,29 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 SideMenuView.MenuItem(R.id.nav_songs, "歌曲", R.drawable.ic_music_note_dark),
                 SideMenuView.MenuItem(R.id.nav_albums, "专辑", R.drawable.ic_album),
                 SideMenuView.MenuItem(R.id.nav_artists, "艺术家", R.drawable.ic_person),
-                SideMenuView.MenuItem(R.id.nav_song_stats, "歌曲统计", UiR.drawable.ic_bar_chart)
+                SideMenuView.MenuItem(R.id.nav_song_stats, "听歌统计", UiR.drawable.ic_bar_chart),
+                SideMenuView.MenuItem(R.id.nav_webdav, "WebDAV", R.drawable.ic_folder_2_fill),
+                SideMenuView.MenuItem(R.id.nav_playlist, "歌单", R.drawable.ic_heart_fill)
             ),
             "系统" to listOf(
                 SideMenuView.MenuItem(R.id.nav_settings, "设置", R.drawable.ic_settings),
                 SideMenuView.MenuItem(R.id.nav_about, "关于", UiR.drawable.ic_info),
-                SideMenuView.MenuItem(R.id.nav_qq_group, "QQ群", UiR.drawable.ic_info)
+                SideMenuView.MenuItem(R.id.nav_qq_group, "QQ群", UiR.drawable.ic_info),
+                SideMenuView.MenuItem(R.id.nav_log_export, "日志导出", R.drawable.ic_log),
+                SideMenuView.MenuItem(R.id.nav_log_viewer, "日志分析", R.drawable.ic_log)
             )
         )
         binding.sideMenu.setMenuItems(menuGroups, R.id.nav_songs)
 
         binding.sideMenu.onMenuItemClick = { itemId ->
             if (itemId == R.id.nav_qq_group) {
-                // 弹出白色弹窗显示QQ群号
                 AlertDialog.Builder(this)
                     .setTitle("QQ群号")
                     .setMessage("QQ群号1093312333，欢迎大家进群讨论。")
                     .setPositiveButton("确定", null)
                     .show()
+            } else if (itemId == R.id.nav_log_export) {
+                exportLogWithSaf()
             } else {
                 try {
                     navController.navigate(itemId)
@@ -464,8 +522,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 R.id.nav_albums -> R.id.nav_albums
                 R.id.nav_artists -> R.id.nav_artists
                 R.id.nav_song_stats -> R.id.nav_song_stats
+                R.id.nav_webdav -> R.id.nav_webdav
+                R.id.nav_playlist -> R.id.nav_playlist
                 R.id.nav_settings -> R.id.nav_settings
                 R.id.nav_about -> R.id.nav_about
+                R.id.nav_log_viewer -> R.id.nav_log_viewer
                 else -> null
             }
             if (menuId != null) binding.sideMenu.setSelectedMenuId(menuId)
@@ -555,7 +616,9 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         }
 
         unifiedContainer.onSceneChanged = { newScene, oldScene ->
-            android.util.Log.d("SceneTransition", "onSceneChanged: $oldScene -> $newScene")
+            AppLogger.d("SceneTransition", "onSceneChanged: $oldScene -> $newScene")
+            val isRealTransition = oldScene != newScene
+            com.rawsmusic.module.data.prefs.AppPreferences.UI.lastScene = newScene.name
             // 只在状态栏设置实际会改变时才更新，避免 PLAYER↔LYRIC 等切换时触发 insets 重算导致导航栏闪烁
             val needsUpdate = (oldScene == UnifiedPlayerContainer.Scene.MAIN) != (newScene == UnifiedPlayerContainer.Scene.MAIN)
             if (needsUpdate) {
@@ -580,7 +643,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                         binding.ivPlayCover.visibility = View.INVISIBLE
                         binding.ivPlayCover.alpha = 0f
                     }
-                    try { navController.popBackStack(R.id.nav_songs, false) } catch (_: Exception) {}
+                    // 仅在场景实际从 PLAYER/LYRIC 切换回 MAIN 时才 pop 导航栈，
+                    // 避免 forceReapplyCurrentScene()（oldScene==newScene）误杀二级页面（如 PEQ）
+                    if (isRealTransition) {
+                        try { navController.popBackStack(R.id.nav_songs, false) } catch (_: Exception) {}
+                    }
                     getListCoverView()?.visibility = View.VISIBLE
                     // 延迟滚动到当前歌曲，确保 RecyclerView 已准备好
                     binding.root.post { scrollToCurrentSong() }
@@ -598,7 +665,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     }
                     if (currentLyricText.isNotBlank()) {
                         val pos = playerController?.position?.value ?: 0L
-                        val lineIdx = currentLyricData.findCurrentLine(pos)
+                        val lineIdx = currentLyricData.findCurrentLine(pos, 100L)
                         val lineText = if (lineIdx >= 0) currentLyricData.getLine(lineIdx)?.text else null
                         val lineTranslation = if (lineIdx >= 0) currentLyricData.getLine(lineIdx)?.translation else null
                         capsuleView.updateLyric(lineText, lineTranslation, !lineTranslation.isNullOrBlank())
@@ -624,12 +691,19 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     frozenContainerLoc = null
                     binding.lyricContentContainer.visibility = View.GONE
                     binding.lyricContentContainer.alpha = 0f
+                    // 隐藏新歌词场景的视图
+                    binding.singleLineLyric?.visibility = View.GONE
+                    binding.audioVisualizer?.visibility = View.GONE
+                    // 恢复流动光效果
+                    binding.playBgView.setDynamic(true)
+                    binding.playBgView.setAllowDynamicRunning(true)
                     binding.miniPlayerBar.post {
                         binding.miniPlayerBar.alpha = 1f
                         binding.miniPlayerBar.visible()
                     }
                 }
                 UnifiedPlayerContainer.Scene.PLAYER -> {
+                    binding.navHostFragment.alpha = 0f
                     unifiedContainer.syncRotationState(unifiedContainer.isCurrentlyPlaying)
                     binding.ivPlayCover.pivotX = binding.ivPlayCover.width / 2f
                     binding.ivPlayCover.pivotY = binding.ivPlayCover.height / 2f
@@ -637,62 +711,121 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     binding.playTitleGroup.pivotY = binding.playTitleGroup.height / 2f
                     val density = resources.displayMetrics.density
                     val isImmersive = unifiedContainer.isImmersiveEnabled
+                    val isLetterMode = com.rawsmusic.module.data.prefs.AppPreferences.UI.isLetterModeEnabled
+                    val isFlowingLightOff = com.rawsmusic.module.data.prefs.AppPreferences.UI.isFlowingLightDisabled
+                    // 封面：沉浸模式隐藏
+                    val coverAlpha = if (isImmersive) 0f else 1f
+                    val coverVisibility = if (isImmersive) View.INVISIBLE else View.VISIBLE
                     unifiedContainer.registerSceneParams(
                         R.id.ivPlayCover,
                         UnifiedPlayerContainer.Scene.PLAYER,
                         UnifiedPlayerContainer.SceneParams(
                             scene = UnifiedPlayerContainer.Scene.PLAYER,
-                            alpha = if (isImmersive) 0f else 1f,
-                            visibility = if (isImmersive) View.INVISIBLE else View.VISIBLE,
+                            alpha = coverAlpha,
+                            visibility = coverVisibility,
                             translationX = 0f,
                             translationY = 0f,
                             scaleX = 1f,
                             scaleY = 1f,
-                            cornerRadius = 12f * density
+                            cornerRadius = 10f * density
                         )
                     )
-                    capsuleView.fold()
-                    capsuleView.showNavBar()
-                    binding.miniPlayerBar.visible()
-                    binding.miniPlayerBar.alpha = 1f
-                    binding.playBottomPanel?.apply {
-                        visibility = View.VISIBLE
-                        alpha = 1f
+                    // 完全移除胶囊栏
+                    binding.miniPlayerBar.visibility = View.GONE
+                    binding.miniPlayerBar.alpha = 0f
+                    // 流动光效果：根据设置控制
+                    if (isFlowingLightOff || isLetterMode) {
+                        binding.playBgView.setDynamic(false)
+                        binding.playBgView.setAllowDynamicRunning(false)
+                        binding.playBgView.pauseAnimations()
+                    } else {
+                        binding.playBgView.setDynamic(true)
+                        binding.playBgView.setAllowDynamicRunning(true)
+                        binding.playBgView.resumeAnimations()
                     }
-                    binding.playTitleGroup.apply {
-                        visibility = View.VISIBLE
-                        alpha = 1f
-                        scaleX = 1f
-                        scaleY = 1f
-                        translationX = 0f
-                        translationY = 0f
+                    // 信笺模式 vs 普通模式
+                    if (isLetterMode) {
+                        // 信笺模式：单行歌词+音频可视化
+                        // 更新scene参数，防止applyRatio(1f)覆盖visibility
+                        val letterModeIds = listOf(R.id.singleLineLyric, R.id.audioVisualizer)
+                        for (vid in letterModeIds) {
+                            unifiedContainer.registerSceneParams(
+                                vid,
+                                UnifiedPlayerContainer.Scene.PLAYER,
+                                UnifiedPlayerContainer.SceneParams(
+                                    scene = UnifiedPlayerContainer.Scene.PLAYER,
+                                    alpha = 1f,
+                                    visibility = View.VISIBLE
+                                )
+                            )
+                        }
+                        binding.singleLineLyric?.apply {
+                            alpha = 1f
+                            visibility = View.VISIBLE
+                        }
+                        binding.audioVisualizer?.apply {
+                            alpha = 1f
+                            visibility = View.VISIBLE
+                        }
+                        binding.playBottomPanel?.visibility = View.GONE
+                        binding.btnPlayMode.visibility = View.GONE
+                        binding.ivHiresSmall.visibility = View.GONE
+                        // 更新信笺模式内容
+                        updateLetterModeContent()
+                    } else {
+                        // 普通模式：显示原始视图
+                        binding.singleLineLyric?.visibility = View.GONE
+                        binding.audioVisualizer?.visibility = View.GONE
+                        binding.playBottomPanel?.apply {
+                            visibility = View.VISIBLE
+                            alpha = 1f
+                        }
+                        binding.playTitleGroup.apply {
+                            visibility = View.VISIBLE
+                            alpha = 1f
+                            scaleX = 1f
+                            scaleY = 1f
+                            translationX = 0f
+                            translationY = 0f
+                        }
+                        binding.btnPlayMode.visibility = View.VISIBLE
+                        updateHiresBadge()
                     }
-                    binding.btnPlayMode.visibility = View.VISIBLE
-                    updateHiresBadge()
                     isCoverAnimActive = false
                     frozenContainerLoc = null
                     val isLandscapePlayer = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+                    val screenHeight = resources.displayMetrics.heightPixels
                     if (isLandscapePlayer) {
-                        binding.lyricContentContainer.setPadding(0, (40 * density).toInt(), 0, (60 * density).toInt())
+                        // 使用屏幕高度的 8% 和 12% 作为歌词容器 padding
+                        val lyricTopPad = (screenHeight * 0.08f).toInt()
+                        val lyricBottomPad = (screenHeight * 0.12f).toInt()
+                        binding.lyricContentContainer.setPadding(0, lyricTopPad, 0, lyricBottomPad)
                     } else {
-                        binding.lyricContentContainer.setPadding(0, (140 * density).toInt(), 0, (120 * density).toInt())
+                        // 使用屏幕高度的 20% 和 15% 作为歌词容器 padding
+                        val lyricTopPad = (screenHeight * 0.20f).toInt()
+                        val lyricBottomPad = (screenHeight * 0.15f).toInt()
+                        binding.lyricContentContainer.setPadding(0, lyricTopPad, 0, lyricBottomPad)
                     }
                     setupCoverLayoutParams()
-                    binding.playBgView.resumeAnimations()
                     binding.queuePageContainer?.visibility = View.GONE
                     binding.albumDetailContainer?.visibility = View.GONE
                     binding.mainBgScrim?.visibility = View.GONE
                     binding.mainBgScrim?.alpha = 0f
                 }
                 UnifiedPlayerContainer.Scene.LYRIC -> {
-                    capsuleView.fold()
-                    capsuleView.showNavBar()
-                    binding.miniPlayerBar.visible()
-                    binding.miniPlayerBar.alpha = 1f
+                    binding.navHostFragment.alpha = 0f
+                    // 完全移除胶囊栏（用户要求：播放界面完全移除）
+                    binding.miniPlayerBar.visibility = View.GONE
+                    binding.miniPlayerBar.alpha = 0f
+                    // 隐藏新歌词场景的视图（这些在PLAYER子状态中使用）
+                    binding.singleLineLyric?.visibility = View.GONE
+                    binding.audioVisualizer?.visibility = View.GONE
                     val density = resources.displayMetrics.density
                     val coverBottom = getCoverBottomInContainer()
-                    val lyricTopPad = (coverBottom + 16 * density).toInt()
-                    val lyricBottomPad = (56 * density).toInt()
+                    // 使用屏幕高度的百分比作为歌词容器 margin
+                    val screenHeight = resources.displayMetrics.heightPixels
+                    val lyricTopPad = (screenHeight * 0.03f).toInt()
+                    val lyricBottomPad = (screenHeight * 0.08f).toInt()
 
                     val lyricLp = binding.lyricContentContainer.layoutParams as android.widget.FrameLayout.LayoutParams
                     lyricLp.topMargin = lyricTopPad
@@ -764,6 +897,9 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     binding.mainBgScrim?.visibility = View.GONE
                     binding.mainBgScrim?.alpha = 0f
                 }
+                UnifiedPlayerContainer.Scene.EFFECTS -> {
+                    syncEffectsPanelState()
+                }
             }
         }
 
@@ -783,36 +919,86 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             unifiedContainer.closePlayPageWithCoverAlign(true)
         }
 
-        unifiedContainer.onPreparePlayerToMain = {
+        unifiedContainer.onPreparePlayerToMain = { onReady ->
             binding.ivHiresSmall.visibility = View.GONE
             binding.ivHiresSmall.alpha = 0f
-            getListCoverView()?.visibility = View.INVISIBLE
-            registerCoverCollapseParams()
+            scrollToCurrentSong()
+            binding.root.post {
+                getListCoverView()?.visibility = View.INVISIBLE
+                registerCoverCollapseParams()
+                onReady()
+            }
         }
 
         unifiedContainer.onPreparePlayerToLyric = {
+            binding.miniPlayerBar.visibility = View.GONE
+            binding.miniPlayerBar.alpha = 0f
             binding.ivHiresSmall.visibility = View.GONE
             binding.ivHiresSmall.alpha = 0f
             binding.ivPlayCover.pivotX = 0f
             binding.ivPlayCover.pivotY = 0f
-            binding.lyricBgView.syncFrom(binding.playBgView)
+            if (!binding.lyricBgView.syncFrom(binding.playBgView)) {
+                binding.lyricBgView.syncFrom(binding.backgroundView)
+            }
             binding.lyricBgView.resumeAnimations()
             registerCoverLyricParams()
         }
 
         unifiedContainer.onPrepareMainToPlayer = {
-            binding.ivPlayCover.apply {
-                visibility = View.VISIBLE
-                alpha = 1f
+            // 立即隐藏胶囊栏（淡出动画）
+            binding.miniPlayerBar.animate()
+                .alpha(0f)
+                .translationY(binding.miniPlayerBar.height.toFloat() * 0.5f)
+                .setDuration(150L)
+                .setInterpolator(android.view.animation.AccelerateInterpolator())
+                .withEndAction {
+                    binding.miniPlayerBar.visibility = View.GONE
+                }
+                .start()
+            loadedCoverImageWidth = 0
+            loadedCoverImageHeight = 0
+            val isImmersive = unifiedContainer.isImmersiveEnabled
+            val isLetterMode = com.rawsmusic.module.data.prefs.AppPreferences.UI.isLetterModeEnabled
+            // 非沉浸模式下检查封面是否可用，无封面则隐藏避免透明矩形
+            val currentSong = playerController?.currentSong?.value
+            val coverUri = currentSong?.let { resolveCoverUri(it) } ?: ""
+            val playCoverUri = coverUri.ifBlank { currentSong?.albumArtPath ?: "" }
+            val hasCover = playCoverUri.isNotBlank()
+            playCoverView.apply {
+                visibility = View.INVISIBLE
+                alpha = if (isImmersive || isLetterMode) 0f else 1f
                 scaleX = 1f
                 scaleY = 1f
                 translationX = 0f
                 translationY = 0f
                 pivotX = width / 2f
                 pivotY = height / 2f
-                shapeAppearanceModel = shapeAppearanceModel.toBuilder()
-                    .setAllCornerSizes(12f * resources.displayMetrics.density)
+                cornerRadius = 10f * resources.displayMetrics.density
+            }
+            // 从主界面进入播放界面时，确保封面图片已加载
+            if (hasCover && !isImmersive && !isLetterMode) {
+                val request = coil.request.ImageRequest.Builder(this)
+                    .data(playCoverUri)
+                    .crossfade(true)
+                    .allowHardware(false)
+                    .target(
+                        onSuccess = { result ->
+                            AppLogger.d("CoverAdjust", "onPrepareMainToPlayer target onSuccess")
+                            val bitmap = (result as? android.graphics.drawable.BitmapDrawable)?.bitmap
+                            if (bitmap != null) {
+                                AppLogger.d("CoverAdjust", "bitmap: ${bitmap.width}x${bitmap.height}")
+                                loadedCoverImageWidth = bitmap.width
+                                loadedCoverImageHeight = bitmap.height
+                            }
+                            // 先同步更新 LayoutParams，确保 setCoverDrawable 触发 requestLayout 时参数正确
+                            setupCoverLayoutParams()
+                            playCoverView.setCoverDrawable(result)
+                            playCoverView.visibility = View.VISIBLE
+                            unifiedContainer.post { setupCoverLayoutParams() }
+                        }
+                    )
                     .build()
+                imageLoader.enqueue(request)
             }
         }
 
@@ -909,80 +1095,104 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 gravity = android.view.Gravity.BOTTOM
                 marginStart = (containerWidth * 0.5f + 16 * density).toInt()
                 marginEnd = (16 * density).toInt()
-                bottomMargin = if (isImmersive) (-5 * density).toInt() else (4 * density).toInt()
+                // 使用屏幕高度的 1% 作为底部 margin，适配不同 DPI 设备
+                bottomMargin = if (isImmersive) (-5 * density).toInt() else (containerHeight * 0.01f).toInt()
             }
         } else {
             val horizontalPadding = (8 * density).toInt()
             val availableWidth = containerWidth - 2 * horizontalPadding
-            val coverSize = (availableWidth * 0.93f).toInt()
-            val coverMarginStart = horizontalPadding + (availableWidth - coverSize) / 2
-
-            val params = android.widget.FrameLayout.LayoutParams(coverSize, coverSize)
-            params.topMargin = (56 * density).toInt()
-            params.marginStart = coverMarginStart
-            binding.ivPlayCover.layoutParams = params
-            binding.ivPlayCover.scaleType = ImageView.ScaleType.CENTER_CROP
-
-            val hiresWidth = (48 * density).toInt()
-            val hiresHeight = (24 * density).toInt()
-            val hiresParams = android.widget.FrameLayout.LayoutParams(hiresWidth, hiresHeight)
+            val coverWidth = (availableWidth * 0.97f).toInt()
             val isImmersive = unifiedContainer.isImmersiveEnabled
-            if (isImmersive) {
-                // 沉浸模式：封面占满屏幕宽度，高度为55%
-                val splitY = (containerHeight * 0.55f).toInt()
-                hiresParams.topMargin = splitY - hiresHeight - (8 * density).toInt()
-                hiresParams.marginStart = containerWidth - hiresWidth - (8 * density).toInt()
-            } else {
-                hiresParams.topMargin = params.topMargin + coverSize - hiresHeight
-                hiresParams.marginStart = coverMarginStart + coverSize - hiresWidth
+
+            val maxHeightPx = (containerHeight * 0.5f).toInt()
+            playCoverView.maxHeightPx = maxHeightPx
+
+            var desiredWidth = coverWidth
+            if (loadedCoverImageWidth > 0 && loadedCoverImageHeight > 0) {
+                val aspectRatio = loadedCoverImageHeight.toFloat() / loadedCoverImageWidth.toFloat()
+                val desiredHeight = (coverWidth * aspectRatio).toInt()
+                if (desiredHeight > maxHeightPx) {
+                    desiredWidth = (maxHeightPx / aspectRatio).toInt()
+                    val minWidth = (100 * density).toInt()
+                    desiredWidth = desiredWidth.coerceIn(minWidth, coverWidth)
+                }
             }
-            binding.ivHiresSmall.layoutParams = hiresParams
 
-            val playModeContainerSize = (38 * density).toInt()
-            val playModeContainerParams = android.widget.FrameLayout.LayoutParams(playModeContainerSize, playModeContainerSize)
-            playModeContainerParams.gravity = android.view.Gravity.TOP or android.view.Gravity.END
-            if (isImmersive) {
-                val splitY = (containerHeight * 0.55f).toInt()
-                playModeContainerParams.topMargin = splitY + (4 * density).toInt()
-                playModeContainerParams.marginEnd = (45 * density).toInt()
-            } else {
-                playModeContainerParams.topMargin = params.topMargin + coverSize + (4 * density).toInt()
-                playModeContainerParams.marginEnd = containerWidth - (coverMarginStart + coverSize) + (35 * density).toInt()
-            }
-            binding.btnPlayModeContainer.layoutParams = playModeContainerParams
+            val params = android.widget.FrameLayout.LayoutParams(desiredWidth, android.widget.FrameLayout.LayoutParams.WRAP_CONTENT)
+            params.gravity = android.view.Gravity.CENTER_HORIZONTAL
+            // 使用屏幕高度的 8% 作为封面 topMargin，适配不同 DPI 设备
+            val screenHeight = resources.displayMetrics.heightPixels
+            params.topMargin = (screenHeight * 0.06f).toInt()
+            params.marginStart = horizontalPadding
+            params.marginEnd = horizontalPadding
+            binding.ivPlayCover.layoutParams = params
 
-            // btnMoreActionContainer 位于 btnPlayModeContainer 右侧
-            val moreActionContainerSize = (38 * density).toInt()
-            val moreActionContainerParams = android.widget.FrameLayout.LayoutParams(moreActionContainerSize, moreActionContainerSize)
-            moreActionContainerParams.gravity = android.view.Gravity.TOP or android.view.Gravity.END
-            moreActionContainerParams.topMargin = playModeContainerParams.topMargin + (playModeContainerSize - moreActionContainerSize) / 2
-            moreActionContainerParams.marginEnd = playModeContainerParams.marginEnd - playModeContainerSize - (2 * density).toInt()
-            binding.btnMoreActionContainer.layoutParams = moreActionContainerParams
+            // 使用 post 等待布局完成后，用实际渲染高度定位 Hi-Res、按钮和标题
+            binding.ivPlayCover.post {
+                val actualCoverHeight = binding.ivPlayCover.height
+                if (actualCoverHeight == 0) return@post
 
-            val titleParams = binding.playTitleGroup.layoutParams as android.widget.FrameLayout.LayoutParams
-            titleParams.width = android.widget.FrameLayout.LayoutParams.MATCH_PARENT
-            if (isImmersive) {
-                // 沉浸模式：标题信息下移，与播放偏好、三个点平行（同一水平线）
-                val splitY = (containerHeight * 0.55f).toInt()
-                titleParams.topMargin = splitY + (4 * density).toInt()
-            } else {
-                titleParams.topMargin = params.topMargin + coverSize + (12 * density).toInt()
-            }
-            titleParams.marginStart = (20 * density).toInt()
-            titleParams.marginEnd = (72 * density).toInt()
-            binding.playTitleGroup.layoutParams = titleParams
+                val hiresWidth = (48 * density).toInt()
+                val hiresHeight = (24 * density).toInt()
+                val hiresParams = android.widget.FrameLayout.LayoutParams(hiresWidth, hiresHeight)
+                if (isImmersive) {
+                    val splitY = (containerHeight * 0.55f).toInt()
+                    hiresParams.topMargin = splitY - hiresHeight - (8 * density).toInt()
+                    hiresParams.marginStart = containerWidth - hiresWidth - (8 * density).toInt()
+                } else {
+                    hiresParams.topMargin = params.topMargin + actualCoverHeight - hiresHeight
+                    hiresParams.marginStart = binding.ivPlayCover.right - hiresWidth
+                }
+                binding.ivHiresSmall.layoutParams = hiresParams
 
-            binding.playBottomPanel?.layoutParams = android.widget.FrameLayout.LayoutParams(
-                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = android.view.Gravity.BOTTOM
-                marginStart = (20 * density).toInt()
-                marginEnd = (20 * density).toInt()
-                bottomMargin = if (isImmersive) (-5 * density).toInt() else (24 * density).toInt()
+                val playModeContainerSize = (38 * density).toInt()
+                val playModeContainerParams = android.widget.FrameLayout.LayoutParams(playModeContainerSize, playModeContainerSize)
+                playModeContainerParams.gravity = android.view.Gravity.TOP or android.view.Gravity.END
+                if (isImmersive) {
+                    val splitY = (containerHeight * 0.55f).toInt()
+                    playModeContainerParams.topMargin = splitY + (4 * density).toInt()
+                    playModeContainerParams.marginEnd = (45 * density).toInt()
+                } else {
+                    playModeContainerParams.topMargin = params.topMargin + actualCoverHeight + (4 * density).toInt()
+                    playModeContainerParams.marginEnd = containerWidth - binding.ivPlayCover.right + (35 * density).toInt()
+                }
+                binding.btnPlayModeContainer.layoutParams = playModeContainerParams
+
+                val moreActionContainerSize = (38 * density).toInt()
+                val moreActionContainerParams = android.widget.FrameLayout.LayoutParams(moreActionContainerSize, moreActionContainerSize)
+                moreActionContainerParams.gravity = android.view.Gravity.TOP or android.view.Gravity.END
+                moreActionContainerParams.topMargin = playModeContainerParams.topMargin + (playModeContainerSize - moreActionContainerSize) / 2
+                moreActionContainerParams.marginEnd = playModeContainerParams.marginEnd - playModeContainerSize - (2 * density).toInt()
+                binding.btnMoreActionContainer.layoutParams = moreActionContainerParams
+
+                val titleParams = binding.playTitleGroup.layoutParams as android.widget.FrameLayout.LayoutParams
+                titleParams.width = android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+                if (isImmersive) {
+                    val splitY = (containerHeight * 0.55f).toInt()
+                    titleParams.topMargin = splitY + (4 * density).toInt()
+                } else {
+                    titleParams.topMargin = params.topMargin + actualCoverHeight + (20 * density).toInt()
+                }
+                titleParams.marginStart = (20 * density).toInt()
+                titleParams.marginEnd = (72 * density).toInt()
+                binding.playTitleGroup.layoutParams = titleParams
+
+                binding.playBottomPanel?.layoutParams = android.widget.FrameLayout.LayoutParams(
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    gravity = android.view.Gravity.BOTTOM
+                    marginStart = (20 * density).toInt()
+                    marginEnd = (20 * density).toInt()
+                    // 使用屏幕高度的 3% 作为底部 margin，适配不同 DPI 设备
+                    val screenHeight = resources.displayMetrics.heightPixels
+                    bottomMargin = if (isImmersive) (-5 * density).toInt() else (screenHeight * 0.01f).toInt()
+                }
             }
         }
     }
+
+
 
     /**
      */
@@ -1010,11 +1220,12 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             UnifiedPlayerContainer.Scene.LYRIC to UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.LYRIC,
                 alpha = 0f,
-                visibility = View.GONE
+                visibility = View.VISIBLE
             )
         )
 
         val isImmersive = unifiedContainer.isImmersiveEnabled
+        val coverAlpha = if (isImmersive) 0f else 1f
         unifiedContainer.registerViewScenes(
             R.id.ivPlayCover,
             UnifiedPlayerContainer.Scene.MAIN to UnifiedPlayerContainer.SceneParams(
@@ -1024,17 +1235,24 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             ),
             UnifiedPlayerContainer.Scene.PLAYER to UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.PLAYER,
-                alpha = if (isImmersive) 0f else 1f,
-                visibility = if (isImmersive) View.INVISIBLE else View.VISIBLE,
+                alpha = coverAlpha,
+                visibility = View.INVISIBLE,
                 translationX = 0f,
                 translationY = 0f,
             ),
             UnifiedPlayerContainer.Scene.LYRIC to UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.LYRIC,
-                alpha = if (isImmersive) 0f else 1f,
-                visibility = if (isImmersive) View.INVISIBLE else View.VISIBLE,
+                alpha = coverAlpha,
+                visibility = View.INVISIBLE,
                 scaleX = 0.3f,
                 scaleY = 0.3f,
+                translationX = 0f,
+                translationY = 0f,
+            ),
+            UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.EFFECTS,
+                alpha = coverAlpha,
+                visibility = View.INVISIBLE,
                 translationX = 0f,
                 translationY = 0f,
             )
@@ -1138,10 +1356,14 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 visibility = View.VISIBLE,
                 scaleX = 0.98f,
                 scaleY = 0.98f
+            ),
+            UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.EFFECTS,
+                alpha = 0f,
+                visibility = View.GONE
             )
         )
 
-        // ===== audioInfoCapsule =====
         unifiedContainer.registerViewScenes(
             R.id.audioInfoCapsule,
             UnifiedPlayerContainer.Scene.MAIN to UnifiedPlayerContainer.SceneParams(
@@ -1158,6 +1380,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 scene = UnifiedPlayerContainer.Scene.LYRIC,
                 alpha = 1f,
                 visibility = View.VISIBLE
+            ),
+            UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.EFFECTS,
+                alpha = 0f,
+                visibility = View.GONE
             )
         )
 
@@ -1179,8 +1406,6 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             )
         )
 
-        // ===== 场景过渡动画 =====
-        // 非沉浸模式下隐藏 playBgView，避免与 ivPlayCover 同时显示专辑图
         unifiedContainer.registerViewScenes(
             R.id.playBgView,
             UnifiedPlayerContainer.Scene.MAIN to UnifiedPlayerContainer.SceneParams(
@@ -1195,8 +1420,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             ),
             UnifiedPlayerContainer.Scene.LYRIC to UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.LYRIC,
-                alpha = if (isImmersive) 1f else 0f,
-                visibility = if (isImmersive) View.VISIBLE else View.INVISIBLE
+                alpha = 0f,
+                visibility = View.GONE
             ),
             UnifiedPlayerContainer.Scene.QUEUE to UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.QUEUE,
@@ -1207,10 +1432,14 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 scene = UnifiedPlayerContainer.Scene.ALBUM_DETAIL,
                 alpha = if (isImmersive) 1f else 0f,
                 visibility = if (isImmersive) View.VISIBLE else View.INVISIBLE
+            ),
+            UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.EFFECTS,
+                alpha = if (isImmersive) 1f else 0f,
+                visibility = if (isImmersive) View.VISIBLE else View.INVISIBLE
             )
         )
 
-        // ===== 播放页手势处理=====
         val scrimAlpha = if (isImmersive) 0f else 1f
         val scrimVisibility = if (isImmersive) View.INVISIBLE else View.VISIBLE
         unifiedContainer.registerViewScenes(
@@ -1239,6 +1468,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 scene = UnifiedPlayerContainer.Scene.ALBUM_DETAIL,
                 alpha = scrimAlpha,
                 visibility = scrimVisibility
+            ),
+            UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.EFFECTS,
+                alpha = scrimAlpha,
+                visibility = scrimVisibility
             )
         )
 
@@ -1258,10 +1492,45 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 scene = UnifiedPlayerContainer.Scene.LYRIC,
                 alpha = 0f,
                 visibility = View.GONE
+            ),
+            UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.EFFECTS,
+                alpha = 0f,
+                visibility = View.GONE
             )
         )
 
-        // ===== 胶囊播放栏场景参数=====
+        val isLetterMode = com.rawsmusic.module.data.prefs.AppPreferences.UI.isLetterModeEnabled
+        val letterModeIds = listOf(
+            R.id.singleLineLyric,
+            R.id.audioVisualizer
+        )
+        for (vid in letterModeIds) {
+            unifiedContainer.registerViewScenes(
+                vid,
+                UnifiedPlayerContainer.Scene.MAIN to UnifiedPlayerContainer.SceneParams(
+                    scene = UnifiedPlayerContainer.Scene.MAIN,
+                    alpha = 0f,
+                    visibility = View.GONE
+                ),
+                UnifiedPlayerContainer.Scene.PLAYER to UnifiedPlayerContainer.SceneParams(
+                    scene = UnifiedPlayerContainer.Scene.PLAYER,
+                    alpha = if (isLetterMode) 1f else 0f,
+                    visibility = if (isLetterMode) View.VISIBLE else View.GONE
+                ),
+                UnifiedPlayerContainer.Scene.LYRIC to UnifiedPlayerContainer.SceneParams(
+                    scene = UnifiedPlayerContainer.Scene.LYRIC,
+                    alpha = 0f,
+                    visibility = View.GONE
+                ),
+                UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                    scene = UnifiedPlayerContainer.Scene.EFFECTS,
+                    alpha = 0f,
+                    visibility = View.GONE
+                )
+            )
+        }
+
         unifiedContainer.registerViewScenes(
             R.id.playMetadataCard,
             UnifiedPlayerContainer.Scene.MAIN to UnifiedPlayerContainer.SceneParams(
@@ -1278,10 +1547,14 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 scene = UnifiedPlayerContainer.Scene.LYRIC,
                 alpha = 0f,
                 visibility = View.GONE
+            ),
+            UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.EFFECTS,
+                alpha = 0f,
+                visibility = View.GONE
             )
         )
 
-        // ===== 导航栏主场景参数 =====
         unifiedContainer.registerViewScenes(
             R.id.miniPlayerBar,
             UnifiedPlayerContainer.Scene.MAIN to UnifiedPlayerContainer.SceneParams(
@@ -1300,10 +1573,15 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 scene = UnifiedPlayerContainer.Scene.LYRIC,
                 alpha = 1f,
                 visibility = View.VISIBLE
+            ),
+            UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.EFFECTS,
+                alpha = 1f,
+                visibility = View.VISIBLE
             )
         )
 
-        // ===== 播放背景场景参数=====
+        // ===== 歌词背景场景参数=====
         unifiedContainer.registerViewScenes(
             R.id.lyricBgView,
             UnifiedPlayerContainer.Scene.MAIN to UnifiedPlayerContainer.SceneParams(
@@ -1318,8 +1596,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             ),
             UnifiedPlayerContainer.Scene.LYRIC to UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.LYRIC,
-                alpha = 0f,
-                visibility = View.GONE
+                alpha = 1f,
+                visibility = View.VISIBLE
             ),
             UnifiedPlayerContainer.Scene.QUEUE to UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.QUEUE,
@@ -1352,7 +1630,6 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             )
         )
 
-        // 非沉浸模式下，播放页/歌词页需要保留流光背景（playBgScrim 覆盖其上）
         val bgPlayerAlpha = if (isImmersive) 0f else 1f
         unifiedContainer.registerViewScenes(
             R.id.backgroundView,
@@ -1380,10 +1657,14 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 scene = UnifiedPlayerContainer.Scene.ALBUM_DETAIL,
                 alpha = 0f,
                 visibility = View.VISIBLE
+            ),
+            UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.EFFECTS,
+                alpha = bgPlayerAlpha,
+                visibility = View.VISIBLE
             )
         )
 
-        // ===== 播放页背景设置=====
         unifiedContainer.registerViewScenes(
             R.id.mainBgScrim,
             UnifiedPlayerContainer.Scene.MAIN to UnifiedPlayerContainer.SceneParams(
@@ -1408,6 +1689,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             ),
             UnifiedPlayerContainer.Scene.ALBUM_DETAIL to UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.ALBUM_DETAIL,
+                alpha = 0f,
+                visibility = View.VISIBLE
+            ),
+            UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.EFFECTS,
                 alpha = 0f,
                 visibility = View.VISIBLE
             )
@@ -1449,6 +1735,9 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             ),
             UnifiedPlayerContainer.Scene.ALBUM_DETAIL to UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.ALBUM_DETAIL, alpha = 0f, visibility = View.GONE
+            ),
+            UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.EFFECTS, alpha = 0f, visibility = View.GONE
             )
         )
 
@@ -1468,6 +1757,31 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             ),
             UnifiedPlayerContainer.Scene.ALBUM_DETAIL to UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.ALBUM_DETAIL, alpha = 1f, visibility = View.VISIBLE, translationX = 0f
+            ),
+            UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.EFFECTS, alpha = 0f, visibility = View.GONE
+            )
+        )
+
+        unifiedContainer.registerViewScenes(
+            R.id.effectsPanel,
+            UnifiedPlayerContainer.Scene.MAIN to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.MAIN, alpha = 0f, visibility = View.GONE
+            ),
+            UnifiedPlayerContainer.Scene.PLAYER to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.PLAYER, alpha = 0f, visibility = View.GONE
+            ),
+            UnifiedPlayerContainer.Scene.LYRIC to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.LYRIC, alpha = 0f, visibility = View.GONE
+            ),
+            UnifiedPlayerContainer.Scene.QUEUE to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.QUEUE, alpha = 0f, visibility = View.GONE
+            ),
+            UnifiedPlayerContainer.Scene.ALBUM_DETAIL to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.ALBUM_DETAIL, alpha = 0f, visibility = View.GONE
+            ),
+            UnifiedPlayerContainer.Scene.EFFECTS to UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.EFFECTS, alpha = 1f, visibility = View.VISIBLE
             )
         )
 
@@ -1478,9 +1792,9 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             R.id.btnPlayModeContainer,
             R.id.btnMoreActionContainer,
             R.id.audioInfoCapsule,
-            R.id.playBgView,
-            R.id.playBgScrim,
-            R.id.ivPlayCoverMirror
+            R.id.ivPlayCoverMirror,
+            R.id.singleLineLyric,
+            R.id.audioVisualizer
         )
 
         val ch = unifiedContainer.height.toFloat()
@@ -1490,6 +1804,19 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 UnifiedPlayerContainer.SceneParams(scene = UnifiedPlayerContainer.Scene.QUEUE, alpha = 0f, translationY = -ch, visibility = View.GONE))
             unifiedContainer.registerSceneParams(vid, UnifiedPlayerContainer.Scene.ALBUM_DETAIL,
                 UnifiedPlayerContainer.SceneParams(scene = UnifiedPlayerContainer.Scene.ALBUM_DETAIL, alpha = 0f, translationX = cw, visibility = View.GONE))
+        }
+
+        val effectsFadeOutIds = listOf(
+            R.id.playTitleGroup,
+            R.id.playBottomPanel,
+            R.id.btnPlayModeContainer,
+            R.id.btnMoreActionContainer,
+            R.id.audioInfoCapsule,
+            R.id.ivHiresSmall
+        )
+        for (vid in effectsFadeOutIds) {
+            unifiedContainer.registerSceneParams(vid, UnifiedPlayerContainer.Scene.EFFECTS,
+                UnifiedPlayerContainer.SceneParams(scene = UnifiedPlayerContainer.Scene.EFFECTS, alpha = 0f, visibility = View.GONE))
         }
 
         unifiedContainer.applyImmersiveSceneParams()
@@ -1606,6 +1933,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 binding.btnPlayPause.alpha = 1f
 
                 LyriconProviderManager.setPlaybackState(isPlaying)
+                LyricGetterBridge.updatePlaybackState(this@MainActivity, isPlaying)
 
                 if (!isSeeking && !unifiedContainer.isTransitioning && unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.PLAYER) {
                     animateCoverBreathing(isPlaying)
@@ -1627,7 +1955,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         lifecycleScope.launch(Dispatchers.Main) {
             playerController?.currentSong?.collect { song ->
                 song?.let {
-                    Log.d("MetaObserver", "song changed: ${it.title}, sr=${it.sampleRate}, br=${it.bitRate}, " +
+                    AppLogger.d("MetaObserver", "song changed: ${it.title}, sr=${it.sampleRate}, br=${it.bitRate}, " +
                             "bps=${it.bitsPerSample}, ch=${it.channelCount}, isHiRes=${it.isHiRes}")
 
                     val coverUri = resolveCoverUri(it)
@@ -1644,30 +1972,71 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
                     if (unifiedContainer.currentScene != UnifiedPlayerContainer.Scene.MAIN) {
                         binding.ivPlayCover.animate().cancel()
-                        // 沉浸模式下封面由 ImmersiveBackgroundView 渲染，ivPlayCover 保持隐藏
                         val isImmersive = unifiedContainer.isImmersiveEnabled
+                        val isLetterMode = com.rawsmusic.module.data.prefs.AppPreferences.UI.isLetterModeEnabled
+                        val hasCover = playCoverUri.isNotBlank()
                         binding.ivPlayCover.alpha = if (isImmersive) 0f else 1f
-                        if (isImmersive) {
-                            binding.ivPlayCover.visibility = View.INVISIBLE
-                        }
+                        binding.ivPlayCover.visibility = View.INVISIBLE
                         binding.ivPlayCover.translationX = 0f
                         binding.ivPlayCover.translationY = 0f
                         binding.ivPlayCover.rotationY = 0f
-                        when (unifiedContainer.currentScene) {
-                            UnifiedPlayerContainer.Scene.LYRIC -> {
+                        when {
+                            unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.LYRIC -> {
                                 binding.ivPlayCover.scaleX = 0.3f
                                 binding.ivPlayCover.scaleY = 0.3f
+                            }
+                            isLetterMode -> {
+                                binding.ivPlayCover.scaleX = 1f
+                                binding.ivPlayCover.scaleY = 1f
+                                letterModeCurrentLyricText = ""
+                                updateLetterModeContent()
                             }
                             else -> {
                                 binding.ivPlayCover.scaleX = 1f
                                 binding.ivPlayCover.scaleY = 1f
                             }
                         }
-                        binding.ivPlayCover.load(playCoverUri) {
-                            crossfade(true)
-                            size(3000)
-                            allowHardware(false)
-                            transformations(SquarePadTransformation())
+                        if (hasCover) {
+                            val request = coil.request.ImageRequest.Builder(this@MainActivity)
+                                .data(playCoverUri)
+                                .crossfade(true)
+                                .allowHardware(false)
+                                .target(
+                                    onSuccess = { result ->
+                                        AppLogger.d("CoverAdjust", "songObserver target onSuccess")
+                                        val bitmap = (result as? android.graphics.drawable.BitmapDrawable)?.bitmap
+                                        if (bitmap != null) {
+                                            loadedCoverImageWidth = bitmap.width
+                                            loadedCoverImageHeight = bitmap.height
+                                        }
+                                        setupCoverLayoutParams()
+                                        playCoverView.setCoverDrawable(result)
+                                        // 沉浸模式下不显示大封面
+                                        val isImmers = unifiedContainer.isImmersiveEnabled
+                                        if (!isImmers) {
+                                            binding.ivPlayCover.visibility = View.VISIBLE
+                                        }
+                                        unifiedContainer.post { setupCoverLayoutParams() }
+                                    }
+                                )
+                                .build()
+                            imageLoader.enqueue(request)
+                        } else if (playCoverUri.isNotBlank()) {
+                            val dimRequest = coil.request.ImageRequest.Builder(this@MainActivity)
+                                .data(playCoverUri)
+                                .allowHardware(false)
+                                .size(coil.size.Size.ORIGINAL)
+                                .target(
+                                    onSuccess = { result ->
+                                        val bitmap = (result as? android.graphics.drawable.BitmapDrawable)?.bitmap
+                                        if (bitmap != null) {
+                                            loadedCoverImageWidth = bitmap.width
+                                            loadedCoverImageHeight = bitmap.height
+                                        }
+                                    }
+                                )
+                                .build()
+                            imageLoader.enqueue(dimRequest)
                         }
                     }
                     unifiedContainer.updateImmersiveCover(playCoverUri.ifBlank { null })
@@ -1699,35 +2068,51 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         lifecycleScope.launch(Dispatchers.Main) {
             playerController?.position?.collect { pos ->
                 val duration = playerController?.duration?.value ?: 0L
+                val latency = playerController?.latencyMs?.toLong() ?: 0L
+                val lyricPos = (pos - latency).coerceAtLeast(0L)
                 binding.seekBar.setProgress(pos, duration)
                 binding.tvCurrentTime.text = AudioUtils.formatDuration(pos)
                 binding.tvTotalTime.text = AudioUtils.formatDuration(duration)
-        // 更新歌词显示和胶囊播放栏
                 val remaining = (duration - pos).coerceAtLeast(0L)
-                // Update lyric position for auto-scroll
-                lyricPlayerView.setPosition(pos)
+                lyricPlayerView.setPosition(lyricPos)
                 if (!currentLyricData.isEmpty) {
-                    val lineIdx = currentLyricData.findCurrentLine(pos)
-                    val lineText = if (lineIdx >= 0) currentLyricData.getLine(lineIdx)?.text else null
-                    val lineTranslation = if (lineIdx >= 0) currentLyricData.getLine(lineIdx)?.translation else null
-                    if (lineText != currentLyricText) {
-                        currentLyricText = lineText ?: ""
-                        if (audioCapsuleState == 4) updateCapsuleText()
-                        val song = playerController?.currentSong?.value
-                        val displayTitle = song?.title ?: ""
-                        val displayArtist = song?.artist ?: ""
-                        if (currentLyricText.isNotBlank()) {
-                            capsuleView.updateLyric(currentLyricText, lineTranslation ?: "", !lineTranslation.isNullOrBlank())
-                        } else {
-                            capsuleView.updateLyric(null, null, false)
+                    val lineIdx = currentLyricData.findCurrentLine(lyricPos)
+                    if (lineIdx >= 0) {
+                        val line = currentLyricData.getLine(lineIdx)
+                        if (line != null) {
+                            if (com.rawsmusic.module.data.prefs.AppPreferences.UI.isLetterModeEnabled) {
+                                val isLetterVisible = binding.singleLineLyric?.visibility == View.VISIBLE
+                                if (isLetterVisible) {
+                                    if (line.text != letterModeCurrentLyricText) {
+                                        letterModeCurrentLyricText = line.text
+                                        binding.singleLineLyric?.showLyric(line, lyricPos)
+                                    } else {
+                                        binding.singleLineLyric?.updatePosition(lyricPos)
+                                    }
+                                }
+                            }
+                            val lineText = line.text
+                            val lineTranslation = line.translation
+                            if (lineText != currentLyricText) {
+                                currentLyricText = lineText
+                                if (audioCapsuleState == 4) updateCapsuleText()
+                                if (currentLyricText.isNotBlank() && !isMusicSymbolOnly(currentLyricText)) {
+                                    capsuleView.updateLyric(currentLyricText, lineTranslation, !lineTranslation.isNullOrBlank())
+                                    TickerBridge.updateLyric(this@MainActivity, currentLyricText, lineTranslation ?: "")
+                                    LyricGetterBridge.updateLyric(this@MainActivity, currentLyricText, lineTranslation ?: "")
+                                    BluetoothLyricBridge.updateLyric(currentLyricText, lineTranslation ?: "")
+                                }
+                            }
                         }
                     }
+                } else if (currentLyricText.isNotEmpty()) {
+                    currentLyricText = ""
+                    letterModeCurrentLyricText = ""
+                    capsuleView.updateLyric(null, null, false)
+                    TickerBridge.clearLyric(this@MainActivity)
+                    LyricGetterBridge.clearLyric(this@MainActivity)
+                    BluetoothLyricBridge.clearLyric()
                 }
-            }
-        }
-
-        lifecycleScope.launch(Dispatchers.Main) {
-            playerController?.position?.collect { pos ->
                 val now = System.currentTimeMillis()
                 if (now - lastSyncPositionTime >= 3000 && PlayerService.isRunning) {
                     lastSyncPositionTime = now
@@ -1891,32 +2276,66 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             val parent = v.parent
             if (parent is View) v = parent else break
         }
-        val density = resources.displayMetrics.density
-        val fixedSize = 72f * density
-        return Quad(x, y, fixedSize, fixedSize)
+        return Quad(x, y, listCoverView.width.toFloat(), listCoverView.height.toFloat())
     }
 
     /** 获取播放页封面目标矩形位置 */
     /**
      */
+    /**
+     * 计算播放页封面目标矩形，宽度和高度与 setupCoverLayoutParams 保持一致
+     */
     private fun getPlayCoverTargetRect(): android.graphics.RectF {
         val density = resources.displayMetrics.density
-        val containerW = unifiedContainer.width.toFloat()
-        val containerH = unifiedContainer.height.toFloat()
         val isLandscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
         if (isLandscape) {
+            val containerW = unifiedContainer.width.toFloat()
+            val containerH = unifiedContainer.height.toFloat()
             val coverSize = minOf(containerW * 0.35f, containerH - 48f * density)
             val coverLeft = (containerW * 0.5f - coverSize) / 2f
             val coverTop = (containerH - coverSize) / 2f
             return android.graphics.RectF(coverLeft, coverTop, coverLeft + coverSize, coverTop + coverSize)
         } else {
+            val cover = binding.ivPlayCover
+            if (cover.width > 0 && cover.height > 0) {
+                val containerLoc = IntArray(2)
+                unifiedContainer.getLocationOnScreen(containerLoc)
+                val coverLoc = IntArray(2)
+                cover.getLocationOnScreen(coverLoc)
+                val left = (coverLoc[0] - containerLoc[0]).toFloat()
+                val top = (coverLoc[1] - containerLoc[1]).toFloat()
+                return android.graphics.RectF(left, top, left + cover.width.toFloat(), top + cover.height.toFloat())
+            }
+
+            val containerW = unifiedContainer.width.toFloat()
+            val screenHeight = resources.displayMetrics.heightPixels.toFloat()
             val hPad = 8f * density
             val availW = containerW - 2f * hPad
-            val w = availW * 0.93f
-            val h = w
+            val coverWidth = (availW * 0.97f).toInt()
+            val maxHeightPx = (unifiedContainer.height * 0.5f).toInt()
+
+            var desiredWidth = coverWidth
+            if (loadedCoverImageWidth > 0 && loadedCoverImageHeight > 0) {
+                val aspectRatio = loadedCoverImageHeight.toFloat() / loadedCoverImageWidth.toFloat()
+                val desiredHeight = (coverWidth * aspectRatio).toInt()
+                if (desiredHeight > maxHeightPx) {
+                    desiredWidth = (maxHeightPx / aspectRatio).toInt()
+                    val minWidth = (100 * density).toInt()
+                    desiredWidth = desiredWidth.coerceIn(minWidth, coverWidth)
+                }
+            }
+
+            val w = desiredWidth.toFloat()
+            val h = if (loadedCoverImageWidth > 0 && loadedCoverImageHeight > 0) {
+                val aspectRatio = loadedCoverImageHeight.toFloat() / loadedCoverImageWidth.toFloat()
+                (w * aspectRatio).coerceAtMost(maxHeightPx.toFloat())
+            } else {
+                (w * 1.2f).coerceAtMost(maxHeightPx.toFloat())
+            }
+
             val left = hPad + (availW - w) / 2f
-            val top = 56f * density
+            val top = screenHeight * 0.04f
             return android.graphics.RectF(left, top, left + w, top + h)
         }
     }
@@ -1938,6 +2357,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
         unifiedContainer.isTransitioning = true
         isCoverAnimActive = true
+
+        // 重置封面尺寸，确保动画使用当前歌曲的封面信息而非上一首的
+        loadedCoverImageWidth = 0
+        loadedCoverImageHeight = 0
 
         getCurrentSongCoverRectWhenReady { listCoverRect ->
             val containerLoc = IntArray(2)
@@ -1995,14 +2418,15 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             binding.playBgView.visibility = View.VISIBLE
             binding.playBgView.alpha = 0f
 
-            binding.ivPlayCover.apply {
-                val lp = layoutParams
+            playCoverView.apply {
+                val lp = layoutParams as android.widget.FrameLayout.LayoutParams
                 lp.width = targetW.toInt()
                 lp.height = targetH.toInt()
+                lp.gravity = android.view.Gravity.CENTER_HORIZONTAL
+                lp.marginStart = (8 * resources.displayMetrics.density).toInt()
+                lp.marginEnd = (8 * resources.displayMetrics.density).toInt()
                 layoutParams = lp
-                shapeAppearanceModel = shapeAppearanceModel.toBuilder()
-                    .setAllCornerSizes(12f * resources.displayMetrics.density)
-                    .build()
+                cornerRadius = 10f * resources.displayMetrics.density
                 translationX = translatedX
                 translationY = translatedY
                 scaleX = startScaleX
@@ -2017,7 +2441,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 binding.miniPlayerBar.alpha = 0f
             }
 
-            val baseCornerPx = 12f * resources.displayMetrics.density
+            val baseCornerPx = 10f * resources.displayMetrics.density
             val playerCornerPx = baseCornerPx
             val mainCornerPx = if (startScaleX > 0.01f) playerCornerPx / startScaleX else playerCornerPx
             unifiedContainer.registerSceneParams(
@@ -2086,6 +2510,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
     private var immersiveSwipeDirection = 0
     private var audioCapsuleState = 0
     private var currentLyricText = ""
+    private var letterModeCurrentLyricText = ""
     private var coverLongPressTriggered = false
     private val coverDragThreshold by lazy { 240f * resources.displayMetrics.density }
     private val coverSwipeUpThreshold by lazy { 160f * resources.displayMetrics.density }
@@ -2145,6 +2570,16 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         }
     }
 
+    private fun isMusicSymbolOnly(text: String): Boolean {
+        val content = text.trim()
+        if (content.isEmpty()) return true
+        return content.all { char ->
+            char.isWhitespace() ||
+                char in setOf('♪', '♫', '♬', '♩', '♭', '♯', '♮', '☆', '★', '·', '.', '。', '…') ||
+                Character.UnicodeBlock.of(char) == Character.UnicodeBlock.MUSICAL_SYMBOLS
+        }
+    }
+
     private fun updateCapsuleText() {
         val capsule = binding.audioInfoCapsule ?: return
         val song = playerController?.currentSong?.value
@@ -2163,7 +2598,14 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     } else ""
                     val br = if (song.bitRate > 0) "${song.bitRate / 1000}kbps" else ""
                     val fmt = song.encodingFormat.ifBlank { song.format.ifBlank { song.extension } }.uppercase()
-                    val bps = if (song.bitsPerSample > 0) "${song.bitsPerSample}bit" else ""
+                    val isFloat = fmt.contains("FLOAT", true)
+                    val bps = when {
+                        song.bitsPerSample <= 0 -> ""
+                        isFloat && song.bitsPerSample == 32 -> "Float32"
+                        isFloat && song.bitsPerSample == 64 -> "Float64"
+                        isFloat -> "${song.bitsPerSample}bit Float"
+                        else -> "${song.bitsPerSample}bit"
+                    }
                     val hiResTag = if (song.isHiRes) "Hi-Res " else ""
                     capsule.text = listOf(hiResTag + fmt, sr, bps, br).filter { it.isNotBlank() }.joinToString(" ")
                 } else {
@@ -2361,6 +2803,44 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         } catch (_: Exception) { "" }
     }
 
+    private fun showSleepTimerDialog() {
+        val pc = playerController ?: return
+        val options = arrayOf("关闭", "10 分钟", "15 分钟", "20 分钟", "30 分钟", "45 分钟", "60 分钟", "90 分钟", "播完当前", "播完 3 首后", "播完 5 首后")
+        val currentMode = pc.getSleepTimerMode()
+        val checkedItem = when (currentMode) {
+            1 -> {
+                val mins = AppPreferences.Player.sleepTimerMinutes
+                when (mins) { 10 -> 1; 15 -> 2; 20 -> 3; 30 -> 4; 45 -> 5; 60 -> 6; 90 -> 7; else -> 4 }
+            }
+            3 -> 8
+            2 -> {
+                val songs = if (pc.isSleepTimerActive()) 3 else 0
+                when (songs) { 3 -> 9; 5 -> 10; else -> -1 }
+            }
+            else -> 0
+        }
+        AlertDialog.Builder(this)
+            .setTitle("睡眠定时")
+            .setSingleChoiceItems(options, checkedItem) { dialog, which ->
+                when (which) {
+                    0 -> pc.cancelSleepTimer()
+                    1 -> pc.startSleepTimer(10)
+                    2 -> pc.startSleepTimer(15)
+                    3 -> pc.startSleepTimer(20)
+                    4 -> pc.startSleepTimer(30)
+                    5 -> pc.startSleepTimer(45)
+                    6 -> pc.startSleepTimer(60)
+                    7 -> pc.startSleepTimer(90)
+                    8 -> pc.enableStopAfterCurrent()
+                    9 -> pc.startSleepTimerSongs(3)
+                    10 -> pc.startSleepTimerSongs(5)
+                }
+                dialog.dismiss()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
     @Suppress("MissingPermission", "DEPRECATION")
     private fun showAudioInfoPopup() {
         val song = playerController?.currentSong?.value ?: return
@@ -2436,8 +2916,15 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
         addSectionTitle("文件信息")
         val fmt = song.encodingFormat.ifBlank { song.format.ifBlank { song.extension } }.uppercase()
+        val isFloat = fmt.contains("FLOAT", true)
         addItem("格式", fmt.ifBlank { "未知" })
-        addItem("位深", if (song.bitsPerSample > 0) "${song.bitsPerSample} bit" else "未知")
+        addItem("位深", when {
+            song.bitsPerSample <= 0 -> "未知"
+            isFloat && song.bitsPerSample == 32 -> "32 bit (Float)"
+            isFloat && song.bitsPerSample == 64 -> "64 bit (Float)"
+            isFloat -> "${song.bitsPerSample} bit (Float)"
+            else -> "${song.bitsPerSample} bit"
+        })
         addItem("采样率", if (song.sampleRate > 0) "${song.sampleRate} Hz" else "未知֪")
         addItem("码率", if (song.bitRate > 0) "${song.bitRate / 1000} kbps" else "未知֪")
         addItem("声道", if (song.channelCount > 0) "${song.channelCount}ch" else "未知֪")
@@ -2470,7 +2957,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         }
         addItem("采样率", srText)
         addItem("位深", bdText)
-        Log.d("AudioOutput", "resample: srcSr=$srcSr, srcBd=$srcBd, outSr=$ffmpegOutputSr, outBd=$ffmpegOutputBd, srChanged=$srChanged, bdChanged=$bdChanged, usbSr=$usbSr")
+        AppLogger.d("AudioOutput", "resample: srcSr=$srcSr, srcBd=$srcBd, outSr=$ffmpegOutputSr, outBd=$ffmpegOutputBd, srChanged=$srChanged, bdChanged=$bdChanged, usbSr=$usbSr")
 
         addArrow()
 
@@ -2490,8 +2977,15 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         }
         addItem("输出API", outputApi)
         addItem("实际输出", "${ffmpegOutputBd}bit / ${if (ffmpegOutputSr > 0) "${ffmpegOutputSr}Hz" else "未知"}")
-        addItem("延迟", String.format("%.1f ms (%d frames)", estimatedLatencyMs, actualBufFrames))
-        Log.d("AudioOutput", "popup: outputMode=$actualOutputMode, outputSr=$ffmpegOutputSr, outputBd=$ffmpegOutputBd, latencyMs=$actualLatencyMs, bufFrames=$actualBufFrames, usbExclusive=$isUsbExclusive")
+        val btLatencyInfo = playerController?.getBluetoothLatencyInfo()
+        val effectiveLatencyMs = playerController?.latencyMs?.toFloat() ?: estimatedLatencyMs
+        val latencyDisplay = if (!btLatencyInfo.isNullOrEmpty()) {
+            String.format("%.0f ms [%s]", effectiveLatencyMs, btLatencyInfo)
+        } else {
+            String.format("%.0f ms (%d frames)", estimatedLatencyMs, actualBufFrames)
+        }
+        addItem("歌词延迟补偿", latencyDisplay)
+        AppLogger.d("AudioOutput", "popup: outputMode=$actualOutputMode, outputSr=$ffmpegOutputSr, outputBd=$ffmpegOutputBd, latencyMs=$actualLatencyMs, bufFrames=$actualBufFrames, usbExclusive=$isUsbExclusive")
 
         addArrow()
 
@@ -2626,8 +3120,12 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                             if (scene == UnifiedPlayerContainer.Scene.PLAYER) {
                                 if (dy > 0) {
                                     isCoverDragActive = true
-                                    registerCoverCollapseParams()
-                                    unifiedContainer.startCoverDrag()
+                                    // 先滚动到当前歌曲确保列表封面可见，再注册参数并启动拖拽
+                                    scrollToCurrentSong()
+                                    binding.root.post {
+                                        registerCoverCollapseParams()
+                                        unifiedContainer.startCoverDrag()
+                                    }
                                 } else {
                                     isCoverSwipeUpActive = true
                                     registerCoverLyricParams()
@@ -2726,7 +3224,9 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                             binding.ivHiresSmall.alpha = 0f
                             binding.ivPlayCover.pivotX = 0f
                             binding.ivPlayCover.pivotY = 0f
-                            binding.lyricBgView.syncFrom(binding.playBgView)
+                            if (!binding.lyricBgView.syncFrom(binding.playBgView)) {
+                                binding.lyricBgView.syncFrom(binding.backgroundView)
+                            }
                             binding.lyricBgView.resumeAnimations()
                             registerCoverLyricParams()
                             unifiedContainer.startCoverSwipeUpDrag()
@@ -2817,6 +3317,17 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         unifiedContainer.closeAlbumDetailPage()
     }
 
+    private fun openEffectsPage() {
+        unifiedContainer.onPreparePlayerToEffects = {
+            syncEffectsPanelState()
+        }
+        unifiedContainer.openEffectsPage()
+    }
+
+    private fun closeEffectsPage() {
+        unifiedContainer.closeEffectsPage()
+    }
+
     /**
      */
     private fun performSwipeToChangeSong(direction: Int) {
@@ -2876,65 +3387,31 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
         val listPos = getListCoverPosition()
         if (listPos != null) {
-            val (listX, listY, listW, listH) = listPos
-
-            val targetScaleX = (listW / targetW).coerceIn(0.1f, 1f)
-            val targetScaleY = (listH / targetH).coerceIn(0.1f, 1f)
-
-            val targetCenterX = targetRect.centerX()
-            val targetCenterY = targetRect.centerY()
-            val listCenterX = listX + listW / 2f
-            val listCenterY = listY + listH / 2f
-
-            val translatedX = listCenterX - targetCenterX
-            val translatedY = listCenterY - targetCenterY
-
-            val baseCornerRadius = 12f * density
-            val mainCornerRadius = if (targetScaleX > 0.01f) baseCornerRadius / targetScaleX else baseCornerRadius
-
-            unifiedContainer.registerSceneParams(
-                R.id.ivPlayCover,
-                UnifiedPlayerContainer.Scene.MAIN,
-                UnifiedPlayerContainer.SceneParams(
-                    scene = UnifiedPlayerContainer.Scene.MAIN,
-                    alpha = 1f,
-                    scaleX = targetScaleX,
-                    scaleY = targetScaleY,
-                    translationX = translatedX,
-                    translationY = translatedY,
-                    visibility = View.VISIBLE,
-                    cornerRadius = mainCornerRadius
-                )
-            )
-
-            unifiedContainer.registerSceneParams(
-                R.id.ivPlayCover,
-                UnifiedPlayerContainer.Scene.PLAYER,
-                UnifiedPlayerContainer.SceneParams(
-                    scene = UnifiedPlayerContainer.Scene.PLAYER,
-                    alpha = 1f,
-                    scaleX = cover.scaleX,
-                    scaleY = cover.scaleY,
-                    translationX = cover.translationX,
-                    translationY = cover.translationY,
-                    visibility = View.VISIBLE,
-                    cornerRadius = baseCornerRadius
-                )
-            )
+            registerCoverCollapseParamsWithListPos(listPos, targetRect, targetW, targetH, cover, density)
         } else {
-            unifiedContainer.registerSceneParams(
-                R.id.ivPlayCover,
-                UnifiedPlayerContainer.Scene.MAIN,
-                UnifiedPlayerContainer.SceneParams(
-                    scene = UnifiedPlayerContainer.Scene.MAIN,
-                    alpha = 1f,
-                    scaleX = 0.5f,
-                    scaleY = 0.5f,
-                    translationX = 0f,
-                    translationY = 300f * density,
-                    visibility = View.VISIBLE
-                )
-            )
+            // 列表封面不可见，先滚动到当前歌曲，等布局完成后再注册精确参数
+            scrollToCurrentSong()
+            binding.root.post {
+                val retryPos = getListCoverPosition()
+                if (retryPos != null) {
+                    registerCoverCollapseParamsWithListPos(retryPos, targetRect, targetW, targetH, cover, density)
+                } else {
+                    // 滚动后仍找不到，使用居中缩小作为后备
+                    unifiedContainer.registerSceneParams(
+                        R.id.ivPlayCover,
+                        UnifiedPlayerContainer.Scene.MAIN,
+                        UnifiedPlayerContainer.SceneParams(
+                            scene = UnifiedPlayerContainer.Scene.MAIN,
+                            alpha = 1f,
+                            scaleX = 0.3f,
+                            scaleY = 0.3f,
+                            translationX = 0f,
+                            translationY = 0f,
+                            visibility = View.VISIBLE
+                        )
+                    )
+                }
+            }
         }
 
         // navHostFragment 在 MAIN 场景下alpha 为 0 否则为 1
@@ -3055,6 +3532,62 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         )
     }
 
+    /** 使用已知的列表封面位置注册 PLAYER→MAIN 动画参数 */
+    private fun registerCoverCollapseParamsWithListPos(
+        listPos: Quad<Float, Float, Float, Float>,
+        targetRect: android.graphics.RectF,
+        targetW: Float,
+        targetH: Float,
+        cover: View,
+        density: Float
+    ) {
+        val (listX, listY, listW, listH) = listPos
+
+        val targetScaleX = (listW / targetW).coerceIn(0.1f, 1f)
+        val targetScaleY = (listH / targetH).coerceIn(0.1f, 1f)
+
+        val targetCenterX = targetRect.centerX()
+        val targetCenterY = targetRect.centerY()
+        val listCenterX = listX + listW / 2f
+        val listCenterY = listY + listH / 2f
+
+        val translatedX = listCenterX - targetCenterX
+        val translatedY = listCenterY - targetCenterY
+
+        val baseCornerRadius = 10f * density
+        val mainCornerRadius = if (targetScaleX > 0.01f) baseCornerRadius / targetScaleX else baseCornerRadius
+
+        unifiedContainer.registerSceneParams(
+            R.id.ivPlayCover,
+            UnifiedPlayerContainer.Scene.MAIN,
+            UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.MAIN,
+                alpha = 1f,
+                scaleX = targetScaleX,
+                scaleY = targetScaleY,
+                translationX = translatedX,
+                translationY = translatedY,
+                visibility = View.VISIBLE,
+                cornerRadius = mainCornerRadius
+            )
+        )
+
+        unifiedContainer.registerSceneParams(
+            R.id.ivPlayCover,
+            UnifiedPlayerContainer.Scene.PLAYER,
+            UnifiedPlayerContainer.SceneParams(
+                scene = UnifiedPlayerContainer.Scene.PLAYER,
+                alpha = 1f,
+                scaleX = cover.scaleX,
+                scaleY = cover.scaleY,
+                translationX = cover.translationX,
+                translationY = cover.translationY,
+                visibility = View.VISIBLE,
+                cornerRadius = baseCornerRadius
+            )
+        )
+    }
+
     private fun registerImmersiveCoverCollapseParams() {
         val density = resources.displayMetrics.density
         val containerW = unifiedContainer.width.toFloat()
@@ -3133,20 +3666,23 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
      * 沉浸模式下，上滑封面会触发淡入淡出效果，封面缩小到左上角。     */
     private fun registerCoverLyricParams() {
         val density = resources.displayMetrics.density
-        val baseCornerRadius = 12f * density
+        val baseCornerRadius = 10f * density
         val isImmersive = unifiedContainer.isImmersiveEnabled
+        val coverAlpha = if (isImmersive) 0f else 1f
+        // 非沉浸模式下封面直接可见，沉浸模式下由 ImmersiveBackgroundView 渲染
+        val coverVisibility = if (isImmersive) View.INVISIBLE else View.VISIBLE
 
         unifiedContainer.registerSceneParams(
             R.id.ivPlayCover,
             UnifiedPlayerContainer.Scene.LYRIC,
             UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.LYRIC,
-                alpha = if (isImmersive) 0f else 1f,
+                alpha = coverAlpha,
                 scaleX = 0.3f,
                 scaleY = 0.3f,
                 translationX = 0f,
                 translationY = 0f,
-                visibility = if (isImmersive) View.INVISIBLE else View.VISIBLE,
+                visibility = coverVisibility,
                 cornerRadius = baseCornerRadius
             )
         )
@@ -3156,12 +3692,12 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             UnifiedPlayerContainer.Scene.PLAYER,
             UnifiedPlayerContainer.SceneParams(
                 scene = UnifiedPlayerContainer.Scene.PLAYER,
-                alpha = if (isImmersive) 0f else 1f,
+                alpha = coverAlpha,
                 scaleX = 1f,
                 scaleY = 1f,
                 translationX = 0f,
                 translationY = 0f,
-                visibility = if (isImmersive) View.INVISIBLE else View.VISIBLE,
+                visibility = coverVisibility,
                 cornerRadius = baseCornerRadius
             )
         )
@@ -3219,7 +3755,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         )
 
         val coverLayoutParams = binding.ivPlayCover.layoutParams as android.widget.FrameLayout.LayoutParams
-        val coverMarginStart = coverLayoutParams.marginStart
+        val coverLeft = binding.ivPlayCover.left.toFloat()
         val coverWidth = binding.ivPlayCover.width.toFloat()
         val titleWidth = binding.playTitleGroup.width.toFloat()
 
@@ -3255,7 +3791,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             return
         }
 
-        val smallCoverRight = coverMarginStart + coverWidth * 0.3f
+        val smallCoverRight = coverLeft + coverWidth * 0.3f
         val titleLayoutParams = binding.playTitleGroup.layoutParams as android.widget.FrameLayout.LayoutParams
         val titleCurrentLeft = titleLayoutParams.marginStart.toFloat()
         val titleCurrentTop = titleLayoutParams.topMargin.toFloat()
@@ -3327,7 +3863,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 translationY = 0f,
                 scaleX = 1f,
                 scaleY = 1f,
-                cornerRadius = 12f * density
+                cornerRadius = 10f * density
             )
         )
         unifiedContainer.registerSceneParams(
@@ -3341,7 +3877,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 scaleY = 0.3f,
                 translationX = 0f,
                 translationY = 0f,
-                cornerRadius = 12f * density
+                cornerRadius = 10f * density
             )
         )
         // navHostFragment: 非MAIN 场景隐藏
@@ -3457,7 +3993,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             ButtonAnimHelper.coverSwitchAnim(binding.ivPlayCover, false)
             playerController?.previous()
         }
-        
+
         // 播放模式按钮 - 点击事件绑定到容器
         binding.btnPlayModeContainer.setOnClickListener {
             ButtonAnimHelper.secondaryPressAnim(it)
@@ -3470,13 +4006,15 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             showPlayModePopup()
             true
         }
-        
+
         // 更多按钮 - 点击事件绑定到容器
         binding.btnMoreActionContainer.setOnClickListener {
             ButtonAnimHelper.secondaryPressAnim(it)
             showSongActionSheet()
         }
-        
+
+
+
         binding.btnMore?.setOnClickListener {
             ButtonAnimHelper.secondaryPressAnim(it)
             (it as? AnimatedMoreButton)?.toggleExpanded()
@@ -3536,11 +4074,49 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
     }
 
     /**
+     * 更新信笺模式内容（弧形轮播封面、单行歌词飞入、音频可视化）
+     */
+    private fun updateLetterModeContent() {
+        // 加载用户选择的歌词字体
+        binding.singleLineLyric?.let { lyricView ->
+            val lyricTypeface = com.rawsmusic.module.data.prefs.LyricFontManager.getLyricTypeface()
+            lyricView.setLyricTypeface(lyricTypeface)
+        }
+
+        // 设置单行歌词（提前300ms显示）
+        binding.singleLineLyric?.let { lyricView ->
+            val pos = playerController?.position?.value ?: 0L
+            val lineIdx = currentLyricData.findCurrentLine(pos, 100L)
+            if (lineIdx >= 0) {
+                val line = currentLyricData.getLine(lineIdx)
+                if (line != null) {
+                    letterModeCurrentLyricText = line.text
+                    lyricView.showLyric(line, pos)
+                }
+            }
+        }
+
+        // 启动真实音频可视化，失败时回退模拟动画
+        binding.audioVisualizer?.let { visualizer ->
+            val sessionId = playerController?.getAudioSessionId() ?: 0
+            val hasRecordPermission = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+            val bound = hasRecordPermission && visualizer.bindAudioSession(sessionId)
+            if (!bound) {
+                visualizer.startSimulation()
+            }
+        }
+    }
+
+    /**
      * 根据播放模式更新图标（2种shuffle模式+单曲/顺序循环）
      */
     private fun updatePlayModeIcon(playMode: PlayMode) {
-        val highlightColor = 0xFFFFFFFF.toInt()
-        val dimColor = 0x80787470.toInt()
+        val isLight = com.rawsmusic.core.ui.theme.ThemeManager.isLightBackground
+        val highlightColor = if (isLight) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+        val dimColor = if (isLight) 0x80787470.toInt() else 0x80787470.toInt()
         val density = resources.displayMetrics.density
         val size = (24 * density).toInt()
 
@@ -3655,6 +4231,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             hideSongActionSheet()
             openMetadataDetail()
         }
+        sheet.findViewById<android.widget.TextView>(R.id.actionSleepTimer)?.setOnClickListener {
+            hideSongActionSheet()
+            showSleepTimerDialog()
+        }
         sheet.findViewById<android.widget.TextView>(R.id.actionDelete)?.setOnClickListener {
             hideSongActionSheet()
             deleteCurrentSong()
@@ -3719,13 +4299,26 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
     private fun addToPlaylist() {
         val song = playerController?.currentSong?.value ?: return
-        try {
-            val bundle = android.os.Bundle().apply {
-                putLong("songId", song.id)
-                putString("action", "addToPlaylist")
+        val playlistStore = com.rawsmusic.module.data.prefs.PlaylistStore.getInstance(this)
+        val playlists = playlistStore.playlists.value
+        if (playlists.isEmpty()) {
+            Toast.makeText(this, "暂无歌单", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val names = playlists.map { it.name }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("添加到歌单")
+            .setItems(names) { _, which ->
+                val playlist = playlists[which]
+                lifecycleScope.launch {
+                    playlistStore.addSongToPlaylist(playlist.id, song)
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "已添加到「${playlist.name}」", Toast.LENGTH_SHORT).show()
+                    }
+                }
             }
-            navController.navigate(R.id.nav_songs, bundle)
-        } catch (_: Exception) {}
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun joinPlaylist() {
@@ -3818,8 +4411,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             contentResolver.query(uri, arrayOf(android.provider.MediaStore.Audio.Media._ID), null, null, null)?.use { cursor ->
                 exists = cursor.moveToFirst()
             }
-            Log.d("EditMetadata", "URI exists: $exists, URI: $uri")
-            
+            AppLogger.d("EditMetadata", "URI exists: $exists, URI: $uri")
+
             if (!exists) {
                 Toast.makeText(this, "歌曲未在 MediaStore 中找到", Toast.LENGTH_SHORT).show()
                 return
@@ -3827,14 +4420,14 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
             // 创建新的 ContentValues，只包含确定可写的列
             val safeValues = android.content.ContentValues()
-            values.getAsString(android.provider.MediaStore.Audio.Media.TITLE)?.let { 
-                safeValues.put(android.provider.MediaStore.Audio.Media.TITLE, it) 
+            values.getAsString(android.provider.MediaStore.Audio.Media.TITLE)?.let {
+                safeValues.put(android.provider.MediaStore.Audio.Media.TITLE, it)
             }
-            values.getAsString(android.provider.MediaStore.Audio.Media.ARTIST)?.let { 
-                safeValues.put(android.provider.MediaStore.Audio.Media.ARTIST, it) 
+            values.getAsString(android.provider.MediaStore.Audio.Media.ARTIST)?.let {
+                safeValues.put(android.provider.MediaStore.Audio.Media.ARTIST, it)
             }
-            values.getAsString(android.provider.MediaStore.Audio.Media.ALBUM)?.let { 
-                safeValues.put(android.provider.MediaStore.Audio.Media.ALBUM, it) 
+            values.getAsString(android.provider.MediaStore.Audio.Media.ALBUM)?.let {
+                safeValues.put(android.provider.MediaStore.Audio.Media.ALBUM, it)
             }
             if (values.containsKey(android.provider.MediaStore.Audio.Media.YEAR)) {
                 safeValues.put(android.provider.MediaStore.Audio.Media.YEAR, values.getAsInteger(android.provider.MediaStore.Audio.Media.YEAR))
@@ -3842,11 +4435,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             if (values.containsKey(android.provider.MediaStore.Audio.Media.TRACK)) {
                 safeValues.put(android.provider.MediaStore.Audio.Media.TRACK, values.getAsInteger(android.provider.MediaStore.Audio.Media.TRACK))
             }
-            
-            Log.d("EditMetadata", "Safe values: $safeValues")
+
+            AppLogger.d("EditMetadata", "Safe values: $safeValues")
             val rows = contentResolver.update(uri, safeValues, null, null)
-            Log.d("EditMetadata", "Updated rows: $rows")
-            
+            AppLogger.d("EditMetadata", "Updated rows: $rows")
+
             if (rows > 0) {
                 val song = playerController?.currentSong?.value ?: return
                 val newTitle = safeValues.getAsString(android.provider.MediaStore.Audio.Media.TITLE) ?: song.title
@@ -3868,7 +4461,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 Toast.makeText(this, "保存失败，MediaStore 更新返回 0", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
-            Log.e("EditMetadata", "Update failed", e)
+            AppLogger.e("EditMetadata", "Update failed", e)
             Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
@@ -3948,7 +4541,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             if (newTrack > 0) ffmpegMeta["track"] = newTrack.toString()
 
             val filePath = song.path
-            Log.d("EditMetadata", "Save clicked. FFmpeg write to: $filePath, meta=$ffmpegMeta")
+            AppLogger.d("EditMetadata", "Save clicked. FFmpeg write to: $filePath, meta=$ffmpegMeta")
 
             if (filePath.isBlank() || !java.io.File(filePath).exists()) {
                 Toast.makeText(this, "文件不存在: $filePath", Toast.LENGTH_SHORT).show()
@@ -3979,7 +4572,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                         androidx.activity.result.IntentSenderRequest.Builder(pendingIntent.intentSender).build()
                     )
                 } catch (e: Exception) {
-                    Log.e("EditMetadata", "createWriteRequest failed", e)
+                    AppLogger.e("EditMetadata", "createWriteRequest failed", e)
                     Toast.makeText(this, "权限请求失败: ${e.message}", Toast.LENGTH_SHORT).show()
                     dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).isEnabled = true
                 }
@@ -4020,7 +4613,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 val ext = filePath.substringAfterLast(".", "").lowercase()
                 val tmpFile = java.io.File(cacheDir, "rawsmeta_tmp.$ext")
                 if (!tmpFile.exists() || tmpFile.length() == 0L) {
-                    Log.e("EditMetadata", "Temp file missing or empty: ${tmpFile.absolutePath}, exists=${tmpFile.exists()}, size=${tmpFile.length()}")
+                    AppLogger.e("EditMetadata", "Temp file missing or empty: ${tmpFile.absolutePath}, exists=${tmpFile.exists()}, size=${tmpFile.length()}")
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                         Toast.makeText(this@MainActivity, "临时文件不存在或为空", Toast.LENGTH_SHORT).show()
                         dialog?.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
@@ -4031,10 +4624,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 val tmpSize = tmpFile.length()
                 val origFile = java.io.File(filePath)
                 val origSize = origFile.length()
-                Log.d("EditMetadata", "Temp file: ${tmpFile.absolutePath}, size=$tmpSize bytes, origSize=$origSize bytes")
+                AppLogger.d("EditMetadata", "Temp file: ${tmpFile.absolutePath}, size=$tmpSize bytes, origSize=$origSize bytes")
 
                 if (tmpSize < origSize / 2) {
-                    Log.e("EditMetadata", "Temp file too small ($tmpSize) vs original ($origSize), aborting")
+                    AppLogger.e("EditMetadata", "Temp file too small ($tmpSize) vs original ($origSize), aborting")
                     tmpFile.delete()
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                         Toast.makeText(this@MainActivity, "临时文件异常，中止写入", Toast.LENGTH_SHORT).show()
@@ -4061,10 +4654,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                             writtenSize = origFile.length()
                         }
                     }
-                    Log.d("EditMetadata", "Direct file write: written=$writtenSize bytes")
+                    AppLogger.d("EditMetadata", "Direct file write: written=$writtenSize bytes")
                     copySuccess = writtenSize == tmpSize
                 } catch (e: Exception) {
-                    Log.e("EditMetadata", "Direct file write failed", e)
+                    AppLogger.e("EditMetadata", "Direct file write failed", e)
                 }
 
                 // 方式2: 回退 - ParcelFileDescriptor (通过 contentResolver 获取 fd，但不截断)
@@ -4085,10 +4678,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                         }
                         // 验证
                         writtenSize = origFile.length()
-                        Log.d("EditMetadata", "ParcelFileDescriptor write: written=$writtenSize bytes")
+                        AppLogger.d("EditMetadata", "ParcelFileDescriptor write: written=$writtenSize bytes")
                         copySuccess = writtenSize == tmpSize
                     } catch (e2: Exception) {
-                        Log.e("EditMetadata", "ParcelFileDescriptor write failed", e2)
+                        AppLogger.e("EditMetadata", "ParcelFileDescriptor write failed", e2)
                     }
                 }
 
@@ -4111,7 +4704,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 try {
                     contentResolver.update(uri, safeValues, null, null)
                 } catch (e: Exception) {
-                    Log.w("EditMetadata", "MediaStore update after FFmpeg write failed", e)
+                    AppLogger.w("EditMetadata", "MediaStore update after FFmpeg write failed", e)
                 }
 
                 // 通知 MediaScanner 扫描更新
@@ -4139,7 +4732,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     dialog?.dismiss()
                 }
             } catch (e: Exception) {
-                Log.e("EditMetadata", "doFfmpegWrite failed", e)
+                AppLogger.e("EditMetadata", "doFfmpegWrite failed", e)
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                     Toast.makeText(this@MainActivity, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
                     dialog?.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
@@ -4386,15 +4979,142 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         }
     }
 
+    private fun syncEffectsPanelState() {
+        val peqEnabled = com.rawsmusic.module.data.prefs.AppPreferences.PEQ.isEnabled
+        val peqPreamp = com.rawsmusic.module.data.prefs.AppPreferences.PEQ.preamp
+        val peqPresetName = com.rawsmusic.module.data.prefs.AppPreferences.PEQ.presetName
+        val virtualizer = com.rawsmusic.module.data.prefs.AppPreferences.Equalizer.virtualizer
+        val bassBoost = com.rawsmusic.module.data.prefs.AppPreferences.Equalizer.bassBoost
+        val loudnessEnhance = com.rawsmusic.module.data.prefs.AppPreferences.Equalizer.loudnessEnhance
+
+        binding.switchPeqEnabled?.isChecked = peqEnabled
+        binding.tvPeqPreamp?.text = String.format("Preamp: %+.1f dB", peqPreamp)
+
+        val activeFilterCount = countActivePeqFilters()
+        binding.tvPeqPresetName?.text = if (peqEnabled) {
+            if (activeFilterCount > 0) "$peqPresetName · ${activeFilterCount}段" else peqPresetName
+        } else {
+            "未启用"
+        }
+
+        binding.switchSpatialEnabled?.isChecked = virtualizer > 0
+        binding.sliderSpatialStrength?.value = virtualizer.toFloat()
+        binding.sliderBassBoost?.value = bassBoost.toFloat()
+        binding.sliderLoudnessEnhance?.value = loudnessEnhance.toFloat()
+
+        buildPeqBars()
+
+        binding.switchPeqEnabled?.setOnCheckedChangeListener { _, isChecked ->
+            com.rawsmusic.module.data.prefs.AppPreferences.PEQ.isEnabled = isChecked
+            val peqCtrl = playerController?.peqController
+            if (peqCtrl != null) {
+                peqCtrl.setEnabled(isChecked)
+            }
+            val name = com.rawsmusic.module.data.prefs.AppPreferences.PEQ.presetName
+            val cnt = countActivePeqFilters()
+            binding.tvPeqPresetName?.text = if (isChecked) {
+                if (cnt > 0) "$name · ${cnt}段" else name
+            } else {
+                "未启用"
+            }
+        }
+
+        binding.switchSpatialEnabled?.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked) {
+                val saved = com.rawsmusic.module.data.prefs.AppPreferences.Equalizer.virtualizer
+                val value = if (saved <= 0) 500f else saved.toFloat()
+                binding.sliderSpatialStrength?.value = value
+                playerController?.setStereoWidenFactor(value / 1000f)
+            } else {
+                binding.sliderSpatialStrength?.value = 0f
+                playerController?.setStereoWidenFactor(0f)
+            }
+        }
+
+        binding.sliderSpatialStrength?.addOnChangeListener { _, value, fromUser ->
+            if (fromUser) {
+                playerController?.setStereoWidenFactor(value / 1000f)
+                com.rawsmusic.module.data.prefs.AppPreferences.Equalizer.virtualizer = value.toInt()
+                binding.switchSpatialEnabled?.isChecked = value > 0
+            }
+        }
+
+        binding.sliderBassBoost?.addOnChangeListener { _, value, fromUser ->
+            if (fromUser) {
+                com.rawsmusic.module.data.prefs.AppPreferences.Equalizer.bassBoost = value.toInt()
+            }
+        }
+
+        binding.sliderLoudnessEnhance?.addOnChangeListener { _, value, fromUser ->
+            if (fromUser) {
+                com.rawsmusic.module.data.prefs.AppPreferences.Equalizer.loudnessEnhance = value.toInt()
+            }
+        }
+    }
+
+    private fun countActivePeqFilters(): Int {
+        val peqFiltersJson = com.rawsmusic.module.data.prefs.AppPreferences.PEQ.filtersJson
+        return if (peqFiltersJson.isNotBlank()) {
+            try {
+                val type = object : com.google.gson.reflect.TypeToken<List<com.rawsmusic.module.player.dsp.PEQFilter>>() {}.type
+                val filters: List<com.rawsmusic.module.player.dsp.PEQFilter>? =
+                    com.google.gson.Gson().fromJson(peqFiltersJson, type)
+                filters?.count { it.enabled } ?: 0
+            } catch (_: Exception) { 0 }
+        } else { 0 }
+    }
+
+    private fun buildPeqBars() {
+        val container = binding.peqBarsContainer ?: return
+        container.removeAllViews()
+        val peqFiltersJson = com.rawsmusic.module.data.prefs.AppPreferences.PEQ.filtersJson
+        val filters: List<com.rawsmusic.module.player.dsp.PEQFilter> = if (peqFiltersJson.isNotBlank()) {
+            try {
+                val type = object : com.google.gson.reflect.TypeToken<List<com.rawsmusic.module.player.dsp.PEQFilter>>() {}.type
+                com.google.gson.Gson().fromJson(peqFiltersJson, type) ?: emptyList()
+            } catch (_: Exception) { emptyList() }
+        } else { emptyList() }
+
+        val peqEnabled = com.rawsmusic.module.data.prefs.AppPreferences.PEQ.isEnabled
+        val maxGain = 12f
+        val barCount = filters.size.coerceAtMost(10)
+        for (i in 0 until barCount) {
+            val filter = filters[i]
+            val barHeight = if (peqEnabled && filter.enabled) {
+                ((filter.gainDB + maxGain) / (maxGain * 2) * 100f).coerceIn(5f, 100f)
+            } else {
+                50f
+            }
+            val barColor = if (peqEnabled && filter.enabled) {
+                android.graphics.Color.parseColor("#00D4FF")
+            } else {
+                android.graphics.Color.parseColor("#555577")
+            }
+            val bar = android.view.View(container.context).apply {
+                layoutParams = android.widget.LinearLayout.LayoutParams(0, 0, 1f).apply {
+                    marginStart = 2
+                    marginEnd = 2
+                }
+                setBackgroundColor(barColor)
+            }
+            container.addView(bar)
+            bar.post {
+                val lp = bar.layoutParams as android.widget.LinearLayout.LayoutParams
+                lp.height = (barHeight / 100f * container.height).toInt().coerceAtLeast(4)
+                bar.layoutParams = lp
+            }
+        }
+    }
+
     private fun deleteCurrentSong() {
         val song = playerController?.currentSong?.value ?: return
         android.app.AlertDialog.Builder(this)
             .setTitle("删除歌曲")
-            .setMessage("确定要删除\"\${song.title}\"吗？")
+            .setMessage("确定要删除\"${song.title}\"吗？此操作不可撤销。")
             .setPositiveButton("删除") { _, _ ->
                 playerController?.next()
-                val file = java.io.File(song.path)
-                if (file.exists()) file.delete()
+                val deleted = com.rawsmusic.module.data.repository.MusicRepository.deleteSongFromDevice(this, song)
+                android.widget.Toast.makeText(this, if (deleted) "已删除" else "删除失败", android.widget.Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("取消", null)
             .show()
@@ -4416,11 +5136,6 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     }
                 }
                 hasCustomCover = true
-                binding.ivPlayCover.load(destFile) {
-                    crossfade(true)
-                    size(3000)
-                    transformations(SquarePadTransformation())
-                }
                 syncMirrorCover(destFile.absolutePath)
                 val curSong = playerController?.currentSong?.value
                 if (curSong != null) {
@@ -4438,6 +5153,30 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         }
     }
 
+    private val logExportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        try {
+            val logContent = com.rawsmusic.core.common.utils.AppLogger.getLogContent()
+            if (logContent.isNullOrBlank()) {
+                android.widget.Toast.makeText(this, "暂无日志", android.widget.Toast.LENGTH_SHORT).show()
+                return@registerForActivityResult
+            }
+            contentResolver.openOutputStream(uri)?.use { output ->
+                output.write(logContent.toByteArray(Charsets.UTF_8))
+            }
+            android.widget.Toast.makeText(this, "日志已导出", android.widget.Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            android.widget.Toast.makeText(this, "导出失败: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun exportLogWithSaf() {
+        val fileName = com.rawsmusic.core.common.utils.AppLogger.generateExportFileName()
+        logExportLauncher.launch(fileName)
+    }
+
     private fun pickCoverImage() {
         hideSongActionSheet()
         val intent = android.content.Intent(android.content.Intent.ACTION_PICK)
@@ -4452,11 +5191,6 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         if (cachedFile.exists()) cachedFile.delete()
         hasCustomCover = false
         val coverUri = resolveCoverUri(song)
-        binding.ivPlayCover.load(coverUri.ifBlank { null }) {
-            crossfade(true)
-            size(3000)
-            transformations(SquarePadTransformation())
-        }
         syncMirrorCover(coverUri.ifBlank { null })
         capsuleView.updatePlaybackState(
             playerController?.playState?.value == PlayState.PLAYING,
@@ -4847,17 +5581,29 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
     private fun loadLyrics(songPath: String) {
         if (songPath.isBlank()) {
             currentLyricData = com.rawsmusic.core.common.model.LyricData()
+            currentLyricText = ""
+            letterModeCurrentLyricText = ""
             lyricPlayerView.song = null
             unifiedContainer.lyricEnabled = false
             updateLyricAnchor()
             capsuleView.updateLyric(null, null, false)
+            TickerBridge.clearLyric(this)
+            LyricGetterBridge.clearLyric(this)
+            BluetoothLyricBridge.clearLyric()
+            LyriconProviderManager.setSong(null, null)
             return
         }
+        currentLyricText = ""
+        letterModeCurrentLyricText = ""
         capsuleView.updateLyric(null, null, false)
+        TickerBridge.clearLyric(this)
+        LyricGetterBridge.clearLyric(this)
+        BluetoothLyricBridge.clearLyric()
+        LyriconProviderManager.setSong(null, null)
         lifecycleScope.launch(Dispatchers.IO) {
             val lyricData = LyricReader.readLyrics(songPath)
             launch(Dispatchers.Main) {
-                currentLyricData = lyricData
+                currentLyricData = lyricData.withAnimationFlags()
                 if (!lyricData.isEmpty) {
                     val song = playerController?.currentSong?.value
                     val lyriconSong = lyricData.toLyriconSong(
@@ -4866,33 +5612,13 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     )
                     lyricPlayerView.song = lyriconSong
 
-                    val density = resources.displayMetrics.density
-                    val config = RichLyricLineConfig().apply {
-                        primary.textSize = 24f * density
-                        primary.textColor = intArrayOf(android.graphics.Color.WHITE)
-                        primary.typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-                        primary.enableRelativeProgress = true
-                        primary.enableRelativeProgressHighlight = false
-                        syllable.highlightColor = intArrayOf(android.graphics.Color.WHITE)
-                        syllable.backgroundColor = intArrayOf(0x60FFFFFF.toInt())
-                        syllable.enableSustainGlow = false
-                        syllable.enableCharFloatAnimation = true
-                        secondary.textSize = 16f * density
-                        secondary.textColor = intArrayOf(0x70FFFFFF.toInt())
-                        secondary.typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-                        gradientProgressStyle = true
-                        enableAnim = true
-                        animId = "fade_out_left_fade_in_right"
-                        scaleInMultiLine = 0.86f
-                        fadingEdgeLength = (14 * density).toInt()
-                        placeholderFormat = PlaceholderFormat.NAME_ARTIST
-                    }
-                    lyricPlayerView.setStyle(config)
+                    applyLyricColors()
                     val displayTrans2 = com.rawsmusic.module.data.prefs.AppPreferences.Lyricon.displayTranslation
                     lyricPlayerView.updateDisplayTranslation(displayTranslation = displayTrans2, displayRoma = displayTrans2)
                 } else {
                     lyricPlayerView.song = null
                     currentLyricText = ""
+                    letterModeCurrentLyricText = ""
                     capsuleView.updateLyric(null, null, false)
                 }
                 unifiedContainer.lyricEnabled = !lyricData.isEmpty
@@ -4902,6 +5628,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     playerController?.currentSong?.value,
                     if (lyricData.isEmpty) null else lyricData
                 )
+
+                TickerBridge.clearLyric(this@MainActivity)
+                LyricGetterBridge.clearLyric(this@MainActivity)
+                BluetoothLyricBridge.clearLyric()
 
                 PlayerService.updateLyrics(lyricData)
                 pushLyricsUpdateToService()
@@ -4914,6 +5644,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
      * 因为需要通过Intent Action来区分更新类型，MediaSession需要知道更新的是什么
      */
     private fun pushLyricsUpdateToService() {
+        PlayerService.pushLyricsToMediaSession()
         if (!PlayerService.isRunning) return
         try {
             val intent = Intent(this, PlayerService::class.java).apply {
@@ -4929,12 +5660,13 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
     private fun pushUpdateToService(song: AudioFile) {
         if (!PlayerService.isRunning) return
         try {
+            val coverUri = resolveCoverUri(song).ifBlank { song.albumArtPath }
             val intent = Intent(this, PlayerService::class.java).apply {
                 action = PlayerService.ACTION_UPDATE
                 putExtra("title", song.title)
                 putExtra("artist", song.artist)
                 putExtra("album", song.album)
-                putExtra("albumArtPath", song.albumArtPath)
+                putExtra("albumArtPath", coverUri)
                 putExtra("duration", song.duration)
                 putExtra("playState", (playerController?.playState?.value ?: PlayState.IDLE).ordinal)
                 putExtra("position", playerController?.position?.value ?: 0L)
@@ -4947,9 +5679,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
     private fun requestAudioPermission() {
         val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            arrayOf(Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
+            arrayOf(Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.RECORD_AUDIO, Manifest.permission.BLUETOOTH_CONNECT)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.RECORD_AUDIO, Manifest.permission.BLUETOOTH_CONNECT)
         } else {
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.RECORD_AUDIO)
         }
 
         val allGranted = permissions.all {
@@ -5008,18 +5742,19 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 playerController?.playState?.value == PlayState.PLAYING,
                 song.title,
                 song.artist,
-                coverUri.ifBlank { song.albumArtPath }
+                coverUri
             )
         // 延迟2秒后执行
             binding.tvTitle.text = song.title
             binding.tvArtist.text = song.artist
             binding.tvAlbum.text = song.album
-            val playCoverUri = coverUri.ifBlank { song.albumArtPath }
-            binding.ivPlayCover.load(playCoverUri) {
-                crossfade(true)
-                size(3000)
-                allowHardware(false)
-                transformations(SquarePadTransformation())
+            val playCoverUri = coverUri
+            if (playCoverUri.isNotBlank()) {
+                playCoverView.loadCover(playCoverUri)
+                binding.ivPlayCover.visibility = View.VISIBLE
+            } else {
+                binding.ivPlayCover.visibility = View.GONE
+                playCoverView.clearCover()
             }
             syncMirrorCover(playCoverUri.ifBlank { null })
             loadCoverBackground(playCoverUri)
@@ -5045,7 +5780,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                 UiUtils.setLightStatusBar(window.decorView, !isDarkMode)
             }
             UnifiedPlayerContainer.Scene.PLAYER, UnifiedPlayerContainer.Scene.LYRIC,
-            UnifiedPlayerContainer.Scene.QUEUE, UnifiedPlayerContainer.Scene.ALBUM_DETAIL -> {
+            UnifiedPlayerContainer.Scene.QUEUE, UnifiedPlayerContainer.Scene.ALBUM_DETAIL,
+            UnifiedPlayerContainer.Scene.EFFECTS -> {
                 window.statusBarColor = android.graphics.Color.TRANSPARENT
                 UiUtils.setLightStatusBar(window.decorView, false)
             }
@@ -5149,22 +5885,23 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
      * DynamicCoverBackgroundView 加载封面背景并提取主色调 + 暗色调 + 歌词背景色 + 渐变叠加 + 模糊效果
      */
     private fun loadCoverBackground(albumArtPath: String) {
-        android.util.Log.d("CoverDebug", "loadCoverBackground: path=$albumArtPath")
+        AppLogger.d("CoverDebug", "loadCoverBackground: path=$albumArtPath")
         val path = albumArtPath.ifBlank { null }
         if (path == null) {
-            android.util.Log.d("CoverDebug", "loadCoverBackground: path is blank, using defaults")
+            AppLogger.d("CoverDebug", "loadCoverBackground: path is blank, using defaults")
             applyDefaultColors()
             binding.playBgView.clearArtwork()
             binding.lyricBgView.clearArtwork()
             binding.backgroundView.clearArtwork()
             // 非沉浸模式下无封面时隐藏默认黑色背景
-            if (!unifiedContainer.isImmersiveEnabled) {
+            if (::unifiedContainer.isInitialized && !unifiedContainer.isImmersiveEnabled) {
                 binding.backgroundView.visibility = View.GONE
             }
             binding.immersiveBackground?.clear()
             binding.mainPersistentCover?.clear()
             return
         }
+        // ivPlayCover 不再显示封面
 
         // 将解码后的 Bitmap 设置给 DynamicCoverBackgroundView
         lifecycleScope.launch(Dispatchers.IO) {
@@ -5175,12 +5912,12 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                     .allowHardware(false)
                     .build()
                 val loader = Coil.imageLoader(this@MainActivity)
-                android.util.Log.d("CoverDebug", "loadCoverBackground: loader=$loader")
+                AppLogger.d("CoverDebug", "loadCoverBackground: loader=$loader")
                 val result = loader.execute(request)
-                android.util.Log.d("CoverDebug", "loadCoverBackground: result=${result::class.simpleName}")
+                AppLogger.d("CoverDebug", "loadCoverBackground: result=${result::class.simpleName}")
                 if (result is coil.request.SuccessResult) {
                     val drawable = result.drawable
-                    android.util.Log.d("CoverDebug", "loadCoverBackground: drawable=${drawable.intrinsicWidth}x${drawable.intrinsicHeight}")
+                    AppLogger.d("CoverDebug", "loadCoverBackground: drawable=${drawable.intrinsicWidth}x${drawable.intrinsicHeight}")
                     val w = drawable.intrinsicWidth.coerceAtMost(800)
                     val h = drawable.intrinsicHeight.coerceAtMost(800)
                     if (w > 0 && h > 0) {
@@ -5206,11 +5943,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
                         launch(Dispatchers.Main) { applyDefaultColors() }
                     }
                 } else {
-                    android.util.Log.w("CoverDebug", "loadCoverBackground: not success, result=${result::class.simpleName}")
+                    AppLogger.w("CoverDebug", "loadCoverBackground: not success, result=${result::class.simpleName}")
                     launch(Dispatchers.Main) { applyDefaultColors() }
                 }
             } catch (e: Exception) {
-                android.util.Log.e("CoverDebug", "loadCoverBackground: exception", e)
+                AppLogger.e("CoverDebug", "loadCoverBackground: exception", e)
                 launch(Dispatchers.Main) { applyDefaultColors() }
             }
         }
@@ -5230,10 +5967,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
      * 同时更新侧边菜单 DynamicCoverBackgroundView 的颜色
      */
     private fun applyCoverColors() {
-        // 计算目标位置和大小，用于过渡动画
         lyricHeaderGradient.setColors(coverColors.lyricBg, Color.TRANSPARENT)
 
-        // 使用属性动画实现平滑过渡，同时更新 View 的位置和大小
         val primaryOverlay = (coverColors.primary and 0x00FFFFFF)
         val darkOverlay = (coverColors.dark and 0x00FFFFFF)
         val lyricOverlay1 = (coverColors.dark and 0x00FFFFFF)
@@ -5242,8 +5977,75 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         binding.lyricBgView.setOverlayColors(intArrayOf(lyricOverlay1, lyricOverlay2))
         binding.backgroundView.setOverlayColors(intArrayOf(primaryOverlay, darkOverlay))
 
-        // 隐藏胶囊播放栏，避免在预览时显示
         binding.sideMenu.setCoverColors(coverColors.primary, coverColors.dark)
+
+        applyLyricColors()
+    }
+
+    private fun applyLyricColors() {
+        val isLight = binding.lyricBgView.isLightBackground
+        com.rawsmusic.core.ui.theme.ThemeManager.isLightBackground = isLight
+        val textColor = if (isLight) intArrayOf(android.graphics.Color.BLACK) else intArrayOf(android.graphics.Color.WHITE)
+        val highlightColor = if (isLight) intArrayOf(android.graphics.Color.BLACK) else intArrayOf(android.graphics.Color.WHITE)
+        val dimColor = if (isLight) intArrayOf(0x60000000.toInt()) else intArrayOf(0x60FFFFFF.toInt())
+        val secondaryColor = if (isLight) intArrayOf(0x70000000.toInt()) else intArrayOf(0x70FFFFFF.toInt())
+
+        lyricPlayerView.updateColor(textColor, dimColor, highlightColor)
+
+        applyPlayerTextColor(isLight)
+
+        val density = resources.displayMetrics.density
+        val lyricFontPrefs = com.rawsmusic.module.data.prefs.AppPreferences.LyricFont
+        val lyricTypeface = com.rawsmusic.module.data.prefs.LyricFontManager.getLyricTypeface()
+        val lyricFontScale = lyricFontPrefs.fontScale / 100f
+        val lyricBaseTypeface = lyricTypeface
+            ?: android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+        val config = RichLyricLineConfig().apply {
+            primary.textSize = 24f * density * lyricFontScale
+            primary.textColor = textColor
+            primary.typeface = lyricBaseTypeface
+            primary.enableRelativeProgress = true
+            primary.enableRelativeProgressHighlight = false
+            syllable.highlightColor = highlightColor
+            syllable.backgroundColor = dimColor
+            syllable.enableSustainGlow = false
+            syllable.enableCharFloatAnimation = true
+            secondary.textSize = 16f * density * lyricFontScale
+            secondary.textColor = secondaryColor
+            secondary.typeface = lyricBaseTypeface
+            gradientProgressStyle = true
+            enableAnim = true
+            animId = "fade_out_left_fade_in_right"
+            scaleInMultiLine = 0.86f
+            fadingEdgeLength = (14 * density).toInt()
+            placeholderFormat = PlaceholderFormat.NAME_ARTIST
+        }
+        lyricPlayerView.setStyle(config)
+    }
+
+    private fun applyPlayerTextColor(isLight: Boolean) {
+        val primaryColor = if (isLight) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+        val secondaryColor = if (isLight) 0xCC000000.toInt() else 0xCCFFFFFF.toInt()
+        val tertiaryColor = if (isLight) 0x99000000.toInt() else 0x99FFFFFF.toInt()
+        val capsuleColor = if (isLight) 0xB0000000.toInt() else 0xB0FFFFFF.toInt()
+        val iconDimColor = if (isLight) 0x80787470.toInt() else 0x80787470.toInt()
+        val iconHighlightColor = if (isLight) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+        val containerBgColor = if (isLight) 0x18FFFFFF.toInt() else 0x18FFFFFF.toInt()
+
+        binding.tvTitle.setTextColor(primaryColor)
+        binding.tvArtist.setTextColor(secondaryColor)
+        binding.tvAlbum?.setTextColor(tertiaryColor)
+        binding.tvCurrentTime.setTextColor(secondaryColor)
+        binding.tvTotalTime.setTextColor(secondaryColor)
+        binding.audioInfoCapsule.setTextColor(capsuleColor)
+        binding.btnPlayMode.imageTintList = android.content.res.ColorStateList.valueOf(
+            if (playerController?.playMode?.value == PlayMode.SHUFFLE_OFF) iconDimColor else iconHighlightColor
+        )
+        binding.btnMoreAction.imageTintList = android.content.res.ColorStateList.valueOf(secondaryColor)
+        binding.btnPrevious.imageTintList = android.content.res.ColorStateList.valueOf(primaryColor)
+        binding.btnNext.imageTintList = android.content.res.ColorStateList.valueOf(primaryColor)
+        binding.btnPlayPause.imageTintList = android.content.res.ColorStateList.valueOf(primaryColor)
+        binding.btnAudioQuality.imageTintList = android.content.res.ColorStateList.valueOf(secondaryColor)
     }
 
     /** 显示全屏封面查看器 */
@@ -5384,6 +6186,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             }
             UnifiedPlayerContainer.Scene.ALBUM_DETAIL -> {
                 closeAlbumDetailPage()
+                return
+            }
+            UnifiedPlayerContainer.Scene.EFFECTS -> {
+                closeEffectsPage()
                 return
             }
             UnifiedPlayerContainer.Scene.PLAYER -> {
@@ -5595,26 +6401,158 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
         return super.dispatchTouchEvent(ev)
     }
 
+    private var hasRestoredScene = false
+
+    private val playbackStatsStore by lazy { PlaybackStatsStore.getInstance(this) }
+    private var statsSongId: Long? = null
+    private var statsSong: com.rawsmusic.core.common.model.AudioFile? = null
+    private var playCountedSongId: Long? = null
+    private var pendingListenMs = 0L
+    private var lastStatsTickMs = 0L
+    private val statsHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val statsTickRunnable = object : Runnable {
+        override fun run() {
+            updatePlaybackStats()
+            statsHandler.postDelayed(this, 1000L)
+        }
+    }
+
+    private fun updatePlaybackStats() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val song = playerController?.currentSong?.value
+        val isPlaying = playerController?.playState?.value == PlayState.PLAYING
+        val songId = song?.id
+
+        if (songId != statsSongId) {
+            flushPlaybackStats()
+            statsSongId = songId
+            statsSong = song
+            playCountedSongId = null
+            lastStatsTickMs = now
+            return
+        }
+
+        if (song != null && isPlaying) {
+            if (lastStatsTickMs > 0L) {
+                pendingListenMs += (now - lastStatsTickMs).coerceIn(0L, 1500L)
+            }
+            if (playCountedSongId != song.id && pendingListenMs >= 20_000L) {
+                playbackStatsStore.recordPlay(song)
+                playCountedSongId = song.id
+            }
+            if (playCountedSongId == song.id && pendingListenMs >= 5000L) {
+                playbackStatsStore.addListenTime(song, pendingListenMs)
+                pendingListenMs = 0L
+            }
+        } else {
+            flushPlaybackStats()
+        }
+        lastStatsTickMs = now
+    }
+
+    private fun flushPlaybackStats() {
+        val song = statsSong
+        if (song != null && playCountedSongId == song.id && pendingListenMs > 0L) {
+            playbackStatsStore.addListenTime(song, pendingListenMs)
+        }
+        pendingListenMs = 0L
+    }
+
     override fun onResume() {
         super.onResume()
         if (!::unifiedContainer.isInitialized) return
 
-        // 重置触摸和过渡状态，防止从后台恢复时交互卡住
+        statsHandler.post(statsTickRunnable)
+
         unifiedContainer.resetInteractionState()
 
         unifiedContainer.refreshImmersiveState(com.rawsmusic.module.data.prefs.AppPreferences.UI.isImmersiveEnabled)
         unifiedContainer.updateMiniCoverEnabled(com.rawsmusic.module.data.prefs.AppPreferences.UI.isMiniCoverEnabled)
 
-        // 强制重新应用当前场景的所有视图参数（包括 onSceneChanged 回调），
-        // 确保从后台恢复后所有视图状态一致
+        setupSceneParams()
         unifiedContainer.forceReapplyCurrentScene()
 
-        // 重新布局以响应设置变更
+        playerController?.currentSong?.value?.let { song ->
+            val coverUri = resolveCoverUri(song)
+            if (coverUri.isNotBlank()) {
+                loadCoverBackground(coverUri)
+            }
+        }
+
+        if (!hasRestoredScene && com.rawsmusic.module.data.prefs.AppPreferences.UI.isPlayPageMemoryEnabled) {
+            hasRestoredScene = true
+            val savedScene = com.rawsmusic.module.data.prefs.AppPreferences.UI.lastScene
+            val currentScene = unifiedContainer.currentScene
+            if (currentScene == UnifiedPlayerContainer.Scene.MAIN && savedScene != "MAIN") {
+                val song = playerController?.currentSong?.value
+                if (song != null) {
+                    val targetScene = try {
+                        UnifiedPlayerContainer.Scene.valueOf(savedScene)
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (targetScene != null) {
+                        unifiedContainer.post {
+                            loadedCoverImageWidth = 0
+                            loadedCoverImageHeight = 0
+                            val isImmersive = unifiedContainer.isImmersiveEnabled
+                            val coverUri = resolveCoverUri(song)
+                            val playCoverUri = coverUri.ifBlank { song.albumArtPath ?: "" }
+                            val hasCover = playCoverUri.isNotBlank()
+                            if (hasCover && !isImmersive) {
+                                val request = coil.request.ImageRequest.Builder(this@MainActivity)
+                                    .data(playCoverUri)
+                                    .crossfade(false)
+                                    .allowHardware(false)
+                                    .target(
+                                        onSuccess = { result ->
+                                            val bitmap = (result as? android.graphics.drawable.BitmapDrawable)?.bitmap
+                                            if (bitmap != null) {
+                                                loadedCoverImageWidth = bitmap.width
+                                                loadedCoverImageHeight = bitmap.height
+                                            }
+                                            setupCoverLayoutParams()
+                                            playCoverView.setCoverDrawable(result)
+                                            binding.ivPlayCover.visibility = View.VISIBLE
+                                            unifiedContainer.post {
+                                                setupCoverLayoutParams()
+                                                unifiedContainer.switchToSceneSilent(targetScene)
+                                                if (targetScene == UnifiedPlayerContainer.Scene.LYRIC) {
+                                                    binding.ivPlayCover.pivotX = 0f
+                                                    binding.ivPlayCover.pivotY = 0f
+                                                    registerCoverLyricParams()
+                                                } else {
+                                                    registerCoverCollapseParams()
+                                                }
+                                                unifiedContainer.forceReapplyCurrentScene()
+                                                setupCoverLayoutParams()
+                                                updateHiresBadge()
+                                            }
+                                        }
+                                    )
+                                    .build()
+                                imageLoader.enqueue(request)
+                            } else {
+                                unifiedContainer.switchToSceneSilent(targetScene)
+                                if (targetScene == UnifiedPlayerContainer.Scene.LYRIC) {
+                                    registerCoverLyricParams()
+                                } else {
+                                    registerCoverCollapseParams()
+                                }
+                                unifiedContainer.forceReapplyCurrentScene()
+                                setupCoverLayoutParams()
+                                updateHiresBadge()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         unifiedContainer.post {
             setupCoverLayoutParams()
             updateHiresBadge()
 
-            // 歌词场景下重新注册封面参数并重置 pivot，防止从后台恢复后封面放大
             val currentScene = unifiedContainer.currentScene
             if (currentScene == UnifiedPlayerContainer.Scene.LYRIC) {
                 binding.ivPlayCover.pivotX = 0f
@@ -5635,10 +6573,17 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             )
         }
 
+        if (LyriconProviderManager.isEnabled() && LyriconProviderManager.isConnected()) {
+            val currentSong = playerController?.currentSong?.value
+            val isPlaying = playerController?.playState?.value == PlayState.PLAYING
+            LyriconProviderManager.setSong(currentSong, if (currentLyricData.isEmpty) null else currentLyricData)
+            LyriconProviderManager.setPlaybackState(isPlaying)
+        }
+
         // 如果正在播放，需要重创建，否则USB会话会被破坏
         val isPlaying = playerController?.playState?.value == PlayState.PLAYING
         if (isPlaying) {
-            android.util.Log.i("MainActivity", "onResume: playback active, skip USB re-scan/open")
+            AppLogger.i("MainActivity", "onResume: playback active, skip USB re-scan/open")
             return
         }
 
@@ -5654,10 +6599,15 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
 
     override fun onDestroy() {
         super.onDestroy()
+        statsHandler.removeCallbacks(statsTickRunnable)
+        flushPlaybackStats()
         try { unregisterReceiver(settingsChangeReceiver) } catch (_: Exception) {}
         CapsuleProgressSync.stop()
         LyriconProviderManager.stopPositionSync()
         LyriconProviderManager.destroy()
+        TickerBridge.destroy(this)
+        LyricGetterBridge.destroy()
+        BluetoothLyricBridge.destroy()
         playerController?.release()
         playerController = null
         PlayerHolder.controller = null
@@ -5753,7 +6703,13 @@ class MainActivity : BaseActivity<ActivityMainBinding>() {
             "时长" to AudioUtils.formatDuration(song.duration),
             "码率" to (if (song.bitRate > 0) "${song.bitRate / 1000} kbps" else "未知"),
             "采样率" to srDisplay,
-            "位深" to (if (song.bitsPerSample > 0) "${song.bitsPerSample} bit" else "未知"),
+            "位深" to (when {
+                song.bitsPerSample <= 0 -> "未知"
+                song.encodingFormat.contains("FLOAT", true) && song.bitsPerSample == 32 -> "32 bit (Float)"
+                song.encodingFormat.contains("FLOAT", true) && song.bitsPerSample == 64 -> "64 bit (Float)"
+                song.encodingFormat.contains("FLOAT", true) -> "${song.bitsPerSample} bit (Float)"
+                else -> "${song.bitsPerSample} bit"
+            }),
             "格式" to (song.format.ifBlank { song.extension }),
             "文件大小" to formatFileSize(song.fileSize),
             "文件路径" to song.path

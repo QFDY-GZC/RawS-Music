@@ -2,56 +2,86 @@ package com.rawsmusic.module.data.prefs
 
 import android.content.Context
 import android.graphics.Typeface
+import android.os.Build
 import android.widget.TextView
 
 object FontManager {
 
+    private const val BUILTIN_FONT_PATH = "fonts/MiSansLatinVF.ttf"
+    private const val DEFAULT_WEIGHT = 400
+    private const val DEFAULT_SIZE_SCALE = 100
+    private const val DEFAULT_ITALIC = false
+
+    private var baseTypeface: Typeface? = null
     private var customTypeface: Typeface? = null
 
+    private val scaledViews = mutableSetOf<Int>()
+
     val typeface: Typeface?
-        get() = customTypeface
+        get() = customTypeface ?: baseTypeface
 
     fun init(context: Context) {
-        val path = AppPreferences.UI.customFontPath
-        if (path.isNotBlank()) {
-            try {
-                val tf = Typeface.createFromFile(path)
-                customTypeface = applyStyle(tf)
-            } catch (_: Exception) {
-                try {
-                    val uri = android.net.Uri.parse(path)
-                    val input = context.contentResolver.openInputStream(uri)
-                    if (input != null) {
-                        val file = java.io.File(context.cacheDir, "custom_font.ttf")
-                        file.outputStream().use { out -> input.copyTo(out) }
-                        input.close()
-                        val tf = Typeface.createFromFile(file)
-                        customTypeface = applyStyle(tf)
-                    }
-                } catch (_: Exception) {
-                    customTypeface = null
-                }
-            }
-        } else {
-            customTypeface = null
+        try {
+            baseTypeface = Typeface.createFromAsset(context.assets, BUILTIN_FONT_PATH)
+        } catch (_: Exception) {
+            baseTypeface = null
         }
+        rebuildTypeface(context)
     }
 
-    private fun applyStyle(base: Typeface): Typeface {
+    fun rebuildTypeface(context: Context) {
+        val base = baseTypeface ?: return
+        val weight = AppPreferences.UI.fontWeight
         val italic = AppPreferences.UI.fontItalic
-        val style = if (kotlin.math.abs(italic) > 0.1f) Typeface.ITALIC else Typeface.NORMAL
+
+        customTypeface = buildVariableTypeface(context, base, weight, italic)
+        scaledViews.clear()
+    }
+
+    private fun buildVariableTypeface(context: Context, base: Typeface, weight: Int, italic: Boolean): Typeface {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                val axis = "wght $weight"
+                val builder = Typeface.Builder(context.assets, BUILTIN_FONT_PATH)
+                builder.setFontVariationSettings(axis)
+                val tf = builder.build()
+                return if (italic) {
+                    Typeface.create(tf, Typeface.ITALIC)
+                } else {
+                    tf
+                }
+            } catch (_: Exception) {}
+        }
+        val style = if (italic) Typeface.ITALIC else Typeface.NORMAL
         return Typeface.create(base, style)
     }
 
     fun applyToTextView(textView: TextView) {
-        customTypeface?.let { tf ->
+        val tf = customTypeface ?: baseTypeface
+        if (tf != null) {
             textView.typeface = tf
-            val weight = AppPreferences.UI.fontWeight
-            val italic = AppPreferences.UI.fontItalic
-            textView.textScaleX = weight
-            if (kotlin.math.abs(italic) > 0.01f) {
-                textView.paint.textSkewX = italic
-            }
+        }
+        applyTextSizeScale(textView)
+        applyItalic(textView)
+    }
+
+    private fun applyTextSizeScale(textView: TextView) {
+        val viewId = textView.hashCode()
+        if (viewId in scaledViews) return
+        val scale = AppPreferences.UI.fontSizeScale / 100f
+        if (scale == 1f) return
+        val currentSize = textView.textSize
+        if (currentSize > 0f) {
+            val scaledSize = currentSize * scale
+            textView.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, scaledSize)
+            scaledViews.add(viewId)
+        }
+    }
+
+    private fun applyItalic(textView: TextView) {
+        val italic = AppPreferences.UI.fontItalic
+        if (italic) {
+            textView.paint.textSkewX = -0.2f
         }
     }
 
@@ -64,5 +94,9 @@ object FontManager {
                 applyRecursive(view.getChildAt(i))
             }
         }
+    }
+
+    fun clearScaledCache() {
+        scaledViews.clear()
     }
 }

@@ -83,8 +83,9 @@ class AlbumsFragment : BaseFragment<FragmentAlbumsBinding>() {
         if (searchEditText == null) {
             searchEditText = EditText(requireContext()).apply {
                 hint = "搜索专辑、艺术家"
-                setHintTextColor(0xFF9A9490.toInt())
-                setTextColor(0xFF1C1B1F.toInt())
+                val isDark = com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(requireContext())
+                setHintTextColor(if (isDark) 0xFF9F8D80.toInt() else 0xFF9A9490.toInt())
+                setTextColor(if (isDark) 0xFFE6E1DD.toInt() else 0xFF1C1B1F.toInt())
                 textSize = 15f
                 background = null
                 setSingleLine(true)

@@ -3,15 +3,16 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
+    android:background="@drawable/dialog_bg_rounded"
     android:orientation="vertical"
-    android:padding="24dp">
+    android:padding="28dp">
 
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="导入音乐"
         android:textAppearance="@style/TextAppearance.Material3.TitleLarge"
-        android:textColor="#FF1C1B1F" />
+        android:textColor="#FFFFFFFF" />
 
     <TextView
         android:layout_width="match_parent"
@@ -19,19 +20,20 @@
         android:layout_marginTop="8dp"
         android:text="选择包含音乐的文件夹，将自动扫描其中的音频文件"
         android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
-        android:textColor="#FF79747E" />
+        android:textColor="#CCFFFFFF" />
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnSelectFolder"
         android:layout_width="match_parent"
-        android:layout_height="48dp"
+        android:layout_height="52dp"
         android:layout_marginTop="16dp"
-        android:text="选择文件夹"
-        android:textColor="#FF6750A4"
-        app:backgroundTint="#FFEDDCFE"
-        app:cornerRadius="8dp"
+        android:text="新增文件夹"
+        android:textColor="#FF000000"
+        android:textSize="15sp"
+        app:backgroundTint="#FFFFFFFF"
+        app:cornerRadius="12dp"
         app:icon="@android:drawable/ic_menu_upload"
-        app:iconTint="#FF6750A4"
+        app:iconTint="#FF000000"
         app:iconGravity="textStart" />
 
     <TextView
@@ -40,10 +42,9 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
         android:textAppearance="@style/TextAppearance.Material3.BodySmall"
-        android:textColor="#FF49454F"
+        android:textColor="#CCFFFFFF"
         android:visibility="gone" />
 
-    <!-- 目录树区域 -->
     <LinearLayout
         android:id="@+id/dirTreeContainer"
         android:layout_width="match_parent"
@@ -58,13 +59,14 @@
             android:layout_marginBottom="8dp"
             android:text="目录结构（勾选需要扫描的目录）"
             android:textAppearance="@style/TextAppearance.Material3.LabelMedium"
-            android:textColor="#FF79747E" />
+            android:textColor="#CCFFFFFF" />
 
         <ScrollView
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
-            android:maxHeight="320dp">
+            android:maxHeight="360dp"
+            android:scrollbarStyle="insideOverlay">
 
             <LinearLayout
                 android:id="@+id/dirTreeList"
@@ -76,7 +78,6 @@
 
     </LinearLayout>
 
-    <!-- 扫描进度 -->
     <LinearLayout
         android:id="@+id/scanProgressContainer"
         android:layout_width="match_parent"
@@ -102,11 +103,10 @@
             android:layout_marginStart="8dp"
             android:text="0%"
             android:textAppearance="@style/TextAppearance.Material3.LabelSmall"
-            android:textColor="#FF79747E" />
+            android:textColor="#CCFFFFFF" />
 
     </LinearLayout>
 
-    <!-- 底部按钮 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -120,7 +120,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="取消"
-            android:textColor="#FF79747E" />
+            android:textColor="#CCFFFFFF" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnStartScan"
@@ -129,7 +129,8 @@
             android:layout_marginStart="8dp"
             android:enabled="false"
             android:text="开始扫描"
-            app:cornerRadius="8dp" />
+            app:backgroundTint="#FFFFFFFF"
+            app:cornerRadius="12dp" />
 
     </LinearLayout>
 

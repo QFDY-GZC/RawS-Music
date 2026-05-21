@@ -14,8 +14,8 @@ android {
         applicationId = "com.rawsmusic"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.1.0-alpha1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -123,9 +123,11 @@ dependencies {
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.graphics)
     implementation(libs.compose.material3)
+    implementation(libs.compose.material.icons.core)
     implementation(libs.compose.material.ripple)
     implementation(libs.activity.compose)
     implementation(libs.compose.runtime.livedata)
 
     implementation(project(":backdrop"))
+    implementation(libs.gson)
 }

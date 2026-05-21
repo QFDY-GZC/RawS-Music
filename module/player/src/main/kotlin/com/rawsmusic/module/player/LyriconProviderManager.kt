@@ -31,6 +31,8 @@ object LyriconProviderManager {
 
     var onConnectionStatusChanged: ((ConnectionStatus) -> Unit)? = null
 
+    var onProviderConnected: (() -> Unit)? = null
+
     fun init(context: Context, appIconResId: Int = 0) {
         if (!AppPreferences.Lyricon.enabled) {
             Log.d(TAG, "Lyricon provider disabled")
@@ -59,11 +61,13 @@ object LyriconProviderManager {
                     Log.d(TAG, "Connected to Lyricon")
                     connectionStatus = ConnectionStatus.CONNECTED
                     onConnectionStatusChanged?.invoke(connectionStatus)
+                    onProviderConnected?.invoke()
                 }
                 onReconnected { _ ->
                     Log.d(TAG, "Reconnected to Lyricon")
                     connectionStatus = ConnectionStatus.CONNECTED
                     onConnectionStatusChanged?.invoke(connectionStatus)
+                    onProviderConnected?.invoke()
                 }
                 onDisconnected { _ ->
                     Log.d(TAG, "Disconnected from Lyricon")
@@ -147,9 +151,10 @@ object LyriconProviderManager {
             while (isActive) {
                 try {
                     val pos = playerController.position.value
+                    val latency = playerController.latencyMs.toLong()
                     val state = playerController.playState.value
                     if (state == PlayState.PLAYING) {
-                        setPosition(pos)
+                        setPosition((pos - latency).coerceAtLeast(0L))
                     }
                 } catch (_: Exception) {}
                 delay(200)

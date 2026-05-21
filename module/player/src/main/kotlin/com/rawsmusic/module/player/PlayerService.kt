@@ -24,6 +24,10 @@ import androidx.lifecycle.lifecycleScope
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.common.model.PlayState
+import com.rawsmusic.module.player.lyrics.BluetoothLyricBridge
+import com.rawsmusic.module.player.lyrics.PlaybackTickerState
+import com.rawsmusic.module.player.lyrics.PlayerServiceProxy
+import com.rawsmusic.module.player.lyrics.TickerBridge
 import com.rawsmusic.module.player.usb.UsbVolumeController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,6 +54,13 @@ class PlayerService : LifecycleService() {
         var isRunning = false
             private set
 
+        private var _instance: PlayerService? = null
+
+        private var cachedGetTokenMethod: java.lang.reflect.Method? = null
+        private var cachedMTokenField: java.lang.reflect.Field? = null
+        private var reflectionCacheInitialized = false
+            private set
+
         /** 当前歌词数据 — 由MainActivity加载后设置 */
         private val _currentLyrics = MutableStateFlow<LyricData?>(null)
         val currentLyrics: StateFlow<LyricData?> = _currentLyrics.asStateFlow()
@@ -57,6 +68,10 @@ class PlayerService : LifecycleService() {
         /** 更新当前歌词 — 供外部（MainActivity）调用 */
         fun updateLyrics(lyricData: LyricData?) {
             _currentLyrics.value = lyricData
+        }
+
+        fun pushLyricsToMediaSession() {
+            _instance?.updateLyricsInMetadata()
         }
     }
 
@@ -80,6 +95,7 @@ class PlayerService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         isRunning = true
+        _instance = this
 
         // Service 持有 PlayerController 单例，避免 UI 层重建导致重复创建
         val controller = PlayerController.getInstance(this)
@@ -155,6 +171,11 @@ class PlayerService : LifecycleService() {
 
         // 启动前台通知
         startForegroundCompat(NOTIFICATION_ID, buildNotification())
+
+        TickerBridge.init(this)
+        PlayerServiceProxy.setUpdateCallback {
+            rebuildMetadataWithBluetoothLyric()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -295,17 +316,17 @@ class PlayerService : LifecycleService() {
      * 更新MediaSession的元数据（标题、艺术家、封面等）
      */
     private fun updateMediaSessionMetadata(title: String, artist: String, album: String, albumArtPath: String, duration: Long) {
-        // 清除旧封面（防止新歌曲显示旧封面）
         coverBitmap = null
 
-        // 推送歌词（LRC格式）到GENRE字段，兼容系统歌词显示
         val lrcText = _currentLyrics.value?.let { lyrics ->
             if (!lyrics.isEmpty) buildLrcText(lyrics) else null
         }
 
+        val displayArtist = BluetoothLyricBridge.currentDisplayArtist() ?: artist
+
         val metadata = MediaMetadataCompat.Builder().apply {
             putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
-            putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist)
+            putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
             putString(MediaMetadataCompat.METADATA_KEY_ALBUM, album)
             putLong(MediaMetadataCompat.METADATA_KEY_DURATION, duration)
             if (!lrcText.isNullOrBlank()) {
@@ -336,12 +357,13 @@ class PlayerService : LifecycleService() {
             if (!lyrics.isEmpty) buildLrcText(lyrics) else null
         }
 
+        val displayArtist = BluetoothLyricBridge.currentDisplayArtist() ?: song.artist
+
         val metadata = MediaMetadataCompat.Builder().apply {
             putString(MediaMetadataCompat.METADATA_KEY_TITLE, song.title)
-            putString(MediaMetadataCompat.METADATA_KEY_ARTIST, song.artist)
+            putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
             putString(MediaMetadataCompat.METADATA_KEY_ALBUM, song.album)
             putLong(MediaMetadataCompat.METADATA_KEY_DURATION, song.duration)
-            // 保留已有封面
             coverBitmap?.let { putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, it) }
             if (!lrcText.isNullOrBlank()) {
                 putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
@@ -376,6 +398,26 @@ class PlayerService : LifecycleService() {
             )
         }.build()
         mediaSessionCompat?.setPlaybackState(playbackState)
+    }
+
+    private fun rebuildMetadataWithBluetoothLyric() {
+        val song = currentSong ?: return
+        val lrcText = _currentLyrics.value?.let { lyrics ->
+            if (!lyrics.isEmpty) buildLrcText(lyrics) else null
+        }
+        val displayArtist = BluetoothLyricBridge.currentDisplayArtist() ?: song.artist
+        val metadata = MediaMetadataCompat.Builder().apply {
+            putString(MediaMetadataCompat.METADATA_KEY_TITLE, song.title)
+            putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
+            putString(MediaMetadataCompat.METADATA_KEY_ALBUM, song.album)
+            putLong(MediaMetadataCompat.METADATA_KEY_DURATION, song.duration)
+            coverBitmap?.let { putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, it) }
+            if (!lrcText.isNullOrBlank()) {
+                putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
+            }
+        }.build()
+        mediaSessionCompat?.setMetadata(metadata)
+        updateNotification()
     }
 
     /**
@@ -415,7 +457,13 @@ class PlayerService : LifecycleService() {
                 val path = try { URLDecoder.decode(albumArtPath, "UTF-8") } catch (_: Exception) { albumArtPath }
                 var bitmap: Bitmap? = null
 
-                if (path.startsWith("content://") && path.contains("albumart")) {
+                if (path.startsWith("file://")) {
+                    val filePath = path.removePrefix("file://")
+                    val file = File(filePath)
+                    if (file.exists()) {
+                        bitmap = decodeSampledFile(filePath, 512, 512)
+                    }
+                } else if (path.startsWith("content://") && path.contains("albumart")) {
                     // albumart URI — 优先从音频文件内嵌封面提取高清原图
                     bitmap = extractEmbeddedArtwork(path)
                     // 回退到 content URI 缩略图
@@ -442,14 +490,14 @@ class PlayerService : LifecycleService() {
 
                 if (bitmap != null) {
                     coverBitmap = bitmap
-                    // 更新metadata中的封面（含歌词）
                     val song = currentSong ?: return@launch
                     val lrcText = _currentLyrics.value?.let { lyrics ->
                         if (!lyrics.isEmpty) buildLrcText(lyrics) else null
                     }
+                    val displayArtist = BluetoothLyricBridge.currentDisplayArtist() ?: song.artist
                     val metadata = MediaMetadataCompat.Builder().apply {
                         putString(MediaMetadataCompat.METADATA_KEY_TITLE, song.title)
-                        putString(MediaMetadataCompat.METADATA_KEY_ARTIST, song.artist)
+                        putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
                         putString(MediaMetadataCompat.METADATA_KEY_ALBUM, song.album)
                         putLong(MediaMetadataCompat.METADATA_KEY_DURATION, song.duration)
                         putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
@@ -664,31 +712,50 @@ class PlayerService : LifecycleService() {
 
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
+        val tickerText = PlaybackTickerState.tickerText
+        val tickerTranslation = PlaybackTickerState.tickerTranslation
+        val samsungTranslation = com.rawsmusic.module.data.prefs.AppPreferences.Lyrics.samsungFloatingLyricTranslation
+
+        val displayContentText = if (samsungTranslation && tickerTranslation.isNotBlank() && tickerText.isNotBlank()) {
+            "${song?.artist ?: ""} · $tickerTranslation"
+        } else {
+            song?.artist ?: "准备播放"
+        }
+
         val builder = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(song?.title ?: "RawSMusic")
-            .setContentText(song?.artist ?: "准备播放")
+            .setContentText(displayContentText)
             .setSubText(song?.album)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
             .setContentIntent(contentIntent)
+
+        if (tickerText.isNotBlank()) {
+            builder.setTicker(tickerText)
+        }
 
         // 设置MediaStyle（通过session token关联MediaSession）
         mediaSessionCompat?.let { session ->
             val compatToken = session.sessionToken
             // 获取framework MediaSession.Token用于Notification.MediaStyle
             val frameworkToken = try {
-                // 尝试通过 getToken() 方法获取（部分 AndroidX 版本提供）
-                val method = compatToken.javaClass.getMethod("getToken")
-                method.invoke(compatToken) as? android.media.session.MediaSession.Token
-            } catch (_: NoSuchMethodException) {
-                // 回退到反射获取 mToken 字段
-                try {
-                    val tokenField = compatToken.javaClass.getDeclaredField("mToken")
-                    tokenField.isAccessible = true
-                    tokenField.get(compatToken) as? android.media.session.MediaSession.Token
-                } catch (e: Exception) {
-                    Log.w("PlayerService", "Failed to get framework token via field", e)
-                    null
+                if (!reflectionCacheInitialized) {
+                    reflectionCacheInitialized = true
+                    try {
+                        cachedGetTokenMethod = compatToken.javaClass.getMethod("getToken")
+                    } catch (_: NoSuchMethodException) {
+                        try {
+                            val field = compatToken.javaClass.getDeclaredField("mToken")
+                            field.isAccessible = true
+                            cachedMTokenField = field
+                        } catch (_: Exception) {}
+                    }
+                }
+                val method = cachedGetTokenMethod
+                if (method != null) {
+                    method.invoke(compatToken) as? android.media.session.MediaSession.Token
+                } else {
+                    cachedMTokenField?.get(compatToken) as? android.media.session.MediaSession.Token
                 }
             } catch (e: Exception) {
                 Log.w("PlayerService", "Failed to get framework token", e)
@@ -760,9 +827,13 @@ class PlayerService : LifecycleService() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
+        _instance = null
         positionUpdateJob?.cancel()
         releaseWakeLock()
         releaseUsbWakeLock()
+        TickerBridge.destroy(this)
+        BluetoothLyricBridge.destroy()
+        PlayerServiceProxy.setUpdateCallback(null)
         mediaSessionCompat?.isActive = false
         mediaSessionCompat?.release()
         mediaSessionCompat = null

@@ -13,7 +13,7 @@
         android:layout_height="match_parent"
         android:layout_gravity="start" />
 
-    <!-- ===== 统一场景容器（Poweramp 模式：所有子 View 扁平化） ===== -->
+    <!-- ===== 统一场景容器（所有子 View 扁平化） ===== -->
     <com.rawsmusic.core.ui.widget.UnifiedPlayerContainer
         android:id="@+id/unifiedContainer"
         android:layout_width="match_parent"
@@ -77,18 +77,16 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
-        <!-- ===== 播放页封面（与 Poweramp aa_bounds 同级） ===== -->
-        <com.google.android.material.imageview.ShapeableImageView
+        <!-- ===== 播放页封面（自定义 BitmapShader 渲染，无透明边距） ===== -->
+        <com.rawsmusic.core.ui.widget.CoverImageView
             android:id="@+id/ivPlayCover"
-            android:layout_width="match_parent"
-            android:layout_height="200dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
             android:layout_marginTop="56dp"
             android:layout_marginHorizontal="14dp"
             android:elevation="4dp"
-            android:scaleType="centerCrop"
-            android:src="@drawable/ic_music_note"
-            android:visibility="gone"
-            app:shapeAppearanceOverlay="@style/CoverShape" />
+            android:visibility="gone" />
 
         <!-- ===== 镜像专辑图（沉浸式封面底部倒映） ===== -->
         <com.google.android.material.imageview.ShapeableImageView
@@ -96,7 +94,7 @@
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:scaleType="fitCenter"
-            android:src="@drawable/ic_music_note"
+            android:src="@null"
             android:visibility="gone"
             android:alpha="0.6" />
 
@@ -160,6 +158,8 @@
                 android:tint="#CCFFFFFF" />
         </FrameLayout>
 
+
+
         <LinearLayout
             android:id="@+id/playTitleGroup"
             android:layout_width="match_parent"
@@ -171,35 +171,27 @@
             android:elevation="8dp"
             android:visibility="gone">
 
-            <TextView
+            <com.rawsmusic.core.ui.widget.MarqueeTextView
                 android:id="@+id/tvTitle"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:ellipsize="marquee"
                 android:gravity="start"
-                android:marqueeRepeatLimit="marquee_forever"
                 android:maxLines="1"
                 android:paddingEnd="60dp"
                 android:singleLine="true"
-                android:focusable="true"
-                android:focusableInTouchMode="true"
                 android:textColor="#FFFFFFFF"
                 android:textSize="20sp"
                 android:textStyle="bold" />
 
-            <TextView
+            <com.rawsmusic.core.ui.widget.MarqueeTextView
                 android:id="@+id/tvArtist"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
-                android:ellipsize="marquee"
                 android:gravity="start"
-                android:marqueeRepeatLimit="marquee_forever"
                 android:maxLines="1"
                 android:paddingEnd="60dp"
                 android:singleLine="true"
-                android:focusable="true"
-                android:focusableInTouchMode="true"
                 android:textColor="#CCFFFFFF"
                 android:textSize="14sp" />
 
@@ -389,6 +381,199 @@
 
         </androidx.constraintlayout.widget.ConstraintLayout>
 
+        <!-- ===== 音效/EQ 面板（右滑进入，与播放控件重叠） ===== -->
+        <ScrollView
+            android:id="@+id/effectsPanel"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_gravity="bottom"
+            android:fillViewport="true"
+            android:clipToPadding="false"
+            android:paddingHorizontal="20dp"
+            android:paddingBottom="26dp"
+            android:scrollbars="none"
+            android:elevation="8dp"
+            android:visibility="gone"
+            android:alpha="0">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="bottom">
+
+                <TextView
+                    android:id="@+id/tvEffectsTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="音效"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="22sp"
+                    android:textStyle="bold"
+                    android:layout_marginBottom="16dp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="@drawable/bg_glass_card"
+                    android:paddingHorizontal="20dp"
+                    android:paddingVertical="16dp"
+                    android:layout_marginBottom="12dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:layout_marginBottom="8dp">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="参量均衡器"
+                            android:textColor="#FFFFFFFF"
+                            android:textSize="16sp"
+                            android:textStyle="bold" />
+
+                        <com.google.android.material.materialswitch.MaterialSwitch
+                            android:id="@+id/switchPeqEnabled"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minWidth="0dp"
+                            android:minHeight="0dp" />
+
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/tvPeqPresetName"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="#B0FFFFFF"
+                        android:textSize="15sp"
+                        android:layout_marginBottom="4dp" />
+
+                    <TextView
+                        android:id="@+id/tvPeqPreamp"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="#80FFFFFF"
+                        android:textSize="12sp"
+                        android:layout_marginBottom="8dp" />
+
+                    <LinearLayout
+                        android:id="@+id/peqBarsContainer"
+                        android:layout_width="match_parent"
+                        android:layout_height="50dp"
+                        android:orientation="horizontal"
+                        android:gravity="bottom|center_horizontal" />
+
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="@drawable/bg_glass_card"
+                    android:paddingHorizontal="20dp"
+                    android:paddingVertical="16dp"
+                    android:layout_marginBottom="12dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:layout_marginBottom="8dp">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="立体声扩展"
+                            android:textColor="#FFFFFFFF"
+                            android:textSize="16sp"
+                            android:textStyle="bold" />
+
+                        <com.google.android.material.materialswitch.MaterialSwitch
+                            android:id="@+id/switchSpatialEnabled"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minWidth="0dp"
+                            android:minHeight="0dp" />
+
+                    </LinearLayout>
+
+                    <com.google.android.material.slider.Slider
+                        android:id="@+id/sliderSpatialStrength"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:stepSize="10"
+                        android:valueFrom="0"
+                        android:valueTo="1000" />
+
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="@drawable/bg_glass_card"
+                    android:paddingHorizontal="20dp"
+                    android:paddingVertical="16dp"
+                    android:layout_marginBottom="12dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="低音增强"
+                        android:textColor="#FFFFFFFF"
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="8dp" />
+
+                    <com.google.android.material.slider.Slider
+                        android:id="@+id/sliderBassBoost"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:stepSize="1"
+                        android:valueFrom="0"
+                        android:valueTo="100" />
+
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="@drawable/bg_glass_card"
+                    android:paddingHorizontal="20dp"
+                    android:paddingVertical="16dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="响度增强"
+                        android:textColor="#FFFFFFFF"
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="8dp" />
+
+                    <com.google.android.material.slider.Slider
+                        android:id="@+id/sliderLoudnessEnhance"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:stepSize="1"
+                        android:valueFrom="0"
+                        android:valueTo="100" />
+
+                </LinearLayout>
+
+            </LinearLayout>
+
+        </ScrollView>
+
         <!-- ===== 元数据卡片（独立同级） ===== -->
         <com.rawsmusic.core.ui.widget.MetadataCardView
             android:id="@+id/playMetadataCard"
@@ -490,6 +675,26 @@
             android:layout_marginEnd="24dp"
             android:elevation="24dp" />
 
+        <!-- ===== 单行歌词（音频可视化上方） ===== -->
+        <com.rawsmusic.core.ui.widget.SingleLineLyricView
+            android:id="@+id/singleLineLyric"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_gravity="top|start"
+            android:elevation="8dp"
+            android:visibility="gone" />
+
+        <!-- ===== 音频可视化（屏幕最底部） ===== -->
+        <com.rawsmusic.core.ui.widget.AudioVisualizerView
+            android:id="@+id/audioVisualizer"
+            android:layout_width="match_parent"
+            android:layout_height="72dp"
+            android:layout_gravity="bottom"
+            android:layout_marginBottom="0dp"
+            android:paddingBottom="0dp"
+            android:elevation="8dp"
+            android:visibility="gone" />
+
         <!-- ===== 队列页面 ===== -->
         <FrameLayout
             android:id="@+id/queuePageContainer"
@@ -572,12 +777,12 @@
                     android:orientation="vertical"
                     android:visibility="gone">
 
-                    <ImageView
-                        android:layout_width="64dp"
-                        android:layout_height="64dp"
-                        android:alpha="0.3"
-                        android:src="@drawable/ic_music_note"
-                        android:tint="#FFFFFF" />
+                        <ImageView
+                            android:layout_width="64dp"
+                            android:layout_height="64dp"
+                            android:alpha="0.3"
+                            android:src="@null"
+                            android:tint="#FFFFFF" />
 
                     <TextView
                         android:layout_width="wrap_content"
@@ -656,7 +861,7 @@
                         android:layout_width="80dp"
                         android:layout_height="80dp"
                         android:scaleType="centerCrop"
-                        android:src="@drawable/ic_music_note"
+                        android:src="@null"
                         app:shapeAppearanceOverlay="@style/CoverShape" />
 
                     <LinearLayout
@@ -919,7 +1124,7 @@
                 android:layout_marginHorizontal="40dp"
                 android:layout_marginVertical="120dp"
                 android:scaleType="centerInside"
-                android:src="@drawable/ic_music_note"
+                android:src="@null"
                 app:shapeAppearanceOverlay="@style/CoverShape" />
 
         </FrameLayout>

@@ -6,6 +6,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.viewModels
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.fragment.NavHostFragment
 import androidx.recyclerview.widget.LinearLayoutManager
 import coil.load
@@ -14,6 +15,7 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.adapter.SongAdapter
 import com.rawsmusic.databinding.FragmentAlbumDetailBinding
 import com.rawsmusic.ui.songs.PlayerHolder
+import com.rawsmusic.module.data.prefs.FontManager
 import com.rawsmusic.module.player.PlayerController
 
 class AlbumDetailFragment : BaseFragment<FragmentAlbumDetailBinding>() {
@@ -43,6 +45,8 @@ class AlbumDetailFragment : BaseFragment<FragmentAlbumDetailBinding>() {
             },
             onSelectionChanged = { _ -> }
         )
+
+        songAdapter.fontApplier = { FontManager.applyToTextView(it) }
 
         binding.recyclerView.apply {
             adapter = songAdapter
@@ -74,6 +78,16 @@ class AlbumDetailFragment : BaseFragment<FragmentAlbumDetailBinding>() {
         }
 
         viewModel.loadSongs(albumName, albumArtist)
+
+        val bgListener: (Boolean) -> Unit = { _ ->
+            songAdapter.notifyVisibleItemsChanged()
+        }
+        com.rawsmusic.core.ui.theme.ThemeManager.addOnBackgroundChangeListener(bgListener)
+        viewLifecycleOwner.lifecycle.addObserver(LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_DESTROY) {
+                com.rawsmusic.core.ui.theme.ThemeManager.removeOnBackgroundChangeListener(bgListener)
+            }
+        })
     }
 
     override fun initObserver() {
@@ -102,16 +116,12 @@ class AlbumDetailFragment : BaseFragment<FragmentAlbumDetailBinding>() {
     }
 
     private fun deleteSongFile(song: AudioFile) {
-        try {
-            val file = java.io.File(song.path)
-            if (file.exists() && file.delete()) {
-                viewModel.loadSongs(
-                    arguments?.getString(ARG_ALBUM_NAME) ?: return,
-                    arguments?.getString(ARG_ALBUM_ARTIST) ?: return
-                )
-                android.widget.Toast.makeText(requireContext(), "已删除", android.widget.Toast.LENGTH_SHORT).show()
-            }
-        } catch (_: Exception) {}
+        val deleted = com.rawsmusic.module.data.repository.MusicRepository.deleteSongFromDevice(requireContext(), song)
+        viewModel.loadSongs(
+            arguments?.getString(ARG_ALBUM_NAME) ?: return,
+            arguments?.getString(ARG_ALBUM_ARTIST) ?: return
+        )
+        android.widget.Toast.makeText(requireContext(), if (deleted) "已删除" else "删除失败", android.widget.Toast.LENGTH_SHORT).show()
     }
 
     companion object {

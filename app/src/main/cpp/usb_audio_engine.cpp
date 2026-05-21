@@ -18,6 +18,7 @@
 #include <sched.h>
 #include <sys/syscall.h>
 #include <unordered_set>
+#include <algorithm>  // for std::clamp
 
 #include "libusb.h"
 
@@ -339,6 +340,10 @@ struct UsbAudioContext {
 
     // 标称采样率（整数，由 nativeInit 设置，PI 控制器不修改此值）
     uint32_t nominalSampleRate = 44100;
+
+    // 热插拔回调句柄
+    libusb_hotplug_callback_handle hotplugHandle = 0;
+    bool hotplugRegistered = false;
 };
 
 // g_usbCtx removed – all access goes through handles + gLiveHandles registry
@@ -438,6 +443,51 @@ static UsbDevicePolicy getPolicyForDevice(uint16_t vid, uint16_t pid) {
         p.forceSoftwareVolume = true;      // 强制软件音量（FiiO 硬件音量不可靠）
         p.ignoreClockControl = true;       // 完全忽略时钟控制（SET_CUR/GET_CUR/GET_RANGE 均返回 EIO）
         LOGI("Device policy: FiiO VID=%04X PID=%04X → allowExclusive=1 hwVol=0 ignoreClock=1 forceSwVol=1",
+             vid, pid);
+    }
+
+    // Encore mDSD：固件严重 Bug，描述符声称支持硬件音量，但 GET_CUR 时设备死机
+    // 必须强制禁用 Feature Unit，避免 ANR 崩溃
+    if (vid == 0x16D0 && pid == 0x09DD) { // Encore mDSD
+        p.allowExclusive = true;
+        p.allowBitPerfect = true;
+        p.allowHardwareVolume = false;
+        p.forceDisableFeatureUnit = true;   // 强制禁用 Feature Unit
+        p.forceSoftwareVolume = true;
+        p.forceNoControlIface = true;       // 跳过 AC interface claim
+        LOGI("Device policy: Encore mDSD VID=%04X PID=%04X → forceDisableFU=1 forceSwVol=1 noCtrlIface=1",
+             vid, pid);
+    }
+
+    // Creative Sound Blaster HD：复合设备，接口 2 是数字接口，claim 会导致无声
+    // 注意：只针对已知问题型号，不使用全局 catch-all
+    if (vid == 0x041E && pid == 0x30D7) { // Creative Sound Blaster HD
+        p.allowExclusive = true;
+        p.allowBitPerfect = true;
+        p.allowHardwareVolume = false;      // 使用软件音量更安全
+        p.forceSoftwareVolume = true;
+        LOGI("Device policy: Creative SB HD VID=%04X PID=%04X → forceSwVol=1 (skip digital interface 2)",
+             vid, pid);
+    }
+
+    // Topping DAC 系列：部分型号硬件音量不稳定
+    if (vid == 0x152A) { // Topping
+        p.allowExclusive = true;
+        p.allowBitPerfect = true;
+        p.allowHardwareVolume = false;
+        p.forceSoftwareVolume = true;
+        LOGI("Device policy: Topping VID=%04X PID=%04X → forceSwVol=1",
+             vid, pid);
+    }
+
+    // SMSL DAC 系列：时钟控制可能有问题
+    if (vid == 0x262A) { // SMSL
+        p.allowExclusive = true;
+        p.allowBitPerfect = true;
+        p.allowHardwareVolume = false;
+        p.forceSoftwareVolume = true;
+        p.skipClockConfig = true;           // 跳过 SET_CUR 时钟配置
+        LOGI("Device policy: SMSL VID=%04X PID=%04X → forceSwVol=1 skipClock=1",
              vid, pid);
     }
 
@@ -1835,6 +1885,93 @@ struct AcEntity {
 };
 
 // ==========================
+// Terminal Type 可读名称（USB Audio Terminal Types）
+// 参考：USB Audio Terminal Types spec, Table 2-1
+// ==========================
+static const char* terminalTypeToString(uint16_t type) {
+    switch (type) {
+        // USB Streaming
+        case 0x0100: return "USB Streaming";
+        case 0x0101: return "Vendor Specific";
+
+        // Input Terminal
+        case 0x0200: return "Input Undefined";
+        case 0x0201: return "Microphone";
+        case 0x0202: return "Desktop Microphone";
+        case 0x0203: return "Personal Microphone";
+        case 0x0204: return "Omni-directional Microphone";
+        case 0x0205: return "Microphone Array";
+        case 0x0206: return "Processing Microphone Array";
+
+        // Output Terminal
+        case 0x0300: return "Output Undefined";
+        case 0x0301: return "Speaker";
+        case 0x0302: return "Headphones";
+        case 0x0303: return "Head Mounted Display Audio";
+        case 0x0304: return "Desktop Speaker";
+        case 0x0305: return "Room Speaker";
+        case 0x0306: return "Communication Speaker";
+        case 0x0307: return "Low Frequency Effects Speaker";
+
+        // Bi-directional
+        case 0x0400: return "Bi-directional Undefined";
+        case 0x0401: return "Handset";
+        case 0x0402: return "Headset";
+        case 0x0403: return "Speakerphone";
+        case 0x0404: return "Echo-suppressing Speakerphone";
+        case 0x0405: return "Echo-canceling Speakerphone";
+
+        // Telephony
+        case 0x0500: return "Telephony Undefined";
+        case 0x0501: return "Phone Line";
+        case 0x0502: return "Telephone";
+        case 0x0503: return "Down Line Phone";
+
+        // External
+        case 0x0600: return "External Undefined";
+        case 0x0601: return "Analog Connector";
+        case 0x0602: return "Digital Audio Interface";
+        case 0x0603: return "Line Connector";
+        case 0x0604: return "Legacy Audio Connector";
+        case 0x0605: return "S/PDIF Interface";
+        case 0x0606: return "1394 DA Stream";
+        case 0x0607: return "1394 DV Stream Soundtrack";
+
+        // Embedded
+        case 0x0700: return "Embedded Undefined";
+        case 0x0701: return "Level Calibration Noise Source";
+        case 0x0702: return "Equalization Noise";
+        case 0x0703: return "CD Player";
+        case 0x0704: return "DAT";
+        case 0x0705: return "DCC";
+        case 0x0706: return "MiniDisk";
+        case 0x0707: return "Analog Tape";
+        case 0x0708: return "Phonograph";
+        case 0x0709: return "VCR Audio";
+        case 0x070A: return "Video Disc Audio";
+        case 0x070B: return "DVD Audio";
+        case 0x070C: return "TV Tuner Audio";
+        case 0x070D: return "Satellite Receiver Audio";
+        case 0x070E: return "Cable Tuner Audio";
+        case 0x070F: return "DSS Audio";
+        case 0x0710: return "Radio Receiver";
+        case 0x0711: return "Radio Transmitter";
+        case 0x0712: return "Multi-track Recorder";
+        case 0x0713: return "Synthesizer";
+
+        default:
+            if (type >= 0x0100 && type < 0x0200) return "USB Streaming (Vendor)";
+            if (type >= 0x0200 && type < 0x0300) return "Input (Vendor)";
+            if (type >= 0x0300 && type < 0x0400) return "Output (Vendor)";
+            if (type >= 0x0400 && type < 0x0500) return "Bi-directional (Vendor)";
+            if (type >= 0x0500 && type < 0x0600) return "Telephony (Vendor)";
+            if (type >= 0x0600 && type < 0x0700) return "External (Vendor)";
+            if (type >= 0x0700 && type < 0x0800) return "Embedded (Vendor)";
+            return "Unknown";
+    }
+}
+
+// ==========================
 // AC Topology: 查找辅助
 // ==========================
 struct AcTopology {
@@ -1902,8 +2039,8 @@ static AcTopology parseACTopology(const uint8_t *configDesc, int configLen) {
                                 if (csLen >= 9) {
                                     // bNrChannels at csPos+8
                                 }
-                                LOGI("AC InputTerminal: id=0x%02X type=0x%04X assocTerminal=0x%02X cSourceId=0x%02X",
-                                     e.id, e.terminalType, e.assocTerminal, e.cSourceId);
+                                LOGI("AC InputTerminal: id=0x%02X type=0x%04X (%s) assocTerminal=0x%02X cSourceId=0x%02X",
+                                     e.id, e.terminalType, terminalTypeToString(e.terminalType), e.assocTerminal, e.cSourceId);
                                 break;
 
                             case AC_ENTITY_OUTPUT_TERMINAL: // 0x03
@@ -1915,8 +2052,8 @@ static AcTopology parseACTopology(const uint8_t *configDesc, int configLen) {
                                 if (csLen >= 9) {
                                     e.cSourceId = configDesc[csPos + 8]; // bCSourceID
                                 }
-                                LOGI("AC OutputTerminal: id=0x%02X type=0x%04X assocTerminal=0x%02X sourceId=0x%02X cSourceId=0x%02X",
-                                     e.id, e.terminalType, e.assocTerminal, e.sourceId, e.cSourceId);
+                                LOGI("AC OutputTerminal: id=0x%02X type=0x%04X (%s) assocTerminal=0x%02X sourceId=0x%02X cSourceId=0x%02X",
+                                     e.id, e.terminalType, terminalTypeToString(e.terminalType), e.assocTerminal, e.sourceId, e.cSourceId);
                                 break;
 
                             case AC_ENTITY_FEATURE_UNIT: // 0x06
@@ -2874,6 +3011,9 @@ static int uac2SetCurVolume(UsbAudioContext* ctx, uint8_t channel, int16_t raw) 
 
 // ==========================
 // UAC2 Feature Unit: GET_RANGE volume
+// 两步查询法（参考 eXtream）：
+// 1. 先发小请求获取 numSubranges
+// 2. 根据 numSubranges 计算真实缓冲区大小，再发第二次请求
 // 返回 wNumSubRanges + 每个 subrange (min, max, res)，各 2 bytes
 // ==========================
 static int uac2GetRangeVolume(
@@ -2886,40 +3026,130 @@ static int uac2GetRangeVolume(
     if (!ctx || !outMin || !outMax || !outRes) return -1;
     uint16_t wValue = (UAC_FU_VOLUME << 8) | channel;
     uint16_t wIndex = (ctx->playbackFeatureUnitId << 8) | ctx->playbackFeatureAcInterface;
-    uint8_t data[64] = {0};
+
+    // 第一步：只请求 2 字节，获取 numSubranges
+    uint8_t header[2] = {0};
     int r = libusb_control_transfer(
             ctx->devHandle,
             LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_INTERFACE,
             UAC2_REQ_RANGE,
             wValue,
             wIndex,
-            data,
-            sizeof(data),
+            header,
+            sizeof(header),
             500
     );
-    if (r < 8) {
-        LOGW("UAC2 GET_RANGE volume failed: fu=0x%02X ch=%u r=%d",
+    if (r < 2) {
+        LOGW("UAC2 GET_RANGE volume header failed: fu=0x%02X ch=%u r=%d",
              ctx->playbackFeatureUnitId, channel, r);
         return r < 0 ? r : -2;
     }
-    uint16_t num = data[0] | (data[1] << 8);
-    if (num < 1) {
-        LOGW("UAC2 GET_RANGE volume invalid num=0 ch=%u", channel);
+
+    uint16_t numSubranges = header[0] | (header[1] << 8);
+    if (numSubranges < 1) {
+        LOGW("UAC2 GET_RANGE volume invalid numSubranges=0 ch=%u", channel);
         return -3;
     }
-    int16_t minRaw = (int16_t)(data[2] | (data[3] << 8));
-    int16_t maxRaw = (int16_t)(data[4] | (data[5] << 8));
-    int16_t resRaw = (int16_t)(data[6] | (data[7] << 8));
-    *outMin = minRaw;
-    *outMax = maxRaw;
-    *outRes = resRaw;
-    LOGI("UAC2 GET_RANGE volume ok: fu=0x%02X ch=%u min=%.2f max=%.2f res=%.2f num=%u",
-         ctx->playbackFeatureUnitId,
-         channel,
-         minRaw / 256.0f,
-         maxRaw / 256.0f,
-         resRaw / 256.0f,
-         num);
+
+    // 第二步：按 UAC2 规范请求 32-bit 大小，然后根据实际返回字节数判断格式
+    // UAC2 规范: wNumSubRanges(2) + [dwMIN(4) + dwMAX(4) + dwRES(4)] * n = 2 + n*12
+    // 但很多设备返回 16-bit: wNumSubRanges(2) + [wMIN(2) + wMAX(2) + wRES(2)] * n = 2 + n*6
+    size_t size32 = 2 + (numSubranges * 12);
+    size_t size16 = 2 + (numSubranges * 6);
+    size_t requestSize = std::min(size32, (size_t)256);  // 限制为 256 字节
+    if (requestSize < 8) requestSize = 8;  // 至少请求 8 字节（header + 1 subrange）
+
+    std::vector<uint8_t> data(requestSize, 0);
+    r = libusb_control_transfer(
+            ctx->devHandle,
+            LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_INTERFACE,
+            UAC2_REQ_RANGE,
+            wValue,
+            wIndex,
+            data.data(),
+            static_cast<uint16_t>(requestSize),
+            500
+    );
+    if (r < 8) {
+        LOGW("UAC2 GET_RANGE volume full query failed: fu=0x%02X ch=%u r=%d",
+             ctx->playbackFeatureUnitId, channel, r);
+        return r < 0 ? r : -2;
+    }
+
+    // 第三步：根据实际返回字节数判断 16-bit 还是 32-bit
+    // UAC2 规范要求 32-bit，但很多设备返回 16-bit
+    // 特殊情况：r=8, numSubranges=1 时可能是 32-bit（只有 MIN+MAX，无 RES）或 16-bit（MIN+MAX+RES+padding）
+    int actualBytesPerSubrange = (r - 2) / numSubranges;
+    
+    // 先尝试 16-bit 解析
+    int16_t min16 = (int16_t)(data[2] | (data[3] << 8));
+    int16_t max16 = (int16_t)(data[4] | (data[5] << 8));
+    int16_t res16 = (r >= 8) ? (int16_t)(data[6] | (data[7] << 8)) : 0;
+    
+    // 再尝试 32-bit 解析（需要至少 10 字节）
+    int32_t min32 = 0, max32 = 0, res32 = 0;
+    if (r >= 10) {
+        min32 = (int32_t)(data[2] | (data[3] << 8) | (data[4] << 16) | (data[5] << 24));
+        max32 = (int32_t)(data[6] | (data[7] << 8) | (data[8] << 16) | (data[9] << 24));
+    }
+    if (r >= 14) {
+        res32 = (int32_t)(data[10] | (data[11] << 8) | (data[12] << 16) | (data[13] << 24));
+    }
+    
+    // 判断使用哪种解析结果
+    // 启发式规则：如果 16-bit 结果 min==max 且 res==0，但 32-bit 结果更合理，则用 32-bit
+    bool use32bit = false;
+    if (actualBytesPerSubrange >= 12) {
+        // 明确是 32-bit
+        use32bit = true;
+    } else if (r >= 10 && min16 == max16 && res16 == 0 && min32 != max32) {
+        // 16-bit 结果不合理（min==max），尝试 32-bit
+        use32bit = true;
+        LOGW("UAC2 GET_RANGE: 16-bit parse gives min==max==%d, retrying as 32-bit", min16);
+    }
+    
+    int32_t minRaw = 0, maxRaw = 0, resRaw = 0;
+    if (use32bit) {
+        minRaw = min32;
+        maxRaw = max32;
+        resRaw = res32;
+        
+        // 关键修复：检测设备返回的"零扩展16位值"
+        // 很多USB DAC将16位音量值零扩展到32位字段中，导致负值变正
+        // 例如 0x0000C080 应解释为 int16_t 0xC080 = -16256 (-63.5dB)
+        // 而非 uint32_t 49280 (192.5dB，物理上不可能)
+        // 判断条件：高16位全零 且 低16位的bit15为1（负数区域）
+        if ((min32 & 0xFFFF0000) == 0 && (uint16_t)(min32 & 0xFFFF) >= 0x8000) {
+            int32_t reinterpreted = (int16_t)(min32 & 0xFFFF);
+            LOGI("UAC2 GET_RANGE: min32=%d is zero-extended 16-bit, reinterpreted as %d (%.2fdB)",
+                 min32, reinterpreted, reinterpreted / 256.0f);
+            minRaw = reinterpreted;
+        }
+        if ((max32 & 0xFFFF0000) == 0 && (uint16_t)(max32 & 0xFFFF) >= 0x8000) {
+            int32_t reinterpreted = (int16_t)(max32 & 0xFFFF);
+            LOGI("UAC2 GET_RANGE: max32=%d is zero-extended 16-bit, reinterpreted as %d (%.2fdB)",
+                 max32, reinterpreted, reinterpreted / 256.0f);
+            maxRaw = reinterpreted;
+        }
+        if ((res32 & 0xFFFF0000) == 0 && (uint16_t)(res32 & 0xFFFF) >= 0x8000) {
+            int32_t reinterpreted = (int16_t)(res32 & 0xFFFF);
+            resRaw = reinterpreted;
+        }
+        
+        LOGI("UAC2 GET_RANGE volume 32-bit: fu=0x%02X ch=%u min=%d max=%d res=%d numSubranges=%u",
+             ctx->playbackFeatureUnitId, channel, minRaw, maxRaw, resRaw, numSubranges);
+    } else {
+        minRaw = min16;
+        maxRaw = max16;
+        resRaw = res16;
+        LOGI("UAC2 GET_RANGE volume 16-bit: fu=0x%02X ch=%u min=%.2f max=%.2f res=%.2f numSubranges=%u",
+             ctx->playbackFeatureUnitId, channel, minRaw / 256.0f, maxRaw / 256.0f, resRaw / 256.0f, numSubranges);
+    }
+
+    // 输出结果（截断到 int16_t 范围，保持函数签名不变）
+    *outMin = static_cast<int16_t>(std::clamp(minRaw, (int32_t)INT16_MIN, (int32_t)INT16_MAX));
+    *outMax = static_cast<int16_t>(std::clamp(maxRaw, (int32_t)INT16_MIN, (int32_t)INT16_MAX));
+    *outRes = static_cast<int16_t>(std::clamp(resRaw, (int32_t)INT16_MIN, (int32_t)INT16_MAX));
     return 0;
 }
 
@@ -3385,30 +3615,101 @@ static int setUsbHardwareVolume(UsbAudioContext *ctx, float linear) {
 }
 
 // ==========================
+// forceCleanupTransfers: 当设备已拔出时，强制释放所有 transfer buffer
+// 防止内存泄漏（callback 可能永远不回来）
+// ==========================
+static void forceCleanupTransfers(UsbAudioContext* h) {
+    if (!h) return;
+    LOGW("forceCleanupTransfers: freeing all transfer buffers (transport lost)");
+    
+    // 释放 ISO transfer buffers
+    for (int i = 0; i < NUM_TRANSFERS; i++) {
+        if (h->transferBuffers[i]) {
+            free(h->transferBuffers[i]);
+            h->transferBuffers[i] = nullptr;
+            LOGD("forceCleanupTransfers: freed ISO buffer %d", i);
+        }
+    }
+    
+    // 释放 feedback transfer buffer
+    if (h->feedbackBuffer) {
+        free(h->feedbackBuffer);
+        h->feedbackBuffer = nullptr;
+        LOGD("forceCleanupTransfers: freed feedback buffer");
+    }
+    
+    // 重置 pending 计数器
+    h->pendingTransfers.store(0, std::memory_order_release);
+    h->pendingFeedbackTransfers.store(0, std::memory_order_release);
+    
+    LOGW("forceCleanupTransfers: all buffers freed, pending counters reset");
+}
+
+// ==========================
 // 停止传输（内部辅助）
 // ==========================
 // ==========================
-// stopUsbAudioInternal: 停止 ISO 传输并等待 callback 完成
-// 不释放资源，不 join event thread，只确保所有 in-flight transfer 回来
+// stopUsbAudioInternal: 三阶段停止 ISO 传输并等待 callback 完成
+// 参考 eXtream 的三阶段防御策略：
+// 阶段1：礼貌等待（最多2秒），让现有 transfer 自然结束
+// 阶段2：逐步 cancel（每个间隔1ms），给 libusb 事件循环喘息时间
+// 阶段3：暴力清理（如果设备已拔出），直接放弃等待
 // ==========================
 static void stopUsbAudioInternal(UsbAudioContext* h) {
     if (!h) return;
     h->acceptingWrites.store(false, std::memory_order_release);
     bool wasStreaming = h->streaming.exchange(false, std::memory_order_acq_rel);
-    LOGI("Stopping USB audio... streaming=%d acceptingWrites=%d closing=%d pending=%d fbPending=%d",
+    bool transportLost = h->transportLost.load(std::memory_order_acquire);
+    LOGI("Stopping USB audio... streaming=%d acceptingWrites=%d closing=%d pending=%d fbPending=%d transportLost=%d",
          wasStreaming ? 1 : 0,
          h->acceptingWrites.load() ? 1 : 0,
          h->closing.load(std::memory_order_acquire) ? 1 : 0,
          h->pendingTransfers.load(std::memory_order_acquire),
-         h->pendingFeedbackTransfers.load(std::memory_order_acquire));
+         h->pendingFeedbackTransfers.load(std::memory_order_acquire),
+         transportLost ? 1 : 0);
 
-    // cancel ISO transfers
+    // 阶段3（提前）：如果设备已物理拔出，直接暴力清理，不等待
+    if (transportLost) {
+        LOGW("Fast stop due to USB transport lost, skipping graceful shutdown");
+        // 直接尝试 cancel 所有传输（可能失败，但无所谓）
+        for (int i = 0; i < NUM_TRANSFERS; i++) {
+            if (h->transfers[i]) {
+                libusb_cancel_transfer(h->transfers[i]);
+            }
+        }
+        if (h->feedbackTransfer) {
+            libusb_cancel_transfer(h->feedbackTransfer);
+        }
+        // 强制释放所有 transfer buffer，防止内存泄漏
+        forceCleanupTransfers(h);
+        LOGI("USB audio stopped (transport lost): pending=%d fbPending=%d",
+             h->pendingTransfers.load(), h->pendingFeedbackTransfers.load());
+        return;
+    }
+
+    // 阶段1：礼貌等待（最多2秒），让现有 transfer 自然在 callback 中结束
+    {
+        std::unique_lock<std::mutex> lock(h->stopMutex);
+        bool allDone = h->stopCV.wait_for(lock, std::chrono::milliseconds(2000), [&]() {
+            return h->pendingTransfers.load(std::memory_order_acquire) <= 0 &&
+                   h->pendingFeedbackTransfers.load(std::memory_order_acquire) <= 0;
+        });
+        if (allDone) {
+            LOGI("USB audio stopped gracefully in phase 1");
+            return;
+        }
+        LOGI("Phase 1 timeout: pending transfers still alive (ISO=%d FB=%d), entering phase 2",
+             h->pendingTransfers.load(), h->pendingFeedbackTransfers.load());
+    }
+
+    // 阶段2：逐步 cancel，每个间隔 1ms，给 libusb 事件循环喘息时间
     for (int i = 0; i < NUM_TRANSFERS; i++) {
         if (h->transfers[i]) {
             int r = libusb_cancel_transfer(h->transfers[i]);
             if (r != LIBUSB_SUCCESS && r != LIBUSB_ERROR_NOT_FOUND) {
                 LOGW("cancel iso transfer %d failed: %s", i, libusb_error_name(r));
             }
+            usleep(1000); // 1ms 间隔
         }
     }
 
@@ -3420,15 +3721,15 @@ static void stopUsbAudioInternal(UsbAudioContext* h) {
         }
     }
 
-    // 等待 callback 回来
+    // 再次等待 callback 回来（最多2秒）
     {
         std::unique_lock<std::mutex> lock(h->stopMutex);
-        bool allDone = h->stopCV.wait_for(lock, std::chrono::milliseconds(1500), [&]() {
+        bool allDone = h->stopCV.wait_for(lock, std::chrono::milliseconds(2000), [&]() {
             return h->pendingTransfers.load(std::memory_order_acquire) <= 0 &&
                    h->pendingFeedbackTransfers.load(std::memory_order_acquire) <= 0;
         });
         if (!allDone) {
-            LOGE("stop timeout: pending transfers still alive (ISO=%d FB=%d)",
+            LOGE("stop timeout after phase 2: pending transfers still alive (ISO=%d FB=%d)",
                  h->pendingTransfers.load(), h->pendingFeedbackTransfers.load());
         }
     }
@@ -4731,6 +5032,36 @@ Java_com_rawsmusic_module_player_usb_UsbAudioEngine_nativeInitUsbDevice(
     }
     libusb_set_option(ctx->libusbCtx, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_WARNING);
 
+    // 注册热插拔回调（主动监听设备状态）
+#if defined(LIBUSB_API_VERSION) && (LIBUSB_API_VERSION >= 0x01000105)
+    if (libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG)) {
+        int hotplugRet = libusb_hotplug_register_callback(
+            ctx->libusbCtx,
+            static_cast<libusb_hotplug_event>(LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT),
+            LIBUSB_HOTPLUG_ENUMERATE,
+            LIBUSB_HOTPLUG_MATCH_ANY,
+            LIBUSB_HOTPLUG_MATCH_ANY,
+            LIBUSB_HOTPLUG_MATCH_ANY,
+            [](libusb_context *ctx, libusb_device *device, libusb_hotplug_event event, void *user_data) -> int {
+                auto *usbCtx = static_cast<UsbAudioContext*>(user_data);
+                LOGW("HOTPLUG: Device removed! Marking transport lost.");
+                markUsbTransportLost(usbCtx, "hotplug device removed", -1, LIBUSB_ERROR_NO_DEVICE);
+                return 0;
+            },
+            ctx,
+            &ctx->hotplugHandle
+        );
+        if (hotplugRet == LIBUSB_SUCCESS) {
+            ctx->hotplugRegistered = true;
+            LOGI("Hotplug callback registered successfully");
+        } else {
+            LOGW("Hotplug callback registration failed: %s", libusb_strerror(hotplugRet));
+        }
+    } else {
+        LOGI("Hotplug not supported by this libusb build");
+    }
+#endif
+
     // 使用 dupFd 包装设备
     r = libusb_wrap_sys_device(ctx->libusbCtx, static_cast<intptr_t>(ctx->dupFd), &ctx->devHandle);
     if (r != LIBUSB_SUCCESS || ctx->devHandle == nullptr) {
@@ -5222,7 +5553,16 @@ Java_com_rawsmusic_module_player_usb_UsbAudioEngine_nativeInitUsbDevice(
     // 分配传输缓冲区
     for (int i = 0; i < NUM_TRANSFERS; i++) {
         int bufSize = ctx->transferSize;
-        ctx->transferBuffers[i] = new uint8_t[bufSize];
+        ctx->transferBuffers[i] = new(std::nothrow) uint8_t[bufSize];
+        if (!ctx->transferBuffers[i]) {
+            LOGE("Failed to allocate transfer buffer %d (size=%d)", i, bufSize);
+            // 清理已分配的缓冲区
+            for (int j = 0; j < i; j++) {
+                delete[] ctx->transferBuffers[j];
+                ctx->transferBuffers[j] = nullptr;
+            }
+            return JNI_FALSE;
+        }
         memset(ctx->transferBuffers[i], 0, bufSize);
     }
 
@@ -5300,7 +5640,11 @@ Java_com_rawsmusic_module_player_usb_UsbAudioEngine_nativeInitUsbDevice(
          ctx->prebufferBytes, prebufferMs, ctx->feedbackEpAddress);
 
     // 反馈端点缓冲区
-    ctx->feedbackBuffer = new uint8_t[4];
+    ctx->feedbackBuffer = new(std::nothrow) uint8_t[4];
+    if (!ctx->feedbackBuffer) {
+        LOGE("Failed to allocate feedback buffer");
+        return JNI_FALSE;
+    }
     memset(ctx->feedbackBuffer, 0, 4);
 
     ctx->initialized.store(true, std::memory_order_release);
@@ -5437,7 +5781,16 @@ Java_com_rawsmusic_module_player_usb_UsbAudioEngine_nativeStart__J(
     ctx->streaming.store(true, std::memory_order_release);
     ctx->acceptingWrites.store(true, std::memory_order_release);
     ctx->eventThreadRunning.store(true, std::memory_order_release);
-    ctx->eventThread = std::thread(eventLoop, ctx);
+
+    try {
+        ctx->eventThread = std::thread(eventLoop, ctx);
+    } catch (const std::system_error &e) {
+        LOGE("nativeStart: eventThread creation failed: %s (%d)", e.what(), e.code().value());
+        ctx->eventThreadRunning.store(false, std::memory_order_release);
+        ctx->acceptingWrites.store(false, std::memory_order_release);
+        ctx->streaming.store(false, std::memory_order_release);
+        return JNI_FALSE;
+    }
 
     int submitted = 0;
     for (int i = 0; i < NUM_TRANSFERS; i++) {
@@ -5649,6 +6002,15 @@ Java_com_rawsmusic_module_player_usb_UsbAudioEngine_nativeClose(
         ctx->eventThread.join();
         LOGI("event thread joined");
     }
+
+    // 3.5. 注销热插拔回调
+#if defined(LIBUSB_API_VERSION) && (LIBUSB_API_VERSION >= 0x01000105)
+    if (ctx->hotplugRegistered && ctx->libusbCtx) {
+        libusb_hotplug_deregister_callback(ctx->libusbCtx, ctx->hotplugHandle);
+        ctx->hotplugRegistered = false;
+        LOGI("Hotplug callback deregistered");
+    }
+#endif
 
     // 4. now safe to free transfers
     for (int i = 0; i < NUM_TRANSFERS; i++) {

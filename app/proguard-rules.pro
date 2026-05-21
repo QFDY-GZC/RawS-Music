@@ -19,6 +19,14 @@
 -keep class com.google.gson.reflect.TypeToken { *; }
 -keep class * extends com.google.gson.reflect.TypeToken { *; }
 
+# Keep Gson internal data classes used in PlaylistDao and other DAOs
+-keep class com.rawsmusic.module.data.db.PlaylistDao$* { *; }
+-keep class com.rawsmusic.module.data.db.SongDao$* { *; }
+-keep class com.rawsmusic.module.data.repository.MusicRepository$* { *; }
+-keep class com.rawsmusic.module.player.dsp.ParametricEQController$* { *; }
+-keep class com.rawsmusic.module.data.repository.EqualizerRepository$* { *; }
+-keep class com.rawsmusic.module.player.dsp.AutoEqPreset$* { *; }
+
 # Kotlin Parcelize
 -keep class * implements android.os.Parcelable { *; }
 -keepclassmembers class * implements android.os.Parcelable {
@@ -49,6 +57,10 @@
 # 保留自定义 View 类（只保留项目内的）
 -keep class com.rawsmusic.core.ui.widget.** { *; }
 -keep class com.rawsmusic.ui.widget.** { *; }
+
+# PlayerService - 防止 MediaSession 封面传递被优化
+-keep class com.rawsmusic.module.player.PlayerService { *; }
+-keep class com.rawsmusic.module.player.PlayerService$* { *; }
 
 # Compose
 -dontwarn androidx.compose.**

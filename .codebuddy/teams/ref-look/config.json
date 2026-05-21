@@ -1,0 +1,21 @@
+{
+  "name": "ref-look",
+  "leadAgentId": "4eaa2e0d468e4134b583d843f9b4cadc",
+  "workspacePath": "d:/RawSMusic",
+  "createdAt": "2026-05-18T13:47:25.313Z",
+  "options": {
+    "workspacePath": "d:/RawSMusic"
+  },
+  "members": [
+    {
+      "memberId": "team-lead@ref-look",
+      "name": "team-lead",
+      "role": "Team Lead - coordinates the team and interacts with the user"
+    },
+    {
+      "memberId": "reference-analyzer@ref-look",
+      "name": "reference-analyzer",
+      "role": "分析参考信笺动画实现"
+    }
+  ]
+}

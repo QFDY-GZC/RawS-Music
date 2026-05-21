@@ -38,6 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,12 +55,47 @@ import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.Shadow
 import com.rawsmusic.core.ui.R
 
-private val NavIconColor = Color(0xFF1C1B1F)
-private val TextPrimary = Color(0xFF1C1B1F)
-private val TextSecondary = Color(0xFF49454F)
-private val ProgressActiveColor = Color(0xFF1C1B1F)
-private val ProgressInactiveColor = Color(0x1F1C1B1F)
-private val DividerColor = Color(0x1F1C1B1F)
+@Composable
+private fun navIconColor(): Color {
+    val context = LocalContext.current
+    val isDark = com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(context)
+    return if (isDark) Color(0xFFE6E1DD) else Color(0xFF1C1B1F)
+}
+
+@Composable
+private fun textPrimaryColor(): Color {
+    val context = LocalContext.current
+    val isDark = com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(context)
+    return if (isDark) Color(0xFFE6E1DD) else Color(0xFF1C1B1F)
+}
+
+@Composable
+private fun textSecondaryColor(): Color {
+    val context = LocalContext.current
+    val isDark = com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(context)
+    return if (isDark) Color(0xFF9F8D80) else Color(0xFF49454F)
+}
+
+@Composable
+private fun progressActiveColor(): Color {
+    val context = LocalContext.current
+    val isDark = com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(context)
+    return if (isDark) Color(0xFFD4B896) else Color(0xFF1C1B1F)
+}
+
+@Composable
+private fun progressInactiveColor(): Color {
+    val context = LocalContext.current
+    val isDark = com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(context)
+    return if (isDark) Color(0x1FD4B896) else Color(0x1F1C1B1F)
+}
+
+@Composable
+private fun dividerColor(): Color {
+    val context = LocalContext.current
+    val isDark = com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(context)
+    return if (isDark) Color(0x1AE6E1DD) else Color(0x1F1C1B1F)
+}
 
 private data class NavItem(
     val id: CapsuleNavId,
@@ -188,7 +224,7 @@ fun RawsmusicBottomCapsule() {
                     .padding(horizontal = 20.dp)
                     .height(0.5.dp)
                     .graphicsLayer { alpha = dividerAlpha }
-                    .background(DividerColor)
+                    .background(dividerColor())
             )
         }
 
@@ -266,7 +302,7 @@ private fun CapsuleMiniPlayer(
                     text = lyricText,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = TextPrimary,
+                    color = textPrimaryColor(),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -276,7 +312,7 @@ private fun CapsuleMiniPlayer(
                         text = lyricTranslation,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
-                        color = TextSecondary,
+                        color = textSecondaryColor(),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -286,7 +322,7 @@ private fun CapsuleMiniPlayer(
                     text = songTitle,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = TextPrimary,
+                    color = textPrimaryColor(),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -296,7 +332,7 @@ private fun CapsuleMiniPlayer(
                         text = songArtist,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
-                        color = TextSecondary,
+                        color = textSecondaryColor(),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -317,7 +353,7 @@ private fun CapsuleMiniPlayer(
                     onClick = onPlayPauseClick
                 )
                 .padding(8.dp),
-            tint = TextPrimary
+            tint = textPrimaryColor()
         )
     }
 }
@@ -344,9 +380,9 @@ private fun ProgressSection(
                 .fillMaxWidth()
                 .height(16.dp),
             colors = SliderDefaults.colors(
-                thumbColor = ProgressActiveColor,
-                activeTrackColor = ProgressActiveColor,
-                inactiveTrackColor = ProgressInactiveColor
+                thumbColor = progressActiveColor(),
+                activeTrackColor = progressActiveColor(),
+                inactiveTrackColor = progressInactiveColor()
             )
         )
 
@@ -360,13 +396,13 @@ private fun ProgressSection(
                 text = formatTime(currentPosition),
                 fontSize = 9.sp,
                 fontWeight = FontWeight.Medium,
-                color = TextSecondary
+                color = textSecondaryColor()
             )
             Text(
                 text = formatTime(duration),
                 fontSize = 9.sp,
                 fontWeight = FontWeight.Medium,
-                color = TextSecondary
+                color = textSecondaryColor()
             )
         }
     }
@@ -411,7 +447,7 @@ private fun NavigationRow(
                 Icon(
                     painter = painterResource(item.iconRes),
                     contentDescription = null,
-                    tint = NavIconColor,
+                    tint = navIconColor(),
                     modifier = Modifier.size(28.dp)
                 )
                 Spacer(Modifier.height(1.dp))
@@ -420,7 +456,7 @@ private fun NavigationRow(
                         .width(indicatorWidth)
                         .height(2.5.dp)
                         .clip(RoundedCornerShape(1.25.dp))
-                        .background(NavIconColor)
+                        .background(navIconColor())
                 )
             }
         }

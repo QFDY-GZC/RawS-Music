@@ -47,4 +47,15 @@
     <string name="login">Login</string>
     <string name="register">Register</string>
     <string name="logout">Logout</string>
+    <string name="webdav_music_library">WebDAV Music Library</string>
+    <string name="webdav_settings">WebDAV Settings</string>
+    <string name="webdav_url_hint">WebDAV URL (e.g. https://dav.example.com/music/)</string>
+    <string name="webdav_username_hint">Username (optional)</string>
+    <string name="webdav_password_hint">Password (optional)</string>
+    <string name="webdav_test_connection">Test Connection</string>
+    <string name="webdav_save">Save</string>
+    <string name="webdav_empty">No content</string>
+    <string name="webdav_configure_hint">Tap the settings button to configure WebDAV connection</string>
+    <string name="webdav_folder">Folder</string>
+    <string name="webdav_added_to_queue">Added to queue</string>
 </resources>

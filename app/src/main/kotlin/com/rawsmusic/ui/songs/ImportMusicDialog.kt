@@ -13,6 +13,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.lifecycle.lifecycleScope
 import com.rawsmusic.R
+import com.rawsmusic.core.common.utils.CjkSortUtils
 import com.rawsmusic.databinding.DialogImportMusicBinding
 import com.rawsmusic.module.data.prefs.AppPreferences
 import kotlinx.coroutines.Dispatchers
@@ -20,22 +21,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/**
- * 音乐导入对话框
- * - 选择文件夹后显示目录树
- * - 目录树可展开/折叠，每个目录有勾选框
- * - 点击"开始扫描"后按勾选项扫描
- */
 class ImportMusicDialog(
     private val fragment: SongsFragment,
     private val onLaunchFolderPicker: () -> Unit
 ) {
     private var dialog: AlertDialog? = null
     private var binding: DialogImportMusicBinding? = null
-    private var selectedRootPath: String? = null
+    private val rootPaths = mutableListOf<String>()
     private val dirNodes = mutableListOf<DirNode>()
 
-    /** 目录树节点 */
     data class DirNode(
         val path: String,
         val name: String,
@@ -69,6 +63,7 @@ class ImportMusicDialog(
         val ctx = fragment.requireContext()
         binding = DialogImportMusicBinding.inflate(LayoutInflater.from(ctx), null, false)
 
+        binding!!.btnSelectFolder.text = "新增文件夹"
         binding!!.btnSelectFolder.setOnClickListener {
             onLaunchFolderPicker()
         }
@@ -86,42 +81,113 @@ class ImportMusicDialog(
             .setCancelable(true)
             .create()
 
-        dialog?.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog?.window?.setBackgroundDrawableResource(R.drawable.dialog_bg_rounded)
         dialog?.show()
+
+        val window = dialog?.window
+        if (window != null) {
+            val dm = ctx.resources.displayMetrics
+            val width = (dm.widthPixels * 0.85).toInt()
+            val height = (dm.heightPixels * 0.8).toInt()
+            window.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+
+        rootPaths.clear()
+        dirNodes.clear()
+        binding?.dirTreeList?.removeAllViews()
+        binding?.dirTreeContainer?.visibility = View.GONE
+        binding?.btnStartScan?.isEnabled = false
+
+        // 优先从 rootScanPaths 恢复原始根目录，保持目录树结构
+        val savedRootPaths = AppPreferences.UI.rootScanPaths
+        val savedScanPaths = AppPreferences.UI.scanPaths.toSet()
+        if (savedRootPaths.isNotEmpty()) {
+            for (path in savedRootPaths) {
+                if (File(path).exists() && path !in rootPaths) {
+                    rootPaths.add(path)
+                    buildDirectoryTree(path, savedScanPaths)
+                }
+            }
+        } else if (savedScanPaths.isNotEmpty()) {
+            // 兼容旧数据：没有 rootScanPaths 时，用 scanPaths 作为根目录
+            for (path in savedScanPaths) {
+                if (File(path).exists() && path !in rootPaths) {
+                    rootPaths.add(path)
+                    buildDirectoryTree(path)
+                }
+            }
+        }
+        if (rootPaths.isNotEmpty()) {
+            updateFolderListDisplay()
+            binding?.dirTreeContainer?.visibility = View.VISIBLE
+            binding?.btnStartScan?.isEnabled = true
+        }
     }
 
     private fun onFolderSelected(path: String) {
-        selectedRootPath = path
-        binding?.tvSelectedFolder?.text = "已选择：$path"
-        binding?.tvSelectedFolder?.visibility = View.VISIBLE
+        if (path in rootPaths) {
+            Toast.makeText(fragment.requireContext(), "该文件夹已添加", Toast.LENGTH_SHORT).show()
+            return
+        }
 
-        // 构建目录树
+        rootPaths.add(path)
+        AppPreferences.UI.lastSelectedFolderPath = path
+
         buildDirectoryTree(path)
 
+        updateFolderListDisplay()
         binding?.dirTreeContainer?.visibility = View.VISIBLE
         binding?.btnStartScan?.isEnabled = true
     }
 
-    private fun buildDirectoryTree(rootPath: String) {
-        dirNodes.clear()
-        binding?.dirTreeList?.removeAllViews()
-
-        val rootFile = File(rootPath)
-        if (!rootFile.exists() || !rootFile.isDirectory) {
-            binding?.tvSelectedFolder?.text = "文件夹不存在或无法访问"
-            return
+    private fun updateFolderListDisplay() {
+        if (rootPaths.isEmpty()) {
+            binding?.tvSelectedFolder?.visibility = View.GONE
+        } else {
+            binding?.tvSelectedFolder?.visibility = View.VISIBLE
+            val displayText = if (rootPaths.size == 1) {
+                "已选择：${rootPaths[0]}"
+            } else {
+                "已选择 ${rootPaths.size} 个文件夹"
+            }
+            binding?.tvSelectedFolder?.text = displayText
         }
+    }
 
+    private fun buildDirectoryTree(rootPath: String, enabledPaths: Set<String>? = null) {
+        val rootFile = File(rootPath)
+        if (!rootFile.exists() || !rootFile.isDirectory) return
+
+        val savedPaths = enabledPaths ?: AppPreferences.UI.scanPaths.toSet()
         val rootNode = scanDirectory(rootFile, 0)
         if (rootNode != null) {
+            restoreEnabledState(rootNode, savedPaths)
             dirNodes.add(rootNode)
             renderNode(rootNode, binding!!.dirTreeList)
         }
     }
 
+    private fun restoreEnabledState(node: DirNode, savedPaths: Set<String>) {
+        if (node.path in savedPaths) {
+            node.enabled = true
+            setChildrenEnabled(node, true)
+        } else {
+            val hasChildInSaved = savedPaths.any { it.startsWith(node.path + "/") }
+            if (hasChildInSaved) {
+                node.enabled = false
+                node.expanded = true
+                for (child in node.children) {
+                    restoreEnabledState(child, savedPaths)
+                }
+            } else {
+                node.enabled = true
+            }
+        }
+    }
+
     private fun scanDirectory(dir: File, depth: Int): DirNode? {
         if (!dir.isDirectory) return null
-        if (dir.name.startsWith(".") && depth > 0) return null // 跳过隐藏目录
+        if (dir.name.startsWith(".") && depth > 0) return null
 
         val node = DirNode(
             path = dir.absolutePath,
@@ -130,12 +196,11 @@ class ImportMusicDialog(
             enabled = true
         )
 
-        // 限制深度，避免嵌套过深
         if (depth < 6) {
             try {
                 val subDirs = dir.listFiles()
                     ?.filter { it.isDirectory && !it.name.startsWith(".") }
-                    ?.sortedBy { it.name.lowercase() }
+                    ?.sortedBy { CjkSortUtils.sortKey(it.name) }
                     ?: emptyList()
 
                 for (subDir in subDirs) {
@@ -157,14 +222,12 @@ class ImportMusicDialog(
         val tvDirName = itemView.findViewById<TextView>(R.id.tvDirName)
         val cbEnabled = itemView.findViewById<CheckBox>(R.id.cbEnabled)
 
-        // 缩进
         val paddingStart = (node.depth * 24 * density).toInt()
         itemView.setPadding(paddingStart, itemView.paddingTop, itemView.paddingRight, itemView.paddingBottom)
 
         tvDirName.text = if (node.depth == 0) node.path.substringAfterLast("/") else node.name
         cbEnabled.isChecked = node.enabled
 
-        // 箭头可见性和方向
         if (node.children.isNotEmpty()) {
             ivExpand.visibility = View.VISIBLE
             ivExpand.rotation = if (node.expanded) 0f else -90f
@@ -172,30 +235,22 @@ class ImportMusicDialog(
             ivExpand.visibility = View.INVISIBLE
         }
 
-        // 文件夹图标：叶子节点用不同图标
-        ivFolderIcon.setImageResource(
-            if (node.children.isEmpty()) android.R.drawable.ic_menu_view
-            else android.R.drawable.ic_menu_set_as
-        )
+        ivFolderIcon.setImageResource(R.drawable.ic_folder_2_fill)
 
-        // 展开/折叠
         ivExpand.setOnClickListener {
             node.expanded = !node.expanded
             ivExpand.rotation = if (node.expanded) 0f else -90f
             updateChildrenVisibility(node)
         }
 
-        // 勾选框
         cbEnabled.setOnCheckedChangeListener { _, isChecked ->
             node.enabled = isChecked
-            // 级联：勾选/取消子目录
             setChildrenEnabled(node, isChecked)
         }
 
         container.addView(itemView)
         node.itemView = itemView
 
-        // 子目录容器
         val childContainer = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(
@@ -207,7 +262,6 @@ class ImportMusicDialog(
         container.addView(childContainer)
         node.childContainer = childContainer
 
-        // 渲染子节点
         for (child in node.children) {
             renderNode(child, childContainer)
         }
@@ -237,41 +291,41 @@ class ImportMusicDialog(
         }
     }
 
-    /** 收集所有被勾选的目录路径 */
     private fun collectEnabledPaths(nodes: List<DirNode>): List<String> {
         val paths = mutableListOf<String>()
         for (node in nodes) {
             if (node.enabled) {
                 paths.add(node.path)
+            } else {
+                paths.addAll(collectEnabledPaths(node.children))
             }
         }
         return paths
     }
 
     private fun startScan() {
-        if (selectedRootPath == null) return
         val enabledPaths = collectEnabledPaths(dirNodes)
         if (enabledPaths.isEmpty()) {
             Toast.makeText(fragment.requireContext(), "请至少勾选一个目录", Toast.LENGTH_SHORT).show()
             return
         }
 
-        // 保存扫描路径配置
+        val newPaths = enabledPaths.toMutableList()
         val existingPaths = AppPreferences.UI.scanPaths.toMutableList()
-        for (path in enabledPaths) {
-            if (path !in existingPaths) {
-                existingPaths.add(path)
-            }
-        }
-        AppPreferences.UI.scanPaths = existingPaths
+        val rootPathSet = rootPaths.toSet()
+        val keptPaths = existingPaths.filter { it !in rootPathSet && rootPathSet.none { root -> it.startsWith(root + "/") } }
+        newPaths.addAll(keptPaths)
+        AppPreferences.UI.scanPaths = newPaths
+        // 保存原始根目录，用于下次重建目录树
+        val existingRoots = AppPreferences.UI.rootScanPaths.toMutableSet()
+        existingRoots.addAll(rootPaths)
+        AppPreferences.UI.rootScanPaths = existingRoots.toList()
 
-        // 显示扫描进度
         binding?.btnStartScan?.isEnabled = false
         binding?.btnSelectFolder?.isEnabled = false
         binding?.scanProgressContainer?.visibility = View.VISIBLE
         binding?.scanProgressBar?.progress = 0
 
-        // 执行扫描
         fragment.lifecycleScope.launch(Dispatchers.Main) {
             try {
                 val result = withContext(Dispatchers.IO) {

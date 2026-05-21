@@ -212,7 +212,8 @@ static int convert_to_wav(const char *input_path, const char *output_path,
     {
         const AVCodec *codec = avcodec_find_decoder(fmt_ctx->streams[audio_stream_idx]->codecpar->codec_id);
         if (!codec) {
-            LOGE("Unsupported codec");
+            AVCodecParameters *cp = fmt_ctx->streams[audio_stream_idx]->codecpar;
+            LOGE("Unsupported codec (codec_id=%d, codec_tag=0x%x, bits=%d)", cp->codec_id, cp->codec_tag, cp->bits_per_coded_sample);
             goto cleanup;
         }
 
@@ -472,7 +473,7 @@ static int convert_to_raw_pcm(
         AVCodecParameters *codecpar = fmt_ctx->streams[audio_stream_idx]->codecpar;
         const AVCodec *codec = avcodec_find_decoder(codecpar->codec_id);
         if (!codec) {
-            LOGE("convert_to_raw_pcm: Unsupported codec");
+            LOGE("convert_to_raw_pcm: Unsupported codec (codec_id=%d, codec_tag=0x%x, bits=%d)", codecpar->codec_id, codecpar->codec_tag, codecpar->bits_per_coded_sample);
             goto cleanup_pcm;
         }
 
@@ -921,7 +922,43 @@ struct StreamDecoder {
     bool eof_reached;
     bool flushed_decoder;
     bool flushed_swr;
+    bool raw_pcm_mode;
+    volatile bool closing;  // Set to true before close to prevent concurrent av_read_frame
+    AVSampleFormat raw_pcm_fmt;
 };
+
+static bool is_pcm_codec_id(int codec_id) {
+    return (codec_id >= 0x10001 && codec_id <= 0x10018) ||
+           codec_id == AV_CODEC_ID_PCM_S16LE_PLANAR ||
+           codec_id == AV_CODEC_ID_PCM_S24LE_PLANAR ||
+           codec_id == AV_CODEC_ID_PCM_S32LE_PLANAR ||
+           codec_id == AV_CODEC_ID_PCM_F16LE ||
+           codec_id == AV_CODEC_ID_PCM_F24LE;
+}
+
+static AVSampleFormat pcm_codec_sample_fmt(int codec_id) {
+    switch (codec_id) {
+        case 0x10001: return AV_SAMPLE_FMT_S16; // PCM_S16LE
+        case 0x10002: return AV_SAMPLE_FMT_S16; // PCM_S16BE
+        case 0x10003: return AV_SAMPLE_FMT_S16; // PCM_U16LE
+        case 0x10004: return AV_SAMPLE_FMT_S16; // PCM_U16BE
+        case 0x10005: return AV_SAMPLE_FMT_U8;  // PCM_S8
+        case 0x10006: return AV_SAMPLE_FMT_U8;  // PCM_U8
+        case 0x10009: return AV_SAMPLE_FMT_S32; // PCM_S32LE
+        case 0x1000A: return AV_SAMPLE_FMT_S32; // PCM_S32BE
+        case 0x1000B: return AV_SAMPLE_FMT_S32; // PCM_U32LE
+        case 0x1000C: return AV_SAMPLE_FMT_S32; // PCM_U32BE
+        case 0x1000D: return AV_SAMPLE_FMT_S32; // PCM_S24LE
+        case 0x1000E: return AV_SAMPLE_FMT_S32; // PCM_S24BE
+        case 0x1000F: return AV_SAMPLE_FMT_S32; // PCM_U24LE
+        case 0x10010: return AV_SAMPLE_FMT_S32; // PCM_U24BE
+        case 0x10015: return AV_SAMPLE_FMT_FLT; // PCM_F32BE
+        case 0x10016: return AV_SAMPLE_FMT_FLT; // PCM_F32LE
+        case 0x10017: return AV_SAMPLE_FMT_DBL; // PCM_F64BE
+        case 0x10018: return AV_SAMPLE_FMT_DBL; // PCM_F64LE
+        default: return AV_SAMPLE_FMT_S16;
+    }
+}
 
 static StreamDecoder* stream_decoder_open(
     const char *path,
@@ -961,29 +998,44 @@ static StreamDecoder* stream_decoder_open(
         AVCodecParameters *codecpar = sd->fmt_ctx->streams[sd->audio_stream_idx]->codecpar;
         const AVCodec *codec = avcodec_find_decoder(codecpar->codec_id);
         if (!codec) {
-            LOGE("stream_decoder_open: Unsupported codec");
-            goto fail;
+            if (is_pcm_codec_id(codecpar->codec_id)) {
+                LOGI("stream_decoder_open: PCM decoder not found for codec_id=%d, using raw PCM fallback", codecpar->codec_id);
+                sd->raw_pcm_mode = true;
+                sd->raw_pcm_fmt = pcm_codec_sample_fmt(codecpar->codec_id);
+                sd->src_sample_rate = codecpar->sample_rate;
+                sd->src_channels = codecpar->ch_layout.nb_channels;
+                if (sd->src_channels <= 0) sd->src_channels = 2;
+                sd->duration_us = sd->fmt_ctx->duration;
+                sd->codec_ctx = nullptr;
+            } else {
+                LOGE("stream_decoder_open: Unsupported codec (codec_id=%d, codec_tag=0x%x, bits=%d, channels=%d, sample_rate=%d)",
+                      codecpar->codec_id, codecpar->codec_tag, codecpar->bits_per_coded_sample,
+                      codecpar->ch_layout.nb_channels, codecpar->sample_rate);
+                goto fail;
+            }
         }
 
-        sd->codec_ctx = avcodec_alloc_context3(codec);
-        if (!sd->codec_ctx) {
-            LOGE("stream_decoder_open: Could not allocate codec context");
-            goto fail;
-        }
+        if (!sd->raw_pcm_mode) {
+            sd->codec_ctx = avcodec_alloc_context3(codec);
+            if (!sd->codec_ctx) {
+                LOGE("stream_decoder_open: Could not allocate codec context");
+                goto fail;
+            }
 
-        if (avcodec_parameters_to_context(sd->codec_ctx, codecpar) < 0) {
-            LOGE("stream_decoder_open: Could not copy codec params");
-            goto fail;
-        }
+            if (avcodec_parameters_to_context(sd->codec_ctx, codecpar) < 0) {
+                LOGE("stream_decoder_open: Could not copy codec params");
+                goto fail;
+            }
 
-        if (avcodec_open2(sd->codec_ctx, codec, nullptr) < 0) {
-            LOGE("stream_decoder_open: Could not open codec");
-            goto fail;
-        }
+            if (avcodec_open2(sd->codec_ctx, codec, nullptr) < 0) {
+                LOGE("stream_decoder_open: Could not open codec");
+                goto fail;
+            }
 
-        sd->src_sample_rate = sd->codec_ctx->sample_rate;
-        sd->src_channels = sd->codec_ctx->channels;
-        sd->duration_us = sd->fmt_ctx->duration;
+            sd->src_sample_rate = sd->codec_ctx->sample_rate;
+            sd->src_channels = sd->codec_ctx->channels;
+            sd->duration_us = sd->fmt_ctx->duration;
+        }
 
         // Output format
         sd->out_sample_rate = target_sample_rate > 0 ? target_sample_rate : sd->src_sample_rate;
@@ -995,14 +1047,15 @@ static StreamDecoder* stream_decoder_open(
         sd->out_fmt = swr_output_format_for_bits(sd->out_bits);
 
         // Channel layout
-        int64_t in_ch_layout = sd->codec_ctx->channel_layout;
-        if (in_ch_layout == 0) in_ch_layout = av_get_default_channel_layout(sd->codec_ctx->channels);
+        AVSampleFormat src_fmt = sd->raw_pcm_mode ? sd->raw_pcm_fmt : sd->codec_ctx->sample_fmt;
+        int64_t in_ch_layout = sd->raw_pcm_mode ? av_get_default_channel_layout(sd->src_channels) : sd->codec_ctx->channel_layout;
+        if (in_ch_layout == 0) in_ch_layout = av_get_default_channel_layout(sd->src_channels);
         if (in_ch_layout == 0) in_ch_layout = AV_CH_LAYOUT_STEREO;
         int64_t out_ch_layout = av_get_default_channel_layout(sd->out_channels);
 
         sd->swr_ctx = swr_alloc_set_opts(nullptr,
             out_ch_layout, sd->out_fmt, sd->out_sample_rate,
-            in_ch_layout, sd->codec_ctx->sample_fmt, sd->src_sample_rate,
+            in_ch_layout, src_fmt, sd->src_sample_rate,
             0, nullptr);
         if (!sd->swr_ctx) {
             LOGE("stream_decoder_open: Could not allocate SwrContext");
@@ -1037,6 +1090,7 @@ static StreamDecoder* stream_decoder_open(
         sd->eof_reached = false;
         sd->flushed_decoder = false;
         sd->flushed_swr = false;
+        sd->closing = false;
 
         LOGI("stream_decoder_open: OK, %s -> %dHz %dch %dbit, duration=%lldus",
              path, sd->out_sample_rate, sd->out_channels, sd->out_bits, (long long)sd->duration_us);
@@ -1082,11 +1136,52 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
 
     // Step 2: If output still has space, decode more frames
     while (bytes_written < out_max_bytes && !sd->eof_reached) {
-        // Try to receive more decoded frames
+        if (sd->closing) return bytes_written > 0 ? bytes_written : -2;
+        if (sd->raw_pcm_mode) {
+            int ret = av_read_frame(sd->fmt_ctx, sd->pkt);
+            if (ret < 0) {
+                if (ret == AVERROR_EOF) {
+                    sd->eof_reached = true;
+                    break;
+                }
+                LOGE("stream_decoder_read: av_read_frame failed: %d", ret);
+                sd->eof_reached = true;
+                break;
+            }
+            if (sd->pkt->stream_index != sd->audio_stream_idx) {
+                av_packet_unref(sd->pkt);
+                continue;
+            }
+            int bytes_per_sample = av_get_bytes_per_sample(sd->raw_pcm_fmt);
+            if (bytes_per_sample <= 0) bytes_per_sample = 1;
+            int nb_samples = sd->pkt->size / (bytes_per_sample * sd->src_channels);
+            const uint8_t *data_ptr = sd->pkt->data;
+            int out_samples = swr_convert(sd->swr_ctx, &sd->residual_buf,
+                sd->residual_buf_capacity / sd->out_bytes_per_sample / sd->out_channels,
+                &data_ptr, nb_samples);
+            av_packet_unref(sd->pkt);
+            if (out_samples > 0) {
+                int resampled_bytes = out_samples * sd->out_channels * sd->out_bytes_per_sample;
+                if (resampled_bytes > sd->residual_buf_capacity) {
+                    resampled_bytes = sd->residual_buf_capacity;
+                }
+                sd->residual_buf_size = resampled_bytes;
+                sd->residual_buf_pos = 0;
+                int available = sd->residual_buf_size;
+                int remaining = out_max_bytes - bytes_written;
+                int to_copy = (available < remaining) ? available : remaining;
+                memcpy(out_buf + bytes_written, sd->residual_buf + sd->residual_buf_pos, to_copy);
+                sd->residual_buf_pos += to_copy;
+                bytes_written += to_copy;
+                if (bytes_written >= out_max_bytes) break;
+            }
+        } else {
+            // Try to receive more decoded frames
         int ret = avcodec_receive_frame(sd->codec_ctx, sd->frame);
         if (ret == AVERROR(EAGAIN)) {
             // Need more packets
             if (!sd->flushed_decoder) {
+                if (sd->closing) return bytes_written > 0 ? bytes_written : -2;
                 ret = av_read_frame(sd->fmt_ctx, sd->pkt);
                 if (ret < 0) {
                     if (ret == AVERROR_EOF) {
@@ -1163,6 +1258,7 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
 
             if (bytes_written >= out_max_bytes) break;
         }
+        } // end else (non-raw-pcm mode)
     }
 
     // If decoder EOF but swr has residual
@@ -1207,7 +1303,8 @@ static bool stream_decoder_seek(StreamDecoder *sd, int64_t position_us) {
     sd->eof_reached = false;
     sd->flushed_decoder = false;
     sd->flushed_swr = false;
-    avcodec_flush_buffers(sd->codec_ctx);
+    if (sd->codec_ctx) avcodec_flush_buffers(sd->codec_ctx);
+    if (sd->swr_ctx) swr_init(sd->swr_ctx);
 
     int ret = avformat_seek_file(sd->fmt_ctx, -1, INT64_MIN, position_us, INT64_MAX, 0);
     if (ret < 0) {
@@ -1221,6 +1318,7 @@ static bool stream_decoder_seek(StreamDecoder *sd, int64_t position_us) {
 
 static void stream_decoder_close(StreamDecoder *sd) {
     if (!sd) return;
+    sd->closing = true;  // Signal to decoder thread that we're closing
     if (sd->pkt) av_packet_free(&sd->pkt);
     if (sd->frame) av_frame_free(&sd->frame);
     if (sd->residual_buf) av_free(sd->residual_buf);

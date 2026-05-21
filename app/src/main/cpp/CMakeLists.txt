@@ -148,3 +148,26 @@ target_link_libraries(
     android
     log
 )
+
+# ==========================================
+# TagLib-inspired WAV 元数据解析桥接
+# ==========================================
+add_library(
+    rawsmusic_taglib
+    SHARED
+    taglib_bridge.cpp
+)
+
+target_include_directories(
+    rawsmusic_taglib
+    PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_compile_options(rawsmusic_taglib PRIVATE -O3 -fomit-frame-pointer)
+
+target_link_libraries(
+    rawsmusic_taglib
+    android
+    log
+)

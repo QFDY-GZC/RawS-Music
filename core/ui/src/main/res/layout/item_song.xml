@@ -4,33 +4,33 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/itemRoot"
     android:layout_width="match_parent"
-    android:layout_height="100dp"
+    android:layout_height="wrap_content"
+    android:minHeight="90dp"
     android:background="@drawable/bg_song_item"
-    android:paddingHorizontal="16dp">
+    android:paddingHorizontal="16dp"
+    android:paddingVertical="8dp">
 
-    <com.google.android.material.imageview.ShapeableImageView
+    <ImageView
         android:id="@+id/ivCover"
-        android:layout_width="72dp"
-        android:layout_height="72dp"
-        android:scaleType="centerCrop"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:adjustViewBounds="true"
+        android:maxWidth="80dp"
+        android:maxHeight="80dp"
+        android:scaleType="fitCenter"
         android:src="@android:drawable/ic_menu_gallery"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:shapeAppearanceOverlay="@style/CoverShape" />
+        app:layout_constraintBottom_toBottomOf="parent" />
 
-    <TextView
+    <com.rawsmusic.core.ui.widget.MarqueeTextView
         android:id="@+id/tvTitle"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginStart="12dp"
         android:layout_marginEnd="8dp"
-        android:ellipsize="marquee"
-        android:marqueeRepeatLimit="marquee_forever"
         android:maxLines="1"
         android:singleLine="true"
-        android:focusable="true"
-        android:focusableInTouchMode="true"
         android:textColor="@color/text_primary"
         android:textSize="15sp"
         android:textStyle="bold"
@@ -41,22 +41,39 @@
         app:layout_constraintVertical_chainStyle="packed"
         tools:text="Song Title" />
 
-    <TextView
+    <com.rawsmusic.core.ui.widget.MarqueeTextView
         android:id="@+id/tvArtist"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginStart="12dp"
-        android:layout_marginTop="2dp"
+        android:layout_marginTop="1dp"
         android:layout_marginEnd="8dp"
-        android:ellipsize="end"
         android:maxLines="1"
+        android:singleLine="true"
         android:textColor="@color/text_secondary"
-        android:textSize="15sp"
-        app:layout_constraintBottom_toBottomOf="parent"
+        android:textSize="13sp"
+        app:layout_constraintBottom_toTopOf="@id/tvMeta"
         app:layout_constraintEnd_toStartOf="@id/cbSelect"
         app:layout_constraintStart_toEndOf="@id/ivCover"
         app:layout_constraintTop_toBottomOf="@id/tvTitle"
-        tools:text="Artist · 3:45" />
+        tools:text="Artist · Album" />
+
+    <TextView
+        android:id="@+id/tvMeta"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="1dp"
+        android:layout_marginEnd="8dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/text_tertiary"
+        android:textSize="11sp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toStartOf="@id/cbSelect"
+        app:layout_constraintStart_toEndOf="@id/ivCover"
+        app:layout_constraintTop_toBottomOf="@id/tvArtist"
+        tools:text="Hi·Res | 24bit | 96kHz | 3:45" />
 
     <CheckBox
         android:id="@+id/cbSelect"

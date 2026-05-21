@@ -35,9 +35,34 @@
         android:label="Settings" />
 
     <fragment
+        android:id="@+id/nav_lyric_management"
+        android:name="com.rawsmusic.ui.settings.LyricManagementFragment"
+        android:label="歌词管理" />
+
+    <fragment
+        android:id="@+id/nav_status_bar_lyric"
+        android:name="com.rawsmusic.ui.settings.StatusBarLyricFragment"
+        android:label="状态栏歌词" />
+
+    <fragment
+        android:id="@+id/nav_appearance"
+        android:name="com.rawsmusic.ui.settings.AppearanceFragment"
+        android:label="外观主题" />
+
+    <fragment
         android:id="@+id/nav_audio_settings"
         android:name="com.rawsmusic.ui.settings.AudioSettingsFragment"
         android:label="Audio Settings" />
+
+    <fragment
+        android:id="@+id/nav_audio_effects"
+        android:name="com.rawsmusic.ui.settings.AudioEffectsFragment"
+        android:label="音效设置" />
+
+    <fragment
+        android:id="@+id/nav_player_interface"
+        android:name="com.rawsmusic.ui.settings.PlayerInterfaceFragment"
+        android:label="播放界面" />
 
     <fragment
         android:id="@+id/nav_about"
@@ -47,17 +72,67 @@
     <fragment
         android:id="@+id/nav_spatial_sound"
         android:name="com.rawsmusic.ui.settings.SpatialSoundFragment"
-        android:label="音效设置" />
+        android:label="空间音效" />
 
     <fragment
         android:id="@+id/nav_song_stats"
-        android:name="com.rawsmusic.ui.stats.SongStatsFragment"
-        android:label="歌曲统计" />
+        android:name="com.rawsmusic.ui.analytics.AnalyticsFragment"
+        android:label="听歌统计" />
 
     <fragment
         android:id="@+id/nav_usb_dac_settings"
         android:name="com.rawsmusic.ui.settings.UsbDacSettingsFragment"
         android:label="USB DAC 设置" />
+
+    <fragment
+        android:id="@+id/nav_peq"
+        android:name="com.rawsmusic.ui.settings.PEQFragment"
+        android:label="参量均衡器" />
+
+    <fragment
+        android:id="@+id/nav_lyric_font_settings"
+        android:name="com.rawsmusic.ui.settings.LyricFontSettingsFragment"
+        android:label="歌词字体设置" />
+
+    <fragment
+        android:id="@+id/nav_global_font_settings"
+        android:name="com.rawsmusic.ui.settings.GlobalFontSettingsFragment"
+        android:label="全局字体" />
+
+    <fragment
+        android:id="@+id/nav_log_export"
+        android:name="com.rawsmusic.ui.songs.SongsFragment"
+        android:label="日志导出" />
+
+    <fragment
+        android:id="@+id/nav_webdav"
+        android:name="com.rawsmusic.ui.webdav.WebDavFragment"
+        android:label="WebDAV 音乐库" />
+
+    <fragment
+        android:id="@+id/nav_playlist"
+        android:name="com.rawsmusic.ui.playlist.PlaylistFragment"
+        android:label="歌单" />
+
+    <fragment
+        android:id="@+id/nav_playlist_detail"
+        android:name="com.rawsmusic.ui.playlist.PlaylistDetailFragment"
+        android:label="歌单详情" />
+
+    <fragment
+        android:id="@+id/nav_analytics"
+        android:name="com.rawsmusic.ui.analytics.AnalyticsFragment"
+        android:label="听歌统计" />
+
+    <fragment
+        android:id="@+id/nav_webdav_backup"
+        android:name="com.rawsmusic.ui.settings.WebDavBackupFragment"
+        android:label="WebDAV 备份" />
+
+    <fragment
+        android:id="@+id/nav_log_viewer"
+        android:name="com.rawsmusic.ui.log.LogViewerFragment"
+        android:label="日志分析" />
 
     <action
         android:id="@+id/action_global_artist_detail"
