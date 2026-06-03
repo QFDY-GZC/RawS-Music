@@ -678,42 +678,934 @@ public:
 };
 
 // ==========================================
+// 压限器 (Compressor) - 动态范围压缩
+// ==========================================
+class Compressor {
+    bool m_enabled = false;
+    int m_sampleRate = 44100;
+
+    // 参数
+    float m_thresholdDB = -20.0f;   // 阈值 (dB), 范围: -60 ~ 0
+    float m_ratio = 4.0f;           // 压缩比, 范围: 1 ~ 20
+    float m_attackMs = 10.0f;       // 启动时间 (ms), 范围: 0.1 ~ 100
+    float m_releaseMs = 200.0f;     // 释放时间 (ms), 范围: 10 ~ 1000
+    float m_makeupGainDB = 0.0f;    // 补偿增益 (dB), 范围: 0 ~ 24
+    float m_kneeWidthDB = 6.0f;     // 拐点宽度 (dB), 范围: 0 ~ 30
+    int m_detectionMode = 1;        // 0=Peak, 1=RMS
+
+    // 预计算系数
+    float m_alphaAttack = 0.0f;     // 启动平滑系数
+    float m_alphaRelease = 0.0f;    // 释放平滑系数
+    float m_makeupGainLinear = 1.0f;
+    float m_ratioInv = 0.25f;       // 1/ratio - 1
+
+    // 状态变量
+    float m_gainSmooth = 0.0f;      // 平滑后的增益衰减 (dB)
+    float m_rmsLevel = 0.0f;        // RMS电平（指数平均）
+    float m_alphaRms = 0.0f;        // RMS平滑系数
+
+    // 用于GR Meter
+    float m_currentGR = 0.0f;       // 当前增益衰减量 (dB)
+
+    void updateCoeffs() {
+        float fs = (float)m_sampleRate;
+        m_alphaAttack = expf(-1.0f / (m_attackMs * 0.001f * fs));
+        m_alphaRelease = expf(-1.0f / (m_releaseMs * 0.001f * fs));
+        m_makeupGainLinear = powf(10.0f, m_makeupGainDB / 20.0f);
+        m_ratioInv = 1.0f / m_ratio - 1.0f;
+        // RMS 时间常数约 10ms
+        m_alphaRms = expf(-1.0f / (0.010f * fs));
+    }
+
+public:
+    Compressor() { updateCoeffs(); }
+
+    void setEnabled(bool enabled) {
+        if (!m_enabled && enabled) {
+            m_gainSmooth = 0.0f;
+            m_rmsLevel = 0.0f;
+        }
+        m_enabled = enabled;
+    }
+
+    bool isEnabled() const { return m_enabled; }
+
+    void setSampleRate(int sampleRate) {
+        if (sampleRate > 0 && sampleRate != m_sampleRate) {
+            m_sampleRate = sampleRate;
+            updateCoeffs();
+        }
+    }
+
+    void setParams(float thresholdDB, float ratio, float attackMs, float releaseMs, float makeupGainDB) {
+        m_thresholdDB = (thresholdDB < -60.0f) ? -60.0f : (thresholdDB > 0.0f) ? 0.0f : thresholdDB;
+        m_ratio = (ratio < 1.0f) ? 1.0f : (ratio > 20.0f) ? 20.0f : ratio;
+        m_attackMs = (attackMs < 0.1f) ? 0.1f : (attackMs > 100.0f) ? 100.0f : attackMs;
+        m_releaseMs = (releaseMs < 10.0f) ? 10.0f : (releaseMs > 1000.0f) ? 1000.0f : releaseMs;
+        m_makeupGainDB = (makeupGainDB < 0.0f) ? 0.0f : (makeupGainDB > 24.0f) ? 24.0f : makeupGainDB;
+        updateCoeffs();
+    }
+
+    void setKneeWidth(float kneeWidthDB) {
+        m_kneeWidthDB = (kneeWidthDB < 0.0f) ? 0.0f : (kneeWidthDB > 30.0f) ? 30.0f : kneeWidthDB;
+    }
+
+    void setDetectionMode(int mode) {
+        m_detectionMode = (mode == 0) ? 0 : 1;
+    }
+
+    float getCurrentGR() const { return m_currentGR; }
+
+    void process(float* samples, int numFrames, int channels) {
+        if (!m_enabled) return;
+
+        const float threshold = m_thresholdDB;
+        const float halfW = m_kneeWidthDB * 0.5f;
+        const float ratioInvM1 = m_ratioInv; // 1/ratio - 1
+        const float alphaA = m_alphaAttack;
+        const float alphaR = m_alphaRelease;
+        const float makeup = m_makeupGainLinear;
+        const bool isRMS = (m_detectionMode == 1);
+        const float alphaRmsVal = m_alphaRms;
+        const float epsilon = 1e-10f;
+
+        float gainSmooth = m_gainSmooth;
+        float rmsLevel = m_rmsLevel;
+
+        for (int i = 0; i < numFrames; i++) {
+            // 计算检测电平（取所有声道最大值）
+            float maxAbs = 0.0f;
+            for (int ch = 0; ch < channels; ch++) {
+                float s = fabsf(samples[i * channels + ch]);
+                if (s > maxAbs) maxAbs = s;
+            }
+
+            float detectLevel;
+            if (isRMS) {
+                // RMS 检测：指数平均
+                rmsLevel = alphaRmsVal * rmsLevel + (1.0f - alphaRmsVal) * maxAbs * maxAbs;
+                detectLevel = sqrtf(rmsLevel);
+            } else {
+                // Peak 检测
+                detectLevel = maxAbs;
+            }
+
+            // 转换到 dB 域
+            float linDB = 20.0f * log10f(detectLevel + epsilon);
+
+            // 计算目标增益衰减
+            float delta = linDB - threshold;
+            float gainTarget;
+
+            if (delta < -halfW) {
+                // 低于阈值，不压缩
+                gainTarget = 0.0f;
+            } else if (delta < halfW) {
+                // 软拐点区域：二次曲线平滑过渡
+                gainTarget = (0.5f / m_kneeWidthDB) * (delta + halfW) * (delta + halfW) * ratioInvM1;
+            } else {
+                // 线性压缩区
+                gainTarget = delta * ratioInvM1;
+            }
+
+            // 包络跟随器：平滑增益变化
+            if (gainTarget < gainSmooth) {
+                // 启动：快速响应
+                gainSmooth = alphaA * gainSmooth + (1.0f - alphaA) * gainTarget;
+            } else {
+                // 释放：缓慢恢复
+                gainSmooth = alphaR * gainSmooth + (1.0f - alphaR) * gainTarget;
+            }
+
+            // 应用增益（含补偿增益）
+            float gainLinear = powf(10.0f, (gainSmooth + m_makeupGainDB) / 20.0f);
+            for (int ch = 0; ch < channels; ch++) {
+                samples[i * channels + ch] *= gainLinear;
+            }
+        }
+
+        m_gainSmooth = gainSmooth;
+        m_rmsLevel = rmsLevel;
+        m_currentGR = -gainSmooth; // GR Meter 显示正值
+    }
+
+    void reset() {
+        m_gainSmooth = 0.0f;
+        m_rmsLevel = 0.0f;
+        m_currentGR = 0.0f;
+    }
+};
+
+// ==========================================
+// 低音增强 (BassBoost) - 基于 LowShelf BiQuad
+// ==========================================
+class BassBoost {
+    BiQuad m_filter;
+    bool m_enabled = false;
+    int m_sampleRate = 44100;
+
+    // 参数
+    float m_gainDB = 0.0f;          // 增益 (dB), 范围: -12 ~ +12
+    float m_frequency = 100.0f;     // 转折频率 (Hz), 范围: 50 ~ 500
+    float m_Q = 0.707f;             // 品质因数 (Butterworth)
+
+    void updateFilter() {
+        if (m_enabled && m_gainDB != 0.0f) {
+            m_filter.setLS2_RBJ((float)m_sampleRate, m_frequency, m_Q, m_gainDB);
+        }
+    }
+
+public:
+    BassBoost() {}
+
+    void setEnabled(bool enabled) {
+        if (!m_enabled && enabled) {
+            m_filter.reset();
+        }
+        m_enabled = enabled;
+        updateFilter();
+    }
+
+    bool isEnabled() const { return m_enabled; }
+
+    void setSampleRate(int sampleRate) {
+        if (sampleRate > 0 && sampleRate != m_sampleRate) {
+            m_sampleRate = sampleRate;
+            m_filter.reset();
+            updateFilter();
+        }
+    }
+
+    void setParams(float gainDB, float frequency) {
+        m_gainDB = (gainDB < -12.0f) ? -12.0f : (gainDB > 12.0f) ? 12.0f : gainDB;
+        m_frequency = (frequency < 50.0f) ? 50.0f : (frequency > 500.0f) ? 500.0f : frequency;
+        updateFilter();
+    }
+
+    void process(float* samples, int numFrames, int channels) {
+        if (!m_enabled || m_gainDB == 0.0f) return;
+
+        for (int i = 0; i < numFrames; i++) {
+            for (int ch = 0; ch < channels; ch++) {
+                samples[i * channels + ch] = m_filter.processSample(samples[i * channels + ch], ch);
+            }
+        }
+    }
+
+    void reset() {
+        m_filter.reset();
+    }
+};
+
+// ==========================================
+// 高音增强 (TrebleBoost) - 基于 HighShelf BiQuad
+// ==========================================
+class TrebleBoost {
+    BiQuad m_filter;
+    bool m_enabled = false;
+    int m_sampleRate = 44100;
+
+    // 参数
+    float m_gainDB = 0.0f;          // 增益 (dB), 范围: -12 ~ +12
+    float m_frequency = 8000.0f;    // 转折频率 (Hz), 范围: 2000 ~ 16000
+    float m_Q = 0.707f;             // 品质因数 (Butterworth)
+
+    void updateFilter() {
+        if (m_enabled && m_gainDB != 0.0f) {
+            m_filter.setHS2_RBJ((float)m_sampleRate, m_frequency, m_Q, m_gainDB);
+        }
+    }
+
+public:
+    TrebleBoost() {}
+
+    void setEnabled(bool enabled) {
+        if (!m_enabled && enabled) {
+            m_filter.reset();
+        }
+        m_enabled = enabled;
+        updateFilter();
+    }
+
+    bool isEnabled() const { return m_enabled; }
+
+    void setSampleRate(int sampleRate) {
+        if (sampleRate > 0 && sampleRate != m_sampleRate) {
+            m_sampleRate = sampleRate;
+            m_filter.reset();
+            updateFilter();
+        }
+    }
+
+    void setParams(float gainDB, float frequency) {
+        m_gainDB = (gainDB < -12.0f) ? -12.0f : (gainDB > 12.0f) ? 12.0f : gainDB;
+        m_frequency = (frequency < 2000.0f) ? 2000.0f : (frequency > 16000.0f) ? 16000.0f : frequency;
+        updateFilter();
+    }
+
+    void process(float* samples, int numFrames, int channels) {
+        if (!m_enabled || m_gainDB == 0.0f) return;
+
+        for (int i = 0; i < numFrames; i++) {
+            for (int ch = 0; ch < channels; ch++) {
+                samples[i * channels + ch] = m_filter.processSample(samples[i * channels + ch], ch);
+            }
+        }
+    }
+
+    void reset() {
+        m_filter.reset();
+    }
+};
+
+// ==========================================
+// 360° 环绕音 (Surround360) - 2D 水平面双耳渲染
+// Woodworth 球头模型: ILD + ITD + 头影低通 + 全通去相关
+// ==========================================
+class Surround360 {
+    bool m_enabled = false;
+    int m_sampleRate = 44100;
+
+    // 参数
+    float m_intensity = 0.5f;       // 效果强度 0.0 ~ 1.0
+    float m_azimuthRad = 0.0f;      // 方位角 (弧度), 0=前, π/2=右, π=后, -π/2=左
+
+    // 常量
+    static constexpr float HEAD_RADIUS = 0.0875f;   // 头半径 (m), KEMAR 平均
+    static constexpr float SPEED_OF_SOUND = 343.0f;  // 声速 (m/s)
+    static constexpr float MAX_DELAY_SEC = HEAD_RADIUS / SPEED_OF_SOUND * (M_PI + 1.0f);
+    // ≈ 0.0008s, 留余量取 2ms
+
+    // === 分数延迟线 (线性插值) ===
+    static const int DELAY_BUF_SIZE = 128;  // 2ms @48kHz ≈ 96 样本, 取 128 对齐 2 的幂
+    float m_delayBufL[DELAY_BUF_SIZE];
+    float m_delayBufR[DELAY_BUF_SIZE];
+    int m_delayWriteIdx = 0;
+    float m_delaySamples = 0.0f;     // 当前延迟量 (样本, 含小数)
+
+    // === 头影低通滤波器 (远耳) ===
+    BiQuad m_shadowLpL;
+    BiQuad m_shadowLpR;
+
+    // === 全通去相关滤波器 (用于后方声像) ===
+    BiQuad m_apfL;
+    BiQuad m_apfR;
+
+    // === 预计算 ILD 增益 ===
+    float m_gainL = 1.0f;
+    float m_gainR = 1.0f;
+    float m_shadowCutoffL = 20000.0f;
+    float m_shadowCutoffR = 20000.0f;
+    float m_apfMix = 0.0f;          // 全通混合量 (后方更强)
+
+    // === 逐样本平滑值 (消除快速旋转时的跳变) ===
+    float m_smoothGainL = 1.0f;
+    float m_smoothGainR = 1.0f;
+    float m_smoothDelay = 0.0f;
+    float m_smoothAzmRad = 0.0f;
+    // 平滑系数: 越小越平滑, 0.001 ≈ 10ms @48kHz
+    static constexpr float SMOOTH_COEFF = 0.002f;
+
+    void updateParams() {
+        float theta = m_azimuthRad;
+        float s = sinf(theta);
+        float c = cosf(theta);
+        float absS = fabsf(s);
+        float intensity = m_intensity;
+
+        // --- ILD (Woodworth 球头幅度模型, 功率归一化) ---
+        // θ=0(前): L=R=1; θ=π/2(右): L≈0.67, R≈1.33; θ=-π/2(左): L≈1.33, R≈0.67
+        float ildL = 1.0f - s * 0.5f * intensity;
+        float ildR = 1.0f + s * 0.5f * intensity;
+        // 功率归一化: 使 L²+R² 恒定, 避免环绕效果导致整体响度变化
+        float normFactor = 1.0f / sqrtf(ildL * ildL + ildR * ildR) * 1.4142f; // /√2 保持前方位为1
+        m_gainL = ildL * normFactor;
+        m_gainR = ildR * normFactor;
+
+        // --- ITD (Woodworth 延迟模型) ---
+        // Δt = (r/c) * (θ + sin θ), 正 θ → 右耳延迟
+        float itdSec = (HEAD_RADIUS / SPEED_OF_SOUND) * (theta + s) * intensity;
+        m_delaySamples = fabsf(itdSec) * (float)m_sampleRate;
+        // clamp 到 [0, DELAY_BUF_SIZE-2] 防止越界 (留 1 样本给插值)
+        if (m_delaySamples > (float)(DELAY_BUF_SIZE - 2))
+            m_delaySamples = (float)(DELAY_BUF_SIZE - 2);
+
+        // --- 头影低通 (远耳高频衰减) ---
+        // f_c(θ) = 15000 - 13000 * |sin(θ)|
+        float shadowFreq = 15000.0f - 13000.0f * absS * intensity;
+        shadowFreq = max(shadowFreq, 1000.0f);
+        if (s > 0.0f) {
+            // 声源偏右: 左耳为远耳 → 左耳加低通
+            m_shadowLpL.setLP2_RBJ((float)m_sampleRate, shadowFreq, 0.707f);
+            m_shadowLpR.setLP2_RBJ((float)m_sampleRate, 20000.0f, 0.707f);
+            m_shadowCutoffL = shadowFreq;
+            m_shadowCutoffR = 20000.0f;
+        } else {
+            // 声源偏左: 右耳为远耳 → 右耳加低通
+            m_shadowLpL.setLP2_RBJ((float)m_sampleRate, 20000.0f, 0.707f);
+            m_shadowLpR.setLP2_RBJ((float)m_sampleRate, shadowFreq, 0.707f);
+            m_shadowCutoffL = 20000.0f;
+            m_shadowCutoffR = shadowFreq;
+        }
+
+        // --- 全通去相关 (后方声源增强前后区分度) ---
+        // 实际前后区分: |θ| > 90° 即 cos < 0
+        float behindFactor = max(0.0f, -c);  // 0(前方) ~ 1(正后方)
+        m_apfMix = behindFactor * 0.4f * intensity;
+
+        // 两个不同频率的全通, 产生频率相关的相位差
+        m_apfL.setLP2_RBJ((float)m_sampleRate, 700.0f, 0.5f);   // 用作全通替代
+        m_apfR.setLP2_RBJ((float)m_sampleRate, 1100.0f, 0.5f);
+    }
+
+public:
+    Surround360() {
+        memset(m_delayBufL, 0, sizeof(m_delayBufL));
+        memset(m_delayBufR, 0, sizeof(m_delayBufR));
+        updateParams();
+    }
+
+    void setEnabled(bool enabled) {
+        if (!m_enabled && enabled) {
+            memset(m_delayBufL, 0, sizeof(m_delayBufL));
+            memset(m_delayBufR, 0, sizeof(m_delayBufR));
+            m_delayWriteIdx = 0;
+            m_shadowLpL.reset();
+            m_shadowLpR.reset();
+            m_apfL.reset();
+            m_apfR.reset();
+            // 重置平滑值到当前目标, 避免从零跳变
+            m_smoothGainL = m_gainL;
+            m_smoothGainR = m_gainR;
+            m_smoothDelay = m_delaySamples;
+            m_smoothAzmRad = m_azimuthRad;
+        }
+        m_enabled = enabled;
+    }
+
+    bool isEnabled() const { return m_enabled; }
+
+    void setSampleRate(int sampleRate) {
+        if (sampleRate > 0 && sampleRate != m_sampleRate) {
+            m_sampleRate = sampleRate;
+            memset(m_delayBufL, 0, sizeof(m_delayBufL));
+            memset(m_delayBufR, 0, sizeof(m_delayBufR));
+            m_delayWriteIdx = 0;
+            updateParams();
+        }
+    }
+
+    void setParams(float intensity, float azimuthDeg) {
+        // intensity: 0 ~ 100
+        m_intensity = (intensity < 0.0f) ? 0.0f : (intensity > 100.0f) ? 100.0f : intensity;
+        m_intensity /= 100.0f;
+
+        // azimuthDeg: 0 ~ 360 → 转换到 -π ~ π
+        float deg = fmodf(azimuthDeg, 360.0f);
+        if (deg > 180.0f) deg -= 360.0f;
+        if (deg < -180.0f) deg += 360.0f;
+        m_azimuthRad = deg * (float)M_PI / 180.0f;
+
+        updateParams();
+    }
+
+    void process(float* samples, int numFrames, int channels) {
+        if (!m_enabled || channels < 2) return;
+
+        const float targetGainL = m_gainL;
+        const float targetGainR = m_gainR;
+        const float targetDelay = m_delaySamples;
+        const float apfMix = m_apfMix;
+        const int mask = DELAY_BUF_SIZE - 1;
+        const float a = SMOOTH_COEFF;
+        const float b = 1.0f - a;
+        int wIdx = m_delayWriteIdx;
+
+        // 取当前平滑值
+        float sGainL = m_smoothGainL;
+        float sGainR = m_smoothGainR;
+        float sDelay = m_smoothDelay;
+        float sAzmRad = m_smoothAzmRad;
+
+        for (int i = 0; i < numFrames; i++) {
+            // 逐样本指数平滑
+            sGainL = sGainL * b + targetGainL * a;
+            sGainR = sGainR * b + targetGainR * a;
+            sDelay = sDelay * b + targetDelay * a;
+            sAzmRad = sAzmRad * b + m_azimuthRad * a;
+
+            float inL = samples[i * 2];
+            float inR = samples[i * 2 + 1];
+
+            // 写入延迟缓冲
+            m_delayBufL[wIdx] = inL;
+            m_delayBufR[wIdx] = inR;
+
+            // 用平滑后的延迟量做分数延迟读取 (线性插值)
+            float readPos = (float)wIdx - sDelay;
+            int readIdx0 = (int)floorf(readPos);
+            float frac = readPos - (float)readIdx0;
+            readIdx0 %= DELAY_BUF_SIZE;
+            if (readIdx0 < 0) readIdx0 += DELAY_BUF_SIZE;
+            int readIdx1 = (readIdx0 + 1) & mask;
+
+            float dL = m_delayBufL[readIdx0] * (1.0f - frac) + m_delayBufL[readIdx1] * frac;
+            float dR = m_delayBufR[readIdx0] * (1.0f - frac) + m_delayBufR[readIdx1] * frac;
+
+            // 用平滑方位角决定延迟耳 (避免左右快速跳变)
+            bool delayLeft = (sAzmRad < 0.0f);
+
+            // 应用 ITD: 远耳用延迟信号, 近耳用原始信号
+            float outL, outR;
+            if (delayLeft) {
+                outL = dL;
+                outR = inR;
+            } else {
+                outL = inL;
+                outR = dR;
+            }
+
+            // 应用平滑后的 ILD 增益
+            outL *= sGainL;
+            outR *= sGainR;
+
+            // 应用头影低通 (远耳) — 用 buffer 首样本的滤波器系数 (已由 updateParams 设置)
+            if (m_shadowCutoffL < 19000.0f) {
+                outL = m_shadowLpL.processSample(outL, 0);
+            }
+            if (m_shadowCutoffR < 19000.0f) {
+                outR = m_shadowLpR.processSample(outR, 1);
+            }
+
+            // 全通去相关 (后方声像混合)
+            if (apfMix > 0.001f) {
+                float apfOutL = m_apfL.processSample(inL, 0);
+                float apfOutR = m_apfR.processSample(inR, 1);
+                outL = outL * (1.0f - apfMix) + apfOutL * apfMix;
+                outR = outR * (1.0f - apfMix) + apfOutR * apfMix;
+            }
+
+            // 软限幅
+            outL = max(-1.0f, min(1.0f, outL));
+            outR = max(-1.0f, min(1.0f, outR));
+
+            samples[i * 2]     = outL;
+            samples[i * 2 + 1] = outR;
+
+            wIdx = (wIdx + 1) & mask;
+        }
+
+        // 保存平滑状态
+        m_smoothGainL = sGainL;
+        m_smoothGainR = sGainR;
+        m_smoothDelay = sDelay;
+        m_smoothAzmRad = sAzmRad;
+        m_delayWriteIdx = wIdx;
+    }
+
+    void reset() {
+        memset(m_delayBufL, 0, sizeof(m_delayBufL));
+        memset(m_delayBufR, 0, sizeof(m_delayBufR));
+        m_delayWriteIdx = 0;
+        m_shadowLpL.reset();
+        m_shadowLpR.reset();
+        m_apfL.reset();
+        m_apfR.reset();
+        m_smoothGainL = m_gainL;
+        m_smoothGainR = m_gainR;
+        m_smoothDelay = m_delaySamples;
+        m_smoothAzmRad = m_azimuthRad;
+    }
+};
+
+// ==========================================
+// 360° 全景音 (Panoramic360) - 3D 球面双耳渲染
+// 在 Surround360 基础上增加: 耳廓 EQ、3D 方位角修正、早期反射、FDN 混响
+// ==========================================
+class Panoramic360 {
+    bool m_enabled = false;
+    int m_sampleRate = 44100;
+
+    // 参数
+    float m_intensity = 0.5f;       // 效果强度 0 ~ 1
+    float m_azimuthDeg = 0.0f;      // 方位角 0~360°
+    float m_elevationDeg = 0.0f;    // 仰角 -90~+90°
+
+    // 常量
+    static constexpr float HEAD_RADIUS = 0.0875f;
+    static constexpr float SPEED_OF_SOUND = 343.0f;
+
+    // === 内嵌 Surround360 用于基础 ILD/ITD ===
+    Surround360 m_surround;
+
+    // === 耳廓 EQ (Pinna simulation) ===
+    // 高频增益随仰角变化: G_pinna(φ) = G_max * sin(φ), 频段 8~12kHz
+    BiQuad m_pinnaL;
+    BiQuad m_pinnaR;
+    float m_pinnaGainDB = 0.0f;
+
+    // === 早期反射 (6墙镜像源法) ===
+    static const int NUM_REFLECTIONS = 6;
+    static const int REFL_DELAY_MAX = 4096;  // ~85ms @48kHz
+    float m_reflDelayBufL[REFL_DELAY_MAX];
+    float m_reflDelayBufR[REFL_DELAY_MAX];
+    int m_reflWriteIdx = 0;
+
+    // 反射参数: 延迟(样本)、增益、左右分配
+    struct Reflection {
+        int delaySamples;
+        float gainL;
+        float gainR;
+    };
+    Reflection m_reflections[NUM_REFLECTIONS];
+
+    // === FDN 混响 (Feedback Delay Network) ===
+    static const int FDN_ORDER = 4;
+    static const int FDN_DELAY_MAX = 8192;
+    float m_fdnDelayBuf[FDN_ORDER][FDN_DELAY_MAX];
+    int m_fdnWriteIdx = 0;
+    float m_fdnGains[FDN_ORDER];       // 延迟线输出增益 (反馈矩阵对角)
+    int m_fdnDelays[FDN_ORDER];        // 延迟长度 (样本)
+    float m_fdnFeedback = 0.7f;        // 反馈量
+    float m_fdnMix = 0.0f;             // 混响混合量 (dry=1-mix, wet=mix)
+    float m_fdnDamping = 0.4f;         // 高频阻尼
+    BiQuad m_fdnDampFilters[FDN_ORDER]; // 每条延迟线的阻尼低通
+
+    void updateReflections() {
+        // 房间尺寸 (简化: 4m x 3m x 2.5m)
+        // 6面墙: 左、右、前、后、上、下
+        // 镜像源距离 → 延迟, 增益随反射次数衰减
+        float roomW = 4.0f, roomH = 3.0f, roomD = 2.5f;
+        float reflGains[NUM_REFLECTIONS] = {0.35f, 0.35f, 0.30f, 0.30f, 0.20f, 0.20f};
+
+        // 简化: 固定延迟模拟不同墙壁距离
+        float delays_ms[NUM_REFLECTIONS] = {5.8f, 6.2f, 8.3f, 8.7f, 12.1f, 12.5f};
+
+        // 左右分配随方位角旋转
+        float azRad = m_azimuthDeg * (float)M_PI / 180.0f;
+        float c = cosf(azRad);
+        float s = sinf(azRad);
+
+        for (int i = 0; i < NUM_REFLECTIONS; i++) {
+            m_reflections[i].delaySamples = (int)(delays_ms[i] * 0.001f * (float)m_sampleRate);
+            if (m_reflections[i].delaySamples >= REFL_DELAY_MAX)
+                m_reflections[i].delaySamples = REFL_DELAY_MAX - 1;
+
+            // 简单的左右分配: 奇数墙偏左, 偶数墙偏右, 随方位角旋转
+            float basePanL = (i % 2 == 0) ? 0.3f : 0.7f;
+            float basePanR = 1.0f - basePanL;
+            // 旋转
+            float rotL = basePanL * (1.0f + c * 0.3f) + basePanR * (-s * 0.2f);
+            float rotR = basePanR * (1.0f - c * 0.3f) + basePanL * (s * 0.2f);
+            rotL = max(0.0f, min(1.0f, rotL));
+            rotR = max(0.0f, min(1.0f, rotR));
+
+            m_reflections[i].gainL = reflGains[i] * rotL;
+            m_reflections[i].gainR = reflGains[i] * rotR;
+        }
+    }
+
+    void updateFDN() {
+        // 质数互素延迟长度, 避免梳状滤波
+        int primes[FDN_ORDER] = {113, 163, 223, 311};
+        float baseTime_ms = 30.0f + m_intensity * 50.0f;  // 30~80ms
+        for (int i = 0; i < FDN_ORDER; i++) {
+            m_fdnDelays[i] = (int)(baseTime_ms * 0.001f * (float)m_sampleRate * (float)primes[i] / 113.0f);
+            if (m_fdnDelays[i] >= FDN_DELAY_MAX) m_fdnDelays[i] = FDN_DELAY_MAX - 1;
+            m_fdnGains[i] = 1.0f;
+            // 阻尼低通: 高频衰减更快
+            float dampFreq = 4000.0f + (1.0f - m_fdnDamping) * 12000.0f;
+            m_fdnDampFilters[i].setLP2_RBJ((float)m_sampleRate, dampFreq, 0.707f);
+        }
+        // 反馈量随强度变化
+        m_fdnFeedback = 0.5f + m_intensity * 0.35f;  // 0.5 ~ 0.85
+        // 混响混合量 (较保守, 避免过度模糊)
+        m_fdnMix = m_intensity * 0.15f;  // 0 ~ 15%
+    }
+
+    void updatePinnaEQ() {
+        // 耳廓高频增益: G_pinna(φ) = G_max * sin(φ), φ=仰角
+        // 仅在 8~12kHz 有效
+        float elevRad = m_elevationDeg * (float)M_PI / 180.0f;
+        float pinnaEffect = sinf(elevRad);  // -1 ~ +1
+        m_pinnaGainDB = pinnaEffect * 6.0f * m_intensity;  // ±6dB
+        // 使用高频搁架模拟
+        float pinnaFreq = 8000.0f;
+        m_pinnaL.setHS2_RBJ((float)m_sampleRate, pinnaFreq, 0.707f, m_pinnaGainDB);
+        m_pinnaR.setHS2_RBJ((float)m_sampleRate, pinnaFreq, 0.707f, m_pinnaGainDB);
+    }
+
+public:
+    Panoramic360() {
+        memset(m_reflDelayBufL, 0, sizeof(m_reflDelayBufL));
+        memset(m_reflDelayBufR, 0, sizeof(m_reflDelayBufR));
+        for (int i = 0; i < FDN_ORDER; i++) {
+            memset(m_fdnDelayBuf[i], 0, sizeof(m_fdnDelayBuf[i]));
+        }
+        updateReflections();
+        updateFDN();
+        updatePinnaEQ();
+    }
+
+    void setEnabled(bool enabled) {
+        if (!m_enabled && enabled) {
+            m_surround.reset();
+            memset(m_reflDelayBufL, 0, sizeof(m_reflDelayBufL));
+            memset(m_reflDelayBufR, 0, sizeof(m_reflDelayBufR));
+            m_reflWriteIdx = 0;
+            for (int i = 0; i < FDN_ORDER; i++) {
+                memset(m_fdnDelayBuf[i], 0, sizeof(m_fdnDelayBuf[i]));
+                m_fdnDampFilters[i].reset();
+            }
+            m_fdnWriteIdx = 0;
+            m_pinnaL.reset();
+            m_pinnaR.reset();
+        }
+        m_surround.setEnabled(enabled);  // 同步启用/禁用内嵌 Surround360
+        m_enabled = enabled;
+    }
+
+    bool isEnabled() const { return m_enabled; }
+
+    void setSampleRate(int sampleRate) {
+        if (sampleRate > 0 && sampleRate != m_sampleRate) {
+            m_sampleRate = sampleRate;
+            m_surround.setSampleRate(sampleRate);
+            memset(m_reflDelayBufL, 0, sizeof(m_reflDelayBufL));
+            memset(m_reflDelayBufR, 0, sizeof(m_reflDelayBufR));
+            m_reflWriteIdx = 0;
+            for (int i = 0; i < FDN_ORDER; i++) {
+                memset(m_fdnDelayBuf[i], 0, sizeof(m_fdnDelayBuf[i]));
+            }
+            m_fdnWriteIdx = 0;
+            updateReflections();
+            updateFDN();
+            updatePinnaEQ();
+        }
+    }
+
+    void setParams(float intensity, float azimuthDeg, float elevationDeg) {
+        m_intensity = (intensity < 0.0f) ? 0.0f : (intensity > 100.0f) ? 100.0f : intensity;
+        m_intensity /= 100.0f;
+
+        m_azimuthDeg = fmodf(azimuthDeg, 360.0f);
+        if (m_azimuthDeg < 0.0f) m_azimuthDeg += 360.0f;
+
+        m_elevationDeg = (elevationDeg < -90.0f) ? -90.0f : (elevationDeg > 90.0f) ? 90.0f : elevationDeg;
+
+        // 更新内嵌 Surround360
+        m_surround.setParams(m_intensity * 100.0f, m_azimuthDeg);
+
+        updateReflections();
+        updateFDN();
+        updatePinnaEQ();
+    }
+
+    void process(float* samples, int numFrames, int channels) {
+        if (!m_enabled || channels < 2) return;
+
+        // === 1. 基础 2D ILD/ITD (Surround360) ===
+        m_surround.process(samples, numFrames, channels);
+
+        // === 2. 耳廓 EQ ===
+        if (fabsf(m_pinnaGainDB) > 0.1f) {
+            for (int i = 0; i < numFrames; i++) {
+                samples[i * 2]     = m_pinnaL.processSample(samples[i * 2], 0);
+                samples[i * 2 + 1] = m_pinnaR.processSample(samples[i * 2 + 1], 1);
+            }
+        }
+
+        // === 3. 早期反射 (6墙镜像源) ===
+        const int reflMask = REFL_DELAY_MAX - 1;
+        int reflW = m_reflWriteIdx;
+        float reflIntensity = m_intensity * 0.6f;
+
+        for (int i = 0; i < numFrames; i++) {
+            float dryL = samples[i * 2];
+            float dryR = samples[i * 2 + 1];
+
+            // 写入反射缓冲 (取左右均值作单声道源)
+            float mono = (dryL + dryR) * 0.5f;
+            m_reflDelayBufL[reflW] = mono;
+            m_reflDelayBufR[reflW] = mono;
+
+            float reflL = 0.0f, reflR = 0.0f;
+            for (int r = 0; r < NUM_REFLECTIONS; r++) {
+                int readIdx = reflW - m_reflections[r].delaySamples;
+                if (readIdx < 0) readIdx += REFL_DELAY_MAX;
+                readIdx &= reflMask;
+                reflL += m_reflDelayBufL[readIdx] * m_reflections[r].gainL;
+                reflR += m_reflDelayBufR[readIdx] * m_reflections[r].gainR;
+            }
+
+            samples[i * 2]     = dryL + reflL * reflIntensity;
+            samples[i * 2 + 1] = dryR + reflR * reflIntensity;
+
+            reflW = (reflW + 1) & reflMask;
+        }
+        m_reflWriteIdx = reflW;
+
+        // === 4. FDN 晚期混响 ===
+        if (m_fdnMix > 0.001f) {
+            const int fdnMask = FDN_DELAY_MAX - 1;
+            int fdnW = m_fdnWriteIdx;
+            float fb = m_fdnFeedback;
+            float mix = m_fdnMix;
+
+            for (int i = 0; i < numFrames; i++) {
+                float inL = samples[i * 2];
+                float inR = samples[i * 2 + 1];
+                float inputMono = (inL + inR) * 0.5f;
+
+                // 从各延迟线读取并应用阻尼
+                float fdnOut[FDN_ORDER];
+                for (int d = 0; d < FDN_ORDER; d++) {
+                    int readIdx = fdnW - m_fdnDelays[d];
+                    if (readIdx < 0) readIdx += FDN_DELAY_MAX;
+                    readIdx &= fdnMask;
+                    float delayed = m_fdnDelayBuf[d][readIdx];
+                    // 应用高频阻尼 (BiQuad 仅支持 ch 0-1, 延迟线为单声道统一用 ch 0)
+                    delayed = m_fdnDampFilters[d].processSample(delayed, 0);
+                    fdnOut[d] = delayed;
+                }
+
+                // Hadamard 反馈矩阵 (简化: 4阶)
+                // [1  1  1  1]   [fdnOut[0]]
+                // [1 -1  1 -1] * [fdnOut[1]]
+                // [1  1 -1 -1]   [fdnOut[2]]
+                // [1 -1 -1  1]   [fdnOut[3]]
+                float fbSignals[FDN_ORDER];
+                fbSignals[0] = (fdnOut[0] + fdnOut[1] + fdnOut[2] + fdnOut[3]) * 0.5f;
+                fbSignals[1] = (fdnOut[0] - fdnOut[1] + fdnOut[2] - fdnOut[3]) * 0.5f;
+                fbSignals[2] = (fdnOut[0] + fdnOut[1] - fdnOut[2] - fdnOut[3]) * 0.5f;
+                fbSignals[3] = (fdnOut[0] - fdnOut[1] - fdnOut[2] + fdnOut[3]) * 0.5f;
+
+                // 写入延迟线: 输入 + 反馈
+                for (int d = 0; d < FDN_ORDER; d++) {
+                    m_fdnDelayBuf[d][fdnW] = inputMono + fbSignals[d] * fb;
+                }
+
+                // 混响输出: 取前两个延迟线作左右
+                float reverbL = (fdnOut[0] + fdnOut[2]) * 0.5f;
+                float reverbR = (fdnOut[1] + fdnOut[3]) * 0.5f;
+
+                samples[i * 2]     = inL * (1.0f - mix) + reverbL * mix;
+                samples[i * 2 + 1] = inR * (1.0f - mix) + reverbR * mix;
+
+                fdnW = (fdnW + 1) & fdnMask;
+            }
+            m_fdnWriteIdx = fdnW;
+        }
+    }
+
+    void reset() {
+        m_surround.reset();
+        memset(m_reflDelayBufL, 0, sizeof(m_reflDelayBufL));
+        memset(m_reflDelayBufR, 0, sizeof(m_reflDelayBufR));
+        m_reflWriteIdx = 0;
+        for (int i = 0; i < FDN_ORDER; i++) {
+            memset(m_fdnDelayBuf[i], 0, sizeof(m_fdnDelayBuf[i]));
+            m_fdnDampFilters[i].reset();
+        }
+        m_fdnWriteIdx = 0;
+        m_pinnaL.reset();
+        m_pinnaR.reset();
+    }
+};
+
+// ==========================================
 // JNI 引擎框架 (预分配内存)
 // ==========================================
 class DSPChain {
     std::unique_ptr<StereoExpander> m_expander;
     std::unique_ptr<ParametricEQ> m_peq;
+    std::unique_ptr<Crossfeed> m_crossfeed;
+    std::unique_ptr<Compressor> m_compressor;
+    std::unique_ptr<BassBoost> m_bassBoost;
+    std::unique_ptr<TrebleBoost> m_trebleBoost;
+    std::unique_ptr<Surround360> m_surround360;
+    std::unique_ptr<Panoramic360> m_panoramic360;
     std::vector<float> m_floatBuf;
     int m_sampleRate = 44100;
     int m_channels = 2;
 
 public:
     DSPChain() : m_expander(std::make_unique<StereoExpander>()),
-                 m_peq(std::make_unique<ParametricEQ>()) {}
+                 m_peq(std::make_unique<ParametricEQ>()),
+                 m_crossfeed(std::make_unique<Crossfeed>()),
+                 m_compressor(std::make_unique<Compressor>()),
+                 m_bassBoost(std::make_unique<BassBoost>()),
+                 m_trebleBoost(std::make_unique<TrebleBoost>()),
+                 m_surround360(std::make_unique<Surround360>()),
+                 m_panoramic360(std::make_unique<Panoramic360>()) {}
 
     void init(int sampleRate, int channels) {
         m_sampleRate = sampleRate;
         m_channels = channels;
         m_expander->setSampleRate(sampleRate);
         m_peq->setSampleRate(sampleRate);
+        m_crossfeed->setSampleRate(sampleRate);
+        m_compressor->setSampleRate(sampleRate);
+        m_bassBoost->setSampleRate(sampleRate);
+        m_trebleBoost->setSampleRate(sampleRate);
+        m_surround360->setSampleRate(sampleRate);
+        m_panoramic360->setSampleRate(sampleRate);
         m_floatBuf.resize(48000 * 2);
     }
 
     void process(float* samples, int numFrames, int channels) {
-        // 先处理PEQ
+        // 处理链顺序: BassBoost → TrebleBoost → PEQ → Compressor → Surround360 → Panoramic360 → StereoExpander → Crossfeed
+
+        // 1. 低音增强
+        if (m_bassBoost->isEnabled()) {
+            m_bassBoost->process(samples, numFrames, channels);
+        }
+
+        // 2. 高音增强
+        if (m_trebleBoost->isEnabled()) {
+            m_trebleBoost->process(samples, numFrames, channels);
+        }
+
+        // 3. 参量均衡器
         if (m_peq->isEnabled()) {
             m_peq->process(samples, numFrames, channels);
         }
 
-        // 再处理立体声扩展
+        // 4. 压限器
+        if (m_compressor->isEnabled()) {
+            m_compressor->process(samples, numFrames, channels);
+        }
+
+        // 5. 360° 环绕音 (2D 水平面双耳渲染)
+        if (m_surround360->isEnabled()) {
+            m_surround360->process(samples, numFrames, channels);
+        }
+
+        // 6. 360° 全景音 (3D 球面双耳渲染)
+        if (m_panoramic360->isEnabled()) {
+            m_panoramic360->process(samples, numFrames, channels);
+        }
+
+        // 7. 立体声扩展
         if (m_expander->isEnabled()) {
             m_expander->process(samples, numFrames, channels);
+        }
+
+        // 8. 互馈 (Crossfeed)
+        if (m_crossfeed->isEnabled()) {
+            m_crossfeed->process(samples, numFrames, channels);
         }
     }
 
     float* getFloatBuffer() { return m_floatBuf.data(); }
     StereoExpander* getExpander() { return m_expander.get(); }
     ParametricEQ* getPEQ() { return m_peq.get(); }
+    Crossfeed* getCrossfeed() { return m_crossfeed.get(); }
+    Compressor* getCompressor() { return m_compressor.get(); }
+    BassBoost* getBassBoost() { return m_bassBoost.get(); }
+    TrebleBoost* getTrebleBoost() { return m_trebleBoost.get(); }
+    Surround360* getSurround360() { return m_surround360.get(); }
+    Panoramic360* getPanoramic360() { return m_panoramic360.get(); }
 };
 
 extern "C"
@@ -850,4 +1742,167 @@ Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetPreamp(
     if (handle == 0) return;
     auto* chain = reinterpret_cast<DSPChain*>(handle);
     chain->getPEQ()->setPreamp(gainDB);
+}
+
+// ==========================================
+// 互馈 (Crossfeed) JNI 接口
+// ==========================================
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetCrossfeedEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    chain->getCrossfeed()->setEnabled(enabled);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetCrossfeedParams(
+        JNIEnv*, jobject, jlong handle, jfloat lowCutFreq, jfloat highCutFreq, jfloat attenuationDB) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    auto* cf = chain->getCrossfeed();
+    cf->setLowCutFreq(lowCutFreq);
+    cf->setHighCutFreq(highCutFreq);
+    cf->setAttenuationDB(attenuationDB);
+}
+
+// ==========================================
+// 压限器 (Compressor) JNI 接口
+// ==========================================
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetCompressorEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    chain->getCompressor()->setEnabled(enabled);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetCompressorParams(
+        JNIEnv*, jobject, jlong handle,
+        jfloat thresholdDB, jfloat ratio, jfloat attackMs, jfloat releaseMs, jfloat makeupGainDB) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    chain->getCompressor()->setParams(thresholdDB, ratio, attackMs, releaseMs, makeupGainDB);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetCompressorKneeWidth(
+        JNIEnv*, jobject, jlong handle, jfloat kneeWidthDB) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    chain->getCompressor()->setKneeWidth(kneeWidthDB);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetCompressorDetectionMode(
+        JNIEnv*, jobject, jlong handle, jint mode) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    chain->getCompressor()->setDetectionMode(mode);
+}
+
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeGetCompressorGR(
+        JNIEnv*, jobject, jlong handle) {
+    if (handle == 0) return 0.0f;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    return chain->getCompressor()->getCurrentGR();
+}
+
+// ==========================================
+// 低音增强 (BassBoost) JNI 接口
+// ==========================================
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetBassBoostEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    chain->getBassBoost()->setEnabled(enabled);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetBassBoostParams(
+        JNIEnv*, jobject, jlong handle, jfloat gainDB, jfloat frequency) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    chain->getBassBoost()->setParams(gainDB, frequency);
+}
+
+// ==========================================
+// 高音增强 (TrebleBoost) JNI 接口
+// ==========================================
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetTrebleBoostEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    chain->getTrebleBoost()->setEnabled(enabled);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetTrebleBoostParams(
+        JNIEnv*, jobject, jlong handle, jfloat gainDB, jfloat frequency) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    chain->getTrebleBoost()->setParams(gainDB, frequency);
+}
+
+// ==========================================
+// 360° 环绕音 (Surround360) JNI 接口
+// ==========================================
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetSurround360Enabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    chain->getSurround360()->setEnabled(enabled);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetSurround360Params(
+        JNIEnv*, jobject, jlong handle, jfloat intensity, jfloat azimuthDeg) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    chain->getSurround360()->setParams(intensity, azimuthDeg);
+}
+
+// ==========================================
+// 360° 全景音 (Panoramic360) JNI 接口
+// ==========================================
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetPanoramic360Enabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    chain->getPanoramic360()->setEnabled(enabled);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetPanoramic360Params(
+        JNIEnv*, jobject, jlong handle, jfloat intensity, jfloat azimuthDeg, jfloat elevationDeg) {
+    if (handle == 0) return;
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    chain->getPanoramic360()->setParams(intensity, azimuthDeg, elevationDeg);
 }
