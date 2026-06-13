@@ -1,5 +1,6 @@
 package com.rawsmusic.ui.settings
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -8,8 +9,20 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.fragment.app.Fragment
 import androidx.navigation.fragment.NavHostFragment
+import com.rawsmusic.ui.settings.compose.scene.ComposeMainActivity
 
 class SettingsFragment : Fragment() {
+
+    private fun navigateTo(destinationId: Int) {
+        val activity = activity as? com.rawsmusic.MainActivity
+        if (activity != null) {
+            activity.navigateSettingsForward(destinationId)
+            return
+        }
+        try {
+            NavHostFragment.findNavController(this).navigate(destinationId)
+        } catch (_: Exception) {}
+    }
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -21,58 +34,40 @@ class SettingsFragment : Fragment() {
             setContent {
                 LiquidGlassSettingsScreen(
                     onNavigateToLyricManagement = {
-                        try {
-                            NavHostFragment.findNavController(this@SettingsFragment)
-                                .navigate(com.rawsmusic.R.id.nav_lyric_management)
-                        } catch (_: Exception) {}
+                        navigateTo(com.rawsmusic.R.id.nav_lyric_management)
                     },
                     onNavigateToStatusBarLyric = {
-                        try {
-                            NavHostFragment.findNavController(this@SettingsFragment)
-                                .navigate(com.rawsmusic.R.id.nav_status_bar_lyric)
-                        } catch (_: Exception) {}
+                        navigateTo(com.rawsmusic.R.id.nav_status_bar_lyric)
                     },
                     onNavigateToAppearance = {
-                        try {
-                            NavHostFragment.findNavController(this@SettingsFragment)
-                                .navigate(com.rawsmusic.R.id.nav_appearance)
-                        } catch (_: Exception) {}
+                        navigateTo(com.rawsmusic.R.id.nav_appearance)
                     },
                     onNavigateToAudioSettings = {
-                        try {
-                            NavHostFragment.findNavController(this@SettingsFragment)
-                                .navigate(com.rawsmusic.R.id.nav_audio_settings)
-                        } catch (_: Exception) {}
+                        navigateTo(com.rawsmusic.R.id.nav_audio_settings)
                     },
                     onNavigateToAudioEffects = {
-                        try {
-                            NavHostFragment.findNavController(this@SettingsFragment)
-                                .navigate(com.rawsmusic.R.id.nav_audio_effects)
-                        } catch (_: Exception) {}
+                        navigateTo(com.rawsmusic.R.id.nav_audio_effects)
                     },
                     onNavigateToPlayerInterface = {
-                        try {
-                            NavHostFragment.findNavController(this@SettingsFragment)
-                                .navigate(com.rawsmusic.R.id.nav_player_interface)
-                        } catch (_: Exception) {}
+                        navigateTo(com.rawsmusic.R.id.nav_player_interface)
                     },
                     onNavigateToUsbDac = {
-                        try {
-                            NavHostFragment.findNavController(this@SettingsFragment)
-                                .navigate(com.rawsmusic.R.id.nav_usb_dac_settings)
-                        } catch (_: Exception) {}
+                        navigateTo(com.rawsmusic.R.id.nav_usb_dac_settings)
                     },
                     onNavigateToGlobalFont = {
-                        try {
-                            NavHostFragment.findNavController(this@SettingsFragment)
-                                .navigate(com.rawsmusic.R.id.nav_global_font_settings)
-                        } catch (_: Exception) {}
+                        navigateTo(com.rawsmusic.R.id.nav_global_font_settings)
+                    },
+                    onNavigateToAlbumArt = {
+                        navigateTo(com.rawsmusic.R.id.nav_album_art_settings)
                     },
                     onWebDavBackup = {
-                        try {
-                            NavHostFragment.findNavController(this@SettingsFragment)
-                                .navigate(com.rawsmusic.R.id.nav_webdav_backup)
-                        } catch (_: Exception) {}
+                        navigateTo(com.rawsmusic.R.id.nav_webdav_backup)
+                    },
+                    onNavigateToComposePlayerDemo = {
+                        navigateTo(com.rawsmusic.R.id.nav_compose_player_demo)
+                    },
+                    onNavigateToComposeScene = {
+                        startActivity(Intent(requireContext(), ComposeMainActivity::class.java))
                     }
                 )
             }

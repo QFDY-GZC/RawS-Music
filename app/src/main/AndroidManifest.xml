@@ -9,7 +9,9 @@
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -37,6 +39,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:enableOnBackInvokedCallback="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|keyboardHidden"
             android:windowSoftInputMode="adjustResize"
                 android:launchMode="singleTop">
@@ -45,20 +48,44 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <intent-filter>
-                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
-            </intent-filter>
 
-            <meta-data
-                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
-                android:resource="@xml/usb_device_filter" />
 
         </activity>
+
+        <!-- 设置子页面 Activity（对标 Poweramp SettingsActivity + f90 模式） -->
+        <activity android:name=".ui.settings.SettingsActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.AudioSettingsActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.AudioEffectsActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.AppearanceActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.LyricManagementActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.StatusBarLyricActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.PlayerInterfaceActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.AlbumArtActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.GlobalFontSettingsActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.LyricFontSettingsActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.PEQActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.CompressorActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.BassTrebleBoostActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.Surround360Activity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.Panoramic360Activity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.SpatialSoundActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.UsbDacSettingsActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.WebDavBackupActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.ComposePlayerDemoActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.compose.scene.ComposeMainActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.compose.scene.demo.ComposeUnifiedMainContainerActivity" android:theme="@style/SettingsActivityTheme" android:enableOnBackInvokedCallback="true" />
+
+        <!-- 沉浸模式歌词界面 -->
+        <activity
+            android:name=".ui.lyric.ImmersiveLyricActivity"
+            android:theme="@style/Theme.RawSMusic"
+            android:enableOnBackInvokedCallback="true"
+            android:screenOrientation="portrait" />
 
         <service
             android:name="com.rawsmusic.module.player.PlayerService"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback">
+            android:foregroundServiceType="mediaPlayback|connectedDevice">
             <intent-filter>
                 <action android:name="com.rawsmusic.action.PLAY" />
                 <action android:name="com.rawsmusic.action.PAUSE" />

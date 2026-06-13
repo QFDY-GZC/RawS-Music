@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -66,14 +67,14 @@ internal fun themeColors(): ThemeColors {
         onPrimaryContainer = Color.White,
         secondaryText = Color(0xCCFFFFFF)
     ) else ThemeColors(
-        background = Color(0xFFFFFFFF),
-        surface = Color(0xFFF5F5F5),
+        background = Color(0xFFF8F7FC),
+        surface = Color(0xFFE4E6F2),
         onSurface = Color.Black,
         onSurfaceVariant = Color(0x8A000000),
-        outline = Color(0xFF857367),
+        outline = Color(0xFF8A8E9C),
         primary = Color.Black,
         onPrimary = Color.White,
-        primaryContainer = Color(0xFFFFDCC4),
+        primaryContainer = Color(0xFFE9EEF8),
         onPrimaryContainer = Color.Black,
         secondaryText = Color(0x8A000000)
     )
@@ -105,22 +106,26 @@ internal fun SettingsPage(
     content: @Composable ColumnScope.() -> Unit
 ) {
     val colors = themeColors()
+    val context = LocalContext.current
+    val pageBackground = colors.background
     Column(
         Modifier
             .fillMaxSize()
-            .background(colors.background)
+            .background(pageBackground)
             .verticalScroll(rememberScrollState())
             .statusBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 8.dp),
+            .navigationBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(18.dp))
         if (onBack == null) {
             Text(
                 title,
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Medium,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.SemiBold,
                 color = colors.onSurface,
+                modifier = Modifier.padding(horizontal = 8.dp),
                 fontFamily = appFontFamily()
             )
         } else {
@@ -130,11 +135,11 @@ internal fun SettingsPage(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TextButton(onClick = onBack) {
-                    Text("← 返回", color = colors.primary, fontSize = 16.sp, fontFamily = appFontFamily())
+                    Text("← 返回", color = colors.primary, fontSize = 14.sp, fontFamily = appFontFamily())
                 }
                 Text(
                     title,
-                    fontSize = 20.sp,
+                    fontSize = 18.sp,
                     fontWeight = FontWeight.Medium,
                     color = colors.onSurface,
                     fontFamily = appFontFamily()
@@ -142,9 +147,9 @@ internal fun SettingsPage(
                 Spacer(Modifier.weight(1f))
             }
         }
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(22.dp))
         content()
-        Spacer(Modifier.height(48.dp))
+        Spacer(Modifier.height(180.dp))
     }
 }
 
@@ -167,76 +172,223 @@ fun LiquidGlassSettingsScreen(
     onNavigateToPlayerInterface: () -> Unit,
     onNavigateToUsbDac: () -> Unit,
     onNavigateToGlobalFont: () -> Unit,
-    onWebDavBackup: () -> Unit
+    onNavigateToAlbumArt: () -> Unit,
+    onWebDavBackup: () -> Unit,
+    onNavigateToComposePlayerDemo: () -> Unit = {},
+    onNavigateToComposeScene: () -> Unit = {}
 ) {
-    SettingsPage(title = "设置") {
-        SettingsCard {
-            SettingsEntryRow(
+    val colors = themeColors()
+    val isDark = colors.onSurface == Color.White
+    val pageBackground = colors.background
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(pageBackground)
+            .verticalScroll(rememberScrollState())
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Spacer(Modifier.height(18.dp))
+        Text(
+            "设置",
+            fontSize = 24.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = colors.onSurface,
+            modifier = Modifier.padding(horizontal = 8.dp),
+            fontFamily = appFontFamily()
+        )
+        Spacer(Modifier.height(26.dp))
+
+        MainSettingsSection("播放与界面") {
+            MainSettingsEntry(
+                title = "界面设置",
+                description = "默认背景、沉浸模式、常驻封面、音频可视化",
+                onClick = onNavigateToPlayerInterface
+            )
+            MainSettingsEntry(
+                title = "专辑图",
+                description = "画质、高清封面、24位 RGB、封面下载与动画",
+                onClick = onNavigateToAlbumArt
+            )
+            MainSettingsEntry(
+                title = "外观主题",
+                description = "主题模式、界面色彩与显示风格",
+                onClick = onNavigateToAppearance
+            )
+            MainSettingsEntry(
+                title = "全局字体",
+                description = "字体大小、字重、斜体与全局显示",
+                onClick = onNavigateToGlobalFont
+            )
+        }
+
+        MainSettingsSection("歌词") {
+            MainSettingsEntry(
                 title = "歌词管理",
-                description = "词幕、歌词字体设置",
+                description = "歌词源、歌词字体设置与歌词显示",
                 onClick = onNavigateToLyricManagement
             )
-
-            SettingsEntryRow(
+            MainSettingsEntry(
                 title = "状态栏歌词",
                 description = "Flyme、三星、蓝牙、Lyric Getter",
                 onClick = onNavigateToStatusBarLyric
             )
         }
 
-        Spacer(Modifier.height(12.dp))
-
-        SettingsCard {
-            SettingsEntryRow(
-                title = "外观主题",
-                description = "主题模式",
-                onClick = onNavigateToAppearance
-            )
-
-            SettingsEntryRow(
-                title = "全局字体",
-                description = "字体大小、字重、斜体",
-                onClick = onNavigateToGlobalFont
-            )
-
-            SettingsEntryRow(
-                title = "播放界面",
-                description = "沉浸、常驻封面、信笺、流动光、界面记忆",
-                onClick = onNavigateToPlayerInterface
-            )
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        SettingsCard {
-            SettingsEntryRow(
+        MainSettingsSection("音频") {
+            MainSettingsEntry(
                 title = "音质设置",
-                description = "采样率、位深、输出模式",
+                description = "采样率、位深、输出模式与重采样",
                 onClick = onNavigateToAudioSettings
             )
-
-            SettingsEntryRow(
+            MainSettingsEntry(
                 title = "音效设置",
-                description = "参量均衡器、立体声扩展",
+                description = "均衡器、动态范围、空间音频与增强",
                 onClick = onNavigateToAudioEffects
             )
-
-            SettingsEntryRow(
+            MainSettingsEntry(
                 title = "USB DAC",
-                description = "USB 独占模式设置",
+                description = "USB 独占、DAC 状态、PCM 输出与 DSD",
                 onClick = onNavigateToUsbDac
             )
         }
 
-        Spacer(Modifier.height(12.dp))
-
-        SettingsCard {
-            SettingsEntryRow(
+        MainSettingsSection("数据") {
+            MainSettingsEntry(
                 title = "WebDAV 备份",
-                description = "备份与恢复歌单、统计数据",
+                description = "备份与恢复歌单、统计数据和应用配置",
                 onClick = onWebDavBackup
             )
         }
+
+        MainSettingsSection("开发") {
+            MainSettingsEntry(
+                title = "Compose Player Demo",
+                description = "纯 Compose 播放器演示：液态玻璃 + 捏合缩放 + 场景切换",
+                onClick = onNavigateToComposePlayerDemo
+            )
+            MainSettingsEntry(
+                title = "纯 Compose 场景系统",
+                description = "纯 Compose 版本的统一容器：双引擎 + SceneParams + 场景切换",
+                onClick = onNavigateToComposeScene
+            )
+        }
+
+        Spacer(Modifier.height(180.dp))
+    }
+}
+
+@Composable
+private fun MainSettingsSection(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val colors = themeColors()
+    val cardColor = colors.surface
+
+    Text(
+        title,
+        fontSize = 14.sp,
+        fontWeight = FontWeight.SemiBold,
+        color = colors.onSurface,
+        modifier = Modifier.padding(start = 8.dp, bottom = 8.dp),
+        fontFamily = appFontFamily()
+    )
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(9.dp))
+            .background(cardColor)
+            .padding(vertical = 6.dp),
+        content = content
+    )
+    Spacer(Modifier.height(12.dp))
+}
+
+@Composable
+private fun MainSettingsEntry(
+    title: String,
+    description: String,
+    onClick: () -> Unit
+) {
+    val colors = themeColors()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Normal,
+                color = colors.onSurface,
+                fontFamily = appFontFamily()
+            )
+            Text(
+                description,
+                fontSize = 11.sp,
+                color = colors.secondaryText,
+                modifier = Modifier.padding(top = 4.dp),
+                fontFamily = appFontFamily()
+            )
+        }
+        Text(
+            "›",
+            fontSize = 24.sp,
+            color = colors.outline,
+            modifier = Modifier.padding(start = 12.dp)
+        )
+    }
+}
+
+@Composable
+internal fun SettingsSection(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    MainSettingsSection(title = title, content = content)
+}
+
+@Composable
+internal fun SettingsNavigationEntry(
+    title: String,
+    description: String,
+    onClick: () -> Unit
+) {
+    MainSettingsEntry(title = title, description = description, onClick = onClick)
+}
+
+@Composable
+internal fun SettingsInfoEntry(
+    title: String,
+    description: String
+) {
+    val colors = themeColors()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Text(
+            title,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Normal,
+            color = colors.onSurface,
+            fontFamily = appFontFamily()
+        )
+        Text(
+            description,
+            fontSize = 11.sp,
+            color = colors.secondaryText,
+            modifier = Modifier.padding(top = 4.dp),
+            fontFamily = appFontFamily()
+        )
     }
 }
 
@@ -289,10 +441,10 @@ internal fun SectionHeader(title: String) {
     val colors = themeColors()
     Text(
         title,
-        fontSize = 16.sp,
-        fontWeight = FontWeight.Medium,
+        fontSize = 14.sp,
+        fontWeight = FontWeight.SemiBold,
         color = colors.onSurface,
-        modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+        modifier = Modifier.padding(start = 2.dp, top = 2.dp, bottom = 8.dp),
         fontFamily = appFontFamily()
     )
 }
@@ -307,15 +459,14 @@ internal fun SettingsCard(
     content: @Composable ColumnScope.() -> Unit
 ) {
     val colors = themeColors()
-    val isDark = colors.onSurface == Color.White
-    val cardColor = if (isDark) Color(0xFF1D1D21) else Color(0xFFFFFFFF)
+    val cardColor = colors.surface
     Column(
         modifier
             .fillMaxWidth()
-            .padding(bottom = 14.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .padding(bottom = 12.dp)
+            .clip(RoundedCornerShape(9.dp))
             .background(cardColor)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         content = content
     )
 }
@@ -331,20 +482,22 @@ fun SwitchRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .height(48.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             label,
             fontSize = 14.sp,
-            color = if (enabled) colors.onSurfaceVariant else colors.outline,
+            color = if (enabled) colors.onSurface else colors.outline,
+            modifier = Modifier.weight(1f),
             fontFamily = appFontFamily()
         )
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
             enabled = enabled,
+            modifier = Modifier.padding(start = 16.dp),
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Color(0xFFFFFFFF),
                 checkedTrackColor = Color(0xFF4285F4),
