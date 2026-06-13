@@ -134,6 +134,9 @@ class UnifiedMainContainer @JvmOverloads constructor(
     /** Compose 版本的导航栈 */
     private val composeBackStack = mutableListOf(NavScene.HOME)
 
+    /** Compose 版本的场景过渡动画时长 */
+    private val composeTransitionDuration = 400L
+
     // ==================== Compose 状态属性 ====================
     /** Compose 可观察的当前场景 */
     var composeCurrentScene by mutableStateOf(NavScene.HOME)
