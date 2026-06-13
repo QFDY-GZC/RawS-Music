@@ -272,49 +272,32 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     private fun setupSceneController() {
-        sceneController.onSceneChanged = { newScene, _ ->
-            navigationLock = false
-            restorePageState(newScene)
-        }
+        // Compose 版本不需要 View 场景控制器
+        // 场景切换由 Compose 状态自动管理
     }
 
     private fun saveCurrentPageState(scene: NavScene) {
-        val page = pageCache[scene] ?: return
-        val rv = findRecyclerView(page) ?: return
-        val layoutManager = rv.layoutManager as? LinearLayoutManager ?: return
-        val scrollPos = layoutManager.findFirstVisibleItemPosition()
-        val child = layoutManager.findViewByPosition(scrollPos)
-        val scrollOffset = child?.top ?: 0
-        navController.updateCurrentEntryState(scrollPos, scrollOffset)
+        // Compose 版本不需要保存页面状态
+        // 页面状态由 Compose 状态自动管理
     }
 
     private fun restorePageState(scene: NavScene) {
-        val entry = navController.findInBackStack(scene) ?: return
-        if (entry.scrollPosition <= 0) return
-        val page = pageCache[scene] ?: return
-        val rv = findRecyclerView(page) ?: return
-        val layoutManager = rv.layoutManager as? LinearLayoutManager ?: return
-        layoutManager.scrollToPositionWithOffset(entry.scrollPosition, entry.scrollOffset)
+        // Compose 版本不需要恢复页面状态
+        // 页面状态由 Compose 状态自动管理
     }
 
     private fun getOrCreatePage(scene: NavScene): FrameLayout {
-        return pageCache.getOrPut(scene) {
-            val factory = pageFactories[scene] ?: return@getOrPut createPlaceholderPage(scene)
-            val page = factory()
-            // 非当前场景的页面默认隐藏，避免多页面同时显示重叠
-            page.visibility = if (scene == navController.currentScene.value) View.VISIBLE else View.INVISIBLE
-            addView(page)
-            page
-        }
+        // Compose 版本：返回一个包含 ComposeView 的 FrameLayout
+        return createComposePage(scene)
     }
 
-    private fun getPage(scene: NavScene): FrameLayout? = pageCache[scene]
+    private fun getPage(scene: NavScene): FrameLayout? {
+        // Compose 版本：返回一个包含 ComposeView 的 FrameLayout
+        return createComposePage(scene)
+    }
 
     private fun findRecyclerView(page: FrameLayout): RecyclerView? {
-        for (i in 0 until page.childCount) {
-            val child = page.getChildAt(i)
-            if (child is RecyclerView) return child
-        }
+        // Compose 版本不需要 RecyclerView
         return null
     }
 
@@ -2082,6 +2065,41 @@ class UnifiedMainContainer @JvmOverloads constructor(
             id = View.generateViewId()
             layoutParams = LayoutParams(MATCH_PARENT, MATCH_PARENT)
             tag = scene.tag
+        }
+    }
+
+    /**
+     * Compose 版本的页面创建
+     * 返回一个包含 ComposeView 的 FrameLayout
+     */
+    private fun createComposePage(scene: NavScene): FrameLayout {
+        val page = createPageContainer(scene)
+        val composeView = ComposeView(context).apply {
+            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+            setContent {
+                ComposePageContent(scene)
+            }
+        }
+        page.addView(composeView)
+        return page
+    }
+
+    @Composable
+    private fun ComposePageContent(scene: NavScene) {
+        when (scene) {
+            NavScene.HOME -> ComposeHomePageContent()
+            NavScene.SONGS -> ComposeSongsPageContent()
+            NavScene.FOLDERS -> ComposeFoldersPageContent()
+            NavScene.ALBUMS -> ComposeAlbumsPageContent()
+            NavScene.ARTISTS -> ArtistsScreen(
+                dataSource = artistDataSource,
+                onArtistClick = { artist -> navigateToArtistDetail(artist.name) }
+            )
+            NavScene.PLAYLISTS -> ComposeSimplePageContent("歌单", "歌单列表")
+            NavScene.QUEUE -> ComposeSimplePageContent("播放队列", "当前播放队列")
+            NavScene.RECENTLY_ADDED -> ComposeSimplePageContent("最近添加", "最近添加的歌曲")
+            NavScene.WEBDAV -> ComposeSimplePageContent("WebDAV", "云端音乐")
+            else -> ComposeSimplePageContent(scene.label, scene.label)
         }
     }
 
