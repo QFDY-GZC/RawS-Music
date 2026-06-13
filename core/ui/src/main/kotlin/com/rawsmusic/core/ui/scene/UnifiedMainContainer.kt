@@ -2038,54 +2038,85 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     private fun createPlaylistsPage(): FrameLayout {
-        return createSearchableListPage(NavScene.PLAYLISTS, "歌单",
-            PlaylistRvAdapter(onPlaylistClick), "搜索歌单")
+        return createComposeSimplePage(NavScene.PLAYLISTS, "歌单", "歌单列表")
     }
 
     private fun createQueuePage(): FrameLayout {
-        return createListPage(NavScene.QUEUE, "播放队列",
-            SongRvAdapter(onQueueSongClick))
+        return createComposeSimplePage(NavScene.QUEUE, "播放队列", "当前播放队列")
     }
 
     private fun createRecentlyAddedPage(): FrameLayout {
-        return createListPage(NavScene.RECENTLY_ADDED, "最近添加",
-            SongRvAdapter(onRecentlyAddedClick))
+        return createComposeSimplePage(NavScene.RECENTLY_ADDED, "最近添加", "最近添加的歌曲")
+    }
+
+    /**
+     * Compose 版本的简单列表页 (通用)
+     */
+    private fun createComposeSimplePage(scene: NavScene, title: String, placeholder: String): FrameLayout {
+        val page = createPageContainer(scene)
+        val composeView = ComposeView(context).apply {
+            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+            setContent {
+                ComposeSimplePageContent(title, placeholder)
+            }
+        }
+        page.addView(composeView)
+        return page
+    }
+
+    @Composable
+    private fun ComposeSimplePageContent(title: String, placeholder: String) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ComposeColor(C.PAGE_BG))
+        ) {
+            // 标题栏
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = { navigateHome() },
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Text("←", fontSize = 20.sp, color = ComposeColor(C.TEXT_SECONDARY))
+                }
+                Text(
+                    text = title,
+                    color = ComposeColor(C.TEXT_PRIMARY),
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.size(44.dp))
+            }
+
+            // 占位内容
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = placeholder,
+                    color = ComposeColor(C.TEXT_META),
+                    fontSize = 16.sp,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
     }
 
     private fun createWebDavPage(): FrameLayout {
-        val page = createPageContainer(NavScene.WEBDAV)
-        page.setBackgroundColor(C.PAGE_BG)
-        val header = createPageHeader("WebDAV") { navigateHome() }
-        page.addView(header)
-        val placeholder = TextView(context).apply {
-            text = "WebDAV"
-            textSize = 18f
-            setTextColor(C.TEXT_SECONDARY)
-            setPadding(32, 32, 32, 32)
-            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply {
-                topMargin = (52 * density).toInt()
-            }
-        }
-        page.addView(placeholder)
-        return page
+        return createComposeSimplePage(NavScene.WEBDAV, "WebDAV", "云端音乐")
     }
 
     private fun createPlaceholderPage(scene: NavScene): FrameLayout {
-        val page = createPageContainer(scene)
-        page.setBackgroundColor(C.PAGE_BG)
-        val header = createPageHeader(scene.label) { navigateHome() }
-        page.addView(header)
-        val placeholder = TextView(context).apply {
-            text = scene.label
-            textSize = 18f
-            setTextColor(C.TEXT_SECONDARY)
-            setPadding(32, 32, 32, 32)
-            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply {
-                topMargin = (52 * density).toInt()
-            }
-        }
-        page.addView(placeholder)
-        return page
+        return createComposeSimplePage(scene, scene.label, scene.label)
     }
 
     private fun createPageHeader(title: String, onBack: () -> Unit): LinearLayout {
