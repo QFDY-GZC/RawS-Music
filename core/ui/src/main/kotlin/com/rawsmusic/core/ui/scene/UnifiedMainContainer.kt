@@ -81,6 +81,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.Alignment
@@ -2534,6 +2535,158 @@ class UnifiedMainContainer @JvmOverloads constructor(
             NavScene.RECENTLY_ADDED -> NavScene.HOME
             NavScene.WEBDAV -> NavScene.HOME
             else -> NavScene.HOME
+        }
+    }
+
+    // ==================== Compose StateAnim 系统 ====================
+
+    /** 存储正在运行的 Compose 状态动画 Job */
+    private val composeStateAnimMap = mutableMapOf<String, kotlinx.coroutines.Job>()
+
+    /**
+     * Compose 版本：启动状态动画
+     * 用于按钮点击、弹性回弹等动画效果
+     */
+    fun composeStartStateAnim(
+        key: String,
+        initialValue: Float = 0f,
+        targetValue: Float = 1f,
+        durationMs: Long = 300L,
+        easing: Easing = LinearEasing,
+        onCancel: (() -> Unit)? = null,
+        onEnd: (() -> Unit)? = null,
+        onUpdate: (Float) -> Unit
+    ) {
+        composeCancelStateAnim(key)
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
+        val job = scope.launch {
+            val animatable = Animatable(initialValue)
+            animatable.animateTo(
+                targetValue = targetValue,
+                animationSpec = tween(
+                    durationMillis = durationMs.toInt(),
+                    easing = easing
+                )
+            ) {
+                onUpdate(value)
+            }
+            onEnd?.invoke()
+        }
+        job.invokeOnCompletion {
+            if (job.isCancelled) onCancel?.invoke()
+        }
+        composeStateAnimMap[key] = job
+    }
+
+    /**
+     * Compose 版本：取消指定状态动画
+     */
+    fun composeCancelStateAnim(key: String) {
+        composeStateAnimMap[key]?.cancel()
+        composeStateAnimMap.remove(key)
+    }
+
+    /**
+     * Compose 版本：取消所有状态动画
+     */
+    fun composeCancelAllStateAnims() {
+        composeStateAnimMap.values.forEach { it.cancel() }
+        composeStateAnimMap.clear()
+    }
+
+    // ==================== Compose 便捷导航方法 ====================
+
+    /**
+     * Compose 版本：导航到歌曲列表
+     */
+    fun composeNavigateToSongs(scope: kotlinx.coroutines.CoroutineScope) {
+        composeNavigateToScene(NavScene.SONGS, scope = scope)
+    }
+
+    /**
+     * Compose 版本：导航到文件夹
+     */
+    fun composeNavigateToFolders(scope: kotlinx.coroutines.CoroutineScope) {
+        composeNavigateToScene(NavScene.FOLDERS, scope = scope)
+    }
+
+    /**
+     * Compose 版本：导航到专辑
+     */
+    fun composeNavigateToAlbums(scope: kotlinx.coroutines.CoroutineScope) {
+        composeNavigateToScene(NavScene.ALBUMS, scope = scope)
+    }
+
+    /**
+     * Compose 版本：导航到艺术家
+     */
+    fun composeNavigateToArtists(scope: kotlinx.coroutines.CoroutineScope) {
+        composeNavigateToScene(NavScene.ARTISTS, scope = scope)
+    }
+
+    /**
+     * Compose 版本：导航到歌单
+     */
+    fun composeNavigateToPlaylists(scope: kotlinx.coroutines.CoroutineScope) {
+        composeNavigateToScene(NavScene.PLAYLISTS, scope = scope)
+    }
+
+    /**
+     * Compose 版本：导航到播放队列
+     */
+    fun composeNavigateToQueue(scope: kotlinx.coroutines.CoroutineScope) {
+        composeNavigateToScene(NavScene.QUEUE, scope = scope)
+    }
+
+    /**
+     * Compose 版本：导航到最近添加
+     */
+    fun composeNavigateToRecentlyAdded(scope: kotlinx.coroutines.CoroutineScope) {
+        composeNavigateToScene(NavScene.RECENTLY_ADDED, scope = scope)
+    }
+
+    /**
+     * Compose 版本：导航到 WebDAV
+     */
+    fun composeNavigateToWebDav(scope: kotlinx.coroutines.CoroutineScope) {
+        composeNavigateToScene(NavScene.WEBDAV, scope = scope)
+    }
+
+    /**
+     * Compose 版本：导航到专辑详情
+     */
+    fun composeNavigateToAlbumDetail(scope: kotlinx.coroutines.CoroutineScope) {
+        composeNavigateToScene(NavScene.ALBUM_DETAIL, scope = scope)
+    }
+
+    /**
+     * Compose 版本：导航到艺术家详情
+     */
+    fun composeNavigateToArtistDetail(scope: kotlinx.coroutines.CoroutineScope) {
+        composeNavigateToScene(NavScene.ARTIST_DETAIL, scope = scope)
+    }
+
+    /**
+     * Compose 版本：导航到歌单详情
+     */
+    fun composeNavigateToPlaylistDetail(scope: kotlinx.coroutines.CoroutineScope) {
+        composeNavigateToScene(NavScene.PLAYLIST_DETAIL, scope = scope)
+    }
+
+    /**
+     * Compose 版本：返回主页
+     */
+    fun composeBackToHome(scope: kotlinx.coroutines.CoroutineScope) {
+        composeNavigateToScene(NavScene.HOME, scope = scope)
+    }
+
+    /**
+     * Compose 版本：返回上一页
+     */
+    fun composeGoBack(scope: kotlinx.coroutines.CoroutineScope) {
+        val previousScene = getPreviousScene()
+        if (previousScene != null) {
+            composeNavigateToScene(previousScene, scope = scope)
         }
     }
 
