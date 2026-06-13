@@ -100,6 +100,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.consumeAllChanges
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 
 class UnifiedMainContainer @JvmOverloads constructor(
@@ -2687,6 +2692,80 @@ class UnifiedMainContainer @JvmOverloads constructor(
         val previousScene = getPreviousScene()
         if (previousScene != null) {
             composeNavigateToScene(previousScene, scope = scope)
+        }
+    }
+
+    // ==================== Compose UI 组件 ====================
+
+    /**
+     * Compose 版本的场景导航宿主
+     * 可在 Compose 环境中使用 UnifiedMainContainer 的场景管理
+     */
+    @Composable
+    fun ComposeNavHost(
+        modifier: Modifier = Modifier,
+        sceneContent: @Composable (NavScene) -> Unit
+    ) {
+        val currentScene = composeCurrentScene
+        val isTransitioning = composeIsTransitioning
+        val transitionProgress = composeTransitionProgress
+
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    // 过渡时的透明度变化
+                    alpha = if (isTransitioning) {
+                        1f - transitionProgress * 0.3f
+                    } else {
+                        1f
+                    }
+                }
+        ) {
+            sceneContent(currentScene)
+        }
+    }
+
+    /**
+     * Compose 版本的拖拽返回手势容器
+     */
+    @Composable
+    fun ComposeDragBackContainer(
+        modifier: Modifier = Modifier,
+        content: @Composable () -> Unit
+    ) {
+        val scope = rememberCoroutineScope()
+        val isDraggingBack = composeIsDraggingBack
+        val dragBackProgress = composeDragBackProgress
+
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    if (isDraggingBack) {
+                        val scale = 1f - (dragBackProgress * 0.1f)
+                        scaleX = scale
+                        scaleY = scale
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            composeStartDragBack()
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            val progress = (dragAmount / size.width).coerceIn(0f, 1f)
+                            composeUpdateDragBack(progress)
+                        },
+                        onDragEnd = {
+                            val shouldCommit = composeDragBackProgress > 0.3f
+                            composeEndDragBack(shouldCommit, scope = scope)
+                        }
+                    )
+                }
+        ) {
+            content()
         }
     }
 
