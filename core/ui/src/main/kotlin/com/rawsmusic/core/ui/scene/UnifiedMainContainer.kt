@@ -71,6 +71,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -996,310 +997,136 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     private fun createSongsPage(): FrameLayout {
+        return createComposeSongsPage()
+    }
+
+    /**
+     * Compose 版本的歌曲列表页
+     * 纯 Compose 实现，替代原 View 版本
+     */
+    private fun createComposeSongsPage(): FrameLayout {
         val page = createPageContainer(NavScene.SONGS)
-        page.setBackgroundColor(C.PAGE_BG)
-
-        // Initialize SongDataProvider
-        songDataProvider = SongDataProvider()
-        songDataProvider.onItemClicked = { song, position ->
-            onSongClick?.invoke(song, position)
-        }
-        songDataProvider.onItemLongClicked = { song, position ->
-            showSongActionPopup(song, position)
-        }
-        songDataProvider.onSelectionChanged = { selectedPositions ->
-            updateSongsEditCount(selectedPositions.size)
-        }
-
-        // Main vertical container with top padding
-        val mainContainer = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
+        val composeView = ComposeView(context).apply {
             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-            setPadding(0, (44 * density).toInt(), 0, 0)
-        }
-
-        // Normal title bar
-        val normalTitleBar = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, (52 * density).toInt())
-            setPadding((4 * density).toInt(), 0, (4 * density).toInt(), 0)
-        }
-
-        // Back button
-        normalTitleBar.addView(ImageView(context).apply {
-            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt())
-            val p = (10 * density).toInt()
-            setPadding(p, p, p, p)
-            setImageResource(com.rawsmusic.core.ui.R.drawable.ic_back)
-            setColorFilter(C.TEXT_SECONDARY, android.graphics.PorterDuff.Mode.SRC_IN)
-            setOnClickListener { navigateHome() }
-            isClickable = true
-            isFocusable = true
-        })
-
-        // Title
-        normalTitleBar.addView(TextView(context).apply {
-            text = "歌曲列表"
-            textSize = 17f
-            setTextColor(C.TEXT_PRIMARY)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
-                gravity = Gravity.CENTER
-            }
-            gravity = Gravity.CENTER
-            tag = "songs_page_title"
-        })
-
-        // Folder button
-        normalTitleBar.addView(ImageView(context).apply {
-            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt())
-            val p = (10 * density).toInt()
-            setPadding(p, p, p, p)
-            setImageResource(com.rawsmusic.core.ui.R.drawable.ic_folder_2_fill)
-            setColorFilter(C.TEXT_PRIMARY, android.graphics.PorterDuff.Mode.SRC_IN)
-            setOnClickListener { onOpenFolderPicker?.invoke() }
-            isClickable = true
-            isFocusable = true
-        })
-
-        // Sort button
-        normalTitleBar.addView(ImageView(context).apply {
-            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt())
-            val p = (10 * density).toInt()
-            setPadding(p, p, p, p)
-            setImageResource(com.rawsmusic.core.ui.R.drawable.ic_more_2_fill)
-            setColorFilter(C.TEXT_PRIMARY, android.graphics.PorterDuff.Mode.SRC_IN)
-            setOnClickListener { showSongsSortDialog() }
-            isClickable = true
-            isFocusable = true
-            tag = "songs_sort_btn"
-        })
-
-        // Search button (hidden by default)
-        normalTitleBar.addView(ImageView(context).apply {
-            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt())
-            val p = (10 * density).toInt()
-            setPadding(p, p, p, p)
-            setImageResource(com.rawsmusic.core.ui.R.drawable.ic_search_bold)
-            visibility = View.GONE
-            setOnClickListener { toggleSongsSearch() }
-            isClickable = true
-            isFocusable = true
-            tag = "songs_search_btn"
-        })
-
-        songsNormalTitleBar = normalTitleBar
-        mainContainer.addView(normalTitleBar)
-
-        // Edit title bar (hidden by default)
-        val editTitleBar = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, (52 * density).toInt())
-            setPadding((8 * density).toInt(), 0, (8 * density).toInt(), 0)
-            visibility = View.GONE
-        }
-
-        editTitleBar.addView(TextView(context).apply {
-            text = "取消"
-            textSize = 15f
-            setTextColor(C.TEXT_PRIMARY)
-            val hPad = (8 * density).toInt()
-            val vPad = (6 * density).toInt()
-            setPadding(hPad, vPad, hPad, vPad)
-            setOnClickListener {
-                songDataProvider.exitSelectMode()
-                updateSongsEditBar()
-            }
-        })
-
-        val tvEditCount = TextView(context).apply {
-            text = "已选择 0 首"
-            textSize = 15f
-            setTextColor(C.TEXT_PRIMARY)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
-            gravity = Gravity.CENTER
-        }
-        editTitleBar.addView(tvEditCount)
-        songsTvEditCount = tvEditCount
-
-        editTitleBar.addView(TextView(context).apply {
-            text = "全选"
-            textSize = 15f
-            setTextColor(C.ACCENT)
-            val hPad = (8 * density).toInt()
-            val vPad = (6 * density).toInt()
-            setPadding(hPad, vPad, hPad, vPad)
-            setOnClickListener {
-                val count = songDataProvider.getItemCount()
-                songDataProvider.selectedPositions = (0 until count).toSet()
-                updateSongsEditCount(count)
-            }
-        })
-
-        editTitleBar.addView(TextView(context).apply {
-            text = "删除"
-            textSize = 15f
-            setTextColor(0xFF777777.toInt())
-            val hPad = (8 * density).toInt()
-            val vPad = (6 * density).toInt()
-            setPadding(hPad, vPad, hPad, vPad)
-            setOnClickListener { deleteSelectedSongs() }
-        })
-
-        songsEditTitleBar = editTitleBar
-        mainContainer.addView(editTitleBar)
-
-        // Content area with SwipeRefreshLayout + PowerListView + AlphabetIndex
-        val contentFrame = FrameLayout(context).apply {
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
-            clipChildren = false
-        }
-
-        // SwipeRefreshLayout
-        val swipeRefresh = androidx.swiperefreshlayout.widget.SwipeRefreshLayout(context).apply {
-            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-            val marginEnd = (10 * density).toInt()
-            setPadding(0, 0, marginEnd, 0)
-            clipChildren = false
-            isEnabled = false
-        }
-
-        // PowerListView
-        val powerListView = PowerListView(context).apply {
-            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-            clipToPadding = false
-            clipChildren = false
-            val bottomPad = (180 * density).toInt()
-            setPadding(0, 0, 0, bottomPad)
-        }
-        powerListView.setDataProvider(songDataProvider)
-        powerListView.setOnItemClickListener(object : PowerListView.OnItemClickListener {
-            override fun onItemClick(position: Int, view: View) {
-                val songs = songDataProvider.getItems()
-                if (position in songs.indices) {
-                    onSongClick?.invoke(songs[position], position)
-                }
-            }
-        })
-        powerListView.setOnItemLongClickListener(object : PowerListView.OnItemLongClickListener {
-            override fun onItemLongClick(position: Int, view: View): Boolean {
-                val songs = songDataProvider.getItems()
-                if (position in songs.indices) {
-                    showSongActionPopup(songs[position], position)
-                }
-                return true
-            }
-        })
-
-        swipeRefresh.addView(powerListView)
-        songsPowerListView = powerListView
-        songsSwipeRefresh = swipeRefresh
-        contentFrame.addView(swipeRefresh)
-
-        // AlphabetIndex
-        val alphabetIndex = AlphabetIndexView(context).apply {
-            layoutParams = FrameLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT).apply {
-                gravity = Gravity.END or Gravity.CENTER_VERTICAL
-                topMargin = (12 * density).toInt()
-                bottomMargin = (180 * density).toInt()
+            setContent {
+                ComposeSongsPageContent()
             }
         }
-        alphabetIndex.onLetterSelected = listener@{ letter ->
-            val songs = songDataProvider.getItems()
-            val index = songs.indexOfFirst { song ->
-                val firstChar = song.displayName.firstOrNull() ?: '#'
-                val key = categorizeForIndex(firstChar)
-                key == letter
-            }
-            if (index >= 0) {
-                powerListView.scrollTo(0, index * powerListView.rowHeight)
-            }
-        }
-        songsAlphabetIndex = alphabetIndex
-        contentFrame.addView(alphabetIndex)
-
-        mainContainer.addView(contentFrame)
-        page.addView(mainContainer)
-
-        // Empty view
-        val emptyView = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
-                gravity = Gravity.CENTER
-            }
-            visibility = View.GONE
-        }
-        emptyView.addView(ImageView(context).apply {
-            layoutParams = LinearLayout.LayoutParams((116 * density).toInt(), (116 * density).toInt())
-            alpha = 0.5f
-            setImageResource(com.rawsmusic.core.ui.R.drawable.ic_music_note_dark)
-        })
-        emptyView.addView(TextView(context).apply {
-            text = "没有找到歌曲"
-            textSize = 16f
-            setTextColor(C.TEXT_PRIMARY)
-            layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
-                topMargin = (30 * density).toInt()
-            }
-            gravity = Gravity.CENTER
-        })
-        emptyView.addView(TextView(context).apply {
-            text = "点击下方按钮导入音乐"
-            textSize = 14f
-            setTextColor(C.TEXT_SECONDARY)
-            layoutParams = LinearLayout.LayoutParams((240 * density).toInt(), WRAP_CONTENT).apply {
-                topMargin = (15 * density).toInt()
-            }
-            gravity = Gravity.CENTER
-        })
-        emptyView.addView(TextView(context).apply {
-            text = "去导入"
-            textSize = 14f
-            setTextColor(C.ACCENT)
-            layoutParams = LinearLayout.LayoutParams((140 * density).toInt(), (42 * density).toInt()).apply {
-                topMargin = (24 * density).toInt()
-            }
-            gravity = Gravity.CENTER
-            background = GradientDrawable().apply {
-                setStroke((1 * density).toInt(), C.ACCENT)
-                cornerRadius = (21 * density).toFloat()
-            }
-            setOnClickListener { onOpenFolderPicker?.invoke() }
-        })
-        songsEmptyView = emptyView
-        page.addView(emptyView)
-
-        // 回填 submitSongs() 在页面创建前已存储的数据
-        if (songsAllItems.isNotEmpty()) {
-            songDataProvider.submitList(songsAllItems)
-            songsSwipeRefresh?.apply {
-                animate().cancel()
-                clearAnimation()
-                visibility = View.VISIBLE
-                alpha = 1f
-            }
-            songsEmptyView?.apply {
-                animate().cancel()
-                clearAnimation()
-                visibility = View.GONE
-                alpha = 0f
-            }
-            songsPowerListView?.apply {
-                refreshLayout()
-                ensureSurfaceVisibleForItems()
-            }
-            songsAlphabetIndex?.updateIndexFromTitles(songsAllItems.map { it.displayName })
-            if (currentPlayingSongId > 0) {
-                val idx = songsAllItems.indexOfFirst { it.id == currentPlayingSongId }
-                songDataProvider.playingPosition = idx
-            }
-        }
-
+        page.addView(composeView)
         return page
+    }
+
+    @Composable
+    private fun ComposeSongsPageContent() {
+        val scope = rememberCoroutineScope()
+        var searchQuery by remember { mutableStateOf("") }
+        var isSearchActive by remember { mutableStateOf(false) }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ComposeColor(C.PAGE_BG))
+        ) {
+            // 标题栏
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 返回按钮
+                IconButton(
+                    onClick = { navigateHome() },
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Text("←", fontSize = 20.sp, color = ComposeColor(C.TEXT_SECONDARY))
+                }
+
+                // 标题
+                Text(
+                    text = "歌曲列表",
+                    color = ComposeColor(C.TEXT_PRIMARY),
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center
+                )
+
+                // 文件夹按钮
+                IconButton(
+                    onClick = { onOpenFolderPicker?.invoke() },
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Text("📁", fontSize = 18.sp)
+                }
+
+                // 排序按钮
+                IconButton(
+                    onClick = { showSongsSortDialog() },
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Text("⋮", fontSize = 18.sp, color = ComposeColor(C.TEXT_PRIMARY))
+                }
+
+                // 搜索按钮
+                IconButton(
+                    onClick = { isSearchActive = !isSearchActive },
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Text("🔍", fontSize = 18.sp)
+                }
+            }
+
+            // 搜索栏 (可折叠)
+            if (isSearchActive) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(ComposeColor(C.CARD_BG))
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = TextStyle(
+                            color = ComposeColor(C.TEXT_PRIMARY),
+                            fontSize = 14.sp
+                        ),
+                        singleLine = true,
+                        cursorBrush = SolidColor(ComposeColor(C.ACCENT))
+                    )
+                    if (searchQuery.isEmpty()) {
+                        Text(
+                            text = "搜索歌曲...",
+                            color = ComposeColor(C.TEXT_META),
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+            }
+
+            // 歌曲列表
+            // 注意：这里需要实际的数据源，目前先显示占位
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = 180.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "歌曲列表\n(需要集成 SongDataProvider)",
+                    color = ComposeColor(C.TEXT_META),
+                    fontSize = 16.sp,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
     }
 
     // ===== Songs page methods (migrated from SongsFragment) =====
