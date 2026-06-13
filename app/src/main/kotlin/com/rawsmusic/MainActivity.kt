@@ -73,6 +73,11 @@ import com.rawsmusic.module.player.lyrics.TickerBridge
 import com.rawsmusic.module.scanner.LyricReader
 import com.rawsmusic.ui.songs.PlayerHolder
 import com.rawsmusic.core.ui.util.AdaptivePadTransformation
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -192,6 +197,27 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
     private var savedAlbumDetailCoverRect: android.graphics.RectF? = null
     /** 从歌曲列表进入播放器时，保存列表封面的屏幕坐标，用于返回时与进入动画保持同一落点 */
     private var savedListCoverRect: android.graphics.RectF? = null
+
+    // ==================== Compose 状态属性 ====================
+    /** Compose 可观察的播放状态 */
+    var composeIsPlaying by mutableStateOf(false)
+        private set
+
+    /** Compose 可观察的当前播放进度 (0..1) */
+    var composePlayProgress by mutableFloatStateOf(0f)
+        private set
+
+    /** Compose 可观察的总时长 (ms) */
+    var composeTotalDurationMs by mutableLongStateOf(0L)
+        private set
+
+    /** Compose 可观察的当前播放位置 (ms) */
+    var composeCurrentPositionMs by mutableLongStateOf(0L)
+        private set
+
+    /** Compose 可观察的播放模式 */
+    var composePlayMode by mutableStateOf(PlayMode.SEQUENTIAL)
+        private set
 
     /*观察播放器动作（通过 PlayerEventBus）*/
     private fun observePlayerActions() {
@@ -3457,6 +3483,88 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                 usbMgr.requestPermissionSafely(device)
             }
         }, 500)
+    }
+
+    // ==================== Compose 播放控制方法 ====================
+
+    /**
+     * Compose 版本：切换播放/暂停
+     */
+    fun composeTogglePlayPause() {
+        playerController?.playPause()
+    }
+
+    /**
+     * Compose 版本：播放上一首
+     */
+    fun composePlayPrevious() {
+        playerController?.previous()
+    }
+
+    /**
+     * Compose 版本：播放下一首
+     */
+    fun composePlayNext() {
+        playerController?.next()
+    }
+
+    /**
+     * Compose 版本：跳转到指定进度
+     * @param progress 0..1 的进度值
+     */
+    fun composeSeekTo(progress: Float) {
+        val durationMs = playerController?.duration?.value ?: 0L
+        if (durationMs > 0) {
+            val targetMs = (progress * durationMs).toLong()
+            playerController?.seekTo(targetMs)
+        }
+    }
+
+    /**
+     * Compose 版本：切换重复模式
+     */
+    fun composeToggleRepeatMode() {
+        playerController?.toggleRepeatMode()
+    }
+
+    /**
+     * Compose 版本：切换随机播放
+     */
+    fun composeToggleShuffle() {
+        playerController?.toggleShuffle()
+    }
+
+    /**
+     * Compose 版本：同步播放状态到 Compose
+     * 在 onResume 或播放状态变化时调用
+     */
+    fun syncPlayStateToCompose() {
+        playerController?.let { controller ->
+            composeIsPlaying = controller.playState.value == PlayState.PLAYING
+            composeTotalDurationMs = controller.duration.value ?: 0L
+            composeCurrentPositionMs = controller.position.value ?: 0L
+            composePlayMode = controller.playMode.value ?: PlayMode.SEQUENTIAL
+
+            val duration = composeTotalDurationMs
+            if (duration > 0) {
+                composePlayProgress = composeCurrentPositionMs.toFloat() / duration
+            } else {
+                composePlayProgress = 0f
+            }
+        }
+    }
+
+    /**
+     * Compose 版本：启动播放进度同步协程
+     * 在 Composable 的 LaunchedEffect 中调用
+     */
+    fun startComposeProgressSync(scope: kotlinx.coroutines.CoroutineScope) {
+        scope.launch {
+            while (true) {
+                syncPlayStateToCompose()
+                delay(100) // 每 100ms 更新一次
+            }
+        }
     }
 
     override fun onDestroy() {
