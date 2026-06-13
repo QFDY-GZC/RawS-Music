@@ -3,8 +3,7 @@ package com.rawsmusic.ui.settings.compose.scene.item
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Layout
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -14,16 +13,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.MeasurePolicy
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.ui.settings.compose.scene.state.ComposeListState
-import com.rawsmusic.ui.settings.compose.scene.state.ItemLayout
 import com.rawsmusic.ui.settings.compose.scene.state.ItemLayoutCalculator
 import com.rawsmusic.ui.settings.compose.scene.state.lerpItemLayout
-import com.rawsmusic.ui.settings.powerlist.ListZoomIndex
-import com.rawsmusic.ui.settings.powerlist.ListZoomLevels
 
 /**
  * 纯 Compose 版本的列表项
@@ -50,7 +49,7 @@ fun ComposeTrackItem(
         )
     }
 
-    val targetLayout = remember(state.targetParams, density) {
+    val targetLayout = remember(state.targetParams, density, state.isTransitioning) {
         if (state.isTransitioning) {
             ItemLayoutCalculator.calculateListLayout(
                 params = state.targetParams,
@@ -72,13 +71,98 @@ fun ComposeTrackItem(
     }
 
     // 使用 Layout composable 实现自定义布局
+    val measurePolicy = MeasurePolicy { measurables, constraints ->
+        // 使用 renderLayout 的参数进行测量和布局
+        val rowWidth = renderLayout.rowWidth.coerceAtLeast(constraints.minWidth)
+        val rowHeight = renderLayout.rowHeight.coerceAtLeast(constraints.minHeight)
+
+        // 测量所有子元素
+        val placeables = measurables.mapIndexed { index, measurable ->
+            when (index) {
+                0 -> {
+                    // 封面
+                    measurable.measure(
+                        Constraints.fixed(
+                            width = renderLayout.coverSize.coerceAtLeast(1),
+                            height = renderLayout.coverSize.coerceAtLeast(1)
+                        )
+                    )
+                }
+                1 -> {
+                    // 标题
+                    measurable.measure(
+                        Constraints.fixedWidth(
+                            width = renderLayout.titleWidth.coerceAtLeast(1)
+                        )
+                    )
+                }
+                2 -> {
+                    // 第二行
+                    if (renderLayout.line2Visible) {
+                        measurable.measure(
+                            Constraints.fixedWidth(
+                                width = renderLayout.line2Width.coerceAtLeast(1)
+                            )
+                        )
+                    } else {
+                        measurable.measure(Constraints.fixed(0, 0))
+                    }
+                }
+                3 -> {
+                    // 元数据
+                    if (renderLayout.metaVisible && !renderLayout.metaInline) {
+                        measurable.measure(
+                            Constraints.fixedWidth(
+                                width = renderLayout.metaWidth.coerceAtLeast(1)
+                            )
+                        )
+                    } else {
+                        measurable.measure(Constraints.fixed(0, 0))
+                    }
+                }
+                else -> {
+                    measurable.measure(constraints)
+                }
+            }
+        }
+
+        layout(rowWidth, rowHeight) {
+            // 放置封面
+            placeables.getOrNull(0)?.placeRelative(
+                x = renderLayout.coverLeft,
+                y = renderLayout.coverTop
+            )
+
+            // 放置标题
+            placeables.getOrNull(1)?.placeRelative(
+                x = renderLayout.titleLeft,
+                y = renderLayout.titleTop
+            )
+
+            // 放置第二行
+            if (renderLayout.line2Visible) {
+                placeables.getOrNull(2)?.placeRelative(
+                    x = renderLayout.line2Left,
+                    y = renderLayout.line2Top
+                )
+            }
+
+            // 放置元数据
+            if (renderLayout.metaVisible && !renderLayout.metaInline) {
+                placeables.getOrNull(3)?.placeRelative(
+                    x = renderLayout.metaLeft,
+                    y = renderLayout.metaTop
+                )
+            }
+        }
+    }
+
     Layout(
         content = {
             // 封面
             TrackCover(
                 size = renderLayout.coverSize,
-                cornerRadius = renderLayout.cornerRadius,
-                modifier = Modifier.align(Alignment.Center)
+                cornerRadius = renderLayout.cornerRadius
             )
 
             // 标题
@@ -110,70 +194,7 @@ fun ComposeTrackItem(
             }
         },
         modifier = modifier,
-        measurePolicy = { measurables, constraints ->
-            // 使用 renderLayout 的参数进行测量和布局
-            val rowWidth = renderLayout.rowWidth.coerceAtLeast(constraints.minWidth)
-            val rowHeight = renderLayout.rowHeight.coerceAtLeast(constraints.minHeight)
-
-            // 测量封面
-            val coverPlaceable = measurables[0].measure(
-                androidx.compose.ui.unit.Constraints.fixed(
-                    width = renderLayout.coverSize,
-                    height = renderLayout.coverSize
-                )
-            )
-
-            // 测量标题
-            val titlePlaceable = measurables[1].measure(
-                androidx.compose.ui.unit.Constraints.fixedWidth(
-                    width = renderLayout.titleWidth
-                )
-            )
-
-            // 测量第二行
-            val line2Placeable = if (renderLayout.line2Visible && measurables.size > 2) {
-                measurables[2].measure(
-                    androidx.compose.ui.unit.Constraints.fixedWidth(
-                        width = renderLayout.line2Width
-                    )
-                )
-            } else null
-
-            // 测量元数据
-            val metaPlaceable = if (renderLayout.metaVisible && !renderLayout.metaInline && measurables.size > 3) {
-                measurables[3].measure(
-                    androidx.compose.ui.unit.Constraints.fixedWidth(
-                        width = renderLayout.metaWidth
-                    )
-                )
-            } else null
-
-            layout(rowWidth, rowHeight) {
-                // 放置封面
-                coverPlaceable.placeRelative(
-                    x = renderLayout.coverLeft,
-                    y = renderLayout.coverTop
-                )
-
-                // 放置标题
-                titlePlaceable.placeRelative(
-                    x = renderLayout.titleLeft,
-                    y = renderLayout.titleTop
-                )
-
-                // 放置第二行
-                line2Placeable?.placeRelative(
-                    x = renderLayout.line2Left,
-                    y = renderLayout.line2Top
-                )
-
-                // 放置元数据
-                metaPlaceable?.placeRelative(
-                    x = renderLayout.metaLeft,
-                    y = renderLayout.metaTop
-                )
-            }
-        }
+        measurePolicy = measurePolicy
     )
 }
 

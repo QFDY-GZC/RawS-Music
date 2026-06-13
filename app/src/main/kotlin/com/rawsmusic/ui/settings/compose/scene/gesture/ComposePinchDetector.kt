@@ -10,8 +10,8 @@ import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.unit.dp
 import com.rawsmusic.ui.settings.compose.scene.state.ComposeListState
-import com.rawsmusic.ui.settings.powerlist.ListZoomIndex
-import com.rawsmusic.ui.settings.powerlist.ListZoomLevels
+import com.rawsmusic.core.ui.widget.powerlist.ListZoomIndex
+import com.rawsmusic.core.ui.widget.powerlist.ListZoomLevels
 import kotlinx.coroutines.coroutineScope
 import kotlin.math.abs
 import kotlin.math.sqrt
@@ -187,8 +187,8 @@ class ComposePinchDetector(
                 state.gridZoomProgress > 0.3f
             }
             if (shouldConfirmGrid) {
-                // 切换到网格模式
-                state.switchColumns(4)
+                // 切换到网格模式 (TODO: 实现网格切换)
+                state.columns = 4
             }
             state.resetGestureState()
             return

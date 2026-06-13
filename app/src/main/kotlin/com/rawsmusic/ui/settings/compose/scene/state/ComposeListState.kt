@@ -5,10 +5,9 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import com.rawsmusic.ui.settings.powerlist.ListZoomIndex
-import com.rawsmusic.ui.settings.powerlist.ListZoomLevelKt
-import com.rawsmusic.ui.settings.powerlist.ListZoomLevels
-import com.rawsmusic.ui.settings.powerlist.ListZoomParams
+import com.rawsmusic.core.ui.widget.powerlist.ListZoomIndex
+import com.rawsmusic.core.ui.widget.powerlist.ListZoomLevels
+import com.rawsmusic.core.ui.widget.powerlist.ListZoomParams
 
 /**
  * 纯 Compose 版本的列表状态管理
@@ -60,7 +59,7 @@ class ComposeListState {
     /** 当前生效的参数（插值后） */
     val currentParams: ListZoomParams
         get() = if (isTransitioning) {
-            ListZoomLevelKt.lerpZoomParams(sourceParams, targetParams, transitionProgress)
+            lerpZoomParams(sourceParams, targetParams, transitionProgress)
         } else {
             sourceParams
         }
@@ -194,3 +193,30 @@ class ComposeListState {
         const val BOUNDARY_ELASTIC_DURATION_MS = 350L
     }
 }
+
+/**
+ * 在两个 ListZoomParams 之间插值
+ * 对应原版 ListZoomLevel.kt 中的 lerpZoomParams()
+ */
+private fun lerpZoomParams(from: ListZoomParams, to: ListZoomParams, fraction: Float): ListZoomParams {
+    val f = fraction.coerceIn(0f, 1f)
+    return ListZoomParams(
+        coverSizeDp = lerp(from.coverSizeDp, to.coverSizeDp, f),
+        rowHeightValue = lerp(from.rowHeightValue, to.rowHeightValue, f),
+        rowHeightIsSp = if (f < 0.5f) from.rowHeightIsSp else to.rowHeightIsSp,
+        coverMarginLeftDp = lerp(from.coverMarginLeftDp, to.coverMarginLeftDp, f),
+        coverMarginTopDp = lerp(from.coverMarginTopDp, to.coverMarginTopDp, f),
+        coverMarginBottomDp = lerp(from.coverMarginBottomDp, to.coverMarginBottomDp, f),
+        cornerRadiusTracksDp = lerp(from.cornerRadiusTracksDp, to.cornerRadiusTracksDp, f),
+        cornerRadiusAlbumsDp = lerp(from.cornerRadiusAlbumsDp, to.cornerRadiusAlbumsDp, f),
+        textMarginLeftDp = lerp(from.textMarginLeftDp, to.textMarginLeftDp, f),
+        textMarginRightDp = lerp(from.textMarginRightDp, to.textMarginRightDp, f),
+        line2Visible = if (f < 0.5f) from.line2Visible else to.line2Visible,
+        metaVisible = if (f < 0.5f) from.metaVisible else to.metaVisible,
+        titleTopOffsetDp = lerp(from.titleTopOffsetDp, to.titleTopOffsetDp, f),
+        metaInlineFraction = lerp(from.metaInlineFraction, to.metaInlineFraction, f),
+        textScale = lerp(from.textScale, to.textScale, f)
+    )
+}
+
+private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
