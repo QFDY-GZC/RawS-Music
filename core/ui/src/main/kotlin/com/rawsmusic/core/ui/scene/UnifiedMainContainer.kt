@@ -310,7 +310,8 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     private fun navigateHomeImmediate() {
-        navController.resetTo(NavScene.HOME)
+        // Compose 版本：直接切换到主页
+        composeSwitchToSceneSilent(NavScene.HOME)
     }
 
     fun isAtHome(): Boolean = composeCurrentScene == NavScene.HOME
@@ -451,7 +452,8 @@ class UnifiedMainContainer @JvmOverloads constructor(
     /** 是否正在过渡动画中 */
     fun isSceneTransitioning(): Boolean = composeIsTransitioning
 
-    val currentSceneFlow: kotlinx.coroutines.flow.StateFlow<NavScene> get() = navController.currentScene
+    val currentSceneFlow: kotlinx.coroutines.flow.StateFlow<NavScene> get() = _currentSceneFlow
+    private val _currentSceneFlow = kotlinx.coroutines.flow.MutableStateFlow(NavScene.HOME)
 
     fun onBackPressed(): Boolean {
         if (composeIsTransitioning || composeIsDraggingBack) return true
@@ -1866,11 +1868,9 @@ class UnifiedMainContainer @JvmOverloads constructor(
 
             // 动画完成
             composeCurrentScene = targetScene
+            _currentSceneFlow.value = targetScene
             composeIsTransitioning = false
             composeTransitionProgress = 0f
-
-            // 通知 View 系统
-            sceneController.switchToSceneSilent(targetScene, toPage)
         }
     }
 
@@ -1879,6 +1879,7 @@ class UnifiedMainContainer @JvmOverloads constructor(
      */
     fun composeSwitchToSceneSilent(targetScene: NavScene) {
         composeCurrentScene = targetScene
+        _currentSceneFlow.value = targetScene
         composeIsTransitioning = false
         composeTransitionProgress = 0f
 
