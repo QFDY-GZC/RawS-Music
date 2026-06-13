@@ -1626,8 +1626,69 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     private fun createFoldersPage(): FrameLayout {
-        return createListPage(NavScene.FOLDERS, "文件夹",
-            FolderRvAdapter(onFolderClick))
+        return createComposeFoldersPage()
+    }
+
+    /**
+     * Compose 版本的文件夹页
+     */
+    private fun createComposeFoldersPage(): FrameLayout {
+        val page = createPageContainer(NavScene.FOLDERS)
+        val composeView = ComposeView(context).apply {
+            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+            setContent {
+                ComposeFoldersPageContent()
+            }
+        }
+        page.addView(composeView)
+        return page
+    }
+
+    @Composable
+    private fun ComposeFoldersPageContent() {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ComposeColor(C.PAGE_BG))
+        ) {
+            // 标题栏
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = { navigateHome() },
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Text("←", fontSize = 20.sp, color = ComposeColor(C.TEXT_SECONDARY))
+                }
+                Text(
+                    text = "文件夹",
+                    color = ComposeColor(C.TEXT_PRIMARY),
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.size(44.dp))
+            }
+
+            // 占位内容
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "文件夹列表\n(待集成 FolderRvAdapter)",
+                    color = ComposeColor(C.TEXT_META),
+                    fontSize = 16.sp,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
     }
 
     private fun showSortDialog() {
@@ -1846,41 +1907,60 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     private fun createAlbumsPage(): FrameLayout {
+        return createComposeAlbumsPage()
+    }
+
+    /**
+     * Compose 版本的专辑页
+     */
+    private fun createComposeAlbumsPage(): FrameLayout {
         val page = createPageContainer(NavScene.ALBUMS)
-        page.setBackgroundColor(C.PAGE_BG)
-        val adapter = AlbumGridAdapter { album -> onAlbumItemClick?.invoke(album) }
-        val d = resources.displayMetrics.density
-        // 简单标题栏，无搜索框和返回键，背景透明
-        val header = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, (104 * d).toInt())
-            setBackgroundColor(Color.TRANSPARENT) // 完全透明
-            setPadding((16 * d).toInt(), (20 * d).toInt(), (16 * d).toInt(), 0)
-        }
-        header.addView(TextView(context).apply {
-            text = "专辑界面"
-            textSize = 18f
-            setTextColor(C.TEXT_PRIMARY)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            layoutParams = LinearLayout.LayoutParams(0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f)
-            gravity = Gravity.CENTER // 文字居中
-        })
-        page.addView(header)
-        val spanCount = 2
-        val recyclerView = RecyclerView(context).apply {
-            id = View.generateViewId()
-            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply {
-                topMargin = (104 * d).toInt()
+        val composeView = ComposeView(context).apply {
+            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+            setContent {
+                ComposeAlbumsPageContent()
             }
-            layoutManager = GridLayoutManager(context, spanCount)
-            addItemDecoration(GridSpacingItemDecoration(context, spanCount, 8f))
-            this.adapter = adapter
-            clipToPadding = false
-            setPadding(0, 0, 0, (180 * d).toInt())
         }
-        page.addView(recyclerView)
+        page.addView(composeView)
         return page
+    }
+
+    @Composable
+    private fun ComposeAlbumsPageContent() {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ComposeColor(C.PAGE_BG))
+        ) {
+            // 标题栏
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(104.dp)
+                    .padding(start = 16.dp, top = 20.dp, end = 16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "专辑界面",
+                    color = ComposeColor(C.TEXT_PRIMARY),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // 占位内容
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "专辑列表\n(待集成 AlbumGridAdapter)",
+                    color = ComposeColor(C.TEXT_META),
+                    fontSize = 16.sp,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
     }
 
     private fun createArtistsPage(): FrameLayout {
