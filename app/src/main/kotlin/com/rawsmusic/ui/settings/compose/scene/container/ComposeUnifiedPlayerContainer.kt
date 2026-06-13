@@ -77,15 +77,15 @@ fun ComposeUnifiedPlayerContainer(
             .fillMaxSize()
             .background(Color(0xFF121010))
             .pointerInput(Unit) {
-                detectHorizontalDragGestures { _, dragAmount ->
+                detectHorizontalDragGestures { change, dragAmount ->
                     // 手势切换场景
                     when {
                         // 向右滑动：PLAYER -> MAIN
-                        dragAmount.x > 100 && currentScene == PlayerScene.PLAYER -> {
+                        dragAmount > 100 && currentScene == PlayerScene.PLAYER -> {
                             transitionToScene(PlayerScene.MAIN)
                         }
                         // 向左滑动：MAIN -> PLAYER
-                        dragAmount.x < -100 && currentScene == PlayerScene.MAIN -> {
+                        dragAmount < -100 && currentScene == PlayerScene.MAIN -> {
                             transitionToScene(PlayerScene.PLAYER)
                         }
                     }
