@@ -648,17 +648,7 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     fun updateHomeCounts(songs: Int, albums: Int, artists: Int, folders: Int, playlists: Int) {
-        val homePage = pageCache[NavScene.HOME] ?: return
-        updateTileSubtitle(homePage, NavScene.SONGS.tag, "$songs 首歌曲")
-        updateTileSubtitle(homePage, NavScene.ALBUMS.tag, "$albums 张专辑")
-        updateTileSubtitle(homePage, NavScene.ARTISTS.tag, "$artists 位艺术家")
-        updateTileSubtitle(homePage, NavScene.FOLDERS.tag, "$folders 个文件夹")
-        updateTileSubtitle(homePage, NavScene.PLAYLISTS.tag, "$playlists 个歌单")
-    }
-
-    private fun updateTileSubtitle(page: FrameLayout, tag: String, text: String) {
-        val view = page.findViewWithTag<TextView>("tile_subtitle_$tag")
-        view?.text = text
+        // Compose 版本：数据由 Compose 状态自动管理
     }
 
     private fun createSongsPage(): FrameLayout {
