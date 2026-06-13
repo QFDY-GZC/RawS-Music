@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.rawsmusic.core.ui.widget.scene.AAItemView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content">
+
+    <com.rawsmusic.core.ui.widget.scene.PlayingMark
+        android:id="@+id/playing_mark"
+        android:layout_width="4dp"
+        android:layout_height="4dp"
+        android:visibility="gone"/>
+
+    <com.rawsmusic.core.ui.widget.scene.AAImageView
+        android:id="@+id/aa_image"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:layout_marginLeft="12dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="8dp"
+        android:scaleType="centerCrop"
+        android:cropToPadding="true"/>
+
+    <com.rawsmusic.core.ui.widget.scene.MarqueeFastTextView
+        android:id="@+id/title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"/>
+
+    <com.rawsmusic.core.ui.widget.scene.MarqueeFastTextView
+        android:id="@+id/line2"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"/>
+
+    <com.rawsmusic.core.ui.widget.scene.FastTextView
+        android:id="@+id/meta"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"/>
+
+    <com.rawsmusic.core.ui.widget.scene.FastCheckBoxOnly
+        android:id="@+id/select_box"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:button="@drawable/cb_select_icon"
+        android:background="@null"
+        android:visibility="gone"/>
+
+    <com.rawsmusic.core.ui.widget.scene.FastTextView
+        android:id="@+id/num"
+        android:layout_width="28sp"
+        android:layout_height="wrap_content"
+        android:visibility="gone"/>
+
+    <com.rawsmusic.core.ui.widget.scene.CatImage
+        android:id="@+id/cat_image"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:scaleType="centerCrop"
+        android:visibility="gone"/>
+
+    <com.rawsmusic.core.ui.widget.scene.DragHandler
+        android:id="@+id/drag_handler"
+        android:layout_width="24dp"
+        android:layout_height="match_parent"
+        android:visibility="gone"/>
+
+</com.rawsmusic.core.ui.widget.scene.AAItemView>
