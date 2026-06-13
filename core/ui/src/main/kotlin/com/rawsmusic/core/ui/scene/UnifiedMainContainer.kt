@@ -364,11 +364,11 @@ class UnifiedMainContainer @JvmOverloads constructor(
         navController.resetTo(NavScene.HOME)
     }
 
-    fun isAtHome(): Boolean = navController.currentScene.value == NavScene.HOME
+    fun isAtHome(): Boolean = composeCurrentScene == NavScene.HOME
 
-    fun getCurrentScene(): NavScene = navController.currentScene.value
+    fun getCurrentScene(): NavScene = composeCurrentScene
 
-    fun canNavigateBack(): Boolean = navController.canNavigateBack()
+    fun canNavigateBack(): Boolean = composeBackStack.size > 1
 
     private fun shouldUseSongsPowerListReturn(current: NavScene, target: NavScene): Boolean {
         return current == NavScene.SONGS && target == NavScene.HOME && songsPowerListView != null
