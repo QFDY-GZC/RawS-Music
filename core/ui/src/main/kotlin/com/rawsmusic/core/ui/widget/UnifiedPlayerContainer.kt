@@ -3169,6 +3169,111 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         }
     }
 
+    // ==================== Compose 主布局 ====================
+
+    /**
+     * 纯 Compose 主布局入口
+     * 替代 activity_main.xml 中 UnifiedPlayerContainer 内的所有子 View
+     *
+     * @param backdrop 共享的 LayerBackdrop，用于液态玻璃效果
+     * @param miniPlayerContent 迷你播放栏 Composable
+     * @param mainContent 主界面内容 Composable
+     * @param playerContent 播放页内容 Composable
+     * @param lyricContent 歌词页内容 Composable
+     * @param queueContent 队列页内容 Composable
+     * @param albumDetailContent 专辑详情内容 Composable
+     * @param effectsContent 音效面板内容 Composable
+     */
+    @Composable
+    fun ComposeMainLayout(
+        backdrop: com.kyant.backdrop.backdrops.LayerBackdrop? = null,
+        miniPlayerContent: @Composable () -> Unit = {},
+        mainContent: @Composable () -> Unit = {},
+        playerContent: @Composable () -> Unit = {},
+        lyricContent: @Composable () -> Unit = {},
+        queueContent: @Composable () -> Unit = {},
+        albumDetailContent: @Composable () -> Unit = {},
+        effectsContent: @Composable () -> Unit = {},
+        metadataDetailContent: @Composable () -> Unit = {},
+        fullCoverContent: @Composable () -> Unit = {}
+    ) {
+        val currentScene = composeCurrentScene
+        val isTransitioning = composeIsTransitioning
+        val transitionProgress = composeTransitionProgress
+
+        Box(modifier = Modifier.fillMaxSize()) {
+            // 背景层（所有场景共用）
+            // TODO: DynamicCoverBackgroundView → Compose
+
+            // 主界面层
+            if (currentScene == Scene.MAIN || isTransitioning) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            alpha = if (isTransitioning) 1f - transitionProgress else 1f
+                        }
+                ) {
+                    mainContent()
+                }
+            }
+
+            // 迷你播放栏（MAIN 场景显示）
+            if (currentScene == Scene.MAIN) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    miniPlayerContent()
+                }
+            }
+
+            // 播放页层
+            if (currentScene == Scene.PLAYER || isTransitioning) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            alpha = if (isTransitioning) transitionProgress else 1f
+                        }
+                ) {
+                    playerContent()
+                }
+            }
+
+            // 歌词页层
+            if (currentScene == Scene.LYRIC) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    lyricContent()
+                }
+            }
+
+            // 队列页层
+            if (currentScene == Scene.QUEUE) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    queueContent()
+                }
+            }
+
+            // 专辑详情层
+            if (currentScene == Scene.ALBUM_DETAIL) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    albumDetailContent()
+                }
+            }
+
+            // 音效面板层
+            if (currentScene == Scene.EFFECTS) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    effectsContent()
+                }
+            }
+
+            // 元数据详情层
+            metadataDetailContent()
+
+            // 全屏封面查看层
+            fullCoverContent()
+        }
+    }
+
     companion object {
         private const val EDGE_EXCLUSION_DP = 20f
         private const val LEFT_EDGE_ZONE_DP = 24f
