@@ -2434,6 +2434,142 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         lyricMainLayer = null
     }
 
+    // ==================== Compose 版本的手势处理方法 ====================
+
+    /** Compose 版本的封面拖拽状态 */
+    var composeIsCoverDragging by mutableStateOf(false)
+        private set
+
+    /** Compose 版本的封面上滑拖拽状态 */
+    var composeIsCoverSwipeUpDragging by mutableStateOf(false)
+        private set
+
+    /**
+     * Compose 版本的开始封面拖拽
+     * @param targetScene 目标场景
+     * @param scope CoroutineScope
+     */
+    fun composeStartCoverDrag(targetScene: Scene = Scene.MAIN, scope: kotlinx.coroutines.CoroutineScope) {
+        if (composeCurrentScene != Scene.PLAYER && composeCurrentScene != Scene.LYRIC) return
+        if (composeCurrentScene == targetScene) return
+        sceneAnimGeneration++
+        fromScene = composeCurrentScene
+        toScene = targetScene
+        composeTransitionProgress = 0f
+        composeIsTransitioning = true
+        composeIsCoverDragging = true
+    }
+
+    /**
+     * Compose 版本的更新封面拖拽进度
+     * @param ratio 0=PLAYER，1=MAIN
+     */
+    fun composeUpdateCoverDrag(ratio: Float) {
+        if (!composeIsCoverDragging) return
+        composeTransitionProgress = ratio.coerceIn(0f, 1f)
+        onTransitionProgress?.invoke(toScene, composeTransitionProgress)
+    }
+
+    /**
+     * Compose 版本的结束封面拖拽
+     * @param shouldClose 是否应关闭到目标场景
+     * @param duration 动画时长
+     * @param scope CoroutineScope
+     */
+    fun composeEndCoverDrag(
+        shouldClose: Boolean,
+        duration: Long = SCENE_ANIM_DURATION,
+        scope: kotlinx.coroutines.CoroutineScope
+    ) {
+        if (!composeIsCoverDragging) return
+        composeIsCoverDragging = false
+
+        val targetScene = if (shouldClose) toScene else fromScene
+        val endRatio = if (shouldClose) 1f else 0f
+        val startRatio = composeTransitionProgress
+
+        if (shouldClose) {
+            composeTransitionToScene(targetScene, duration, scope)
+        } else {
+            // 回弹
+            sceneAnimGeneration++
+            val gen = sceneAnimGeneration
+            scope.launch {
+                val animatable = Animatable(startRatio)
+                animatable.animateTo(
+                    targetValue = 0f,
+                    animationSpec = tween(duration.toInt())
+                ) {
+                    composeTransitionProgress = value
+                }
+                if (sceneAnimGeneration == gen) {
+                    composeIsTransitioning = false
+                }
+            }
+        }
+    }
+
+    /**
+     * Compose 版本的开始封面上滑拖拽
+     */
+    fun composeStartCoverSwipeUpDrag(
+        from: Scene = Scene.PLAYER,
+        to: Scene = Scene.LYRIC,
+        scope: kotlinx.coroutines.CoroutineScope
+    ) {
+        if (composeCurrentScene != from && composeCurrentScene != to) return
+        sceneAnimGeneration++
+        val actualFrom = composeCurrentScene
+        val actualTo = if (actualFrom == from) to else from
+        if (actualFrom == Scene.PLAYER && actualTo == Scene.LYRIC) onPreparePlayerToLyric?.invoke()
+        fromScene = actualFrom
+        toScene = actualTo
+        composeTransitionProgress = 0f
+        composeIsTransitioning = true
+        composeIsCoverSwipeUpDragging = true
+    }
+
+    /**
+     * Compose 版本的更新封面上滑拖拽进度
+     */
+    fun composeUpdateCoverSwipeUpDrag(ratio: Float) {
+        if (!composeIsCoverSwipeUpDragging) return
+        composeTransitionProgress = ratio.coerceIn(0f, 1f)
+        onTransitionProgress?.invoke(toScene, composeTransitionProgress)
+    }
+
+    /**
+     * Compose 版本的结束封面上滑拖拽
+     */
+    fun composeEndCoverSwipeUpDrag(
+        shouldOpen: Boolean,
+        duration: Long = SCENE_ANIM_DURATION,
+        scope: kotlinx.coroutines.CoroutineScope
+    ) {
+        if (!composeIsCoverSwipeUpDragging) return
+        composeIsCoverSwipeUpDragging = false
+
+        val targetScene = if (shouldOpen) toScene else fromScene
+        if (shouldOpen) {
+            composeTransitionToScene(targetScene, duration, scope)
+        } else {
+            sceneAnimGeneration++
+            val gen = sceneAnimGeneration
+            scope.launch {
+                val animatable = Animatable(composeTransitionProgress)
+                animatable.animateTo(
+                    targetValue = 0f,
+                    animationSpec = tween(duration.toInt())
+                ) {
+                    composeTransitionProgress = value
+                }
+                if (sceneAnimGeneration == gen) {
+                    composeIsTransitioning = false
+                }
+            }
+        }
+    }
+
     // ==================== Compose 版本的场景切换方法 ====================
 
     /**
