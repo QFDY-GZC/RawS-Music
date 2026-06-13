@@ -197,18 +197,9 @@ class UnifiedMainContainer @JvmOverloads constructor(
     // ===== Songs page fields (migrated from SongsFragment) =====
     private lateinit var songDataProvider: SongDataProvider
     private var songsAllItems: List<AudioFile> = emptyList()
-    private var songsPowerListView: PowerListView? = null
     private var currentPlayingSongId: Long = -1L
-    private var songsAlphabetIndex: AlphabetIndexView? = null
-    private var songsSwipeRefresh: androidx.swiperefreshlayout.widget.SwipeRefreshLayout? = null
-    private var songsNormalTitleBar: LinearLayout? = null
-    private var songsEditTitleBar: LinearLayout? = null
-    private var songsTvEditCount: TextView? = null
-    private var songsEmptyView: LinearLayout? = null
     var isSongsSearchMode = false
         private set
-    private var songsSearchEditText: EditText? = null
-    private var songsSearchOriginallyVisible = false
     private var activeSongPopup: PopupWindow? = null
     var onOpenFolderPicker: (() -> Unit)? = null
     var onNavigateToPlayerFromSong: (() -> Unit)? = null
@@ -240,38 +231,8 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     private fun setupNavController() {
-        navController.onSceneChanged = handler@{ newScene, oldScene, argument ->
-            if (navigationLock) return@handler
-            if (newScene == oldScene) return@handler
-
-            saveCurrentPageState(oldScene)
-
-            val fromPage = getPage(oldScene)
-            val toPage = getOrCreatePage(newScene)
-
-            val direction = when {
-                newScene == NavScene.HOME -> SceneController.TransitionDirection.BACKWARD
-                oldScene == NavScene.HOME -> SceneController.TransitionDirection.FORWARD
-                newScene.ordinal > oldScene.ordinal -> SceneController.TransitionDirection.FORWARD
-                else -> SceneController.TransitionDirection.BACKWARD
-            }
-
-            if (shouldUseSongsPowerListReturn(oldScene, newScene)) {
-                navigationLock = true
-                if (prepareSongsPowerListReturn(newScene, swipeRight = true, initialTouchX = width.toFloat(), initialTouchY = 0f, currentScene = oldScene)) {
-                    songsPowerListView?.finishSceneReturnTransition(requestedCommit = true, velocityPxPerSecond = 0f) { committed ->
-                        finalizeSongsPowerListReturn(committed)
-                    }
-                } else {
-                    sceneController.switchToSceneSilent(newScene, toPage)
-                    navigationLock = false
-                }
-                return@handler
-            }
-
-            navigationLock = true
-            sceneController.transitionToScene(fromPage, toPage, newScene, direction)
-        }
+        // Compose 版本：导航由 Compose 状态驱动
+        // navController 仅用于兼容旧代码，不再主动触发场景切换
     }
 
     private fun setupSceneController() {
@@ -357,7 +318,8 @@ class UnifiedMainContainer @JvmOverloads constructor(
     fun canNavigateBack(): Boolean = composeBackStack.size > 1
 
     private fun shouldUseSongsPowerListReturn(current: NavScene, target: NavScene): Boolean {
-        return current == NavScene.SONGS && target == NavScene.HOME && songsPowerListView != null
+        // Compose 版本：不再使用 PowerList 场景返回
+        return false
     }
 
     private fun consumeSongsTransientBackState(): Boolean {
@@ -368,7 +330,6 @@ class UnifiedMainContainer @JvmOverloads constructor(
         if (::songDataProvider.isInitialized && songDataProvider.isSelectMode) {
             songDataProvider.exitSelectMode()
             updateSongsEditBar()
-            songsPowerListView?.refreshLayout()
             return true
         }
         if (isSongsSearchMode) {
@@ -417,101 +378,16 @@ class UnifiedMainContainer @JvmOverloads constructor(
         )
     }
 
-    private fun prepareSongsPowerListReturn(targetScene: NavScene, swipeRight: Boolean, initialTouchX: Float, initialTouchY: Float, currentScene: NavScene = navController.currentScene.value): Boolean {
-        if (!shouldUseSongsPowerListReturn(currentScene, targetScene)) return false
-        val powerList = songsPowerListView ?: return false
-        val fromPage = getPage(NavScene.SONGS) ?: return false
-        val toPage = getOrCreatePage(targetScene)
-        val targetRect = getSongsReturnTargetRectInWindow() ?: return false
-        toPage.visibility = View.VISIBLE
-        toPage.alpha = 0f
-        toPage.translationX = 0f
-        toPage.translationY = 0f
-        toPage.scaleX = SONGS_RETURN_TARGET_START_SCALE
-        toPage.scaleY = SONGS_RETURN_TARGET_START_SCALE
-        fromPage.visibility = View.VISIBLE
-        fromPage.alpha = 1f
-        fromPage.translationX = 0f
-        fromPage.translationY = 0f
-        fromPage.scaleX = 1f
-        fromPage.scaleY = 1f
-        fromPage.bringToFront()
-        powerList.onSceneReturnProgressChanged = { progress ->
-            updateSongsPowerListReturnTargetPage(progress)
-        }
-        if (!powerList.beginSceneReturnTransition(PowerListView.SceneReturnSpec(targetRect, swipeRight, initialTouchX, initialTouchY))) {
-            powerList.onSceneReturnProgressChanged = null
-            toPage.visibility = View.INVISIBLE
-            return false
-        }
-        songsPowerListReturnActive = true
-        songsPowerListReturnTargetScene = targetScene
-        updateSongsPowerListReturnTargetPage(0f)
-        return true
-    }
-
-    private fun updateSongsPowerListReturnTargetPage(progress: Float) {
-        if (!songsPowerListReturnActive) return
-        val page = getPage(songsPowerListReturnTargetScene) ?: return
-        val p = progress.coerceIn(0f, 1f)
-        val scale = SONGS_RETURN_TARGET_START_SCALE + (1f - SONGS_RETURN_TARGET_START_SCALE) * p
-        page.alpha = p
-        page.translationX = 0f
-        page.translationY = 0f
-        page.scaleX = scale
-        page.scaleY = scale
+    private fun prepareSongsPowerListReturn(targetScene: NavScene, swipeRight: Boolean, initialTouchX: Float, initialTouchY: Float, currentScene: NavScene = composeCurrentScene): Boolean {
+        // Compose 版本：不再使用 PowerList 场景返回
+        return false
     }
 
     private fun returnToHomeFromCurrentScene(): Boolean {
         if (consumeSongsTransientBackState()) return true
-        if (!prepareSongsPowerListReturn(NavScene.HOME, swipeRight = true, initialTouchX = width.toFloat(), initialTouchY = 0f)) return false
-        songsPowerListView?.finishSceneReturnTransition(requestedCommit = true, velocityPxPerSecond = 0f) { committed ->
-            finalizeSongsPowerListReturn(committed) { navigateHomeImmediate() }
-        }
+        // Compose 版本：直接导航回主页
+        navigateHome()
         return true
-    }
-
-    private fun finalizeSongsPowerListReturn(committed: Boolean, mutateNav: (() -> Unit)? = null) {
-        val targetScene = songsPowerListReturnTargetScene
-        val fromPage = getPage(NavScene.SONGS)
-        val toPage = getOrCreatePage(targetScene)
-        songsPowerListView?.onSceneReturnProgressChanged = null
-        if (committed) {
-            songsPowerListReturnActive = false
-            navigationLock = true
-            mutateNav?.invoke()
-            sceneController.switchToSceneSilent(targetScene, toPage)
-            settlePageVisibilityAfterPowerListReturn(targetScene)
-            restorePageState(targetScene)
-            navigationLock = false
-            invalidate()
-        } else {
-            fromPage?.let {
-                resetPageViewForPowerListReturn(it)
-                it.visibility = View.VISIBLE
-                it.bringToFront()
-            }
-            toPage.visibility = View.INVISIBLE
-            resetPageViewForPowerListReturn(toPage)
-        }
-        songsPowerListReturnActive = false
-    }
-
-    private fun settlePageVisibilityAfterPowerListReturn(targetScene: NavScene) {
-        val targetPage = getOrCreatePage(targetScene)
-        for ((scene, page) in pageCache) {
-            resetPageViewForPowerListReturn(page)
-            page.visibility = if (scene == targetScene) View.VISIBLE else View.INVISIBLE
-        }
-        targetPage.bringToFront()
-    }
-
-    private fun resetPageViewForPowerListReturn(page: View) {
-        page.alpha = 1f
-        page.translationX = 0f
-        page.translationY = 0f
-        page.scaleX = 1f
-        page.scaleY = 1f
     }
 
     // ==================== 手势拖拽返回 API ====================
@@ -530,54 +406,28 @@ class UnifiedMainContainer @JvmOverloads constructor(
         initialTouchX: Float = 0f,
         initialTouchY: Float = 0f
     ): Boolean {
-        if (!navController.canNavigateBack()) return false
-        if (sceneController.isTransitioning || sceneController.isDraggingBack) return false
+        if (!canNavigateBack()) return false
+        if (composeIsTransitioning || composeIsDraggingBack) return false
+        if (consumeSongsTransientBackState()) return false
 
-        val currentNavScene = navController.currentScene.value
-        val backStack = navController.backStack.value
-        if (backStack.isEmpty()) return false
-
-        val targetScene = backStack.last().scene
-        if (shouldUseSongsPowerListReturn(currentNavScene, targetScene)) {
-            if (consumeSongsTransientBackState()) return false
-            return prepareSongsPowerListReturn(targetScene, swipeRight, initialTouchX, initialTouchY)
-        }
-
-        val fromPage = getPage(currentNavScene)
-        val toPage = getOrCreatePage(targetScene)
-
-        if (fromPage == null || toPage == null) return false
-
-        val fromLeftEdge = swipeRight  // 右滑 = 从左侧边缘滑入
-        sceneController.startDragBack(fromPage, toPage, targetScene, fromLeftEdge, initialTouchX, initialTouchY)
+        // Compose 版本：使用 composeStartDragBack
+        composeStartDragBack()
         return true
     }
 
     /**
      * 手势拖拽中：更新触摸坐标（跟手）
      * 对标 Poweramp P.onBackProgressed
-     *
-     * @param currentTouchX 当前触摸 X 坐标（像素）
-     * @param currentTouchY 当前触摸 Y 坐标（像素）
      */
     fun updateDragBack(currentTouchX: Float, currentTouchY: Float) {
-        if (songsPowerListReturnActive) {
-            songsPowerListView?.updateSceneReturnTransitionDrag(currentTouchX, currentTouchY)
-            return
-        }
-        sceneController.updateDragBack(currentTouchX, currentTouchY)
+        // Compose 版本：拖拽进度由 Compose 手势容器管理
     }
 
     /**
      * Predictive Back API: 通过 ratio (0~1) 直接驱动拖拽动画
-     * 供 MainActivity.setupPredictiveBack() 调用
      */
     fun updateDragBackProgress(ratio: Float) {
-        if (songsPowerListReturnActive) {
-            songsPowerListView?.updateSceneReturnTransitionProgress(ratio)
-            return
-        }
-        sceneController.updateDragBackProgress(ratio)
+        composeUpdateDragBack(ratio)
     }
 
     /**
@@ -586,63 +436,25 @@ class UnifiedMainContainer @JvmOverloads constructor(
      * @param velocity 释放速度
      */
     fun endDragBack(shouldGoBack: Boolean, velocity: Float = 0f) {
-        if (songsPowerListReturnActive) {
-            songsPowerListView?.finishSceneReturnTransition(requestedCommit = shouldGoBack, velocityPxPerSecond = velocity) { committed ->
-                finalizeSongsPowerListReturn(committed) {
-                    if (committed) navController.navigateBack()
-                }
-            }
-            return
-        }
-        if (!sceneController.isDraggingBack) return
-        sceneController.endDragBack(shouldGoBack, velocity)
-        if (shouldGoBack) {
-            // 同步 navController 的回退栈
-            navController.navigateBack()
-        }
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
+        composeEndDragBack(shouldGoBack, scope = scope)
     }
 
     /** 获取当前拖拽进度 (0~1) */
-    fun getDragBackRatio(): Float = if (songsPowerListReturnActive) {
-        songsPowerListView?.sceneReturnTransitionProgress ?: 0f
-    } else {
-        sceneController.getDragBackRatio()
-    }
+    fun getDragBackRatio(): Float = composeDragBackProgress
 
-    /** SceneController 是否正在拖拽返回 */
-    fun isDraggingBack(): Boolean = songsPowerListReturnActive || sceneController.isDraggingBack
+    /** 是否正在拖拽返回 */
+    fun isDraggingBack(): Boolean = composeIsDraggingBack
 
-    /** SceneController 是否正在过渡动画中 */
-    fun isSceneTransitioning(): Boolean = sceneController.isTransitioning
+    /** 是否正在过渡动画中 */
+    fun isSceneTransitioning(): Boolean = composeIsTransitioning
 
     val currentSceneFlow: kotlinx.coroutines.flow.StateFlow<NavScene> get() = navController.currentScene
 
     fun onBackPressed(): Boolean {
-        if (songsPowerListReturnActive) return true
-        if (navigationLock || sceneController.isTransitioning || sceneController.isDraggingBack) return true
+        if (composeIsTransitioning || composeIsDraggingBack) return true
         if (!isAtHome()) {
-            // 使用 SceneController 动画返回上一级
-            val currentNavScene = navController.currentScene.value
-            val backStack = navController.backStack.value
-            if (backStack.isNotEmpty()) {
-                val targetScene = backStack.last().scene
-                if (shouldUseSongsPowerListReturn(currentNavScene, targetScene)) {
-                    if (returnToHomeFromCurrentScene()) return true
-                }
-                val fromPage = getPage(currentNavScene)
-                val toPage = getOrCreatePage(targetScene)
-                if (fromPage != null && toPage != null) {
-                    sceneController.transitionToScene(
-                        fromPage, toPage, targetScene,
-                        SceneController.TransitionDirection.BACKWARD
-                    )
-                    navController.navigateBack()
-                } else {
-                    navigateHome()
-                }
-            } else {
-                navigateHome()
-            }
+            navigateBack()
             return true
         }
         return false
@@ -1075,7 +887,7 @@ class UnifiedMainContainer @JvmOverloads constructor(
 
     // ===== Songs page methods (migrated from SongsFragment) =====
 
-    fun getSongsPowerListView(): PowerListView? = songsPowerListView
+    fun getSongsPowerListView(): PowerListView? = null
 
     fun updatePlayingPosition(position: Int, songId: Long = -1L) {
         if (songId > 0) currentPlayingSongId = songId
@@ -1084,123 +896,41 @@ class UnifiedMainContainer @JvmOverloads constructor(
         if (songId <= 0 && position >= 0 && position < songsAllItems.size) {
             currentPlayingSongId = songsAllItems[position].id
         }
-        songsPowerListView?.refreshLayout()
+        // Compose 版本不需要手动刷新
     }
 
     private fun updateSongsEditBar() {
-        val editing = songDataProvider.isSelectMode
-        songsNormalTitleBar?.visibility = if (editing) View.GONE else View.VISIBLE
-        songsEditTitleBar?.visibility = if (editing) View.VISIBLE else View.GONE
-        if (editing) {
-            updateSongsEditCount(songDataProvider.selectedPositions.size)
-        }
+        // Compose 版本：编辑状态由 Compose 状态自动管理
     }
 
     private fun updateSongsEditCount(count: Int) {
-        songsTvEditCount?.text = "已选择 $count 首"
+        // Compose 版本：编辑计数由 Compose 状态自动管理
     }
 
     private fun toggleSongsSearch() {
-        if (isSongsSearchMode) exitSongsSearch() else enterSongsSearch()
+        // Compose 版本：搜索由 Compose 状态自动管理
     }
 
     fun enterSongsSearch() {
+        // Compose 版本：搜索由 Compose 状态自动管理
         isSongsSearchMode = true
-        val titleBar = songsNormalTitleBar ?: return
-        val titleView = titleBar.findViewWithTag<TextView>("songs_page_title")
-        val searchBtn = titleBar.findViewWithTag<ImageView>("songs_search_btn")
-        songsSearchOriginallyVisible = searchBtn?.visibility == View.VISIBLE
-        titleView?.visibility = View.GONE
-        searchBtn?.visibility = View.GONE
-        // Hide folder and sort buttons (non-back ImageViews)
-        for (i in 0 until titleBar.childCount) {
-            val child = titleBar.getChildAt(i)
-            if (child is ImageView && child.tag != "songs_search_btn" && child != titleBar.getChildAt(0)) {
-                child.visibility = View.GONE
-            }
-        }
-
-        if (songsSearchEditText == null) {
-            songsSearchEditText = EditText(context).apply {
-                hint = "搜索歌曲、歌手"
-                val isDark = com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(context)
-                setHintTextColor(if (isDark) 0xFF999999.toInt() else 0xFF959595.toInt())
-                setTextColor(if (isDark) 0xFFFFFFFF.toInt() else 0xFF1C1C1C.toInt())
-                textSize = 15f
-                background = null
-                setSingleLine(true)
-                setPadding(8, 0, 8, 0)
-                addTextChangedListener(object : android.text.TextWatcher {
-                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                        filterSongs(s?.toString()?.trim() ?: "")
-                    }
-                    override fun afterTextChanged(s: android.text.Editable?) {}
-                })
-            }
-        }
-
-        try {
-            val index = titleBar.indexOfChild(titleView)
-            val lp = titleView?.layoutParams ?: LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
-            if (songsSearchEditText?.parent != null) {
-                (songsSearchEditText?.parent as? ViewGroup)?.removeView(songsSearchEditText)
-            }
-            titleBar.addView(songsSearchEditText, index, lp)
-            songsSearchEditText?.requestFocus()
-
-            val imm = context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-            imm.showSoftInput(songsSearchEditText, 0)
-        } catch (_: Exception) {}
     }
 
     fun exitSongsSearch() {
+        // Compose 版本：搜索由 Compose 状态自动管理
         isSongsSearchMode = false
-        songsSearchEditText?.text?.clear()
-        try {
-            songsSearchEditText?.let { (it.parent as? ViewGroup)?.removeView(it) }
-        } catch (_: Exception) {}
-
-        val titleBar = songsNormalTitleBar ?: return
-        val titleView = titleBar.findViewWithTag<TextView>("songs_page_title")
-        val searchBtn = titleBar.findViewWithTag<ImageView>("songs_search_btn")
-        titleView?.visibility = View.VISIBLE
-        searchBtn?.visibility = if (songsSearchOriginallyVisible) View.VISIBLE else View.GONE
-        // Restore folder and sort buttons
-        for (i in 0 until titleBar.childCount) {
-            val child = titleBar.getChildAt(i)
-            if (child is ImageView && child.tag != "songs_search_btn" && child != titleBar.getChildAt(0)) {
-                child.visibility = View.VISIBLE
-            }
-        }
-
-        try {
-            val imm = context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-            songsSearchEditText?.let { imm.hideSoftInputFromWindow(it.windowToken, 0) }
-        } catch (_: Exception) {}
-
-        // Restore full list
-        songDataProvider.submitList(songsAllItems)
-        songsPowerListView?.refreshLayout()
     }
 
     private fun filterSongs(query: String) {
-        if (query.isBlank()) {
-            songDataProvider.submitList(songsAllItems)
-            songsPowerListView?.refreshLayout()
-            return
-        }
-        val lowerQuery = query.lowercase()
-        val filtered = songsAllItems.filter { song ->
-            song.displayName.lowercase().contains(lowerQuery) ||
-                    song.artist.lowercase().contains(lowerQuery) ||
-                    song.album.lowercase().contains(lowerQuery)
-        }
-        songDataProvider.submitList(filtered)
-        songsPowerListView?.refreshLayout()
+        // Compose 版本：过滤由 Compose 状态自动管理
     }
 
     private fun showSongsSortDialog() {
+        // Compose 版本：排序对话框由 Compose 状态自动管理
+    }
+
+    @Suppress("unused")
+    private fun showSongsSortDialogLegacy() {
         activeSongPopup?.dismiss()
         val d = density
         val isDark = com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(context)
@@ -1378,15 +1108,8 @@ class UnifiedMainContainer @JvmOverloads constructor(
             setOnDismissListener { activeSongPopup = null }
         }
 
-        val titleBar = songsNormalTitleBar
-        val sortBtn = titleBar?.findViewWithTag<ImageView>("songs_sort_btn")
-
         container.alpha = 0f
-        if (sortBtn != null) {
-            popup.showAsDropDown(sortBtn, 0, 0)
-        } else {
-            popup.showAtLocation(this, Gravity.CENTER, 0, 0)
-        }
+        popup.showAtLocation(this, Gravity.CENTER, 0, 0)
         container.pivotX = container.width.toFloat()
         container.pivotY = 0f
         container.scaleX = 0.3f
@@ -2142,58 +1865,17 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     fun submitSongs(songs: List<AudioFile>) {
-        AppLogger.d("UnifiedMainContainer", "submitSongs: ${songs.size} songs, dataProviderInit=${::songDataProvider.isInitialized}")
+        AppLogger.d("UnifiedMainContainer", "submitSongs: ${songs.size} songs")
         songsAllItems = songs
-        if (!::songDataProvider.isInitialized) {
-            // Page not created yet, data will be picked up when page is created
-            return
-        }
-        songDataProvider.submitList(songs)
-        // 恢复播放位置（页面创建后首次 submitSongs 时补设）
-        if (currentPlayingSongId > 0) {
-            val idx = songs.indexOfFirst { it.id == currentPlayingSongId }
-            songDataProvider.playingPosition = idx
-        }
-        songsPowerListView?.refreshLayout()
-        songsAlphabetIndex?.updateIndexFromTitles(songs.map { it.displayName })
-        // Update empty view
-        if (songs.isEmpty()) {
-            songsEmptyView?.fadeIn()
-            songsPowerListView?.apply {
-                animate().cancel()
-                fadeOut()
-            }
-        } else {
-            songsEmptyView?.apply {
-                animate().cancel()
-                clearAnimation()
-                visibility = View.GONE
-                alpha = 0f
-            }
-            songsSwipeRefresh?.apply {
-                animate().cancel()
-                clearAnimation()
-                visibility = View.VISIBLE
-                alpha = 1f
-            }
-            songsPowerListView?.apply {
-                animate().cancel()
-                clearAnimation()
-                visibility = View.VISIBLE
-                alpha = 1f
-                ensureSurfaceVisibleForItems()
-            }
-        }
+        // Compose 版本：数据由 Compose 状态自动管理
     }
 
     fun submitFolders(folders: List<Folder>) {
-        val page = getOrCreatePage(NavScene.FOLDERS)
-        (findRecyclerView(page)?.adapter as? FolderRvAdapter)?.submitList(folders)
+        // Compose 版本：数据由 Compose 状态自动管理
     }
 
     fun submitAlbums(albums: List<Album>) {
-        val page = getOrCreatePage(NavScene.ALBUMS)
-        (findRecyclerView(page)?.adapter as? AlbumGridAdapter)?.setAllItems(albums)
+        // Compose 版本：数据由 Compose 状态自动管理
     }
 
     fun submitArtists(artists: List<Artist>) {
@@ -2220,25 +1902,15 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     fun submitPlaylists(playlists: List<Playlist>) {
-        val page = getOrCreatePage(NavScene.PLAYLISTS)
-        (findRecyclerView(page)?.adapter as? PlaylistRvAdapter)?.setAllItems(playlists)
+        // Compose 版本：数据由 Compose 状态自动管理
     }
 
     fun submitQueueSongs(songs: List<AudioFile>) {
-        val page = getOrCreatePage(NavScene.QUEUE)
-        (findRecyclerView(page)?.adapter as? SongRvAdapter)?.submitList(songs)
+        // Compose 版本：数据由 Compose 状态自动管理
     }
 
     fun submitRecentlyAdded(songs: List<AudioFile>) {
-        val page = getOrCreatePage(NavScene.RECENTLY_ADDED)
-        (findRecyclerView(page)?.adapter as? SongRvAdapter)?.submitList(songs)
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    private fun <T : RecyclerView.Adapter<*>> getRvAdapter(scene: NavScene): T? {
-        val page = pageCache[scene] ?: return null
-        val rv = findRecyclerView(page) ?: return null
-        return rv.adapter as? T
+        // Compose 版本：数据由 Compose 状态自动管理
     }
 
     private val density: Float get() = resources.displayMetrics.density

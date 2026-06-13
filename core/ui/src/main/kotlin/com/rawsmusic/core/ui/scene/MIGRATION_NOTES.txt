@@ -1,0 +1,152 @@
+# UnifiedMainContainer View→Compose 迁移记录
+
+## 1. songsPowerListReturn (歌曲列表 PowerListView 场景返回手势) [已清理]
+
+### 已删除的属性
+- songsPowerListReturnActive: Boolean = false  // 是否正在 PowerList 场景返回
+- songsPowerListReturnTargetScene: NavScene = NavScene.HOME  // 返回目标场景
+- songsPowerListView: PowerListView? = null
+- songsAlphabetIndex: AlphabetIndexView? = null
+- songsSwipeRefresh: SwipeRefreshLayout? = null
+- songsNormalTitleBar: LinearLayout? = null
+- songsEditTitleBar: LinearLayout? = null
+- songsTvEditCount: TextView? = null
+- songsEmptyView: LinearLayout? = null
+- songsSearchEditText: EditText? = null
+- songsSearchOriginallyVisible: Boolean = false
+
+### 已改为 Compose 的方法
+- shouldUseSongsPowerListReturn() -> return false
+- prepareSongsPowerListReturn() -> return false
+- returnToHomeFromCurrentScene() -> navigateHome()
+- startDragBack() -> composeStartDragBack()
+- updateDragBack() -> 空实现
+- updateDragBackProgress() -> composeUpdateDragBack()
+- endDragBack() -> composeEndDragBack()
+- getDragBackRatio() -> composeDragBackProgress
+- isDraggingBack() -> composeIsDraggingBack
+- isSceneTransitioning() -> composeIsTransitioning
+- onBackPressed() -> navigateBack()
+- setupNavController() -> 空实现
+
+### 已改为 Compose 的数据方法
+- submitSongs() -> 仅保存数据，不操作 View
+- submitFolders() -> 空实现
+- submitAlbums() -> 空实现
+- submitPlaylists() -> 空实现
+- submitQueueSongs() -> 空实现
+- submitRecentlyAdded() -> 空实现
+- getSongsPowerListView() -> return null
+- updatePlayingPosition() -> 仅更新数据
+- updateSongsEditBar() -> 空实现
+- updateSongsEditCount() -> 空实现
+- enterSongsSearch() -> 仅设置状态
+- exitSongsSearch() -> 仅设置状态
+- filterSongs() -> 空实现
+- showSongsSortDialog() -> 空实现
+- 用途: 判断是否应该使用 PowerList 场景返回动画
+
+### 方法: prepareSongsPowerListReturn(targetScene, swipeRight, initialTouchX, initialTouchY, currentScene)
+- songsPowerListReturnActive = true
+- songsPowerListReturnTargetScene = targetScene
+- songsPowerListView?.onSceneReturnProgressChanged = 回调 (更新 coverAlpha)
+- 返回 Boolean: 是否成功准备
+
+### 方法: startDragBack(fromLeftEdge, initialTouchX, initialTouchY)
+- 如果 songsPowerListReturnActive: songsPowerListView?.updateSceneReturnTransitionDrag(currentTouchX, currentTouchY)
+- 否则: sceneController.startDragBack(...)
+
+### 方法: updateDragBack(currentTouchX, currentTouchY)
+- 如果 songsPowerListReturnActive: songsPowerListView?.updateSceneReturnTransitionDrag(currentTouchX, currentTouchY)
+- 否则: sceneController.updateDragBack(currentTouchX, currentTouchY)
+
+### 方法: updateDragBackProgress(ratio)
+- 如果 songsPowerListReturnActive: songsPowerListView?.updateSceneReturnTransitionProgress(ratio)
+- 否则: sceneController.updateDragBackProgress(ratio)
+
+### 方法: endDragBack(shouldGoBack, velocity)
+- 如果 songsPowerListReturnActive:
+  - songsPowerListView?.finishSceneReturnTransition(requestedCommit, velocity) { committed -> finalizeSongsPowerListReturn(committed) { navController.navigateBack() } }
+- 否则:
+  - sceneController.endDragBack(shouldGoBack, velocity)
+  - 如果 shouldGoBack: navController.navigateBack()
+
+### 方法: getDragBackRatio()
+- 如果 songsPowerListReturnActive: songsPowerListView?.sceneReturnTransitionProgress ?: 0f
+- 否则: sceneController.getDragBackRatio()
+
+### 方法: isDraggingBack()
+- 返回: songsPowerListReturnActive || sceneController.isDraggingBack
+
+### 方法: finalizeSongsPowerListReturn(committed, onComplete)
+- songsPowerListView?.onSceneReturnProgressChanged = null
+- 如果 committed:
+  - switchToSceneSilent(targetScene)
+  - songsPowerListReturnActive = false
+  - onComplete?.invoke()
+- 否则:
+  - songsPowerListReturnActive = false
+  - onComplete?.invoke()
+
+### 方法: returnToHomeFromCurrentScene()
+- 条件: currentScene == SONGS && songsPowerListView != null
+- prepareSongsPowerListReturn(HOME, swipeRight=false, ...)
+- songsPowerListView?.finishSceneReturnTransition(requestedCommit=true) { committed -> finalizeSongsPowerListReturn(committed) }
+- 返回 true
+
+---
+
+## 2. 歌曲列表 View 属性 (已删除)
+
+- songsPowerListView: PowerListView? = null
+- songsAlphabetIndex: AlphabetIndexView? = null
+- songsSwipeRefresh: SwipeRefreshLayout? = null
+- songsNormalTitleBar: LinearLayout? = null
+- songsEditTitleBar: LinearLayout? = null
+- songsTvEditCount: TextView? = null
+- songsEmptyView: LinearLayout? = null
+- songsSearchEditText: EditText? = null
+- songsSearchOriginallyVisible: Boolean = false
+
+---
+
+## 3. View 导航系统 (仍保留但部分方法已改为 Compose)
+
+- navController: SceneNavController
+- sceneController: SceneController(this)
+
+### 已改为 Compose 的方法:
+- navigateTo() -> composeNavigateToScene()
+- switchToScene() -> composeSwitchToSceneSilent()
+- navigateBack() -> composeNavigateToScene(previousScene)
+- navigateHome() -> composeBackToHome()
+- isAtHome() -> composeCurrentScene == HOME
+- getCurrentScene() -> composeCurrentScene
+- canNavigateBack() -> composeBackStack.size > 1
+- getDragBackRatio() -> composeDragBackProgress
+- isDraggingBack() -> composeIsDraggingBack
+- hideAllPagesExcept() -> 空实现
+- setupSceneController() -> 空实现
+- saveCurrentPageState() -> 空实现
+- restorePageState() -> 空实现
+
+### 仍使用 View 导航的方法 (需要后续清理):
+- setupNavController() 中的 navController.onSceneChanged 回调
+- prepareSongsPowerListReturn() - 使用 sceneController
+- startDragBack() / updateDragBack() / endDragBack() - 使用 sceneController
+- returnToHomeFromCurrentScene() - 使用 songsPowerListView
+
+---
+
+## 4. Compose 版本对应关系
+
+| View 版本 | Compose 版本 |
+|-----------|-------------|
+| sceneController.transitionToScene() | composeNavigateToScene() + Animatable |
+| sceneController.switchToSceneSilent() | composeSwitchToSceneSilent() |
+| sceneController.startDragBack() | composeStartDragBack() |
+| sceneController.updateDragBackProgress() | composeUpdateDragBack() |
+| sceneController.endDragBack() | composeEndDragBack() |
+| songsPowerListView.sceneReturnTransition | 需要 Compose 版实现 |
+| navController.backStack | composeBackStack |
+| navController.currentScene | composeCurrentScene |
