@@ -26,6 +26,15 @@ import androidx.compose.runtime.setValue
 import com.rawsmusic.core.ui.util.AdaptivePadTransformation
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import kotlin.math.abs
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.consumeAllChanges
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 
 /**
  * Poweramp 模式的统一场景容器
@@ -3066,6 +3075,97 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         composeTransitionProgress = 0f
         if (oldScene != targetScene) {
             onSceneChanged?.invoke(targetScene, oldScene)
+        }
+    }
+
+    // ==================== Compose UI 组件 ====================
+
+    /**
+     * Compose 版本的场景导航宿主
+     * 管理播放器场景切换 (MAIN/PLAYER/LYRIC/QUEUE/ALBUM_DETAIL/EFFECTS)
+     */
+    @Composable
+    fun ComposePlayerNavHost(
+        modifier: Modifier = Modifier,
+        sceneContent: @Composable (Scene) -> Unit
+    ) {
+        val currentScene = composeCurrentScene
+        val isTransitioning = composeIsTransitioning
+        val transitionProgress = composeTransitionProgress
+
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    // 过渡时的缩放效果
+                    if (isTransitioning) {
+                        val scale = 1f - (transitionProgress * 0.05f)
+                        scaleX = scale
+                        scaleY = scale
+                    }
+                }
+        ) {
+            sceneContent(currentScene)
+        }
+    }
+
+    /**
+     * Compose 版本的封面拖拽容器
+     * 支持上下拖拽切换 PLAYER/LYRIC 场景
+     */
+    @Composable
+    fun ComposeCoverDragContainer(
+        modifier: Modifier = Modifier,
+        content: @Composable () -> Unit
+    ) {
+        val scope = rememberCoroutineScope()
+        val isDragging = composeIsCoverDragging
+        val isSwipeUpDragging = composeIsCoverSwipeUpDragging
+        val progress = composeTransitionProgress
+
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    if (isDragging || isSwipeUpDragging) {
+                        // 拖拽时的视觉反馈
+                        val scale = 1f - (progress * 0.02f)
+                        scaleX = scale
+                        scaleY = scale
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectVerticalDragGestures(
+                        onDragStart = { offset ->
+                            // 根据起始位置判断是下拉还是上滑
+                            if (offset.y < size.height / 2) {
+                                composeStartCoverDrag(Scene.MAIN, scope)
+                            } else {
+                                composeStartCoverSwipeUpDrag(Scene.PLAYER, Scene.LYRIC, scope)
+                            }
+                        },
+                        onVerticalDrag = { change, dragAmount ->
+                            change.consume()
+                            val ratio = (dragAmount / size.height).coerceIn(0f, 1f)
+                            if (isDragging) {
+                                composeUpdateCoverDrag(ratio)
+                            } else if (isSwipeUpDragging) {
+                                composeUpdateCoverSwipeUpDrag(ratio)
+                            }
+                        },
+                        onDragEnd = {
+                            if (isDragging) {
+                                val shouldClose = progress > 0.3f
+                                composeEndCoverDrag(shouldClose, scope = scope)
+                            } else if (isSwipeUpDragging) {
+                                val shouldOpen = progress > 0.3f
+                                composeEndCoverSwipeUpDrag(shouldOpen, scope = scope)
+                            }
+                        }
+                    )
+                }
+        ) {
+            content()
         }
     }
 
