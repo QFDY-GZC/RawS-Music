@@ -27,7 +27,13 @@ import io.github.proify.lyricon.lyric.view.RawsLyricView
 import io.github.proify.lyricon.lyric.view.PlaceholderFormat
 import io.github.proify.lyricon.lyric.model.interfaces.IRichLyricLine
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import com.rawsmusic.core.ui.widget.ComposeMiniPlayer
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.activity.viewModels
@@ -1706,16 +1712,31 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         lyricPlayerView.updateAnchorOffset(anchorOffset)
     }
 
+    // Compose 播放栏状态
+    private var miniPlayerTitle by mutableStateOf("")
+    private var miniPlayerArtist by mutableStateOf("")
+    private var miniPlayerIsPlaying by mutableStateOf(false)
+    private var miniPlayerProgress by mutableFloatStateOf(0f)
+    private var miniPlayerCoverPath by mutableStateOf<String?>(null)
+
     private fun setupMiniPlayerBar() {
-        binding.miniPlayerBar.apply {
+        val composeView = binding.miniPlayerBar as androidx.compose.ui.platform.ComposeView
+        composeView.apply {
             visibility = if (unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.MAIN) View.VISIBLE else View.GONE
             alpha = if (visibility == View.VISIBLE) 1f else 0f
-            isClickable = true
-            isFocusable = true
-            onBarClick = { openPlayPageWithSharedElement() }
-            onPlayPauseClick = { playerController?.playPause() }
-            onPreviousClick = { playerController?.previous() }
-            onNextClick = { playerController?.next() }
+            setContent {
+                ComposeMiniPlayer(
+                    title = miniPlayerTitle,
+                    artist = miniPlayerArtist,
+                    isPlaying = miniPlayerIsPlaying,
+                    progress = miniPlayerProgress,
+                    coverPath = miniPlayerCoverPath,
+                    onClick = { openPlayPageWithSharedElement() },
+                    onPlayPause = { playerController?.playPause() },
+                    onSkipPrevious = { playerController?.previous() },
+                    onSkipNext = { playerController?.next() }
+                )
+            }
         }
         updateMiniPlayerBarSong()
         updateMiniPlayerBarPlayback()
@@ -1724,23 +1745,19 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
 
     private fun updateMiniPlayerBarSong() {
         val song = playerController?.currentSong?.value
-        val coverUri = song?.let { coverUriResolver.resolveCoverUri(it).ifBlank { it.albumArtPath ?: "" } }
-        binding.miniPlayerBar.setSongInfo(
-            song?.title ?: getString(R.string.no_music_playing),
-            song?.artist.orEmpty()
-        )
-        binding.miniPlayerBar.setCoverImage(coverUri)
+        miniPlayerTitle = song?.title ?: getString(R.string.no_music_playing)
+        miniPlayerArtist = song?.artist.orEmpty()
+        miniPlayerCoverPath = song?.let { coverUriResolver.resolveCoverUri(it).ifBlank { it.albumArtPath ?: "" } }
     }
 
     private fun updateMiniPlayerBarPlayback() {
-        val isPlaying = playerController?.playState?.value == PlayState.PLAYING
-        binding.miniPlayerBar.setPlaying(isPlaying)
+        miniPlayerIsPlaying = playerController?.playState?.value == PlayState.PLAYING
     }
 
     private fun updateMiniPlayerBarProgress() {
         val pos = playerController?.position?.value ?: 0L
         val duration = playerController?.duration?.value ?: 0L
-        binding.miniPlayerBar.updateRemainingTime((duration - pos).coerceAtLeast(0L))
+        miniPlayerProgress = if (duration > 0) pos.toFloat() / duration else 0f
     }
 
     override fun initObserver() {
@@ -1943,8 +1960,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                 binding.seekBar.setProgress(pos, duration)
                 binding.tvCurrentTime.text = AudioUtils.formatDuration(pos)
                 binding.tvTotalTime.text = AudioUtils.formatDuration(duration)
-                val remaining = (duration - pos).coerceAtLeast(0L)
-                binding.miniPlayerBar.updateRemainingTime(remaining)
+                miniPlayerProgress = if (duration > 0) pos.toFloat() / duration else 0f
                 // setPosition 现在对 scroll-only 行也能正确更新 lastPosition（已修复 LyricLineView）
                 lyricPlayerView.setPosition(lyricPos)
                 val needSeekTo = lyricsNeedSeekTo

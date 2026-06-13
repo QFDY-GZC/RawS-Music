@@ -39,13 +39,21 @@
             android:layout_height="match_parent"
             android:background="@drawable/bg_main_scrim" />
 
-        <!-- ===== 主界面内容 ===== -->
+        <!-- ===== 主界面内容（UnifiedMainContainer） ===== -->
+        <com.rawsmusic.core.ui.scene.UnifiedMainContainer
+            android:id="@+id/unifiedMainContainer"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+
+        <!-- ===== Fragment容器（设置等详情页，已迁移到独立 Activity） ===== -->
         <androidx.fragment.app.FragmentContainerView
             android:id="@+id/nav_host_fragment"
             android:name="androidx.navigation.fragment.NavHostFragment"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            app:defaultNavHost="true"
+            android:visibility="gone"
+            app:defaultNavHost="false"
             app:navGraph="@navigation/nav_main" />
 
         <!-- ===== 播放界面触摸拦截层：防止触摸穿透到主界面列表 ===== -->
@@ -606,7 +614,7 @@
                 android:layout_height="match_parent"
                 android:layout_gravity="center">
 
-                <io.github.proify.lyricon.lyric.view.LyricPlayerView
+                <io.github.proify.lyricon.lyric.view.RawsLyricView
                     android:id="@+id/lyricView"
                     android:layout_width="match_parent"
                     android:layout_height="match_parent"
@@ -1006,15 +1014,7 @@
 
         </FrameLayout>
 
-        <!-- ===== 底部胶囊播放栏 ===== -->
-        <com.rawsmusic.ui.widget.RawSMusicCapsuleView
-            android:id="@+id/miniPlayerBar"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_gravity="bottom"
-            android:layout_marginStart="4dp"
-            android:layout_marginEnd="4dp"
-            android:layout_marginBottom="2dp" />
+
 
         <!-- ===== 元数据详情界面 ===== -->
         <FrameLayout
@@ -1128,6 +1128,17 @@
                 app:shapeAppearanceOverlay="@style/CoverShape" />
 
         </FrameLayout>
+
+        <!-- miniPlayerBar：纯 Compose 播放栏 -->
+        <androidx.compose.ui.platform.ComposeView
+            android:id="@+id/miniPlayerBar"
+            android:layout_width="match_parent"
+            android:layout_height="66dp"
+            android:layout_gravity="bottom"
+            android:layout_marginStart="14dp"
+            android:layout_marginEnd="14dp"
+            android:layout_marginBottom="14dp"
+            android:visibility="gone" />
 
         <!-- ===== 歌曲操作底部弹出面板 ===== -->
         <include
