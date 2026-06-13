@@ -14,6 +14,10 @@ import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.rawsmusic.core.ui.util.AdaptivePadTransformation
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import kotlin.math.abs
@@ -47,6 +51,22 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
 
     var currentScene: Scene = Scene.MAIN
         private set
+
+    // ==================== Compose 状态属性 ====================
+    /** 当前场景的 Compose 可观察状态 */
+    var composeCurrentScene by mutableStateOf(Scene.MAIN)
+        private set
+
+    /** 是否正在过渡的 Compose 可观察状态 */
+    var composeIsTransitioning by mutableStateOf(false)
+        private set
+
+    /** 过渡进度的 Compose 可观察状态 (0..1) */
+    var composeTransitionProgress by mutableFloatStateOf(0f)
+        private set
+
+    /** 是否正在播放的 Compose 可观察状态 */
+    var composeIsPlaying by mutableStateOf(false)
 
     // ==================== 沉浸模式 ====================
     private var immersiveBackground: ImmersiveBackgroundView? = null
@@ -492,6 +512,9 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         activeAnimParams = params
         transitionRatio = 0f
         isTransitioning = true
+        // 同步 Compose 状态
+        composeIsTransitioning = true
+        composeTransitionProgress = 0f
 
         val gen = sceneAnimGeneration
         val safetyGen = sceneAnimGeneration
@@ -510,6 +533,8 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 transitionRatio = anim.animatedFraction
                 applyRatio(params, transitionRatio)
                 onTransitionProgress?.invoke(to, transitionRatio)
+                // 同步 Compose 状态
+                composeTransitionProgress = transitionRatio
             }
             addListener(object : AnimatorListenerAdapter() {
                 private var cancelled = false
@@ -534,6 +559,10 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                     transitionRatio = 0f
                     isTransitioning = false
                     activeAnimParams = null
+                    // 同步 Compose 状态
+                    composeCurrentScene = targetScene
+                    composeIsTransitioning = false
+                    composeTransitionProgress = 0f
                     Log.d("SceneTransition", "transitionToScene end: oldScene=$capturedOldScene → currentScene=$currentScene")
                     post {
                         if (sceneAnimGeneration != gen) {
@@ -666,6 +695,10 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         transitionRatio = 0f
         isTransitioning = false
         activeAnimParams = null
+        // 同步 Compose 状态
+        composeCurrentScene = targetScene
+        composeIsTransitioning = false
+        composeTransitionProgress = 0f
         // 仅在场景实际变化时才触发回调，避免递归调用
         if (oldScene != targetScene) {
             Log.w("SceneTransition", "=== switchToSceneSilent invoking onSceneChanged: $oldScene -> $targetScene ===")
