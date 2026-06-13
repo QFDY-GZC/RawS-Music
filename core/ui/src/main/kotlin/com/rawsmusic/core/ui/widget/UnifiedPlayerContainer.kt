@@ -14,7 +14,11 @@ import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.getValue
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -2428,6 +2432,108 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         lyricContentContainer = null
         lyricBgView = null
         lyricMainLayer = null
+    }
+
+    // ==================== Compose 版本的场景切换方法 ====================
+
+    /**
+     * Compose 版本的场景切换动画
+     * 使用 Animatable 替代 ValueAnimator
+     *
+     * @param targetScene 目标场景
+     * @param duration 动画时长 (ms)
+     * @param scope CoroutineScope 用于启动动画
+     */
+    fun composeTransitionToScene(
+        targetScene: Scene,
+        duration: Long = SCENE_ANIM_DURATION,
+        scope: kotlinx.coroutines.CoroutineScope
+    ) {
+        if (composeCurrentScene == targetScene && !composeIsTransitioning) return
+
+        sceneAnimGeneration++
+        val gen = sceneAnimGeneration
+        val from = composeCurrentScene
+        val to = targetScene
+
+        fromScene = from
+        toScene = to
+        composeIsTransitioning = true
+        composeTransitionProgress = 0f
+
+        scope.launch {
+            val animatable = Animatable(0f)
+            animatable.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = duration.toInt(),
+                    easing = LinearEasing
+                )
+            ) {
+                composeTransitionProgress = value
+                onTransitionProgress?.invoke(to, value)
+            }
+
+            // 动画完成
+            if (sceneAnimGeneration == gen) {
+                composeCurrentScene = targetScene
+                composeIsTransitioning = false
+                composeTransitionProgress = 0f
+                onSceneChanged?.invoke(targetScene, from)
+            }
+        }
+    }
+
+    /**
+     * Compose 版本的从当前进度继续动画
+     */
+    fun composeTransitionFromCurrentRatio(
+        targetScene: Scene,
+        duration: Long = SCENE_ANIM_DURATION,
+        scope: kotlinx.coroutines.CoroutineScope
+    ) {
+        sceneAnimGeneration++
+        val gen = sceneAnimGeneration
+        val startRatio = composeTransitionProgress
+        val endRatio = if (fromScene == targetScene) 0f else 1f
+
+        toScene = targetScene
+        composeIsTransitioning = true
+
+        scope.launch {
+            val animatable = Animatable(startRatio)
+            animatable.animateTo(
+                targetValue = endRatio,
+                animationSpec = tween(
+                    durationMillis = duration.toInt(),
+                    easing = LinearEasing
+                )
+            ) {
+                composeTransitionProgress = value
+                onTransitionProgress?.invoke(targetScene, value)
+            }
+
+            // 动画完成
+            if (sceneAnimGeneration == gen) {
+                composeCurrentScene = targetScene
+                composeIsTransitioning = false
+                composeTransitionProgress = 0f
+                onSceneChanged?.invoke(targetScene, fromScene)
+            }
+        }
+    }
+
+    /**
+     * Compose 版本的静默切换场景
+     */
+    fun composeSwitchToSceneSilent(targetScene: Scene) {
+        val oldScene = composeCurrentScene
+        composeCurrentScene = targetScene
+        composeIsTransitioning = false
+        composeTransitionProgress = 0f
+        if (oldScene != targetScene) {
+            onSceneChanged?.invoke(targetScene, oldScene)
+        }
     }
 
     companion object {
