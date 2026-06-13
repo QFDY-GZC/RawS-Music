@@ -130,6 +130,10 @@ class UnifiedMainContainer @JvmOverloads constructor(
     private var isInitialized = false
     private var navigationLock = false
 
+    // ==================== Compose 导航状态 ====================
+    /** Compose 版本的导航栈 */
+    private val composeBackStack = mutableListOf(NavScene.HOME)
+
     // ==================== Compose 状态属性 ====================
     /** Compose 可观察的当前场景 */
     var composeCurrentScene by mutableStateOf(NavScene.HOME)
@@ -315,8 +319,9 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     fun navigateTo(scene: NavScene, argument: String = "") {
-        if (navigationLock || sceneController.isTransitioning) return
-        navController.navigateTo(scene, argument)
+        if (composeIsTransitioning) return
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
+        composeNavigateToScene(scene, scope = scope)
     }
 
     /**
@@ -324,13 +329,8 @@ class UnifiedMainContainer @JvmOverloads constructor(
      * 用于从播放器返回时恢复之前的场景状态。
      */
     fun switchToScene(scene: NavScene) {
-        if (navigationLock || sceneController.isTransitioning) return
-        val page = getOrCreatePage(scene)
-        hideAllPagesExcept(scene)
-        page.visibility = View.VISIBLE
-        page.bringToFront()
-        // 仅更新状态，不触发 onSceneChanged 回调（避免触发动画 handler）
-        navController.setCurrentSceneSilent(scene)
+        if (composeIsTransitioning) return
+        composeSwitchToSceneSilent(scene)
     }
 
     /**
@@ -338,21 +338,25 @@ class UnifiedMainContainer @JvmOverloads constructor(
      * 用于从播放器返回前准备容器可见性，避免所有页面闪现。
      */
     fun hideAllPagesExcept(exceptScene: NavScene) {
-        pageCache.forEach { (s, p) ->
-            if (s != exceptScene) {
-                p.visibility = View.INVISIBLE
-            }
-        }
+        // Compose 版本不需要手动隐藏页面
+        // 场景切换由 Compose 状态自动管理
     }
 
     fun navigateBack(): Boolean {
-        if (navigationLock || sceneController.isTransitioning) return false
-        return navController.navigateBack()
+        if (composeIsTransitioning) return false
+        val previousScene = getPreviousScene()
+        if (previousScene != null) {
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
+            composeNavigateToScene(previousScene, scope = scope)
+            return true
+        }
+        return false
     }
 
     fun navigateHome() {
-        if (navigationLock || sceneController.isTransitioning || songsPowerListReturnActive) return
-        if (navController.currentScene.value == NavScene.SONGS && returnToHomeFromCurrentScene()) return
+        if (composeIsTransitioning) return
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
+        composeBackToHome(scope)
         navigateHomeImmediate()
     }
 
