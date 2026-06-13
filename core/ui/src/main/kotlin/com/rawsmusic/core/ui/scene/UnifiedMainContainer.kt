@@ -2401,6 +2401,142 @@ class UnifiedMainContainer @JvmOverloads constructor(
 
     private val density: Float get() = resources.displayMetrics.density
 
+    // ==================== Compose 场景过渡方法 ====================
+
+    /**
+     * Compose 版本：导航到指定场景 (带动画)
+     * 使用 Compose 的 Animatable 驱动过渡动画
+     */
+    fun composeNavigateToScene(
+        targetScene: NavScene,
+        duration: Long = 400L,
+        scope: kotlinx.coroutines.CoroutineScope
+    ) {
+        if (composeIsTransitioning) return
+        if (targetScene == composeCurrentScene) return
+
+        composeIsTransitioning = true
+        composeTransitionProgress = 0f
+
+        // 同步到 View 系统的 sceneController
+        val fromPage = getPage(composeCurrentScene)
+        val toPage = getOrCreatePage(targetScene)
+        val direction = when {
+            targetScene == NavScene.HOME -> SceneController.TransitionDirection.BACKWARD
+            composeCurrentScene == NavScene.HOME -> SceneController.TransitionDirection.FORWARD
+            targetScene.ordinal > composeCurrentScene.ordinal -> SceneController.TransitionDirection.FORWARD
+            else -> SceneController.TransitionDirection.BACKWARD
+        }
+
+        // 使用 Animatable 驱动进度
+        val animatable = Animatable(0f)
+        scope.launch {
+            animatable.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = duration.toInt(),
+                    easing = LinearEasing
+                )
+            ) {
+                composeTransitionProgress = value
+            }
+
+            // 动画完成
+            composeCurrentScene = targetScene
+            composeIsTransitioning = false
+            composeTransitionProgress = 0f
+
+            // 通知 View 系统
+            sceneController.switchToSceneSilent(targetScene, toPage)
+        }
+    }
+
+    /**
+     * Compose 版本：静默切换场景 (无动画)
+     */
+    fun composeSwitchToSceneSilent(targetScene: NavScene) {
+        composeCurrentScene = targetScene
+        composeIsTransitioning = false
+        composeTransitionProgress = 0f
+
+        // 同步到 View 系统
+        val toPage = getOrCreatePage(targetScene)
+        sceneController.switchToSceneSilent(targetScene, toPage)
+    }
+
+    /**
+     * Compose 版本：开始拖拽返回手势
+     */
+    fun composeStartDragBack() {
+        composeIsDraggingBack = true
+        composeDragBackProgress = 0f
+    }
+
+    /**
+     * Compose 版本：更新拖拽返回进度
+     * @param ratio 0..1 的进度值
+     */
+    fun composeUpdateDragBack(ratio: Float) {
+        composeDragBackProgress = ratio.coerceIn(0f, 1f)
+    }
+
+    /**
+     * Compose 版本：结束拖拽返回手势
+     * @param shouldCommit 是否应该执行返回
+     * @param scope 协程作用域
+     */
+    fun composeEndDragBack(
+        shouldCommit: Boolean,
+        duration: Long = 300L,
+        scope: kotlinx.coroutines.CoroutineScope
+    ) {
+        if (!composeIsDraggingBack) return
+
+        val targetRatio = if (shouldCommit) 1f else 0f
+        val animatable = Animatable(composeDragBackProgress)
+
+        scope.launch {
+            animatable.animateTo(
+                targetValue = targetRatio,
+                animationSpec = tween(
+                    durationMillis = duration.toInt(),
+                    easing = LinearEasing
+                )
+            ) {
+                composeDragBackProgress = value
+            }
+
+            composeIsDraggingBack = false
+
+            if (shouldCommit) {
+                // 执行返回操作
+                val previousScene = getPreviousScene()
+                if (previousScene != null) {
+                    composeSwitchToSceneSilent(previousScene)
+                }
+            }
+            composeDragBackProgress = 0f
+        }
+    }
+
+    /**
+     * 获取上一个场景 (用于返回手势)
+     */
+    private fun getPreviousScene(): NavScene? {
+        return when (composeCurrentScene) {
+            NavScene.HOME -> null
+            NavScene.SONGS -> NavScene.HOME
+            NavScene.FOLDERS -> NavScene.HOME
+            NavScene.ALBUMS -> NavScene.HOME
+            NavScene.ARTISTS -> NavScene.HOME
+            NavScene.PLAYLISTS -> NavScene.HOME
+            NavScene.QUEUE -> NavScene.HOME
+            NavScene.RECENTLY_ADDED -> NavScene.HOME
+            NavScene.WEBDAV -> NavScene.HOME
+            else -> NavScene.HOME
+        }
+    }
+
     companion object {
         private const val MATCH_PARENT = LayoutParams.MATCH_PARENT
         private const val WRAP_CONTENT = LayoutParams.WRAP_CONTENT
