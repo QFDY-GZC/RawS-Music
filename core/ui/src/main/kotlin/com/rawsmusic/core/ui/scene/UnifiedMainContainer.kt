@@ -251,13 +251,15 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     private fun getOrCreatePage(scene: NavScene): FrameLayout {
-        // Compose 版本：返回一个包含 ComposeView 的 FrameLayout
-        return createComposePage(scene)
+        return pageCache.getOrPut(scene) {
+            val page = createComposePage(scene)
+            addView(page)
+            page
+        }
     }
 
     private fun getPage(scene: NavScene): FrameLayout? {
-        // Compose 版本：返回一个包含 ComposeView 的 FrameLayout
-        return createComposePage(scene)
+        return pageCache[scene]
     }
 
     private fun findRecyclerView(page: FrameLayout): RecyclerView? {
