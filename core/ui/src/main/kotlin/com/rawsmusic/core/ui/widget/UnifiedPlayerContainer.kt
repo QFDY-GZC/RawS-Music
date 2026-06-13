@@ -2434,6 +2434,161 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         lyricMainLayer = null
     }
 
+    // ==================== Compose 版本的便捷 API ====================
+
+    /**
+     * Compose 版本的打开播放页
+     */
+    fun composeOpenPlayPage(animated: Boolean = true, scope: kotlinx.coroutines.CoroutineScope) {
+        if (composeCurrentScene != Scene.MAIN) return
+        if (animated) {
+            onPrepareMainToPlayer?.invoke()
+            composeTransitionToScene(Scene.PLAYER, scope = scope)
+        } else {
+            composeSwitchToSceneSilent(Scene.PLAYER)
+        }
+    }
+
+    /**
+     * Compose 版本的关闭播放页
+     */
+    fun composeClosePlayPage(animated: Boolean = true, scope: kotlinx.coroutines.CoroutineScope) {
+        if (composeCurrentScene != Scene.PLAYER) return
+        if (animated) composeTransitionToScene(Scene.MAIN, scope = scope)
+        else composeSwitchToSceneSilent(Scene.MAIN)
+    }
+
+    /**
+     * Compose 版本的关闭播放页并执行封面对齐动画
+     */
+    fun composeClosePlayPageWithCoverAlign(animated: Boolean = true, scope: kotlinx.coroutines.CoroutineScope) {
+        if (composeCurrentScene != Scene.PLAYER) return
+        if (animated) {
+            onPreparePlayerToMain?.invoke {
+                composeTransitionToScene(Scene.MAIN, scope = scope)
+            } ?: composeTransitionToScene(Scene.MAIN, scope = scope)
+        } else {
+            composeSwitchToSceneSilent(Scene.MAIN)
+        }
+    }
+
+    /**
+     * Compose 版本的打开歌词页
+     */
+    fun composeOpenLyricPage(animated: Boolean = true, scope: kotlinx.coroutines.CoroutineScope) {
+        if (composeCurrentScene != Scene.PLAYER) return
+        onPreparePlayerToLyric?.invoke()
+        if (animated) composeTransitionToScene(Scene.LYRIC, scope = scope)
+        else composeSwitchToSceneSilent(Scene.LYRIC)
+    }
+
+    /**
+     * Compose 版本的关闭歌词页
+     */
+    fun composeCloseLyricPage(animated: Boolean = true, scope: kotlinx.coroutines.CoroutineScope) {
+        if (composeCurrentScene != Scene.LYRIC) return
+        if (animated) composeTransitionToScene(Scene.PLAYER, scope = scope)
+        else composeSwitchToSceneSilent(Scene.PLAYER)
+    }
+
+    /**
+     * Compose 版本的返回首页
+     */
+    fun composeBackToHome(animated: Boolean, scope: kotlinx.coroutines.CoroutineScope) {
+        when (composeCurrentScene) {
+            Scene.LYRIC -> {
+                composeCloseLyricPage(animated, scope)
+                if (animated) scope.launch {
+                    kotlinx.coroutines.delay(350)
+                    composeClosePlayPage(animated, scope)
+                } else composeClosePlayPage(false, scope)
+            }
+            Scene.QUEUE -> {
+                composeCloseQueuePage(animated, scope)
+                if (animated) scope.launch {
+                    kotlinx.coroutines.delay(350)
+                    composeClosePlayPage(animated, scope)
+                } else composeClosePlayPage(false, scope)
+            }
+            Scene.ALBUM_DETAIL -> {
+                composeCloseAlbumDetailPage(animated, scope)
+                if (animated) scope.launch {
+                    kotlinx.coroutines.delay(350)
+                    composeClosePlayPage(animated, scope)
+                } else composeClosePlayPage(false, scope)
+            }
+            Scene.EFFECTS -> {
+                composeCloseEffectsPage(animated, scope)
+            }
+            Scene.PLAYER -> composeClosePlayPage(animated, scope)
+            Scene.MAIN -> {}
+        }
+    }
+
+    /**
+     * Compose 版本的打开队列页
+     */
+    fun composeOpenQueuePage(animated: Boolean = true, scope: kotlinx.coroutines.CoroutineScope) {
+        if (composeCurrentScene != Scene.PLAYER) return
+        onPreparePlayerToQueue?.invoke()
+        if (animated) composeTransitionToScene(Scene.QUEUE, scope = scope)
+        else composeSwitchToSceneSilent(Scene.QUEUE)
+    }
+
+    /**
+     * Compose 版本的关闭队列页
+     */
+    fun composeCloseQueuePage(animated: Boolean = true, scope: kotlinx.coroutines.CoroutineScope) {
+        if (composeCurrentScene != Scene.QUEUE) return
+        if (animated) composeTransitionToScene(Scene.PLAYER, scope = scope)
+        else composeSwitchToSceneSilent(Scene.PLAYER)
+    }
+
+    /**
+     * Compose 版本的打开专辑详情页
+     */
+    fun composeOpenAlbumDetailPage(animated: Boolean = true, scope: kotlinx.coroutines.CoroutineScope) {
+        if (composeCurrentScene != Scene.PLAYER) return
+        onPreparePlayerToAlbumDetail?.invoke()
+        if (animated) composeTransitionToScene(Scene.ALBUM_DETAIL, scope = scope)
+        else composeSwitchToSceneSilent(Scene.ALBUM_DETAIL)
+    }
+
+    /**
+     * Compose 版本的关闭专辑详情页
+     */
+    fun composeCloseAlbumDetailPage(animated: Boolean = true, scope: kotlinx.coroutines.CoroutineScope) {
+        if (composeCurrentScene != Scene.ALBUM_DETAIL) return
+        if (animated) composeTransitionToScene(Scene.PLAYER, scope = scope)
+        else composeSwitchToSceneSilent(Scene.PLAYER)
+    }
+
+    /**
+     * Compose 版本的打开音效页
+     */
+    fun composeOpenEffectsPage(animated: Boolean = true, scope: kotlinx.coroutines.CoroutineScope) {
+        if (composeCurrentScene != Scene.PLAYER) return
+        onPreparePlayerToEffects?.invoke()
+        if (animated) composeTransitionToScene(Scene.EFFECTS, scope = scope)
+        else composeSwitchToSceneSilent(Scene.EFFECTS)
+    }
+
+    /**
+     * Compose 版本的关闭音效页
+     */
+    fun composeCloseEffectsPage(animated: Boolean = true, scope: kotlinx.coroutines.CoroutineScope) {
+        if (composeCurrentScene != Scene.EFFECTS) return
+        if (animated) composeTransitionToScene(Scene.PLAYER, scope = scope)
+        else composeSwitchToSceneSilent(Scene.PLAYER)
+    }
+
+    /**
+     * Compose 版本的同步旋转状态
+     */
+    fun composeSyncRotationState(isPlaying: Boolean) {
+        composeIsPlaying = isPlaying
+    }
+
     // ==================== Compose 版本的 StateAnim 系统 ====================
 
     /** Compose 版本的动画状态映射 */
