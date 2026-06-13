@@ -32,17 +32,18 @@ import androidx.compose.ui.unit.sp
 import com.rawsmusic.ui.settings.compose.scene.container.ComposePowerList
 import com.rawsmusic.ui.settings.compose.scene.container.TrackData
 import com.rawsmusic.ui.settings.compose.scene.state.ComposeListState
-import com.rawsmusic.ui.settings.powerlist.ListZoomIndex
-import com.rawsmusic.ui.settings.powerlist.ListZoomLevels
+import com.rawsmusic.core.ui.widget.powerlist.ListZoomIndex
+import com.rawsmusic.core.ui.widget.powerlist.ListZoomLevels
 
 /**
- * 纯 Compose 版本的场景系统演示
- * 替代原版 ComposePlayerDemo
+ * 纯 Compose 版本的统一主容器
+ * 替代原版 UnifiedMainContainer
  *
- * 展示双引擎列表、捏合缩放、场景切换等功能
+ * 管理内容页面：HOME、SONGS、ALBUMS、ARTISTS 等
+ * 集成双引擎列表、捏合缩放、场景切换等功能
  */
 @Composable
-fun ComposeSceneDemo(
+fun ComposeUnifiedMainContainer(
     modifier: Modifier = Modifier
 ) {
     // 列表状态

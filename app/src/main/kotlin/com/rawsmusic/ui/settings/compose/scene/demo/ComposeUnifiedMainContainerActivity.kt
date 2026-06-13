@@ -9,7 +9,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 
 /**
- * 纯 Compose 版本的场景系统演示 Activity
+ * 纯 Compose 版本的统一主容器 Activity
  *
  * 展示：
  * 1. 双引擎列表布局
@@ -17,7 +17,7 @@ import androidx.compose.ui.Modifier
  * 3. 场景切换动画
  * 4. 液态玻璃效果兼容
  */
-class ComposeSceneDemoActivity : ComponentActivity() {
+class ComposeUnifiedMainContainerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -27,7 +27,7 @@ class ComposeSceneDemoActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    ComposeSceneDemo()
+                    ComposeUnifiedMainContainer()
                 }
             }
         }
