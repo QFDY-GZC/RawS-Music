@@ -2434,6 +2434,132 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         lyricMainLayer = null
     }
 
+    // ==================== Compose 版本的 StateAnim 系统 ====================
+
+    /** Compose 版本的动画状态映射 */
+    private val composeStateAnimMap = mutableMapOf<String, kotlinx.coroutines.Job>()
+
+    /**
+     * Compose 版本的状态动画
+     * 使用 Animatable 替代 ValueAnimator
+     *
+     * @param key 动画的唯一标识
+     * @param targetAlpha 目标透明度
+     * @param targetScaleX 目标 X 缩放
+     * @param targetScaleY 目标 Y 缩放
+     * @param targetTranslationX 目标 X 平移
+     * @param targetTranslationY 目标 Y 平移
+     * @param targetRotation 目标旋转
+     * @param duration 动画时长
+     * @param scope CoroutineScope
+     * @param onUpdate 每帧更新回调
+     * @param onEnd 动画结束回调
+     */
+    fun composeStartStateAnim(
+        key: String,
+        targetAlpha: Float? = null,
+        targetScaleX: Float? = null,
+        targetScaleY: Float? = null,
+        targetTranslationX: Float? = null,
+        targetTranslationY: Float? = null,
+        targetRotation: Float? = null,
+        duration: Long = STATE_ANIM_DEFAULT_DURATION,
+        scope: kotlinx.coroutines.CoroutineScope,
+        onUpdate: ((Float) -> Unit)? = null,
+        onEnd: (() -> Unit)? = null
+    ) {
+        composeStateAnimMap[key]?.cancel()
+
+        val job = scope.launch {
+            val animatable = Animatable(0f)
+            animatable.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(duration.toInt())
+            ) {
+                onUpdate?.invoke(value)
+            }
+            composeStateAnimMap.remove(key)
+            onEnd?.invoke()
+        }
+        composeStateAnimMap[key] = job
+    }
+
+    /**
+     * Compose 版本的取消状态动画
+     */
+    fun composeCancelStateAnim(key: String) {
+        composeStateAnimMap[key]?.cancel()
+        composeStateAnimMap.remove(key)
+    }
+
+    /**
+     * Compose 版本的取消所有状态动画
+     */
+    fun composeCancelAllStateAnims() {
+        composeStateAnimMap.values.forEach { it.cancel() }
+        composeStateAnimMap.clear()
+    }
+
+    /**
+     * Compose 版本的按钮按压弹回动画
+     */
+    fun composeButtonPressAnim(
+        key: String,
+        pressScale: Float = BUTTON_PRESS_SCALE,
+        duration: Long = BUTTON_PRESS_DURATION,
+        scope: kotlinx.coroutines.CoroutineScope,
+        onUpdate: ((Float) -> Unit)? = null,
+        onEnd: (() -> Unit)? = null
+    ) {
+        composeStartStateAnim(
+            key = key,
+            targetScaleX = pressScale,
+            targetScaleY = pressScale,
+            duration = duration / 2,
+            scope = scope,
+            onUpdate = onUpdate,
+            onEnd = {
+                composeStartStateAnim(
+                    key = key,
+                    targetScaleX = 1f,
+                    targetScaleY = 1f,
+                    duration = duration,
+                    scope = scope,
+                    onEnd = onEnd
+                )
+            }
+        )
+    }
+
+    /**
+     * Compose 版本的弹性回弹动画
+     */
+    fun composeSpringSettleAnim(
+        key: String,
+        targetScaleX: Float = 1f,
+        targetScaleY: Float = 1f,
+        targetTranslationX: Float = 0f,
+        targetTranslationY: Float = 0f,
+        targetAlpha: Float? = null,
+        duration: Long = SPRING_SETTLE_DURATION,
+        scope: kotlinx.coroutines.CoroutineScope,
+        onUpdate: ((Float) -> Unit)? = null,
+        onEnd: (() -> Unit)? = null
+    ) {
+        composeStartStateAnim(
+            key = key,
+            targetAlpha = targetAlpha,
+            targetScaleX = targetScaleX,
+            targetScaleY = targetScaleY,
+            targetTranslationX = targetTranslationX,
+            targetTranslationY = targetTranslationY,
+            duration = duration,
+            scope = scope,
+            onUpdate = onUpdate,
+            onEnd = onEnd
+        )
+    }
+
     // ==================== Compose 版本的沉浸模式 ====================
 
     /** Compose 版本的沉浸模式启用状态 */
