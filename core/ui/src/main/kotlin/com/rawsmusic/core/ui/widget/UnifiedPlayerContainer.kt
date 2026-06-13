@@ -2434,6 +2434,122 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         lyricMainLayer = null
     }
 
+    // ==================== Compose 版本的沉浸模式 ====================
+
+    /** Compose 版本的沉浸模式启用状态 */
+    var composeIsImmersiveEnabled by mutableStateOf(true)
+        private set
+
+    /** Compose 版本的迷你封面启用状态 */
+    var composeIsMiniCoverEnabled by mutableStateOf(true)
+        private set
+
+    /** Compose 版本的默认背景启用状态 */
+    var composeIsDefaultBackgroundEnabled by mutableStateOf(false)
+        private set
+
+    /** Compose 版本的暗色模式状态 */
+    var composeIsDarkMode by mutableStateOf(true)
+        private set
+
+    /**
+     * Compose 版本的初始化沉浸模式
+     * 不再需要 View 引用，只设置状态
+     */
+    fun composeInitImmersive(
+        isImmersiveEnabled: Boolean = true,
+        isMiniCoverEnabled: Boolean = true
+    ) {
+        composeIsImmersiveEnabled = isImmersiveEnabled
+        composeIsMiniCoverEnabled = isMiniCoverEnabled
+        composeApplyImmersiveSceneParams()
+    }
+
+    /**
+     * Compose 版本的应用沉浸模式场景参数
+     * 使用 Compose 可观察的场景注册表
+     */
+    fun composeApplyImmersiveSceneParams() {
+        // 沉浸背景
+        if (composeIsImmersiveEnabled) {
+            val immersiveAlpha = if (composeIsImmersiveEnabled) 1f else 0f
+            registerComposeViewScenes("immersive_bg",
+                Scene.MAIN to SceneParams(Scene.MAIN, alpha = 0f),
+                Scene.PLAYER to SceneParams(Scene.PLAYER, alpha = immersiveAlpha),
+                Scene.LYRIC to SceneParams(Scene.LYRIC, alpha = immersiveAlpha),
+                Scene.QUEUE to SceneParams(Scene.QUEUE, alpha = immersiveAlpha),
+                Scene.ALBUM_DETAIL to SceneParams(Scene.ALBUM_DETAIL, alpha = immersiveAlpha),
+                Scene.EFFECTS to SceneParams(Scene.EFFECTS, alpha = immersiveAlpha)
+            )
+        }
+
+        // 迷你封面
+        val miniCoverAlpha = if (composeIsMiniCoverEnabled) 1f else 0f
+        registerComposeViewScenes("mini_cover",
+            Scene.MAIN to SceneParams(Scene.MAIN, alpha = miniCoverAlpha),
+            Scene.PLAYER to SceneParams(Scene.PLAYER, alpha = 0f),
+            Scene.LYRIC to SceneParams(Scene.LYRIC, alpha = 0f),
+            Scene.QUEUE to SceneParams(Scene.QUEUE, alpha = 0f),
+            Scene.ALBUM_DETAIL to SceneParams(Scene.ALBUM_DETAIL, alpha = 0f),
+            Scene.EFFECTS to SceneParams(Scene.EFFECTS, alpha = 0f)
+        )
+
+        // 播放页封面
+        val playerCoverAlpha = if (composeIsImmersiveEnabled) 0f else 1f
+        registerComposeViewScenes("play_cover",
+            Scene.MAIN to SceneParams(Scene.MAIN, alpha = 0f),
+            Scene.PLAYER to SceneParams(Scene.PLAYER, alpha = playerCoverAlpha),
+            Scene.LYRIC to SceneParams(Scene.LYRIC, alpha = playerCoverAlpha),
+            Scene.QUEUE to SceneParams(Scene.QUEUE, alpha = playerCoverAlpha),
+            Scene.ALBUM_DETAIL to SceneParams(Scene.ALBUM_DETAIL, alpha = playerCoverAlpha),
+            Scene.EFFECTS to SceneParams(Scene.EFFECTS, alpha = playerCoverAlpha)
+        )
+
+        // 播放页遮罩
+        val scrimAlpha = if (composeIsImmersiveEnabled) 0f else 1f
+        registerComposeViewScenes("play_bg_scrim",
+            Scene.MAIN to SceneParams(Scene.MAIN, alpha = 0f),
+            Scene.PLAYER to SceneParams(Scene.PLAYER, alpha = scrimAlpha),
+            Scene.LYRIC to SceneParams(Scene.LYRIC, alpha = scrimAlpha),
+            Scene.QUEUE to SceneParams(Scene.QUEUE, alpha = scrimAlpha),
+            Scene.ALBUM_DETAIL to SceneParams(Scene.ALBUM_DETAIL, alpha = scrimAlpha),
+            Scene.EFFECTS to SceneParams(Scene.EFFECTS, alpha = scrimAlpha)
+        )
+    }
+
+    /**
+     * Compose 版本的更新沉浸模式设置
+     */
+    fun composeUpdateImmersiveSettings(isImmersive: Boolean, isDark: Boolean) {
+        composeIsImmersiveEnabled = isImmersive
+        composeIsDarkMode = isDark
+        composeApplyImmersiveSceneParams()
+    }
+
+    /**
+     * Compose 版本的刷新沉浸模式状态
+     */
+    fun composeRefreshImmersiveState(isImmersive: Boolean) {
+        composeIsImmersiveEnabled = isImmersive
+        composeApplyImmersiveSceneParams()
+    }
+
+    /**
+     * Compose 版本的更新迷你封面启用状态
+     */
+    fun composeUpdateMiniCoverEnabled(enabled: Boolean) {
+        composeIsMiniCoverEnabled = enabled
+        composeApplyImmersiveSceneParams()
+    }
+
+    /**
+     * Compose 版本的更新默认背景启用状态
+     */
+    fun composeUpdateDefaultBackgroundEnabled(enabled: Boolean) {
+        composeIsDefaultBackgroundEnabled = enabled
+        composeApplyImmersiveSceneParams()
+    }
+
     // ==================== Compose 版本的手势处理方法 ====================
 
     /** Compose 版本的封面拖拽状态 */
