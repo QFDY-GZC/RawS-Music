@@ -79,6 +79,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -118,6 +122,27 @@ class UnifiedMainContainer @JvmOverloads constructor(
     private val homeTileViews = mutableMapOf<NavScene, View>()
     private var isInitialized = false
     private var navigationLock = false
+
+    // ==================== Compose 状态属性 ====================
+    /** Compose 可观察的当前场景 */
+    var composeCurrentScene by mutableStateOf(NavScene.HOME)
+        private set
+
+    /** Compose 可观察的是否正在过渡 */
+    var composeIsTransitioning by mutableStateOf(false)
+        private set
+
+    /** Compose 可观察的过渡进度 (0..1) */
+    var composeTransitionProgress by mutableFloatStateOf(0f)
+        private set
+
+    /** Compose 可观察的是否正在拖拽返回 */
+    var composeIsDraggingBack by mutableStateOf(false)
+        private set
+
+    /** Compose 可观察的拖拽返回进度 (0..1) */
+    var composeDragBackProgress by mutableFloatStateOf(0f)
+        private set
     private var songsPowerListReturnActive = false
     private var songsPowerListReturnTargetScene: NavScene = NavScene.HOME
 
