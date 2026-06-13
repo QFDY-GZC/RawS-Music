@@ -35,6 +35,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.consumeAllChanges
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.layout.ContentScale
 
 /**
  * Poweramp 模式的统一场景容器
@@ -3167,6 +3174,80 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         ) {
             content()
         }
+    }
+
+    // ==================== Compose 背景层 ====================
+
+    /**
+     * Compose 版本的动态封面背景
+     * 替代 DynamicCoverBackgroundView
+     */
+    @Composable
+    fun ComposeDynamicBackground(
+        coverBitmap: android.graphics.Bitmap? = null,
+        isLight: Boolean = false,
+        modifier: Modifier = Modifier
+    ) {
+        val baseColor = if (isLight) 0xFFFFFFFF.toInt() else 0xFF171717.toInt()
+
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(Color(baseColor))
+        ) {
+            if (coverBitmap != null) {
+                // 封面模糊背景
+                androidx.compose.foundation.Image(
+                    bitmap = coverBitmap.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = 1.5f
+                            scaleY = 1.5f
+                            alpha = 0.4f
+                        },
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    colorFilter = androidx.compose.ui.graphics.ColorFilter.colorMatrix(
+                        androidx.compose.ui.graphics.ColorMatrix().apply {
+                            setToSaturation(2.5f)
+                        }
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * Compose 版本的背景遮罩
+     * 替代 mainBgScrim / playBgScrim
+     */
+    @Composable
+    fun ComposeBackgroundScrim(
+        isPlayer: Boolean = false,
+        modifier: Modifier = Modifier
+    ) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(
+                    if (isPlayer) {
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            colors = listOf(
+                                androidx.compose.ui.graphics.Color.Transparent,
+                                androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f)
+                            )
+                        )
+                    } else {
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            colors = listOf(
+                                androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.3f),
+                                androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.7f)
+                            )
+                        )
+                    }
+                )
+        )
     }
 
     // ==================== Compose 主布局 ====================
