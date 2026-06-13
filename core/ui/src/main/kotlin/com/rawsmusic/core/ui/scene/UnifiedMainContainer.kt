@@ -214,8 +214,9 @@ class UnifiedMainContainer @JvmOverloads constructor(
         setupNavController()
         setupSceneController()
 
-        val homePage = getOrCreatePage(NavScene.HOME)
-        sceneController.switchToSceneSilent(NavScene.HOME, homePage)
+        // Compose 版本：直接创建主页并显示
+        getOrCreatePage(NavScene.HOME)
+        composeSwitchToSceneSilent(NavScene.HOME)
     }
 
     private fun registerPageFactories() {
@@ -1882,10 +1883,6 @@ class UnifiedMainContainer @JvmOverloads constructor(
         _currentSceneFlow.value = targetScene
         composeIsTransitioning = false
         composeTransitionProgress = 0f
-
-        // 同步到 View 系统
-        val toPage = getOrCreatePage(targetScene)
-        sceneController.switchToSceneSilent(targetScene, toPage)
     }
 
     /**
