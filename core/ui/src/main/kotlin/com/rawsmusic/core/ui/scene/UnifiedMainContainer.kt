@@ -688,73 +688,148 @@ class UnifiedMainContainer @JvmOverloads constructor(
     private val MAX_SCALE = 1.5f
 
     private fun createHomePage(): FrameLayout {
+        return createComposeHomePage()
+    }
+
+    /**
+     * Compose 版本的主页
+     * 纯 Compose 实现，替代原 View 版本
+     */
+    private fun createComposeHomePage(): FrameLayout {
         val page = createPageContainer(NavScene.HOME)
-        page.setBackgroundColor(C.PAGE_BG)
-        val scrollView = ScrollView(context).apply {
+        val composeView = ComposeView(context).apply {
             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-            isFillViewport = true
-            clipToPadding = false
-            val pad = (16 * density).toInt()
-            setPadding(pad, (24 * density).toInt(), pad, (180 * density).toInt())
-        }
-        val container = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
-        }
-
-        container.addView(createSectionTitle("音乐库"))
-
-        val entries = NavScene.homeEntries
-        entries.chunked(2).forEach { rowEntries ->
-            val row = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
-                    topMargin = (10 * density).toInt()
-                }
+            setContent {
+                ComposeHomePageContent()
             }
-            rowEntries.forEachIndexed { index, entry ->
-                val tileIndex = entries.indexOf(entry)
-                val tile = createHomeTile(entry, tileIndex)
-                tile.setOnClickListener {
-                    if (entry.hasFragment()) {
-                        onNavigateToFragment?.invoke(entry)
-                    } else {
-                        navigateTo(entry)
-                    }
-                }
-                val lp = LinearLayout.LayoutParams(0, (90 * density).toInt(), 1f)
-                if (index > 0) lp.marginStart = (10 * density).toInt()
-                tile.layoutParams = lp
-                row.addView(tile)
-            }
-            if (rowEntries.size == 1) {
-                row.addView(View(context).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, (90 * density).toInt(), 1f).apply {
-                        marginStart = (10 * density).toInt()
-                    }
-                })
-            }
-            container.addView(row)
         }
-
-        val scaleDetector = android.view.ScaleGestureDetector(context, object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
-            override fun onScale(detector: android.view.ScaleGestureDetector): Boolean {
-                val scaleFactor = detector.scaleFactor
-                homeScaleFactor = (homeScaleFactor * scaleFactor).coerceIn(MIN_SCALE, MAX_SCALE)
-                container.scaleX = homeScaleFactor
-                container.scaleY = homeScaleFactor
-                return true
-            }
-        })
-
-        scrollView.setOnTouchListener { _, event ->
-            scaleDetector.onTouchEvent(event)
-            false
-        }
-
-        scrollView.addView(container)
-        page.addView(scrollView)
+        page.addView(composeView)
         return page
+    }
+
+    @Composable
+    private fun ComposeHomePageContent() {
+        val scope = rememberCoroutineScope()
+        val entries = NavScene.homeEntries
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ComposeColor(C.PAGE_BG))
+                .padding(horizontal = 16.dp, vertical = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // 标题
+            item {
+                Text(
+                    text = "音乐库",
+                    color = ComposeColor(C.TEXT_PRIMARY),
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+            }
+
+            // 搜索栏
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(ComposeColor(C.CARD_BG))
+                        .clickable { onSearchClick?.invoke() }
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("🔍", fontSize = 16.sp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "搜索歌曲、专辑、艺术家...",
+                            color = ComposeColor(C.TEXT_META),
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+            }
+
+            // 导航磁贴网格
+            items(entries.chunked(2)) { rowEntries ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    rowEntries.forEach { entry ->
+                        ComposeHomeTile(
+                            scene = entry,
+                            onClick = {
+                                if (entry.hasFragment()) {
+                                    onNavigateToFragment?.invoke(entry)
+                                } else {
+                                    navigateTo(entry)
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    // 如果是奇数个，添加占位
+                    if (rowEntries.size == 1) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+
+            // 底部间距
+            item {
+                Spacer(modifier = Modifier.height(180.dp))
+            }
+        }
+    }
+
+    @Composable
+    private fun ComposeHomeTile(
+        scene: NavScene,
+        onClick: () -> Unit,
+        modifier: Modifier = Modifier
+    ) {
+        val tileColors = listOf(
+            listOf(ComposeColor(0xFF4A90D9), ComposeColor(0xFF357ABD)),
+            listOf(ComposeColor(0xFFE67E22), ComposeColor(0xFFD35400)),
+            listOf(ComposeColor(0xFF2ECC71), ComposeColor(0xFF27AE60)),
+            listOf(ComposeColor(0xFF9B59B6), ComposeColor(0xFF8E44AD)),
+            listOf(ComposeColor(0xFFE74C3C), ComposeColor(0xFFC0392B)),
+            listOf(ComposeColor(0xFF1ABC9C), ComposeColor(0xFF16A085)),
+            listOf(ComposeColor(0xFFF39C12), ComposeColor(0xFFE67E22)),
+            listOf(ComposeColor(0xFF3498DB), ComposeColor(0xFF2980B9)),
+            listOf(ComposeColor(0xFFE91E63), ComposeColor(0xFFC2185B))
+        )
+        val colorIndex = NavScene.homeEntries.indexOf(scene) % tileColors.size
+        val colors = tileColors[colorIndex]
+
+        Box(
+            modifier = modifier
+                .height(90.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Brush.verticalGradient(colors))
+                .clickable { onClick() }
+                .padding(16.dp),
+            contentAlignment = Alignment.BottomStart
+        ) {
+            Column {
+                Text(
+                    text = scene.icon,
+                    fontSize = 24.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = scene.label,
+                    color = ComposeColor.White,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
     }
 
     private fun createSearchBar(): LinearLayout {
