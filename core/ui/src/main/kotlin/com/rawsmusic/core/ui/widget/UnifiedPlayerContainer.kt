@@ -9,12 +9,13 @@ import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
-import coil.imageLoader
-import coil.load
 import com.rawsmusic.core.ui.util.AdaptivePadTransformation
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import kotlin.math.abs
 
 /**
@@ -56,6 +57,8 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         private set
     private var isDarkMode = true
     var isMiniCoverEnabled = true
+        private set
+    var isDefaultBackgroundEnabled = false
         private set
     private var immersiveViewId = View.NO_ID
     private var isApplyingImmersiveParams = false
@@ -182,20 +185,35 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     }
 
     private fun forceApplyImmersiveVisibility() {
-        val bg = immersiveBackground ?: return
-        val sceneParams = sceneRegistry[bg.id]?.get(currentScene)
-        if (sceneParams != null) {
-            bg.visibility = sceneParams.visibility
-            if (sceneParams.visibility != View.GONE) {
-                bg.alpha = sceneParams.alpha
-            }
-        } else {
-            if (currentScene == Scene.MAIN) {
-                bg.visibility = View.INVISIBLE
-                bg.alpha = 0f
+        // 默认背景模式：强制隐藏所有沉浸/封面背景视图
+        if (isDefaultBackgroundEnabled) {
+            immersiveBackground?.visibility = View.GONE
+            immersiveBackground?.alpha = 0f
+            // 封面只在播放页/歌词页等非主界面场景显示
+            val coverVisible = currentScene != Scene.MAIN
+            originalCoverImageView?.visibility = if (coverVisible) View.VISIBLE else View.INVISIBLE
+            originalCoverImageView?.alpha = if (coverVisible) 1f else 0f
+            miniCoverView?.visibility = View.GONE
+            miniCoverView?.alpha = 0f
+            playBgScrim?.visibility = View.GONE
+            return
+        }
+
+        immersiveBackground?.let { bg ->
+            val sceneParams = sceneRegistry[bg.id]?.get(currentScene)
+            if (sceneParams != null) {
+                bg.visibility = sceneParams.visibility
+                if (sceneParams.visibility != View.GONE) {
+                    bg.alpha = sceneParams.alpha
+                }
             } else {
-                bg.visibility = if (isImmersiveEnabled) View.VISIBLE else View.INVISIBLE
-                bg.alpha = if (isImmersiveEnabled) 1f else 0f
+                if (currentScene == Scene.MAIN) {
+                    bg.visibility = View.INVISIBLE
+                    bg.alpha = 0f
+                } else {
+                    bg.visibility = if (isImmersiveEnabled) View.VISIBLE else View.INVISIBLE
+                    bg.alpha = if (isImmersiveEnabled) 1f else 0f
+                }
             }
         }
 
@@ -240,14 +258,25 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         }
     }
 
+    fun updateDefaultBackgroundEnabled(enabled: Boolean) {
+        if (isDefaultBackgroundEnabled == enabled) {
+            forceApplyImmersiveVisibility()
+            return
+        }
+        isDefaultBackgroundEnabled = enabled
+        applyImmersiveSceneParams()
+    }
+
     fun updateImmersiveCover(path: String?) {
         originalCoverImageView?.let { coverImg ->
             when (coverImg) {
                 is CoverImageView -> coverImg.loadCover(path)
-                is ImageView -> coverImg.load(path) {
-                    crossfade(true)
-                    // 不限制尺寸，使用原分辨率；不使用 transformation，由 FIT_CENTER 直接显示
-                }
+                is ImageView -> BitmapProvider.load(
+                    key = path ?: return,
+                    imageView = coverImg,
+                    targetWidth = coverImg.width.coerceAtLeast(512),
+                    targetHeight = coverImg.height.coerceAtLeast(512)
+                )
             }
         }
         immersiveBackground?.setCover(path)
@@ -437,7 +466,14 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
 
         Log.d("SceneTransition", "transitionToScene: $from → $to")
 
+        // 🚨 同步锁：动画开始前强制隐藏旧场景的View，避免重叠显示
+        // includeExiting=true：程序化转场需要立即隐藏退出方向的View，防止新旧场景同时半透明
+        lockOldScene(from, to, includeExiting = true)
+        // 兜底：强制隐藏所有不属于目标场景的View，确保无遗漏
+        forceHideNonTargetScene(to)
+
         val params = buildAnimParams(from, to)
+        Log.d("SceneTransition", "transitionToScene: built ${params.size} anim params for $from → $to")
         if (params.isEmpty()) {
             val oldScene = currentScene
             currentScene = targetScene
@@ -458,6 +494,15 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         isTransitioning = true
 
         val gen = sceneAnimGeneration
+        val safetyGen = sceneAnimGeneration
+        postDelayed({
+            if (isTransitioning && sceneAnimGeneration == safetyGen) {
+                Log.w("SceneTransition", "transitionToScene: safety timeout, force-clearing isTransitioning")
+                isTransitioning = false
+                dragState = DragState.IDLE
+                activeAnimParams = null
+            }
+        }, duration + 1500)
         val animator = ValueAnimator.ofFloat(0f, 1f).apply {
             this.duration = duration
             interpolator = DecelerateInterpolator(PAGE_DECELERATE)
@@ -483,21 +528,20 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                         applyRatio(params, 1f)
                     } catch (e: Exception) {
                         Log.e("SceneTransition", "transitionToScene applyRatio error", e)
-                    } finally {
-                        val oldScene = currentScene
-                        currentScene = targetScene
-                        transitionRatio = 0f
-                        isTransitioning = false
-                        activeAnimParams = null
-                        Log.d("SceneTransition", "transitionToScene end: oldScene=$oldScene → currentScene=$currentScene")
                     }
+                    val capturedOldScene = currentScene
+                    currentScene = targetScene
+                    transitionRatio = 0f
+                    isTransitioning = false
+                    activeAnimParams = null
+                    Log.d("SceneTransition", "transitionToScene end: oldScene=$capturedOldScene → currentScene=$currentScene")
                     post {
                         if (sceneAnimGeneration != gen) {
                             Log.d("SceneTransition", "transitionToScene onSceneChanged skipped: generation mismatch")
                             return@post
                         }
                         try {
-                            onSceneChanged?.invoke(targetScene, currentScene)
+                            onSceneChanged?.invoke(targetScene, capturedOldScene)
                         } catch (e: Exception) {
                             Log.e("SceneTransition", "transitionToScene onSceneChanged error", e)
                         }
@@ -538,6 +582,10 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
 
         if (fromScene != targetScene && toScene != targetScene) {
             // 完全不同的场景，重建参数
+            // 🚨 同步锁：动画开始前强制隐藏旧场景的View
+            lockOldScene(currentScene, targetScene, includeExiting = true)
+            // 兜底：强制隐藏所有不属于目标场景的View
+            forceHideNonTargetScene(targetScene)
             activeAnimParams = buildAnimParams(currentScene, targetScene)
             fromScene = currentScene
             toScene = targetScene
@@ -604,6 +652,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
      * 与 switchToSceneImmediate 功能相同，语义上强调"绕过动画引擎"。
      */
     fun switchToSceneSilent(targetScene: Scene) {
+        Log.w("SceneTransition", "=== switchToSceneSilent: $currentScene -> $targetScene ===")
         sceneAnimator?.cancel()
 
         for ((viewId, sceneMap) in sceneRegistry) {
@@ -619,11 +668,100 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         activeAnimParams = null
         // 仅在场景实际变化时才触发回调，避免递归调用
         if (oldScene != targetScene) {
+            Log.w("SceneTransition", "=== switchToSceneSilent invoking onSceneChanged: $oldScene -> $targetScene ===")
             onSceneChanged?.invoke(targetScene, oldScene)
         }
     }
 
+    // ==================== 同步锁机制（解决重叠显示问题） ====================
+
+    /**
+     * 动画开始前，强制隐藏旧场景的所有View（GONE + alpha=0）
+     * 
+     * 核心逻辑（对标 Poweramp mo7061t 的容器级隔离）：
+     * - 遍历 sceneRegistry，找出只属于 fromScene 但不属于 toScene 的 View
+     * - 这些 View 在动画开始前就被强制设为 GONE，避免与新场景 View 同时可见
+     * - 当 includeExiting=true 时，还会锁定"退出方向"的 View（同时注册了两个场景但从可见→不可见）
+     * 
+     * @param fromScene 旧场景
+     * @param toScene 新场景
+     * @param excludeIds 不参与锁定的 View ID 集合（如共享背景）
+     * @param includeExiting 是否也锁定"退出方向"的 View（用于程序化转场，拖拽手势不使用）
+     */
+    private fun lockOldScene(fromScene: Scene, toScene: Scene, excludeIds: Set<Int> = emptySet(), includeExiting: Boolean = false) {
+        for ((viewId, sceneMap) in sceneRegistry) {
+            if (viewId in excludeIds) continue
+            val view = findViewById<View>(viewId) ?: continue
+
+            val fromParams = sceneMap[fromScene]
+            val toParams = sceneMap[toScene]
+
+            if (fromParams != null && toParams == null) {
+                view.alpha = 0f
+                view.visibility = View.INVISIBLE
+                Log.d("SceneTransition", "lockOldScene: locked viewId=$viewId (from=$fromScene only)")
+            } else if (includeExiting && fromParams != null && toParams != null) {
+                val isExiting = (fromParams.alpha > 0f && toParams.alpha == 0f) ||
+                    (fromParams.visibility == View.VISIBLE && toParams.visibility != View.VISIBLE)
+                if (isExiting) {
+                    view.alpha = 0f
+                    view.visibility = View.INVISIBLE
+                    Log.d("SceneTransition", "lockOldScene: locked viewId=$viewId (exiting: alpha ${fromParams.alpha}→${toParams.alpha}, vis ${fromParams.visibility}→${toParams.visibility})")
+                }
+            }
+        }
+
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            val childId = child.id
+            if (childId == View.NO_ID || childId in excludeIds) continue
+
+            val sceneMap = sceneRegistry[childId]
+            if (sceneMap == null) {
+                if (child.visibility == View.VISIBLE && child.alpha > 0f) {
+                    Log.d("SceneTransition", "lockOldScene: unregistered viewId=$childId visibility=${child.visibility} alpha=${child.alpha}")
+                }
+                continue
+            }
+
+            val fromParams = sceneMap[fromScene]
+            val toParams = sceneMap[toScene]
+
+            if (fromParams != null && toParams == null) {
+                child.alpha = 0f
+                child.visibility = View.INVISIBLE
+            } else if (includeExiting && fromParams != null && toParams != null) {
+                val isExiting = (fromParams.alpha > 0f && toParams.alpha == 0f) ||
+                    (fromParams.visibility == View.VISIBLE && toParams.visibility != View.VISIBLE)
+                if (isExiting) {
+                    child.alpha = 0f
+                    child.visibility = View.INVISIBLE
+                }
+            }
+        }
+    }
+
     // ==================== 动画参数构建（对标 e4.m2820 捕获 from 值） ====================
+
+    /**
+     * 兜底方法：强制隐藏所有不属于目标场景的 View
+     * 在 lockOldScene 之后调用，确保没有遗漏的 View 导致重叠显示
+     * 
+     * @param targetScene 目标场景
+     */
+    private fun forceHideNonTargetScene(targetScene: Scene) {
+        for ((viewId, sceneMap) in sceneRegistry) {
+            val view = findViewById<View>(viewId) ?: continue
+            if (sceneMap[targetScene] == null) {
+                // 该 View 没有注册目标场景参数 → 强制隐藏（用INVISIBLE保持View树完整，避免RecyclerView回收）
+                if (view.visibility != View.INVISIBLE || view.alpha != 0f) {
+                    view.alpha = 0f
+                    view.visibility = View.INVISIBLE
+                    Log.d("SceneTransition", "forceHideNonTargetScene: hidden viewId=$viewId (no params for $targetScene)")
+                }
+            }
+        }
+    }
 
     /**
      * 构建从 fromScene 到 toScene 的所有 View 动画参数
@@ -634,21 +772,23 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
 
         for ((viewId, sceneMap) in sceneRegistry) {
             val view = findViewById<View>(viewId) ?: continue
-            
-            // originalCoverImageView 始终参与动画，由注册的场景参数决定其起止状态
-            // 沉浸模式下 PLAYER 场景已正确设为 INVISIBLE，无需额外防御
 
             val fromParams = sceneMap[fromScene]
             val toParams = sceneMap[toScene]
             if (fromParams == null && toParams == null) continue
 
+            Log.d("SceneTransition", "buildAnimParams: viewId=$viewId, fromScene=$fromScene, toScene=$toScene, fromParams=$fromParams, toParams=$toParams")
+
             val animParams = StateAnimParams(view)
             var flags = 0
 
             val fp = fromParams ?: captureCurrentParams(view, fromScene)
-            val tp = toParams ?: continue
+            val tp = toParams ?: SceneParams(
+                scene = toScene,
+                alpha = 0f,
+                visibility = View.GONE
+            )
 
-            // Alpha
             if (fp.alpha != tp.alpha) {
                 flags = flags or PropFlag.ALPHA
                 animParams.fromAlpha = view.alpha
@@ -657,7 +797,6 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 view.alpha = tp.alpha
             }
 
-            // ScaleX
             if (fp.scaleX != tp.scaleX) {
                 flags = flags or PropFlag.SCALE_X
                 animParams.fromScaleX = view.scaleX
@@ -666,7 +805,6 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 view.scaleX = tp.scaleX
             }
 
-            // ScaleY
             if (fp.scaleY != tp.scaleY) {
                 flags = flags or PropFlag.SCALE_Y
                 animParams.fromScaleY = view.scaleY
@@ -675,7 +813,6 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 view.scaleY = tp.scaleY
             }
 
-            // TranslationX
             if (fp.translationX != tp.translationX) {
                 flags = flags or PropFlag.TRANSLATION_X
                 animParams.fromTranslationX = view.translationX
@@ -684,7 +821,6 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 view.translationX = tp.translationX
             }
 
-            // TranslationY
             if (fp.translationY != tp.translationY) {
                 flags = flags or PropFlag.TRANSLATION_Y
                 animParams.fromTranslationY = view.translationY
@@ -693,7 +829,6 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 view.translationY = tp.translationY
             }
 
-            // Visibility
             val needVisAnim = fp.visibility != tp.visibility || view.visibility != tp.visibility
             if (needVisAnim) {
                 flags = flags or PropFlag.VISIBILITY
@@ -703,14 +838,12 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 view.visibility = tp.visibility
             }
 
-            // CornerRadius
             if (fp.cornerRadius >= 0f && tp.cornerRadius >= 0f && fp.cornerRadius != tp.cornerRadius) {
                 flags = flags or PropFlag.CORNER_RADIUS
                 animParams.fromCornerRadius = fp.cornerRadius
                 animParams.toCornerRadius = tp.cornerRadius
             }
 
-            // Rotation
             if (fp.rotation != tp.rotation) {
                 flags = flags or PropFlag.ROTATION
                 animParams.fromRotation = view.rotation
@@ -719,7 +852,6 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 view.rotation = tp.rotation
             }
 
-            // AlphaMultiplier
             if (fp.alphaMultiplier != tp.alphaMultiplier) {
                 flags = flags or PropFlag.ALPHA_MULTIPLIER
                 animParams.fromAlphaMultiplier = fp.alphaMultiplier
@@ -729,6 +861,19 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
             if (flags != 0) {
                 animParams.flags = flags
                 result.add(animParams)
+                // 诊断日志：打印所有动画 View 的 from/to 值（用 logcat 过滤 CoverAnim）
+                val resName = try { resources.getResourceEntryName(view.id) } catch (_: Exception) { "unknown" }
+                android.util.Log.d("CoverAnim", "buildAnimParams $resName: " +
+                    "from=(${animParams.fromTranslationX},${animParams.fromTranslationY} " +
+                    "scale=(${animParams.fromScaleX},${animParams.fromScaleY}) " +
+                    "alpha=${animParams.fromAlpha}) " +
+                    "to=(${animParams.toTranslationX},${animParams.toTranslationY} " +
+                    "scale=(${animParams.toScaleX},${animParams.toScaleY}) " +
+                    "alpha=${animParams.toAlpha}) " +
+                    "viewState=(${view.translationX},${view.translationY} " +
+                    "scale=(${view.scaleX},${view.scaleY}) " +
+                    "left=${view.left} top=${view.top} " +
+                    "w=${view.width} h=${view.height})")
             }
         }
         return result
@@ -925,18 +1070,19 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         startStateAnim(view,
             targetScaleX = pressScale, targetScaleY = pressScale,
             duration = duration / 2,
+            interpolator = AccelerateInterpolator(),
             onUpdate = { if (it >= 0.8f) cancelStateAnim(view) },
             onEnd = {
                 startStateAnim(view,
                     targetScaleX = 1f, targetScaleY = 1f,
                     duration = duration,
-                    interpolator = DecelerateInterpolator(SPRING_DAMPING * 3f))
+                    interpolator = OvershootInterpolator(BUTTON_RELEASE_OVERSHOOT))
             })
     }
 
     /**
-     * 弹性回弹动画（对标 Poweramp 的 spring settle）
-     * 使用阻尼振荡插值器模拟弹簧物理：阻尼 SPRING_DAMPING、刚度 SPRING_STIFFNESS
+     * 弹性回弹动画（对标 Poweramp r1 的 cubic ease-out）
+     * 原始公式：1-(1-t)³，即 3t-3t²+t³
      * 用于封面拖拽释放后的回弹和场景切换回弹
      */
     fun springSettleAnim(
@@ -955,7 +1101,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
             targetTranslationX = targetTranslationX,
             targetTranslationY = targetTranslationY,
             duration = duration,
-            interpolator = DecelerateInterpolator(SPRING_STIFFNESS)
+            interpolator = CUBIC_EASE_OUT
         )
     }
 
@@ -981,6 +1127,19 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
             view.translationY = params.translationY
             view.scaleX = params.scaleX
             view.scaleY = params.scaleY
+            if (params.cornerRadius >= 0f) {
+                when (view) {
+                    is com.google.android.material.imageview.ShapeableImageView -> {
+                        view.shapeAppearanceModel = view.shapeAppearanceModel
+                            .toBuilder()
+                            .setAllCornerSizes(params.cornerRadius)
+                            .build()
+                    }
+                    is CoverImageView -> {
+                        view.cornerRadius = params.cornerRadius
+                    }
+                }
+            }
         }
     }
 
@@ -1006,14 +1165,18 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
 
     /**
      * 开始封面拖拽（对标 c0.m2964 + r.P）
-     * 从 PLAYER 场景拖向 MAIN 场景，构建动画参数
+     * 从当前场景拖向目标场景，构建动画参数
+     * @param targetScene 目标场景。PLAYER→MAIN，LYRIC→PLAYER
      */
-    fun startCoverDrag() {
+    fun startCoverDrag(targetScene: Scene = Scene.MAIN) {
         if (currentScene != Scene.PLAYER && currentScene != Scene.LYRIC) return
+        if (currentScene == targetScene) return
         sceneAnimGeneration++ // 使旧动画的延迟回调失效
         sceneAnimator?.cancel()
         val from = currentScene
-        val to = Scene.MAIN
+        val to = targetScene
+        // 🚨 同步锁：拖拽开始时强制隐藏旧场景的View
+        lockOldScene(from, to)
         activeAnimParams = buildAnimParams(from, to)
         fromScene = from
         toScene = to
@@ -1036,30 +1199,28 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
 
     /**
      * 结束封面拖拽（对标 c0.m2964 + c0.X）
-     * @param shouldClose 是否应关闭到 MAIN 场景
+     * @param shouldClose 是否应关闭到目标场景（toScene）
      * @param duration 动画时长
      */
     fun endCoverDrag(shouldClose: Boolean, duration: Long = SCENE_ANIM_DURATION, velocity: Float = 0f) {
         if (!isCoverDragging) return
         isCoverDragging = false
 
-        val targetScene = if (shouldClose) Scene.MAIN else fromScene
+        val targetScene = if (shouldClose) toScene else fromScene
         val endRatio = if (shouldClose) 1f else 0f
         val startRatio = transitionRatio
 
         val params = activeAnimParams
         if (params == null || params.isEmpty()) {
-            // 没有动画参数，直接完成过渡
             val oldScene = currentScene
             currentScene = targetScene
             transitionRatio = 0f
             isTransitioning = false
             activeAnimParams = null
             switchToSceneSilent(targetScene)
-            // 延迟触发场景变化回调，确保状态已清理
             post {
                 try {
-                    onSceneChanged?.invoke(targetScene, currentScene)
+                    onSceneChanged?.invoke(targetScene, oldScene)
                 } catch (e: Exception) {
                     Log.e("SceneTransition", "endCoverDrag onSceneChanged error", e)
                 }
@@ -1148,6 +1309,98 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         }, animDuration + 500L)
     }
 
+    /**
+     * Predictive Back API: 带 swipeRight 参数的封面拖拽开始
+     * 供 MainActivity.setupPredictiveBack() 调用
+     * @param targetScene 目标场景。PLAYER→MAIN，LYRIC→PLAYER
+     */
+    fun startCoverDrag(swipeRight: Boolean, targetScene: Scene = Scene.MAIN) {
+        startCoverDrag(targetScene)
+    }
+
+    /**
+     * Predictive Back API: 封面拖拽进度更新
+     * 供 MainActivity.setupPredictiveBack() 调用
+     */
+    fun updateCoverDragProgress(ratio: Float) {
+        updateCoverDrag(ratio)
+    }
+
+    /**
+     * Predictive Back API: 封面拖拽释放
+     * 供 MainActivity.setupPredictiveBack() 调用
+     */
+    fun releaseCoverDrag(shouldClose: Boolean, velocity: Float) {
+        endCoverDrag(shouldClose, velocity = velocity)
+    }
+
+    /**
+     * Predictive Back API: 场景拖拽进度更新（QUEUE/ALBUM_DETAIL/EFFECTS/LYRIC）
+     * 直接使用 ratio 驱动动画，不依赖触摸坐标
+     */
+    fun updateDragBackProgress(ratio: Float) {
+        if (activeAnimParams == null) return
+        val clamped = ratio.coerceIn(0f, 1f)
+        transitionRatio = clamped
+        activeAnimParams?.let { applyRatio(it, clamped) }
+        onTransitionProgress?.invoke(toScene, clamped)
+    }
+
+    /**
+     * Predictive Back API: 场景拖拽结束（QUEUE/ALBUM_DETAIL/EFFECTS/LYRIC）
+     * 供 MainActivity.setupPredictiveBack() 调用
+     */
+    fun endDragBack(shouldGoBack: Boolean, velocity: Float = 0f) {
+        val params = activeAnimParams
+        if (params == null || params.isEmpty()) {
+            isTransitioning = false
+            activeAnimParams = null
+            return
+        }
+
+        val startRatio = transitionRatio
+        val endRatio = if (shouldGoBack) 1f else 0f
+        val targetScene = if (shouldGoBack) toScene else fromScene
+
+        val ratioDelta = abs(endRatio - startRatio)
+        val animDuration = calcVelocityAdaptedDuration(SCENE_ANIM_DURATION, ratioDelta, velocity)
+
+        val animator = ValueAnimator.ofFloat(startRatio, endRatio).apply {
+            this.duration = animDuration
+            interpolator = DecelerateInterpolator(PAGE_DECELERATE)
+            addUpdateListener { anim ->
+                transitionRatio = anim.animatedValue as Float
+                applyRatio(params, transitionRatio)
+                onTransitionProgress?.invoke(targetScene, transitionRatio)
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                private var cancelled = false
+                override fun onAnimationCancel(animation: android.animation.Animator) { cancelled = true }
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    sceneAnimator = null
+                    if (cancelled) {
+                        isTransitioning = false
+                        activeAnimParams = null
+                        return
+                    }
+                    val capturedOldScene = currentScene
+                    currentScene = targetScene
+                    transitionRatio = 0f
+                    isTransitioning = false
+                    activeAnimParams = null
+                    switchToSceneSilent(targetScene)
+                    val gen = sceneAnimGeneration
+                    post {
+                        if (sceneAnimGeneration != gen) return@post
+                        onSceneChanged?.invoke(targetScene, capturedOldScene)
+                    }
+                }
+            })
+            start()
+        }
+        sceneAnimator = animator
+    }
+
     // ==================== 封面上滑手势（PLAYER↔LYRIC） ====================
 
     private var isCoverSwipeUpDragging = false
@@ -1164,6 +1417,8 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         val actualTo = if (actualFrom == from) to else from
         Log.d("SceneTransition", "startCoverSwipeUpDrag: actualFrom=$actualFrom → actualTo=$actualTo")
         if (actualFrom == Scene.PLAYER && actualTo == Scene.LYRIC) onPreparePlayerToLyric?.invoke()
+        // 🚨 同步锁：拖拽开始时强制隐藏旧场景的View
+        lockOldScene(actualFrom, actualTo)
         activeAnimParams = buildAnimParams(actualFrom, actualTo)
         fromScene = actualFrom
         toScene = actualTo
@@ -1209,9 +1464,10 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
             activeAnimParams = null
             switchToSceneSilent(targetScene)
             // 延迟触发场景变化回调，确保状态已清理
+            val oldSceneForCallback = oldScene
             post {
                 try {
-                    onSceneChanged?.invoke(targetScene, currentScene)
+                    onSceneChanged?.invoke(targetScene, oldSceneForCallback)
                 } catch (e: Exception) {
                     Log.e("SceneTransition", "endCoverSwipeUpDrag onSceneChanged error", e)
                 }
@@ -1345,11 +1601,21 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     var disableDeepPageSwipe: Boolean = false
     var isCurrentlyPlaying: Boolean = false
 
+    /** 主界面容器引用，用于深层页面手势返回 */
+    var mainContainer: com.rawsmusic.core.ui.scene.UnifiedMainContainer? = null
+
+    /** 当前是否在 MAIN 场景且有可返回的子页面 */
+    private val canGoBackInMain: Boolean
+        get() = currentScene == Scene.MAIN &&
+                !disableDeepPageSwipe &&
+                (mainContainer?.canNavigateBack() == true)
+
     /** 外部 overlay 显示时禁止手势拦截（如歌曲操作面板、元数据详情面板） */
     var disableGestureIntercept: Boolean = false
 
     // ==================== 回调 ====================
     var onSwipeBack: (() -> Unit)? = null
+    var onImmersiveSwipeLeft: (() -> Unit)? = null
     var onLeftEdgeSwipe: (() -> Unit)? = null
     var onPlayerSwipeToMain: (() -> Unit)? = null
     var onHomeSwipeRightDrag: ((offset: Float) -> Unit)? = null
@@ -1363,18 +1629,55 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
 
     // ==================== 触摸拦截 ====================
 
+    /**
+     * 关键修复：覆盖 requestDisallowInterceptTouchEvent
+     * 当边缘滑动进行时，忽略子视图（如 PowerListView）的拦截请求，
+     * 确保 onInterceptTouchEvent 能持续收到后续的 MOVE 事件。
+     */
+    override fun requestDisallowInterceptTouchEvent(disallowIntercept: Boolean) {
+        // 边缘滑动进行中时，忽略子视图的 requestDisallowInterceptTouchEvent(true) 调用
+        if (disallowIntercept && isEdgeDrag) {
+            return
+        }
+        super.requestDisallowInterceptTouchEvent(disallowIntercept)
+    }
+
+    /**
+     * dispatchTouchEvent 总是会被调用，不会被 requestDisallowInterceptTouchEvent 阻止。
+     * 用它来检测边缘滑动，然后强制拦截后续事件。
+     */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val leftEdge = ev.rawX < LEFT_EDGE_ZONE_DP * density
+                val rightEdge = ev.rawX > (width - RIGHT_EDGE_ZONE_DP * density)
+                isEdgeDrag = leftEdge || rightEdge
+                if (isEdgeDrag) {
+                    // 强制拦截边缘滑动事件，防止子视图调用 requestDisallowInterceptTouchEvent
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                }
+            }
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
     override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
         if (dragState == DragState.SETTLING) return false
-        if (isTransitioning && ev.actionMasked == MotionEvent.ACTION_DOWN) return false
+        if (isTransitioning) return true
         if (isCoverSwipeUpDragging) return false
         if (disableGestureIntercept) return false
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (!canStartDrag(ev.rawX, ev.rawY)) return false
+                val canDrag = canStartDrag(ev.rawX, ev.rawY)
+                android.util.Log.d("GestureDebug", "onInterceptTouchEvent DOWN: canStartDrag=$canDrag, canGoBackInMain=$canGoBackInMain, scene=$currentScene, x=${ev.rawX}, w=$width")
+                if (!canDrag) return false
                 dragStartX = ev.rawX
                 dragStartY = ev.rawY
                 isHorizontalSwipe = null
-                isEdgeDrag = ev.rawX < LEFT_EDGE_ZONE_DP * density
+                // 支持左右两侧边缘滑动
+                val leftEdge = ev.rawX < LEFT_EDGE_ZONE_DP * density
+                val rightEdge = ev.rawX > (width - RIGHT_EDGE_ZONE_DP * density)
+                isEdgeDrag = leftEdge || rightEdge
             }
             MotionEvent.ACTION_MOVE -> {
                 if (dragState == DragState.DRAGGING) return true
@@ -1387,17 +1690,53 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                     velocityTracker?.addMovement(ev)
                 }
                 if (isHorizontalSwipe == null && abs(dx) + abs(dy) > touchSlop) {
-                    val dominatedByHorizontal = if (currentScene == Scene.PLAYER || currentScene == Scene.LYRIC) {
-                        abs(dx) > abs(dy) * 1.5f
-                    } else {
-                        abs(dx) > abs(dy)
+                    val dominatedByHorizontal = when {
+                        currentScene == Scene.PLAYER || currentScene == Scene.LYRIC -> abs(dx) > abs(dy) * 1.5f
+                        canGoBackInMain && isEdgeDrag -> true  // 边缘滑动直接判定为水平
+                        canGoBackInMain -> abs(dx) > abs(dy) * 0.6f  // 可返回时更宽松
+                        else -> abs(dx) > abs(dy)
                     }
                     isHorizontalSwipe = dominatedByHorizontal
-                    if (isHorizontalSwipe == true && dx > 0) {
+                    android.util.Log.d("GestureDebug", "onInterceptTouchEvent MOVE: dx=$dx, dy=$dy, isHorizontal=$isHorizontalSwipe, scene=$currentScene, canGoBackInMain=$canGoBackInMain")
+                    if (isHorizontalSwipe == true) {
                         val accepted = checkSwipeAccepted(dx)
+                        android.util.Log.d("GestureDebug", "checkSwipeAccepted=$accepted")
                         if (accepted) {
-                            if (currentScene == Scene.PLAYER || currentScene == Scene.LYRIC) {
-                                onDragStart(dx < 0)
+                            when (currentScene) {
+                                Scene.PLAYER, Scene.LYRIC -> {
+                                    // 沉浸模式 PLAYER 左滑：启动独立歌词界面
+                                    if (isImmersiveEnabled && currentScene == Scene.PLAYER && dx < 0) {
+                                        onImmersiveSwipeLeft?.invoke()
+                                        resetTouch()
+                                        return false
+                                    }
+                                    onDragStart(dx < 0)
+                                }
+                                Scene.QUEUE, Scene.ALBUM_DETAIL, Scene.EFFECTS -> {
+                                    // 这些场景的边缘滑动返回 MAIN
+                                    Log.d("SceneTransition", "onInterceptTouchEvent: QUEUE/ALBUM_DETAIL/EFFECTS edge drag, calling onDragStart")
+                                    onDragStart(directionLeft = false)
+                                }
+                                Scene.MAIN -> {
+                                    if (canGoBackInMain) {
+                                        // 根据滑动方向或边缘位置确定方向
+                                        // 全屏滑动：根据 dx 方向
+                                        // 边缘滑动：根据边缘位置
+                                        val swipeRight = if (isEdgeDrag) {
+                                            // 边缘滑动：左侧边缘向右滑，右侧边缘向左滑
+                                            dragStartX < LEFT_EDGE_ZONE_DP * density
+                                        } else {
+                                            // 全屏滑动：根据滑动方向
+                                            dx > 0
+                                        }
+                                        mainContainer?.startDragBack(
+                                            swipeRight = swipeRight,
+                                            initialTouchX = dragStartX,
+                                            initialTouchY = dragStartY
+                                        )
+                                    }
+                                }
+                                else -> {}
                             }
                             dragState = DragState.DRAGGING
                             parent?.requestDisallowInterceptTouchEvent(true)
@@ -1419,21 +1758,23 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     }
 
     /**
-     * 判断当前场景下右滑是否应该被接受
-     * PLAYER 场景：边缘右滑返回 MAIN
-     * MAIN + 深层页面：全屏右滑返回上一级（disableDeepPageSwipe 时仅边缘）
-     * MAIN + 首页：交给菜单处理（不拦截）
+     * 判断当前场景下滑动是否应该被接受
+     * PLAYER 场景：全屏右滑返回 MAIN，左滑进入 LYRIC
+     * MAIN + 深层页面：全屏左/右滑返回上一级（使用 SceneController 拖拽动画）
+     * MAIN + 首页：右滑交给菜单处理（不拦截）
+     * LYRIC, QUEUE, ALBUM_DETAIL, EFFECTS：边缘滑动支持双向
      */
     private fun checkSwipeAccepted(dx: Float): Boolean {
         return when (currentScene) {
-            Scene.PLAYER -> dx > 0
-            Scene.LYRIC -> isEdgeDrag && dx > 0
-            Scene.QUEUE -> isEdgeDrag && dx > 0
-            Scene.ALBUM_DETAIL -> isEdgeDrag && dx > 0
-            Scene.EFFECTS -> isEdgeDrag && dx > 0
+            Scene.PLAYER -> dx > 0 || dx < 0  // PLAYER 支持双向
+            Scene.LYRIC -> isEdgeDrag && (dx > 0 || dx < 0)  // 边缘滑动支持双向
+            Scene.QUEUE -> isEdgeDrag && (dx > 0 || dx < 0)  // 边缘滑动支持双向
+            Scene.ALBUM_DETAIL -> isEdgeDrag && (dx > 0 || dx < 0)  // 边缘滑动支持双向
+            Scene.EFFECTS -> isEdgeDrag && (dx > 0 || dx < 0)  // 边缘滑动支持双向
             Scene.MAIN -> {
-                if (isDeepHomePage) {
-                    !disableDeepPageSwipe || isEdgeDrag
+                if (canGoBackInMain) {
+                    // 深层页面：全屏滑动和边缘滑动都支持
+                    true
                 } else {
                     dx > 0
                 }
@@ -1442,6 +1783,9 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(ev: MotionEvent): Boolean {
+        android.util.Log.d("SceneTransition", "onTouchEvent: action=${ev.actionMasked}, dragState=$dragState, scene=$currentScene")
+        // 过渡动画期间消费所有触摸事件
+        if (isTransitioning) return true
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> return false
             MotionEvent.ACTION_MOVE -> {
@@ -1465,7 +1809,10 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     }
 
     private fun canStartDrag(x: Float, y: Float): Boolean {
-        if (x > width - EDGE_EXCLUSION_DP * density) return false
+        // 边缘滑动不排除
+        val leftEdge = x < LEFT_EDGE_ZONE_DP * density
+        val rightEdge = x > width - RIGHT_EDGE_ZONE_DP * density
+        if (!leftEdge && !rightEdge && x > width - EDGE_EXCLUSION_DP * density) return false
         if (isTransitioning) return false
         return true
     }
@@ -1474,10 +1821,10 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
      * 拖拽开始：确定拖拽方向并构建动画参数
      * 对标 Poweramp 的 e4.s() 调用前准备
      */
-    private fun onDragStart(directionLeft: Boolean) {
-        // 取消正在进行的动画
+    fun onDragStart(directionLeft: Boolean) {
         sceneAnimator?.cancel()
         isTransitioning = false
+        transitionRatio = 0f
 
         Log.d("SceneTransition", "onDragStart: currentScene=$currentScene, directionLeft=$directionLeft, lyricEnabled=$lyricEnabled")
 
@@ -1486,12 +1833,18 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 if (directionLeft) {
                     dragFromScene = Scene.PLAYER
                     dragToScene = Scene.LYRIC
+                    fromScene = dragFromScene
+                    toScene = dragToScene
                     onPreparePlayerToLyric?.invoke()
+                    lockOldScene(dragFromScene, dragToScene)
                     activeAnimParams = buildAnimParams(dragFromScene, dragToScene)
                 } else if (!directionLeft) {
                     dragFromScene = Scene.PLAYER
                     dragToScene = Scene.EFFECTS
+                    fromScene = dragFromScene
+                    toScene = dragToScene
                     onPreparePlayerToEffects?.invoke()
+                    lockOldScene(dragFromScene, dragToScene)
                     activeAnimParams = buildAnimParams(dragFromScene, dragToScene)
                 }
                 Log.d("SceneTransition", "onDragStart PLAYER: dragFromScene=$dragFromScene → dragToScene=$dragToScene")
@@ -1499,24 +1852,39 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
             Scene.LYRIC -> {
                 dragFromScene = Scene.LYRIC
                 dragToScene = Scene.PLAYER
+                fromScene = dragFromScene
+                toScene = dragToScene
+                lockOldScene(dragFromScene, dragToScene)
                 activeAnimParams = buildAnimParams(dragFromScene, dragToScene)
             }
             Scene.QUEUE -> {
                 dragFromScene = Scene.QUEUE
-                dragToScene = Scene.PLAYER
+                dragToScene = Scene.MAIN
+                fromScene = dragFromScene
+                toScene = dragToScene
+                lockOldScene(dragFromScene, dragToScene)
                 activeAnimParams = buildAnimParams(dragFromScene, dragToScene)
             }
             Scene.ALBUM_DETAIL -> {
                 dragFromScene = Scene.ALBUM_DETAIL
-                dragToScene = Scene.PLAYER
+                dragToScene = Scene.MAIN
+                fromScene = dragFromScene
+                toScene = dragToScene
+                lockOldScene(dragFromScene, dragToScene)
                 activeAnimParams = buildAnimParams(dragFromScene, dragToScene)
             }
             Scene.EFFECTS -> {
                 dragFromScene = Scene.EFFECTS
-                dragToScene = Scene.PLAYER
+                dragToScene = Scene.MAIN
+                fromScene = dragFromScene
+                toScene = dragToScene
+                lockOldScene(dragFromScene, dragToScene)
                 activeAnimParams = buildAnimParams(dragFromScene, dragToScene)
             }
-            Scene.MAIN -> { /* 右滑 → 触发菜单，不走场景动画 */ }
+            Scene.MAIN -> { /* 已在 onInterceptTouchEvent 中调用 startDragBack */ }
+        }
+        if (activeAnimParams != null) {
+            isTransitioning = true
         }
     }
 
@@ -1544,38 +1912,36 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 }
             }
             Scene.LYRIC -> {
-                if (dx > 0) {
-                    val ratio = (dx / width.toFloat()).coerceIn(0f, 1f)
-                    if (activeAnimParams != null) {
-                        transitionRatio = ratio
-                        applyRatio(activeAnimParams!!, ratio)
-                    }
+                // 边缘滑动支持双向
+                val ratio = (kotlin.math.abs(dx) / width.toFloat()).coerceIn(0f, 1f)
+                Log.d("SceneTransition", "handleDragMove LYRIC: dx=$dx, ratio=$ratio, activeAnimParams=${activeAnimParams != null}")
+                if (activeAnimParams != null) {
+                    transitionRatio = ratio
+                    applyRatio(activeAnimParams!!, ratio)
                 }
             }
             Scene.QUEUE, Scene.ALBUM_DETAIL -> {
-                if (dx > 0) {
-                    val ratio = (dx / width.toFloat()).coerceIn(0f, 1f)
-                    if (activeAnimParams != null) {
-                        transitionRatio = ratio
-                        applyRatio(activeAnimParams!!, ratio)
-                    }
+                // 边缘滑动支持双向
+                val ratio = (kotlin.math.abs(dx) / width.toFloat()).coerceIn(0f, 1f)
+                Log.d("SceneTransition", "handleDragMove QUEUE/ALBUM_DETAIL: dx=$dx, ratio=$ratio, activeAnimParams=${activeAnimParams != null}")
+                if (activeAnimParams != null) {
+                    transitionRatio = ratio
+                    applyRatio(activeAnimParams!!, ratio)
                 }
             }
             Scene.EFFECTS -> {
-                if (dx > 0) {
-                    val ratio = (dx / width.toFloat()).coerceIn(0f, 1f)
-                    if (activeAnimParams != null) {
-                        transitionRatio = ratio
-                        applyRatio(activeAnimParams!!, ratio)
-                    }
+                // 边缘滑动支持双向
+                val ratio = (kotlin.math.abs(dx) / width.toFloat()).coerceIn(0f, 1f)
+                Log.d("SceneTransition", "handleDragMove EFFECTS: dx=$dx, ratio=$ratio, activeAnimParams=${activeAnimParams != null}")
+                if (activeAnimParams != null) {
+                    transitionRatio = ratio
+                    applyRatio(activeAnimParams!!, ratio)
                 }
             }
             Scene.MAIN -> {
-                if (isDeepHomePage) {
-                    if (dx > 0) {
-                        val offset = (dx / width.toFloat()).coerceIn(0f, 0.3f)
-                        navHostFragment?.translationX = offset * width * 0.15f
-                    }
+                if (canGoBackInMain) {
+                    // 深层页面：驱动 SceneController 拖拽返回动画，实时跟随手指（跟手）
+                    mainContainer?.updateDragBack(ev.rawX, ev.rawY)
                 } else {
                     if (dx > 0) {
                         val offset = (dx / width.toFloat()).coerceIn(0f, 1f)
@@ -1646,12 +2012,12 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 }
             }
             Scene.MAIN -> {
-                if (isDeepHomePage) {
-                    val dx = lastRawX - dragStartX
-                    if (dx > width * 0.2f || isFlingRight) {
-                        onSwipeBack?.invoke()
-                    }
-                    navHostFragment?.translationX = 0f
+                if (canGoBackInMain) {
+                    // 使用 SceneController 中的 dragCurrentRatio 来判断
+                    val ratio = mainContainer?.getDragBackRatio() ?: 0f
+                    val shouldGoBack = ratio > SWIPE_THRESHOLD_RATIO ||
+                        (ratio > 0 && isFlingRight) || (ratio > 0 && isFlingLeft)
+                    mainContainer?.endDragBack(shouldGoBack, vx)
                 } else {
                     onHomeSwipeRightRelease?.invoke(isFlingRight)
                 }
@@ -1671,7 +2037,10 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         velocity: Float = 0f
     ) {
         val params = activeAnimParams ?: run {
-            Log.w("SceneTransition", "settleFromCurrentRatio: activeAnimParams is NULL, returning early! targetScene=$targetScene")
+            Log.w("SceneTransition", "settleFromCurrentRatio: activeAnimParams is NULL, clearing state! targetScene=$targetScene")
+            isTransitioning = false
+            dragState = DragState.IDLE
+            activeAnimParams = null
             return
         }
 
@@ -1706,6 +2075,15 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         val duration = calcVelocityAdaptedDuration(SCENE_ANIM_DURATION, ratioDelta, velocity)
 
         val gen = sceneAnimGeneration
+        val settleSafetyGen = sceneAnimGeneration
+        postDelayed({
+            if (isTransitioning && sceneAnimGeneration == settleSafetyGen) {
+                Log.w("SceneTransition", "settleFromCurrentRatio: safety timeout, force-clearing isTransitioning")
+                isTransitioning = false
+                dragState = DragState.IDLE
+                activeAnimParams = null
+            }
+        }, duration + 1500)
         val animator = ValueAnimator.ofFloat(startRatio, endRatio).apply {
             this.duration = duration
             interpolator = DecelerateInterpolator(PAGE_DECELERATE)
@@ -1811,6 +2189,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         transitionRatio = 0f
         isTransitioning = false
         activeAnimParams = null
+        forceApplyImmersiveVisibility()
         // 强制触发 onSceneChanged 回调，恢复所有依赖回调管理的视图状态
         onSceneChanged?.invoke(scene, scene)
     }
@@ -1828,7 +2207,11 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     }
 
     fun closePlayPage(animated: Boolean = true) {
-        if (currentScene != Scene.PLAYER) return
+        Log.w("SceneTransition", "=== closePlayPage called, currentScene=$currentScene, animated=$animated ===")
+        if (currentScene != Scene.PLAYER) {
+            Log.w("SceneTransition", "=== closePlayPage: currentScene != PLAYER, returning ===")
+            return
+        }
         if (animated) transitionToScene(Scene.MAIN) else switchToSceneSilent(Scene.MAIN)
     }
 
@@ -1946,22 +2329,28 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     companion object {
         private const val EDGE_EXCLUSION_DP = 20f
         private const val LEFT_EDGE_ZONE_DP = 24f
+        private const val RIGHT_EDGE_ZONE_DP = 24f
         private const val SWIPE_THRESHOLD_RATIO = 0.30f
 
         private const val PAGE_DECELERATE = 2.0f
-        private const val SCENE_ANIM_DURATION = 500L
+        private const val SCENE_ANIM_DURATION = 250L
 
-        private const val VELOCITY_ADAPT_MIN_MS = 120L
-        private const val VELOCITY_ADAPT_MAX_MS = 500L
+        private const val VELOCITY_ADAPT_MIN_MS = 100L
+        private const val VELOCITY_ADAPT_MAX_MS = 250L
         private const val VELOCITY_SENSITIVITY = 0.002f
 
-        private const val SPRING_DAMPING = 0.35f
-        private const val SPRING_STIFFNESS = 2.0f
         private const val SPRING_SETTLE_DURATION = 350L
+
+        /** Poweramp r1 cubic ease-out: 1-(1-t)³ = 3t-3t²+t³ */
+        private val CUBIC_EASE_OUT = android.animation.TimeInterpolator { t ->
+            val inv = 1f - t
+            1f - inv * inv * inv
+        }
 
         private const val STATE_ANIM_DEFAULT_DURATION = 200L
         private const val STATE_ANIM_DECELERATE = 2.0f
         private const val BUTTON_PRESS_SCALE = 0.85f
         private const val BUTTON_PRESS_DURATION = 150L
+        private const val BUTTON_RELEASE_OVERSHOOT = 1.05f
     }
 }
