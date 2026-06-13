@@ -121,9 +121,6 @@ class UnifiedMainContainer @JvmOverloads constructor(
         UC.updateForTheme(isDark)
     }
 
-    private val navController = SceneNavController()
-    private val sceneController = SceneController(this)
-
     private val pageFactories = mutableMapOf<NavScene, () -> FrameLayout>()
     private val pageCache = mutableMapOf<NavScene, FrameLayout>()
     private val homeTileViews = mutableMapOf<NavScene, View>()
