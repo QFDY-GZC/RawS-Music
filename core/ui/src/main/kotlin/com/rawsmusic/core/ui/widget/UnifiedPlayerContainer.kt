@@ -16,6 +16,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.rawsmusic.core.ui.util.AdaptivePadTransformation
@@ -416,6 +417,76 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         sceneParams.forEach { (scene, params) ->
             registerSceneParams(viewId, scene, params)
         }
+    }
+
+    // ==================== Compose 可观察的场景注册表 ====================
+    /** Compose 可观察的场景注册表，key 为字符串标识 */
+    private val composeSceneRegistry = mutableStateMapOf<String, MutableMap<Scene, SceneParams>>()
+
+    /**
+     * 注册 Compose 场景参数
+     * @param key 场景参数的唯一标识（如 "cover", "title", "lyric_bg"）
+     * @param scene 目标场景
+     * @param params 场景参数
+     */
+    fun registerComposeSceneParams(key: String, scene: Scene, params: SceneParams) {
+        val viewMap = composeSceneRegistry.getOrPut(key) { mutableMapOf() }
+        viewMap[scene] = params
+    }
+
+    /**
+     * 批量注册 Compose 场景参数
+     */
+    fun registerComposeViewScenes(key: String, vararg sceneParams: Pair<Scene, SceneParams>) {
+        sceneParams.forEach { (scene, params) ->
+            registerComposeSceneParams(key, scene, params)
+        }
+    }
+
+    /**
+     * 获取指定 key 的当前场景参数
+     */
+    fun getComposeSceneParams(key: String): SceneParams? {
+        return composeSceneRegistry[key]?.get(composeCurrentScene)
+    }
+
+    /**
+     * 获取指定 key 在指定场景的参数
+     */
+    fun getComposeSceneParams(key: String, scene: Scene): SceneParams? {
+        return composeSceneRegistry[key]?.get(scene)
+    }
+
+    /**
+     * 获取指定 key 的插值参数（用于过渡动画）
+     */
+    fun getInterpolatedSceneParams(key: String): SceneParams? {
+        val sceneMap = composeSceneRegistry[key] ?: return null
+        if (!composeIsTransitioning) {
+            return sceneMap[composeCurrentScene]
+        }
+        val fromParams = sceneMap[fromScene] ?: return sceneMap[composeCurrentScene]
+        val toParams = sceneMap[toScene] ?: return sceneMap[composeCurrentScene]
+        return lerpSceneParams(fromParams, toParams, composeTransitionProgress)
+    }
+
+    /**
+     * 线性插值两个 SceneParams
+     */
+    private fun lerpSceneParams(from: SceneParams, to: SceneParams, fraction: Float): SceneParams {
+        val f = fraction.coerceIn(0f, 1f)
+        return SceneParams(
+            scene = if (f < 0.5f) from.scene else to.scene,
+            alpha = from.alpha + (to.alpha - from.alpha) * f,
+            translationX = from.translationX + (to.translationX - from.translationX) * f,
+            translationY = from.translationY + (to.translationY - from.translationY) * f,
+            scaleX = from.scaleX + (to.scaleX - from.scaleX) * f,
+            scaleY = from.scaleY + (to.scaleY - from.scaleY) * f,
+            visibility = if (f < 0.5f) from.visibility else to.visibility,
+            cornerRadius = from.cornerRadius + (to.cornerRadius - from.cornerRadius) * f,
+            rotation = from.rotation + (to.rotation - from.rotation) * f,
+            alphaMultiplier = from.alphaMultiplier + (to.alphaMultiplier - from.alphaMultiplier) * f
+        )
     }
 
     // ==================== Ratio 驱动的场景动画引擎（对标 e4 + b4） ====================
