@@ -3765,6 +3765,202 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         }
     }
 
+    // ==================== Compose 音效面板 ====================
+
+    /**
+     * Compose 版本的音效面板
+     * 替代 activity_main.xml 中 effectsPanel 的所有 View
+     */
+    @Composable
+    fun ComposeEffectsPanel(
+        isPeqEnabled: Boolean = false,
+        peqPresetName: String = "",
+        peqPreamp: String = "",
+        isSpatialEnabled: Boolean = false,
+        spatialStrength: Float = 0f,
+        bassBoost: Float = 0f,
+        loudnessEnhance: Float = 0f,
+        onPeqToggle: (Boolean) -> Unit = {},
+        onSpatialToggle: (Boolean) -> Unit = {},
+        onSpatialStrengthChange: (Float) -> Unit = {},
+        onBassBoostChange: (Float) -> Unit = {},
+        onLoudnessEnhanceChange: (Float) -> Unit = {},
+        onPeqClick: () -> Unit = {},
+        modifier: Modifier = Modifier
+    ) {
+        val textColor = Color.White
+        val secondaryColor = Color(0xB0FFFFFF)
+        val cardColor = Color.White.copy(alpha = 0.1f)
+
+        androidx.compose.foundation.lazy.LazyColumn(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(start = 20.dp, bottom = 26.dp, end = 20.dp)
+        ) {
+            item {
+                Text(
+                    text = "音效",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = textColor,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+            }
+
+            // PEQ 卡片
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(cardColor, RoundedCornerShape(16.dp))
+                        .padding(horizontal = 20.dp, vertical = 16.dp)
+                        .clickable(onClick = onPeqClick)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "参量均衡器",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = textColor,
+                            modifier = Modifier.weight(1f)
+                        )
+                        // Switch 用 AndroidView 包装
+                        AndroidView(
+                            factory = { context ->
+                                com.google.android.material.materialswitch.MaterialSwitch(context).apply {
+                                    isChecked = isPeqEnabled
+                                    setOnCheckedChangeListener { _, checked -> onPeqToggle(checked) }
+                                }
+                            },
+                            update = { it.isChecked = isPeqEnabled }
+                        )
+                    }
+                    if (peqPresetName.isNotBlank()) {
+                        Text(
+                            text = peqPresetName,
+                            fontSize = 15.sp,
+                            color = secondaryColor,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                    if (peqPreamp.isNotBlank()) {
+                        Text(
+                            text = peqPreamp,
+                            fontSize = 12.sp,
+                            color = Color(0x80FFFFFF),
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            // 立体声扩展卡片
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(cardColor, RoundedCornerShape(16.dp))
+                        .padding(horizontal = 20.dp, vertical = 16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "立体声扩展",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = textColor,
+                            modifier = Modifier.weight(1f)
+                        )
+                        AndroidView(
+                            factory = { context ->
+                                com.google.android.material.materialswitch.MaterialSwitch(context).apply {
+                                    isChecked = isSpatialEnabled
+                                    setOnCheckedChangeListener { _, checked -> onSpatialToggle(checked) }
+                                }
+                            },
+                            update = { it.isChecked = isSpatialEnabled }
+                        )
+                    }
+                    AndroidView(
+                        factory = { context ->
+                            com.google.android.material.slider.Slider(context).apply {
+                                valueFrom = 0f; valueTo = 1000f; stepSize = 10f
+                                value = spatialStrength
+                                addOnChangeListener { _, value, _ -> onSpatialStrengthChange(value) }
+                            }
+                        },
+                        update = { it.value = spatialStrength },
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            // 低音增强卡片
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(cardColor, RoundedCornerShape(16.dp))
+                        .padding(horizontal = 20.dp, vertical = 16.dp)
+                ) {
+                    Text(
+                        text = "低音增强",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = textColor,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    AndroidView(
+                        factory = { context ->
+                            com.google.android.material.slider.Slider(context).apply {
+                                valueFrom = 0f; valueTo = 100f; stepSize = 1f
+                                value = bassBoost
+                                addOnChangeListener { _, value, _ -> onBassBoostChange(value) }
+                            }
+                        },
+                        update = { it.value = bassBoost }
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            // 响度增强卡片
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(cardColor, RoundedCornerShape(16.dp))
+                        .padding(horizontal = 20.dp, vertical = 16.dp)
+                ) {
+                    Text(
+                        text = "响度增强",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = textColor,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    AndroidView(
+                        factory = { context ->
+                            com.google.android.material.slider.Slider(context).apply {
+                                valueFrom = 0f; valueTo = 100f; stepSize = 1f
+                                value = loudnessEnhance
+                                addOnChangeListener { _, value, _ -> onLoudnessEnhanceChange(value) }
+                            }
+                        },
+                        update = { it.value = loudnessEnhance }
+                    )
+                }
+            }
+        }
+    }
+
     // ==================== Compose 主布局 ====================
 
     /**
