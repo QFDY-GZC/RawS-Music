@@ -42,6 +42,7 @@ import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.adapter.SongDataProvider
 import com.rawsmusic.core.ui.widget.AlphabetIndexView
+import com.rawsmusic.core.ui.widget.powerlist.ComposePowerList
 import com.rawsmusic.core.ui.widget.powerlist.PowerListView
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.PlaylistStore
@@ -766,21 +767,16 @@ class UnifiedMainContainer @JvmOverloads constructor(
                 }
             }
 
-            // 歌曲列表
-            // 注意：这里需要实际的数据源，目前先显示占位
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(bottom = 180.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "歌曲列表\n(需要集成 SongDataProvider)",
-                    color = ComposeColor(C.TEXT_META),
-                    fontSize = 16.sp,
-                    textAlign = TextAlign.Center
-                )
-            }
+            // 歌曲列表 - 使用 ComposePowerList
+            ComposePowerList(
+                songs = songsAllItems,
+                currentPlayingIndex = if (currentPlayingSongId > 0) {
+                    songsAllItems.indexOfFirst { it.id == currentPlayingSongId }
+                } else -1,
+                onSongClick = { song, position -> onSongClick?.invoke(song, position) },
+                onSongLongClick = { song, position -> showSongActionPopup(song, position) },
+                modifier = Modifier.fillMaxSize()
+            )
         }
     }
 
