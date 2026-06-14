@@ -269,20 +269,6 @@ data class ScrollJudgement(
 // ==================== 项位置追踪 ====================
 
 /**
- * Compose 版本的项位置追踪
- * 替代 ItemPosition
- */
-data class ComposeItemPosition(
-    val index: Int,
-    val top: Float,
-    val bottom: Float,
-    val height: Float
-) {
-    val centerY: Float get() = (top + bottom) / 2f
-    val isVisible: Boolean get() = top < Float.MAX_VALUE && bottom > Float.MIN_VALUE
-}
-
-/**
  * 计算可见项位置
  */
 fun calculateItemPositions(
@@ -299,10 +285,10 @@ fun calculateItemPositions(
         val top = i * rowHeightPx - scrollOffsetPx
         positions.add(
             ComposeItemPosition(
-                index = i,
-                top = top,
-                bottom = top + rowHeightPx,
-                height = rowHeightPx
+                left = 0,
+                top = top.toInt(),
+                right = 0,
+                bottom = (top + rowHeightPx).toInt()
             )
         )
     }
