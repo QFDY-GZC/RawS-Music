@@ -4144,6 +4144,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         // 背景
         coverBitmap: android.graphics.Bitmap? = null,
         isLight: Boolean = false,
+        backdrop: com.kyant.backdrop.backdrops.LayerBackdrop? = null,
         // 播放页
         title: String = "",
         artist: String = "",
@@ -4212,6 +4213,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                     isPlaying = isPlaying,
                     progress = progress,
                     coverPath = coverPath,
+                    backdrop = backdrop,
                     onPlayPause = onPlayPause,
                     onSkipPrevious = onPrevious,
                     onSkipNext = onNext

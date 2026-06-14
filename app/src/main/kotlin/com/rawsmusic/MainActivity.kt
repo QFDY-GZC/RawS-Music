@@ -1783,14 +1783,14 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         }
         AppLogger.d("MainActivity", "setupComposeLayer: composeRoot found, setting content")
         composeView.visibility = View.VISIBLE
-        composeView.setBackgroundColor(android.graphics.Color.BLACK)
         composeView.setContent {
             val isLight = !com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(this@MainActivity)
+            val backdrop = com.kyant.backdrop.backdrops.rememberLayerBackdrop()
 
-            Box(modifier = Modifier.fillMaxSize().background(ComposeColor(0xFF121010))) {
             unifiedContainer.ComposeFullLayout(
                 // 背景
                 isLight = isLight,
+                backdrop = backdrop,
                 // 播放页
                 title = miniPlayerTitle,
                 artist = miniPlayerArtist,
@@ -1807,30 +1807,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                         playerController?.seekTo((progress * durationMs).toLong())
                     }
                 },
-                // 主界面内容
+                // 主界面 - 空白（View UI 在下面）
                 mainContent = {
-                    Box(
-                        modifier = Modifier.fillMaxSize().background(ComposeColor(0xFF121010)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = "RawSMusic",
-                                color = ComposeColor.White,
-                                fontSize = 32.sp,
-                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                text = "Compose UI 已加载",
-                                color = ComposeColor(0xFFD4B896),
-                                fontSize = 16.sp
-                            )
-                        }
-                    }
+                    Box(modifier = Modifier.fillMaxSize())
                 }
             )
-            }
         }
     }
 
