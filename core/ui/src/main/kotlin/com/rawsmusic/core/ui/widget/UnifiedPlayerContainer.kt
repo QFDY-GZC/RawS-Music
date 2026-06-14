@@ -31,6 +31,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -3598,6 +3600,167 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                 ) {
                     Text("⋯", fontSize = 20.sp, color = textColor)
                 }
+            }
+        }
+    }
+
+    // ==================== Compose 浮层 ====================
+
+    /**
+     * Compose 版本的队列页
+     */
+    @Composable
+    fun ComposeQueuePage(
+        songs: List<com.rawsmusic.core.common.model.AudioFile> = emptyList(),
+        currentIndex: Int = -1,
+        onSongClick: (Int) -> Unit = {},
+        onBack: () -> Unit = {},
+        onClear: () -> Unit = {},
+        modifier: Modifier = Modifier
+    ) {
+        val textColor = Color.White
+        val secondaryColor = Color(0x99FFFFFF)
+
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .background(Color(0xB3000000))
+                .padding(top = 54.dp)
+        ) {
+            // 标题栏
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(44.dp)
+                        .height(44.dp)
+                        .clickable(onClick = onBack),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("←", fontSize = 20.sp, color = Color(0xB0FFFFFF))
+                }
+
+                Text(
+                    text = "播放队列",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = textColor,
+                    modifier = Modifier.weight(1f)
+                )
+
+                Text(
+                    text = "${songs.size} 首",
+                    fontSize = 13.sp,
+                    color = secondaryColor
+                )
+
+                Box(
+                    modifier = Modifier
+                        .width(36.dp)
+                        .height(36.dp)
+                        .clickable(onClick = onClear),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("✕", fontSize = 16.sp, color = Color(0xB0FFFFFF))
+                }
+            }
+
+            // 歌曲列表
+            if (songs.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("暂无队列", color = Color(0x66FFFFFF), fontSize = 15.sp)
+                }
+            } else {
+                androidx.compose.foundation.lazy.LazyColumn(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    itemsIndexed(songs) { index, song ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSongClick(index) }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (index == currentIndex) {
+                                Text(
+                                    text = "▶",
+                                    fontSize = 14.sp,
+                                    color = Color(0xFFD4B896),
+                                    modifier = Modifier.width(24.dp)
+                                )
+                            } else {
+                                Spacer(modifier = Modifier.width(24.dp))
+                            }
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = song.displayName,
+                                    fontSize = 15.sp,
+                                    color = if (index == currentIndex) Color(0xFFD4B896) else textColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = song.artist,
+                                    fontSize = 12.sp,
+                                    color = secondaryColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Compose 版本的全屏封面查看器
+     */
+    @Composable
+    fun ComposeFullCoverViewer(
+        coverPath: String? = null,
+        onBack: () -> Unit = {},
+        modifier: Modifier = Modifier
+    ) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            // 返回按钮
+            Box(
+                modifier = Modifier
+                    .padding(start = 16.dp, top = 44.dp)
+                    .width(44.dp)
+                    .height(44.dp)
+                    .clickable(onClick = onBack),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("←", fontSize = 20.sp, color = Color(0xB0FFFFFF))
+            }
+
+            // 封面图
+            if (coverPath != null && coverPath.isNotBlank()) {
+                com.rawsmusic.core.ui.widget.bitmaps.BitmapImage(
+                    key = coverPath,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 40.dp, vertical = 120.dp),
+                    contentScale = ContentScale.Fit,
+                    targetWidth = 1024,
+                    targetHeight = 1024
+                )
             }
         }
     }
