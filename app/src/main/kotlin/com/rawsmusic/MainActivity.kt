@@ -132,11 +132,15 @@ import com.rawsmusic.helper.UsbVolumeKeyHandler
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.CoverGestureCallbacks {
 
@@ -1803,36 +1807,25 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                         playerController?.seekTo((progress * durationMs).toLong())
                     }
                 },
-                // 主界面内容 - 使用 UnifiedMainContainer 的 Compose 版本
+                // 主界面内容
                 mainContent = {
-                    val mainContainer = unifiedMainContainer ?: return@ComposeFullLayout
-                    mainContainer.ComposeNavHost { scene ->
-                        when (scene) {
-                            com.rawsmusic.core.ui.scene.NavScene.HOME -> {
-                                // 主页内容
-                                Box(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = "RawSMusic",
-                                        color = ComposeColor.White,
-                                        fontSize = 32.sp
-                                    )
-                                }
-                            }
-                            else -> {
-                                Box(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = scene.label,
-                                        color = ComposeColor.White,
-                                        fontSize = 24.sp
-                                    )
-                                }
-                            }
+                    Box(
+                        modifier = Modifier.fillMaxSize().background(ComposeColor(0xFF121010)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "RawSMusic",
+                                color = ComposeColor.White,
+                                fontSize = 32.sp,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "Compose UI 已加载",
+                                color = ComposeColor(0xFFD4B896),
+                                fontSize = 16.sp
+                            )
                         }
                     }
                 }
