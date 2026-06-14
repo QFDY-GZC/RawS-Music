@@ -44,6 +44,7 @@ import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.liquidGlass
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.Shadow
@@ -107,8 +108,26 @@ fun ComposeMiniPlayer(
             shape = { shape },
             effects = {
                 vibrancy()
-                blur(34f)
-                lens(12f, 24f)
+                blur(20f)
+                lens(
+                    refractionHeight = 8f,
+                    refractionAmount = 16f,
+                    depthEffect = true,
+                    chromaticAberration = true
+                )
+                liquidGlass(
+                    cornerRadius = 24f,
+                    refraction = 0.85f,
+                    curve = 0.7f,
+                    dispersion = 0.4f,
+                    saturation = 1.2f,
+                    contrast = 1.1f,
+                    edge = 0.3f,
+                    tintR = 1f,
+                    tintG = 1f,
+                    tintB = 1f,
+                    tintA = 0.05f
+                )
             },
             highlight = {
                 Highlight.Default.copy(
