@@ -6,7 +6,8 @@ import android.view.View
 import androidx.navigation.NavController
 import com.rawsmusic.R
 import com.rawsmusic.core.ui.widget.UnifiedPlayerContainer
-import com.rawsmusic.core.ui.widget.powerlist.PowerListView
+import com.rawsmusic.core.ui.widget.powerlist.ListZoomLevels
+import com.rawsmusic.core.ui.widget.powerlist.ListZoomIndex
 import com.rawsmusic.databinding.ActivityMainBinding
 
 /**
@@ -21,7 +22,7 @@ class SceneParamsHelper(
     private val getPlayCoverTargetRect: () -> RectF,
     private val getListCoverPosition: () -> Quad<Float, Float, Float, Float>?,
     private val getAlbumDetailCoverRect: () -> RectF?,
-    private val findSongsPowerListView: () -> PowerListView?
+    private val findSongsPowerListView: () -> Any? = { null }
 ) {
 
     fun registerCoverCollapseParams(
@@ -56,7 +57,7 @@ class SceneParamsHelper(
         val coverPos = albumDetailPos ?: listPos
         if (coverPos != null) {
             val sourceCornerDp = if (albumDetailPos != null) 22f
-            else (findSongsPowerListView()?.currentCoverCornerRadiusDp ?: 18f)
+            else (ListZoomLevels.params[ListZoomIndex.NORMAL]?.cornerRadiusTracksDp ?: 18f)
             registerCoverCollapseParamsWithSourcePos(coverPos, targetRect, targetW, targetH, cover, density, sourceCornerDp)
         } else {
             unifiedContainer.registerSceneParams(
@@ -349,7 +350,7 @@ class SceneParamsHelper(
 
     fun registerCoverLyricParams() {
         val density = resources.displayMetrics.density
-        val baseCornerRadius = (findSongsPowerListView()?.currentCoverCornerRadiusDp ?: 18f) * density
+        val baseCornerRadius = (ListZoomLevels.params[ListZoomIndex.NORMAL]?.cornerRadiusTracksDp ?: 18f) * density
         val isImmersive = unifiedContainer.isImmersiveEnabled
         val coverAlpha = if (isImmersive) 0f else 1f
         val coverVisibility = if (isImmersive) View.INVISIBLE else View.VISIBLE
@@ -537,7 +538,7 @@ class SceneParamsHelper(
                 translationY = 0f,
                 scaleX = 1f,
                 scaleY = 1f,
-                cornerRadius = (findSongsPowerListView()?.currentCoverCornerRadiusDp ?: 18f) * density
+                cornerRadius = (ListZoomLevels.params[ListZoomIndex.NORMAL]?.cornerRadiusTracksDp ?: 18f) * density
             )
         )
         unifiedContainer.registerSceneParams(
@@ -551,7 +552,7 @@ class SceneParamsHelper(
                 scaleY = 0.3f,
                 translationX = 0f,
                 translationY = 0f,
-                cornerRadius = (findSongsPowerListView()?.currentCoverCornerRadiusDp ?: 18f) * density
+                cornerRadius = (ListZoomLevels.params[ListZoomIndex.NORMAL]?.cornerRadiusTracksDp ?: 18f) * density
             )
         )
         unifiedContainer.registerSceneParams(
