@@ -59,6 +59,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.clickable
 import androidx.compose.material3.Text
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.Shadow
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -3402,14 +3409,49 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                     progress = progress,
                     onSeek = onSeek,
                     currentTimeMs = currentTimeMs,
-                    totalDurationMs = totalDurationMs
+                    totalDurationMs = totalDurationMs,
+                    backdrop = backdrop
                 )
 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                // 播放按钮
+                // 播放按钮 - 液态玻璃背景
+                val buttonShape = RoundedCornerShape(24.dp)
+                val buttonGlassModifier = if (backdrop != null) {
+                    Modifier.drawBackdrop(
+                        backdrop = backdrop,
+                        shape = { buttonShape },
+                        effects = {
+                            vibrancy()
+                            blur(20f)
+                            lens(8f, 16f)
+                        },
+                        highlight = {
+                            Highlight.Default.copy(
+                                alpha = if (isLight) 0.25f else 0.15f
+                            )
+                        },
+                        shadow = {
+                            Shadow.Default.copy(
+                                color = Color.Black.copy(
+                                    alpha = if (isLight) 0.10f else 0.25f
+                                )
+                            )
+                        },
+                        onDrawSurface = {
+                            drawRect(Color.White.copy(alpha = if (isLight) 0.35f else 0.08f))
+                        }
+                    )
+                } else {
+                    Modifier.background(Color.White.copy(alpha = if (isLight) 0.35f else 0.08f), buttonShape)
+                }
+
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(buttonShape)
+                        .then(buttonGlassModifier)
+                        .padding(vertical = 8.dp),
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -3471,6 +3513,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         onSeek: (Float) -> Unit,
         currentTimeMs: Long,
         totalDurationMs: Long,
+        backdrop: com.kyant.backdrop.backdrops.LayerBackdrop? = null,
         modifier: Modifier = Modifier
     ) {
         val textColor = Color(0xCCFFFFFF)

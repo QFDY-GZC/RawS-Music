@@ -107,18 +107,18 @@ fun ComposeMiniPlayer(
             shape = { shape },
             effects = {
                 vibrancy()
-                blur(20f)
-                lens(6f, 12f)
+                blur(34f)
+                lens(12f, 24f)
             },
             highlight = {
                 Highlight.Default.copy(
-                    alpha = if (isLight) 0.26f else 0.16f
+                    alpha = if (isLight) 0.30f else 0.20f
                 )
             },
             shadow = {
                 Shadow.Default.copy(
                     color = Color.Black.copy(
-                        alpha = if (isLight) 0.12f else 0.30f
+                        alpha = if (isLight) 0.15f else 0.35f
                     )
                 )
             },
