@@ -1096,13 +1096,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         unifiedContainer.bindViews(
             navHostFragment = binding.navHostFragment,
             playBgView = binding.playBgView,
-            miniPlayerBar = binding.miniPlayerBar,
             lyricContentContainer = binding.lyricContentContainer,
             lyricBgView = binding.lyricBgView,
             lyricMainLayer = binding.lyricMainLayer
         )
 
-        setupMiniPlayerBar()
         setupComposeLayer()
 
         sceneRegistry = com.rawsmusic.helper.SceneRegistry(unifiedContainer, resources)
@@ -1729,30 +1727,6 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
     private var miniPlayerIsPlaying by mutableStateOf(false)
     private var miniPlayerProgress by mutableFloatStateOf(0f)
     private var miniPlayerCoverPath by mutableStateOf<String?>(null)
-
-    private fun setupMiniPlayerBar() {
-        val composeView = binding.miniPlayerBar as androidx.compose.ui.platform.ComposeView
-        composeView.apply {
-            visibility = if (unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.MAIN) View.VISIBLE else View.GONE
-            alpha = if (visibility == View.VISIBLE) 1f else 0f
-            setContent {
-                ComposeMiniPlayer(
-                    title = miniPlayerTitle,
-                    artist = miniPlayerArtist,
-                    isPlaying = miniPlayerIsPlaying,
-                    progress = miniPlayerProgress,
-                    coverPath = miniPlayerCoverPath,
-                    onClick = { openPlayPageWithSharedElement() },
-                    onPlayPause = { playerController?.playPause() },
-                    onSkipPrevious = { playerController?.previous() },
-                    onSkipNext = { playerController?.next() }
-                )
-            }
-        }
-        updateMiniPlayerBarSong()
-        updateMiniPlayerBarPlayback()
-        updateMiniPlayerBarProgress()
-    }
 
     private fun updateMiniPlayerBarSong() {
         val song = playerController?.currentSong?.value

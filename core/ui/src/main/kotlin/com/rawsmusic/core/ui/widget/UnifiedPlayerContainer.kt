@@ -1710,7 +1710,7 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
     fun bindViews(
         navHostFragment: View,
         playBgView: View,
-        miniPlayerBar: View,
+        miniPlayerBar: View? = null,
         lyricContentContainer: View,
         lyricBgView: View,
         lyricMainLayer: View
