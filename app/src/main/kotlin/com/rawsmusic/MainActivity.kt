@@ -1781,9 +1781,14 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                         playerController?.seekTo((progress * durationMs).toLong())
                     }
                 },
-                // 主界面 - 空白（View UI 在下面）
+                // 主界面内容
                 mainContent = {
-                    Box(modifier = Modifier.fillMaxSize())
+                    val mainContainer = unifiedMainContainer
+                    if (mainContainer != null) {
+                        mainContainer.ComposePageContent(mainContainer.composeCurrentScene)
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize())
+                    }
                 }
             )
         }

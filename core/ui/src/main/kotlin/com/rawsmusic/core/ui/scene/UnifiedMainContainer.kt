@@ -1710,7 +1710,7 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     @Composable
-    private fun ComposePageContent(scene: NavScene) {
+    fun ComposePageContent(scene: NavScene) {
         when (scene) {
             NavScene.HOME -> ComposeHomePageContent()
             NavScene.SONGS -> ComposeSongsPageContent()
