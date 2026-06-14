@@ -4134,6 +4134,96 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         }
     }
 
+    /**
+     * 创建完整的 Compose 布局
+     * 供 MainActivity 的 ComposeView 调用
+     */
+    @Composable
+    fun ComposeFullLayout(
+        currentScene: Scene = composeCurrentScene,
+        // 背景
+        coverBitmap: android.graphics.Bitmap? = null,
+        isLight: Boolean = false,
+        // 播放页
+        title: String = "",
+        artist: String = "",
+        album: String = "",
+        coverPath: String? = null,
+        isPlaying: Boolean = false,
+        progress: Float = 0f,
+        currentTimeMs: Long = 0L,
+        totalDurationMs: Long = 0L,
+        isHires: Boolean = false,
+        // 歌词页
+        lyricView: android.view.View? = null,
+        // 队列页
+        queueSongs: List<com.rawsmusic.core.common.model.AudioFile> = emptyList(),
+        queueCurrentIndex: Int = -1,
+        // 音效面板
+        isPeqEnabled: Boolean = false,
+        peqPresetName: String = "",
+        peqPreamp: String = "",
+        isSpatialEnabled: Boolean = false,
+        spatialStrength: Float = 0f,
+        bassBoost: Float = 0f,
+        loudnessEnhance: Float = 0f,
+        // 侧边菜单
+        isSideMenuOpen: Boolean = false,
+        sideMenuItems: List<Pair<Int, String>> = emptyList(),
+        sideMenuSelectedId: Int = 0,
+        coverPrimaryColor: Int = 0xFF2A2624.toInt(),
+        coverDarkColor: Int = 0xFF171412.toInt(),
+        // 回调
+        onPlayPause: () -> Unit = {},
+        onPrevious: () -> Unit = {},
+        onNext: () -> Unit = {},
+        onSeek: (Float) -> Unit = {},
+        onQueueSongClick: (Int) -> Unit = {},
+        onQueueBack: () -> Unit = {},
+        onQueueClear: () -> Unit = {},
+        onTranslationToggle: () -> Unit = {},
+        onMore: () -> Unit = {},
+        onSideMenuClick: (Int) -> Unit = {},
+        onSideMenuClose: () -> Unit = {},
+        onPeqToggle: (Boolean) -> Unit = {},
+        onSpatialToggle: (Boolean) -> Unit = {},
+        onSpatialStrengthChange: (Float) -> Unit = {},
+        onBassBoostChange: (Float) -> Unit = {},
+        onLoudnessEnhanceChange: (Float) -> Unit = {},
+        onPeqClick: () -> Unit = {},
+        // 主界面
+        mainContent: @Composable () -> Unit = {},
+        modifier: Modifier = Modifier
+    ) {
+        Box(modifier = modifier.fillMaxSize()) {
+            // 主界面
+            mainContent()
+
+            // 迷你播放栏
+            ComposeMiniPlayer(
+                title = title,
+                artist = artist,
+                isPlaying = isPlaying,
+                progress = progress,
+                coverPath = coverPath,
+                onPlayPause = onPlayPause,
+                onSkipPrevious = onPrevious,
+                onSkipNext = onNext
+            )
+
+            // 侧边菜单
+            ComposeSideMenu(
+                isOpen = isSideMenuOpen,
+                menuItems = sideMenuItems,
+                selectedId = sideMenuSelectedId,
+                coverPrimaryColor = coverPrimaryColor,
+                coverDarkColor = coverDarkColor,
+                onItemClick = onSideMenuClick,
+                onClose = onSideMenuClose
+            )
+        }
+    }
+
     companion object {
         private const val EDGE_EXCLUSION_DP = 20f
         private const val LEFT_EDGE_ZONE_DP = 24f
