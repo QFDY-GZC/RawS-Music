@@ -132,6 +132,8 @@ import com.rawsmusic.helper.UsbVolumeKeyHandler
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.kyant.backdrop.drawBackdrop
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -1781,13 +1783,26 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                         playerController?.seekTo((progress * durationMs).toLong())
                     }
                 },
-                // 主界面内容
+                // 主界面内容 - 注册到 Backdrop 以支持液态玻璃
                 mainContent = {
                     val mainContainer = unifiedMainContainer
-                    if (mainContainer != null) {
-                        mainContainer.ComposePageContent(mainContainer.composeCurrentScene)
-                    } else {
-                        Box(modifier = Modifier.fillMaxSize())
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .then(
+                                if (backdrop != null) {
+                                    Modifier.drawBackdrop(
+                                        backdrop = backdrop,
+                                        shape = { androidx.compose.foundation.shape.RoundedCornerShape(0.dp) },
+                                        effects = {},
+                                        onDrawSurface = { drawRect(ComposeColor(0xFF121010)) }
+                                    )
+                                } else Modifier
+                            )
+                    ) {
+                        if (mainContainer != null) {
+                            mainContainer.ComposePageContent(mainContainer.composeCurrentScene)
+                        }
                     }
                 }
             )
