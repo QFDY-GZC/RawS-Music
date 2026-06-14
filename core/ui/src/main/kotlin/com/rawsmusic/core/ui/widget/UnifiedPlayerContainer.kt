@@ -42,6 +42,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
@@ -3956,6 +3957,73 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                         },
                         update = { it.value = loudnessEnhance }
                     )
+                }
+            }
+        }
+    }
+
+    // ==================== Compose 侧边菜单 ====================
+
+    /**
+     * Compose 版本的侧边菜单
+     * 替代 SideMenuView
+     */
+    @Composable
+    fun ComposeSideMenu(
+        isOpen: Boolean = false,
+        menuItems: List<Pair<Int, String>> = emptyList(),
+        selectedId: Int = 0,
+        coverPrimaryColor: Int = 0xFF2A2624.toInt(),
+        coverDarkColor: Int = 0xFF171412.toInt(),
+        onItemClick: (Int) -> Unit = {},
+        onClose: () -> Unit = {},
+        modifier: Modifier = Modifier
+    ) {
+        if (!isOpen) return
+
+        val textColor = Color.White
+        val selectedBg = Color.White.copy(alpha = 0.15f)
+
+        Box(modifier = modifier.fillMaxSize()) {
+            // 半透明遮罩
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable(onClick = onClose)
+            )
+
+            // 菜单内容
+            Column(
+                modifier = Modifier
+                    .width(280.dp)
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color(coverPrimaryColor),
+                                Color(coverDarkColor)
+                            )
+                        )
+                    )
+                    .padding(top = 44.dp)
+            ) {
+                menuItems.forEach { (id, title) ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onItemClick(id) }
+                            .background(
+                                if (id == selectedId) selectedBg else Color.Transparent
+                            )
+                            .padding(horizontal = 24.dp, vertical = 16.dp)
+                    ) {
+                        Text(
+                            text = title,
+                            fontSize = 16.sp,
+                            color = textColor
+                        )
+                    }
                 }
             }
         }
