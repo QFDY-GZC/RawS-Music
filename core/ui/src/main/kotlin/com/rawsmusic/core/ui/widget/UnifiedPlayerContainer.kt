@@ -62,6 +62,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.viewinterop.AndroidView
 
 /**
  * Poweramp 模式的统一场景容器
@@ -3521,6 +3522,84 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
         val minutes = totalSeconds / 60
         val seconds = totalSeconds % 60
         return "$minutes:${seconds.toString().padStart(2, '0')}"
+    }
+
+    // ==================== Compose 歌词页 ====================
+
+    /**
+     * Compose 版本的歌词页
+     * 替代 activity_main.xml 中歌词页的所有 View
+     *
+     * @param lyricView 原生 RawsLyricView 实例（通过 AndroidView 包装）
+     * @param onTranslationToggle 翻译切换回调
+     * @param onMore 更多按钮回调
+     */
+    @Composable
+    fun ComposeLyricPage(
+        lyricView: android.view.View? = null,
+        onTranslationToggle: () -> Unit = {},
+        onMore: () -> Unit = {},
+        modifier: Modifier = Modifier
+    ) {
+        val isLight = !com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(
+            androidx.compose.ui.platform.LocalContext.current
+        )
+        val textColor = if (isLight) Color(0xFF1C1B1F) else Color.White
+
+        Box(modifier = modifier.fillMaxSize()) {
+            // 歌词内容（AndroidView 包装原生 RawsLyricView）
+            if (lyricView != null) {
+                androidx.compose.ui.viewinterop.AndroidView(
+                    factory = { context -> lyricView },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 28.dp)
+                )
+            }
+
+            // 底部控制栏
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 20.dp, bottom = 19.dp, end = 20.dp)
+            ) {
+                // 翻译切换按钮
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .width(36.dp)
+                        .height(36.dp)
+                        .clickable(onClick = onTranslationToggle),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "译",
+                        fontSize = 14.sp,
+                        color = Color(0xB0FFFFFF)
+                    )
+                }
+            }
+
+            // 顶部栏
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, top = 44.dp, end = 20.dp)
+            ) {
+                // 更多按钮
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .width(36.dp)
+                        .height(36.dp)
+                        .clickable(onClick = onMore),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("⋯", fontSize = 20.sp, color = textColor)
+                }
+            }
+        }
     }
 
     // ==================== Compose 主布局 ====================
