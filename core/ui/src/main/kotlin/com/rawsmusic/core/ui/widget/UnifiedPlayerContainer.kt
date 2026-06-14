@@ -30,11 +30,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.consumeAllChanges
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
@@ -42,6 +44,24 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.Text
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.Alignment
 
 /**
  * Poweramp 模式的统一场景容器
@@ -3248,6 +3268,259 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
                     }
                 )
         )
+    }
+
+    // ==================== Compose 播放页 ====================
+
+    /**
+     * Compose 版本的播放页
+     * 替代 activity_main.xml 中播放页的所有 View
+     */
+    @Composable
+    fun ComposePlayerPage(
+        title: String = "",
+        artist: String = "",
+        album: String = "",
+        coverPath: String? = null,
+        isPlaying: Boolean = false,
+        progress: Float = 0f,
+        currentTimeMs: Long = 0L,
+        totalDurationMs: Long = 0L,
+        isHires: Boolean = false,
+        backdrop: com.kyant.backdrop.backdrops.LayerBackdrop? = null,
+        onPlayPause: () -> Unit = {},
+        onPrevious: () -> Unit = {},
+        onNext: () -> Unit = {},
+        onSeek: (Float) -> Unit = {},
+        onMoreAction: () -> Unit = {},
+        onPlayMode: () -> Unit = {},
+        modifier: Modifier = Modifier
+    ) {
+        val isLight = !com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(
+            androidx.compose.ui.platform.LocalContext.current
+        )
+        val textColor = if (isLight) Color(0xFF1C1B1F) else Color.White
+        val secondaryColor = if (isLight) Color(0xFF49454F) else Color(0xCCFFFFFF)
+
+        Box(modifier = modifier.fillMaxSize()) {
+            // 封面图
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 14.dp, top = 56.dp, end = 14.dp),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                if (coverPath != null && coverPath.isNotBlank()) {
+                    com.rawsmusic.core.ui.widget.bitmaps.BitmapImage(
+                        key = coverPath,
+                        contentDescription = title,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(1f)
+                            .clip(RoundedCornerShape(16.dp)),
+                        contentScale = ContentScale.Crop,
+                        targetWidth = 512,
+                        targetHeight = 512
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(1f)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(Color.White.copy(alpha = 0.1f))
+                    )
+                }
+
+                // HiRes 徽章
+                if (isHires) {
+                    Text(
+                        text = "Hi-Res",
+                        fontSize = 10.sp,
+                        color = Color(0xFFD4B896),
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp)
+                            .background(
+                                Color.Black.copy(alpha = 0.5f),
+                                RoundedCornerShape(4.dp)
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            // 标题/艺术家/专辑
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 28.dp, top = 280.dp, end = 28.dp)
+            ) {
+                Text(
+                    text = title,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = textColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (artist.isNotBlank()) {
+                    Text(
+                        text = artist,
+                        fontSize = 14.sp,
+                        color = secondaryColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+                if (album.isNotBlank()) {
+                    Text(
+                        text = album,
+                        fontSize = 12.sp,
+                        color = secondaryColor.copy(alpha = 0.6f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 1.dp)
+                    )
+                }
+            }
+
+            // 播放控制区
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 20.dp, bottom = 26.dp, end = 20.dp)
+            ) {
+                // SeekBar
+                ComposeSeekBar(
+                    progress = progress,
+                    onSeek = onSeek,
+                    currentTimeMs = currentTimeMs,
+                    totalDurationMs = totalDurationMs
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // 播放按钮
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // 上一曲
+                    Box(
+                        modifier = Modifier
+                            .width(48.dp)
+                            .height(48.dp)
+                            .clickable(onClick = onPrevious),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("⏮", fontSize = 24.sp, color = textColor)
+                    }
+
+                    Spacer(modifier = Modifier.width(16.dp))
+
+                    // 播放/暂停
+                    Box(
+                        modifier = Modifier
+                            .width(52.dp)
+                            .height(52.dp)
+                            .background(
+                                Color.White.copy(alpha = 0.15f),
+                                CircleShape
+                            )
+                            .clickable(onClick = onPlayPause),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (isPlaying) "⏸" else "▶",
+                            fontSize = 24.sp,
+                            color = Color(0xFFD4B896)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(16.dp))
+
+                    // 下一曲
+                    Box(
+                        modifier = Modifier
+                            .width(48.dp)
+                            .height(48.dp)
+                            .clickable(onClick = onNext),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("⏭", fontSize = 24.sp, color = textColor)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Compose 版本的 SeekBar
+     */
+    @Composable
+    private fun ComposeSeekBar(
+        progress: Float,
+        onSeek: (Float) -> Unit,
+        currentTimeMs: Long,
+        totalDurationMs: Long,
+        modifier: Modifier = Modifier
+    ) {
+        val textColor = Color(0xCCFFFFFF)
+
+        Column(modifier = modifier) {
+            // 进度条
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Color.White.copy(alpha = 0.2f))
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures { change, _ ->
+                            change.consume()
+                            val newProgress = (change.position.x / this@pointerInput.size.width).coerceIn(0f, 1f)
+                            onSeek(newProgress)
+                        }
+                    }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(fraction = progress.coerceIn(0f, 1f))
+                        .height(4.dp)
+                        .background(Color(0xFFD4B896), RoundedCornerShape(2.dp))
+                )
+            }
+
+            // 时间显示
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+            ) {
+                Text(
+                    text = formatDuration(currentTimeMs),
+                    fontSize = 10.sp,
+                    color = textColor,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = formatDuration(totalDurationMs),
+                    fontSize = 10.sp,
+                    color = textColor
+                )
+            }
+        }
+    }
+
+    private fun formatDuration(ms: Long): String {
+        val totalSeconds = ms / 1000
+        val minutes = totalSeconds / 60
+        val seconds = totalSeconds % 60
+        return "$minutes:${seconds.toString().padStart(2, '0')}"
     }
 
     // ==================== Compose 主布局 ====================
