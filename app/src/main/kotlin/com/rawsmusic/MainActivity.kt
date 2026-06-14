@@ -1111,8 +1111,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             unifiedContainer, binding, resources, navController,
             { getPlayCoverTargetRect() },
             { getListCoverPosition() },
-            { getAlbumDetailCoverRect() },
-            { findSongsPowerListView() }
+            { getAlbumDetailCoverRect() }
         )
         coverLayoutHelper = com.rawsmusic.helper.CoverLayoutHelper(
             unifiedContainer, binding, resources, coverAnimState,
@@ -1277,7 +1276,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                             translationY = 0f,
                             scaleX = 1f,
                             scaleY = 1f,
-                            cornerRadius = (findSongsPowerListView()?.currentCoverCornerRadiusDp ?: 18f) * resources.displayMetrics.density
+                            cornerRadius = (18f) * resources.displayMetrics.density
                         )
                     )
                     if (isFlowingLightOff) {
@@ -1538,7 +1537,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                         val sourceCornerDp = if (returningToAlbumDetail) {
                             22f
                         } else {
-                            findSongsPowerListView()?.currentCoverCornerRadiusDp ?: 18f
+                            18f
                         }
                         sceneParamsHelper.registerCoverCollapseParamsWithSourcePos(
                             targetCoverRect,
@@ -1621,7 +1620,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                 translationY = 0f
                 pivotX = width / 2f
                 pivotY = height / 2f
-                cornerRadius = (findSongsPowerListView()?.currentCoverCornerRadiusDp ?: 18f) * resources.displayMetrics.density
+                cornerRadius = (18f) * resources.displayMetrics.density
             }
             // 从主界面进入播放界面时，确保封面图片已加载
             if (hasCover && !isImmersive) {
@@ -2068,30 +2067,14 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
      * PowerList item 自身通过 translationX/Y 定位，aa_image 的 left/top 只是 item-local
      * 坐标。直接对 aa_image 调 getLocationOnScreen 在场景返回/双 slot 布局刚稳定时容易混入
      * 子 View 的旧 matrix 或上一帧位置。这里对标 Poweramp：先拿 item 的屏幕位置，再用
-     * AAItemView.getCoverBounds() 的 item-local bounds 合成最终 rect。
+     * Compose 版本：封面由 ComposeAAItemView 渲染，返回 null。
      */
     private fun getListCoverScreenRect(): RectF? {
-        val powerListView = findSongsPowerListView() ?: return null
-        val provider = powerListView.getDataProvider() as? SongDataProvider ?: return null
-        val playingPos = provider.playingPosition
-        if (playingPos < 0) return null
-        if (playingPos < powerListView.firstVisiblePosition || playingPos > powerListView.lastVisiblePosition) return null
-        val itemView = powerListView.layoutState.viewPool[playingPos]?.view as? AAItemView ?: return null
-        if (itemView.width <= 0 || itemView.height <= 0) return null
-
-        val coverBounds = itemView.getCoverBounds()
-        if (coverBounds.width() <= 0 || coverBounds.height() <= 0) return null
-
-        val mapped = RectF(coverBounds)
-        val itemLoc = IntArray(2)
-        itemView.getLocationOnScreen(itemLoc)
-        mapped.offset(itemLoc[0].toFloat(), itemLoc[1].toFloat())
-        return mapped
+        return null
     }
 
     /**
-     * Gets the screen-space bounding rect of the currently playing song's cover art
-     * in the PowerListView, if it's visible.
+     * Gets the screen-space bounding rect of the currently playing song's cover art.
      */
     private fun getCurrentSongCoverRectWhenReady(attempt: Int = 0, onReady: (RectF?) -> Unit) {
         val coverRect = getListCoverScreenRect()
@@ -2132,28 +2115,13 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         )
     }
 
-    private fun findSongsPowerListView(): com.rawsmusic.core.ui.widget.powerlist.PowerListView? {
-        // 防御: 某些 layout 配置下 unifiedMainContainer 可能未初始化, 安全返回 null
-        return try {
-            unifiedMainContainer?.getSongsPowerListView()
-        } catch (e: Throwable) {
-            null
-        }
-    }
-
     /**
-     * Finds the cover ImageView (aa_image) of the currently playing song
-     * from the visible items in the PowerListView.
+     * Finds the cover ImageView of the currently playing song.
+     * Compose 版本：返回 null（封面由 Compose 渲染）
      */
     private fun getListCoverView(): View? {
-        val powerListView = findSongsPowerListView() ?: return null
-        val provider = powerListView.getDataProvider() as? com.rawsmusic.core.ui.adapter.SongDataProvider ?: return null
-        val playingPos = provider.playingPosition
-        if (playingPos < 0) return null
-        if (playingPos < powerListView.firstVisiblePosition || playingPos > powerListView.lastVisiblePosition) return null
-        val holder = powerListView.layoutState.viewPool[playingPos] ?: return null
-        val itemView = holder.view ?: return null
-        return itemView.findViewById(com.rawsmusic.core.ui.R.id.aa_image)
+        // Compose 版本：封面由 ComposeAAItemView 渲染，无法直接获取 View
+        return null
     }
 
     /**
@@ -2385,7 +2353,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             playCoverView.apply {
                 // 圆角：歌曲列表使用 zoom 状态的圆角，专辑详情页使用 22dp
                 val cornerDp = if (isFromAlbumDetail) 22f
-                else (findSongsPowerListView()?.currentCoverCornerRadiusDp ?: 18f)
+                else (18f)
                 cornerRadius = cornerDp * resources.displayMetrics.density
                 translationX = translatedX
                 translationY = translatedY
@@ -2404,7 +2372,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
 
             // 圆角：歌曲列表使用 zoom 状态的圆角，专辑详情页使用 22dp
             val sourceCornerDp = if (isFromAlbumDetail) 22f
-            else (findSongsPowerListView()?.currentCoverCornerRadiusDp ?: 18f)
+            else (18f)
             val baseCornerPx = sourceCornerDp * resources.displayMetrics.density
             val playerCornerPx = baseCornerPx
             val mainCornerPx = if (startScaleX > 0.01f) playerCornerPx / startScaleX else playerCornerPx
@@ -2594,7 +2562,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                     val targetRect = getPlayCoverTargetRect()
                     val targetW = if (targetRect.width() > 0f) targetRect.width() else binding.ivPlayCover.width.toFloat()
                     val targetH = if (targetRect.height() > 0f) targetRect.height() else binding.ivPlayCover.height.toFloat()
-                    val sourceCornerDp = findSongsPowerListView()?.currentCoverCornerRadiusDp ?: 18f
+                    val sourceCornerDp = 18f
                     sceneParamsHelper.registerCoverCollapseParamsWithSourcePos(
                         targetCoverQuad, targetRect, targetW, targetH,
                         binding.ivPlayCover, resources.displayMetrics.density, sourceCornerDp
