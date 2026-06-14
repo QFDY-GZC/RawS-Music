@@ -43,7 +43,6 @@ import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.adapter.SongDataProvider
 import com.rawsmusic.core.ui.widget.AlphabetIndexView
 import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
-import com.rawsmusic.core.ui.widget.powerlist.PowerListView
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.PlaylistStore
 import com.rawsmusic.module.data.repository.MusicRepository
@@ -781,8 +780,6 @@ class UnifiedMainContainer @JvmOverloads constructor(
     }
 
     // ===== Songs page methods (migrated from SongsFragment) =====
-
-    fun getSongsPowerListView(): PowerListView? = null
 
     fun updatePlayingPosition(position: Int, songId: Long = -1L) {
         if (songId > 0) currentPlayingSongId = songId
