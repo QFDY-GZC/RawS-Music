@@ -514,16 +514,6 @@
             android:layout_marginEnd="20dp"
             android:elevation="24dp" />
 
-        <!-- ===== 底部迷你栏 ===== -->
-        <com.rawsmusic.core.ui.widget.MiniPlayerView
-            android:id="@+id/miniPlayerBar"
-            android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:layout_gravity="bottom"
-            android:layout_marginStart="12dp"
-            android:layout_marginEnd="12dp"
-            android:layout_marginBottom="8dp" />
-
         <!-- ===== 音效/EQ 面板（右滑进入，横屏布局） ===== -->
         <LinearLayout
             android:id="@+id/effectsPanel"
