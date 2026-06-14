@@ -1773,7 +1773,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
      * 液态玻璃效果在 Compose 树内生效
      */
     private fun setupComposeLayer() {
-        val composeView = binding.composeRoot ?: return
+        val composeView = binding.composeRoot ?: run {
+            AppLogger.w("MainActivity", "setupComposeLayer: composeRoot is null!")
+            return
+        }
+        AppLogger.d("MainActivity", "setupComposeLayer: composeRoot found, setting content")
         composeView.visibility = View.VISIBLE
         composeView.setBackgroundColor(android.graphics.Color.BLACK)
         composeView.setContent {
