@@ -1823,43 +1823,16 @@ class UnifiedMainContainer @JvmOverloads constructor(
     fun composeNavigateToScene(
         targetScene: NavScene,
         duration: Long = 400L,
-        scope: kotlinx.coroutines.CoroutineScope
+        scope: kotlinx.coroutines.CoroutineScope? = null
     ) {
         if (composeIsTransitioning) return
         if (targetScene == composeCurrentScene) return
 
-        composeIsTransitioning = true
+        // 直接切换（避免 MonotonicFrameClock 问题）
+        composeCurrentScene = targetScene
+        _currentSceneFlow.value = targetScene
+        composeIsTransitioning = false
         composeTransitionProgress = 0f
-
-        // 同步到 View 系统的 sceneController
-        val fromPage = getPage(composeCurrentScene)
-        val toPage = getOrCreatePage(targetScene)
-        val direction = when {
-            targetScene == NavScene.HOME -> SceneController.TransitionDirection.BACKWARD
-            composeCurrentScene == NavScene.HOME -> SceneController.TransitionDirection.FORWARD
-            targetScene.ordinal > composeCurrentScene.ordinal -> SceneController.TransitionDirection.FORWARD
-            else -> SceneController.TransitionDirection.BACKWARD
-        }
-
-        // 使用 Animatable 驱动进度
-        val animatable = Animatable(0f)
-        scope.launch {
-            animatable.animateTo(
-                targetValue = 1f,
-                animationSpec = tween(
-                    durationMillis = duration.toInt(),
-                    easing = LinearEasing
-                )
-            ) {
-                composeTransitionProgress = value
-            }
-
-            // 动画完成
-            composeCurrentScene = targetScene
-            _currentSceneFlow.value = targetScene
-            composeIsTransitioning = false
-            composeTransitionProgress = 0f
-        }
     }
 
     /**
@@ -1896,35 +1869,19 @@ class UnifiedMainContainer @JvmOverloads constructor(
     fun composeEndDragBack(
         shouldCommit: Boolean,
         duration: Long = 300L,
-        scope: kotlinx.coroutines.CoroutineScope
+        scope: kotlinx.coroutines.CoroutineScope? = null
     ) {
         if (!composeIsDraggingBack) return
 
-        val targetRatio = if (shouldCommit) 1f else 0f
-        val animatable = Animatable(composeDragBackProgress)
+        composeIsDraggingBack = false
 
-        scope.launch {
-            animatable.animateTo(
-                targetValue = targetRatio,
-                animationSpec = tween(
-                    durationMillis = duration.toInt(),
-                    easing = LinearEasing
-                )
-            ) {
-                composeDragBackProgress = value
+        if (shouldCommit) {
+            val previousScene = getPreviousScene()
+            if (previousScene != null) {
+                composeSwitchToSceneSilent(previousScene)
             }
-
-            composeIsDraggingBack = false
-
-            if (shouldCommit) {
-                // 执行返回操作
-                val previousScene = getPreviousScene()
-                if (previousScene != null) {
-                    composeSwitchToSceneSilent(previousScene)
-                }
-            }
-            composeDragBackProgress = 0f
         }
+        composeDragBackProgress = 0f
     }
 
     /**
@@ -1965,24 +1922,9 @@ class UnifiedMainContainer @JvmOverloads constructor(
         onUpdate: (Float) -> Unit
     ) {
         composeCancelStateAnim(key)
-        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
-        val job = scope.launch {
-            val animatable = Animatable(initialValue)
-            animatable.animateTo(
-                targetValue = targetValue,
-                animationSpec = tween(
-                    durationMillis = durationMs.toInt(),
-                    easing = easing
-                )
-            ) {
-                onUpdate(value)
-            }
-            onEnd?.invoke()
-        }
-        job.invokeOnCompletion {
-            if (job.isCancelled) onCancel?.invoke()
-        }
-        composeStateAnimMap[key] = job
+        // 直接设置目标值，避免 MonotonicFrameClock 问题
+        onUpdate(targetValue)
+        onEnd?.invoke()
     }
 
     /**
