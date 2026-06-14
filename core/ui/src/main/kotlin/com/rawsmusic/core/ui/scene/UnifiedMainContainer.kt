@@ -42,7 +42,7 @@ import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.adapter.SongDataProvider
 import com.rawsmusic.core.ui.widget.AlphabetIndexView
-import com.rawsmusic.core.ui.widget.powerlist.ComposePowerList
+import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
 import com.rawsmusic.core.ui.widget.powerlist.PowerListView
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.PlaylistStore
@@ -767,8 +767,8 @@ class UnifiedMainContainer @JvmOverloads constructor(
                 }
             }
 
-            // 歌曲列表 - 使用 ComposePowerList
-            ComposePowerList(
+            // 歌曲列表 - 使用完整 ComposePowerListFull
+            ComposePowerListFull(
                 songs = songsAllItems,
                 currentPlayingIndex = if (currentPlayingSongId > 0) {
                     songsAllItems.indexOfFirst { it.id == currentPlayingSongId }
