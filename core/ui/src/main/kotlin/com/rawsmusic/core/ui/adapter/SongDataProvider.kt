@@ -13,14 +13,13 @@ import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.theme.ThemeManager
-import com.rawsmusic.core.ui.widget.powerlist.PowerListView
 import com.rawsmusic.core.ui.widget.powerlist.PowerListSceneItem
 
 /**
- * Song data provider for PowerListView.
- * Replaces SongAdapter with PowerListView.PowerListDataProvider implementation.
+ * Song data provider.
+ * Replaces SongAdapter with data provider implementation.
  */
-class SongDataProvider : PowerListView.PowerListDataProvider {
+class SongDataProvider {
 
     companion object {
         /** Single view type for all layouts - Poweramp uses ONE view type per view category */
@@ -53,15 +52,15 @@ class SongDataProvider : PowerListView.PowerListDataProvider {
     var onItemLongClicked: ((AudioFile, Int) -> Unit)? = null
     var onSelectionChanged: ((Set<Int>) -> Unit)? = null
 
-    override fun getItemCount(): Int = items.size
+    fun getItemCount(): Int = items.size
 
-    override fun createView(position: Int, parent: ViewGroup): View? {
+    fun createView(position: Int, parent: ViewGroup): View? {
         // Poweramp: ONE XML layout per view type, scene switching via SceneParams
         val view = LayoutInflater.from(parent.context).inflate(R.layout.item_track, parent, false)
         return view
     }
 
-    override fun bindView(position: Int, view: View) {
+    fun bindView(position: Int, view: View) {
         if (position < 0 || position >= items.size) return
         val item = items[position]
 
@@ -116,7 +115,7 @@ class SongDataProvider : PowerListView.PowerListDataProvider {
         }
     }
 
-    override fun getItemViewType(position: Int): Int = VIEW_TYPE_SONG
+    fun getItemViewType(position: Int): Int = VIEW_TYPE_SONG
 
     /**
      * Updates the data list.
@@ -170,10 +169,6 @@ class SongDataProvider : PowerListView.PowerListDataProvider {
     /**
      * Updates text colors for visible items.
      */
-    fun updateVisibleTextColors(powerListView: PowerListView) {
-        // This will be handled by PowerListView's refresh mechanism
-        // We can implement a method to refresh visible items
-    }
 
     private fun buildMetaText(item: AudioFile): String {
         val parts = mutableListOf<String>()
