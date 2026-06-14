@@ -130,6 +130,7 @@ import com.rawsmusic.helper.TextMarqueeHelper
 import com.rawsmusic.helper.UsbVolumeKeyHandler
 
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
@@ -1774,9 +1775,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
     private fun setupComposeLayer() {
         val composeView = binding.composeRoot ?: return
         composeView.visibility = View.VISIBLE
+        composeView.setBackgroundColor(android.graphics.Color.BLACK)
         composeView.setContent {
             val isLight = !com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(this@MainActivity)
 
+            Box(modifier = Modifier.fillMaxSize().background(ComposeColor(0xFF121010))) {
             unifiedContainer.ComposeFullLayout(
                 // 背景
                 isLight = isLight,
@@ -1830,6 +1833,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                     }
                 }
             )
+            }
         }
     }
 
