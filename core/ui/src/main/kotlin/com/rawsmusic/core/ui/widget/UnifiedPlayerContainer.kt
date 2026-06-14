@@ -4199,17 +4199,24 @@ class UnifiedPlayerContainer @JvmOverloads constructor(
             // 主界面
             mainContent()
 
-            // 迷你播放栏
-            ComposeMiniPlayer(
-                title = title,
-                artist = artist,
-                isPlaying = isPlaying,
-                progress = progress,
-                coverPath = coverPath,
-                onPlayPause = onPlayPause,
-                onSkipPrevious = onPrevious,
-                onSkipNext = onNext
-            )
+            // 迷你播放栏 - 底部
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 14.dp, bottom = 14.dp, end = 14.dp)
+            ) {
+                ComposeMiniPlayer(
+                    title = title,
+                    artist = artist,
+                    isPlaying = isPlaying,
+                    progress = progress,
+                    coverPath = coverPath,
+                    onPlayPause = onPlayPause,
+                    onSkipPrevious = onPrevious,
+                    onSkipNext = onNext
+                )
+            }
 
             // 侧边菜单
             ComposeSideMenu(
