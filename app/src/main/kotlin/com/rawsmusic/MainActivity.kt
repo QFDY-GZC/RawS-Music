@@ -1093,6 +1093,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         )
 
         setupMiniPlayerBar()
+        setupComposeLayer()
 
         sceneRegistry = com.rawsmusic.helper.SceneRegistry(unifiedContainer, resources)
         sceneParamsHelper = com.rawsmusic.helper.SceneParamsHelper(
@@ -1758,6 +1759,40 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         val pos = playerController?.position?.value ?: 0L
         val duration = playerController?.duration?.value ?: 0L
         miniPlayerProgress = if (duration > 0) pos.toFloat() / duration else 0f
+    }
+
+    /**
+     * 设置 Compose 层
+     * 在现有 View 布局之上渲染纯 Compose 内容
+     * 液态玻璃效果在 Compose 树内生效
+     */
+    private fun setupComposeLayer() {
+        val composeView = binding.composeRoot ?: return
+        composeView.visibility = View.VISIBLE
+        composeView.setContent {
+            val isLight = !com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(this@MainActivity)
+
+            unifiedContainer.ComposeFullLayout(
+                // 背景
+                isLight = isLight,
+                // 播放页
+                title = miniPlayerTitle,
+                artist = miniPlayerArtist,
+                coverPath = miniPlayerCoverPath,
+                isPlaying = miniPlayerIsPlaying,
+                progress = miniPlayerProgress,
+                // 回调
+                onPlayPause = { playerController?.playPause() },
+                onPrevious = { playerController?.previous() },
+                onNext = { playerController?.next() },
+                onSeek = { progress ->
+                    val durationMs = playerController?.duration?.value ?: 0L
+                    if (durationMs > 0) {
+                        playerController?.seekTo((progress * durationMs).toLong())
+                    }
+                }
+            )
+        }
     }
 
     override fun initObserver() {

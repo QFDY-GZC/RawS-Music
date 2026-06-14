@@ -1147,6 +1147,13 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
+        <!-- ===== Compose 布局层（液态玻璃效果在此生效） ===== -->
+        <androidx.compose.ui.platform.ComposeView
+            android:id="@+id/composeRoot"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+
     </com.rawsmusic.core.ui.widget.UnifiedPlayerContainer>
 
 </FrameLayout>
