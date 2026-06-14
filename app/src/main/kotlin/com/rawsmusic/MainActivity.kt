@@ -133,6 +133,7 @@ import com.rawsmusic.helper.UsbVolumeKeyHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -1786,22 +1787,21 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                 // 主界面内容 - 注册到 Backdrop 以支持液态玻璃
                 mainContent = {
                     val mainContainer = unifiedMainContainer
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .then(
-                                if (backdrop != null) {
-                                    Modifier.drawBackdrop(
-                                        backdrop = backdrop,
-                                        shape = { androidx.compose.foundation.shape.RoundedCornerShape(0.dp) },
-                                        effects = {},
-                                        onDrawSurface = { drawRect(ComposeColor(0xFF121010)) }
-                                    )
-                                } else Modifier
-                            )
-                    ) {
-                        if (mainContainer != null) {
-                            mainContainer.ComposePageContent(mainContainer.composeCurrentScene)
+                    if (backdrop != null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .layerBackdrop(backdrop)
+                        ) {
+                            if (mainContainer != null) {
+                                mainContainer.ComposePageContent(mainContainer.composeCurrentScene)
+                            }
+                        }
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            if (mainContainer != null) {
+                                mainContainer.ComposePageContent(mainContainer.composeCurrentScene)
+                            }
                         }
                     }
                 }
