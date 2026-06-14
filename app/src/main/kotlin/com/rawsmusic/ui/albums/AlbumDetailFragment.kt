@@ -5,14 +5,16 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.livedata.observeAsState
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.fragment.NavHostFragment
-import androidx.recyclerview.widget.LinearLayoutManager
-import coil.load
 import com.rawsmusic.core.common.base.BaseFragment
 import com.rawsmusic.core.common.model.AudioFile
-import com.rawsmusic.core.ui.adapter.SongAdapter
+import com.rawsmusic.core.ui.adapter.SongDataProvider
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
+import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
 import com.rawsmusic.databinding.FragmentAlbumDetailBinding
 import com.rawsmusic.ui.songs.PlayerHolder
 import com.rawsmusic.module.data.prefs.FontManager
@@ -26,32 +28,42 @@ class AlbumDetailFragment : BaseFragment<FragmentAlbumDetailBinding>() {
         }
 
     private val viewModel: AlbumDetailViewModel by viewModels()
-    private lateinit var songAdapter: SongAdapter
+    private lateinit var songDataProvider: SongDataProvider
 
     override fun initView() {
-        songAdapter = SongAdapter(
-            onSongClick = { song, _ ->
-                playSongSafe(song)
-            },
-            onLongClick = { song, position ->
-                // 长按切换选中状态（不再使用操作卡片）
-                if (songAdapter.isEditMode) {
-                    val isSelected = song.id in songAdapter.selectedIds
-                    if (isSelected) songAdapter.deselectSong(song.id) else songAdapter.selectSong(song.id)
-                } else {
-                    songAdapter.enterEditMode(song.id)
+        songDataProvider = SongDataProvider()
+        songDataProvider.onItemClicked = { song, _ ->
+            playSongSafe(song)
+        }
+        songDataProvider.onItemLongClicked = { song, position ->
+            if (songDataProvider.isSelectMode) {
+                val isSelected = position in songDataProvider.selectedPositions
+                if (isSelected) songDataProvider.selectedPositions = songDataProvider.selectedPositions - position
+                else songDataProvider.selectedPositions = songDataProvider.selectedPositions + position
+            } else {
+                songDataProvider.isSelectMode = true
+                songDataProvider.selectedPositions = setOf(position)
+            }
+        }
+        songDataProvider.onSelectionChanged = { _ -> }
+
+        // Compose 版本的歌曲列表
+        binding.composeSongList.setContent {
+            val songs by viewModel.songs.observeAsState(emptyList())
+            ComposePowerListFull(
+                songs = songs,
+                onSongClick = { song, _ -> playSongSafe(song) },
+                onSongLongClick = { song, position ->
+                    if (songDataProvider.isSelectMode) {
+                        val isSelected = position in songDataProvider.selectedPositions
+                        if (isSelected) songDataProvider.selectedPositions = songDataProvider.selectedPositions - position
+                        else songDataProvider.selectedPositions = songDataProvider.selectedPositions + position
+                    } else {
+                        songDataProvider.isSelectMode = true
+                        songDataProvider.selectedPositions = setOf(position)
+                    }
                 }
-                true
-            },
-            onSelectionChanged = { _ -> }
-        )
-
-        songAdapter.fontApplier = { FontManager.applyToTextView(it) }
-
-        binding.recyclerView.apply {
-            adapter = songAdapter
-            layoutManager = LinearLayoutManager(requireContext())
-            setHasFixedSize(true)
+            )
         }
 
         binding.btnBack.setOnClickListener {
@@ -70,29 +82,25 @@ class AlbumDetailFragment : BaseFragment<FragmentAlbumDetailBinding>() {
 
         val coverUri = coverPath.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
         if (coverUri != null) {
-            binding.ivAlbumCover.load(coverUri) {
-                crossfade(true)
-            }
+            BitmapProvider.load(
+                key = coverUri.toString(),
+                imageView = binding.ivAlbumCover,
+                targetWidth = binding.ivAlbumCover.width.coerceAtLeast(512),
+                targetHeight = binding.ivAlbumCover.height.coerceAtLeast(512)
+            )
         } else {
             binding.ivAlbumCover.setImageDrawable(null)
         }
 
         viewModel.loadSongs(albumName, albumArtist)
 
-        val bgListener: (Boolean) -> Unit = { _ ->
-            songAdapter.notifyVisibleItemsChanged()
-        }
-        com.rawsmusic.core.ui.theme.ThemeManager.addOnBackgroundChangeListener(bgListener)
-        viewLifecycleOwner.lifecycle.addObserver(LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_DESTROY) {
-                com.rawsmusic.core.ui.theme.ThemeManager.removeOnBackgroundChangeListener(bgListener)
-            }
-        })
+        // Compose 版本：背景变化通过 ThemeManager 自动处理
     }
 
     override fun initObserver() {
         viewModel.songs.observe(viewLifecycleOwner) { songs ->
-            songAdapter.submitList(songs)
+            songDataProvider.submitList(songs)
+            // Compose 版本：数据通过 observeAsState 自动更新
             val hasHiRes = songs.any { it.isHiRes }
             binding.ivHiresCoverBadge.visibility = if (hasHiRes) View.VISIBLE else View.GONE
         }

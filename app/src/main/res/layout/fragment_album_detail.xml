@@ -114,14 +114,11 @@
 
     </LinearLayout>
 
-    <!-- 歌曲列表 -->
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/recyclerView"
+    <!-- 歌曲列表 (Compose) -->
+    <androidx.compose.ui.platform.ComposeView
+        android:id="@+id/composeSongList"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:clipToPadding="false"
-        android:paddingHorizontal="12dp"
-        android:paddingBottom="72dp" />
+        android:layout_weight="1" />
 
 </LinearLayout>
