@@ -15,19 +15,19 @@
 ![Views](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FQFDY-GZC%2FRawS-Music&count_bg=%233D7EFF&title_bg=%232C3440&icon=&icon_color=%23FFFFFF&title=views&edge_flat=false)
 [![QQ Group](https://img.shields.io/badge/QQ群-1093312333-12B7F5?style=flat-square)](https://qm.qq.com/q/P6Qxx7XzC8)
 
-面向本地音乐收藏、高音质播放、DSD 与 USB DAC 场景持续打磨的 Android 音乐播放器。
+面向本地音乐收藏与高音质播放场景持续打磨的 Android 音乐播放器。
 
-[项目说明](#项目说明) • [核心功能](#核心功能) • [格式与媒体库支持](#格式与媒体库支持) • [当前开源范围](#当前开源范围) • [模块结构](#模块结构) • [依赖库与框架](#依赖库与框架) • [仓库统计](#仓库统计) • [构建方式](#构建方式) • [Star History](#star-history) • [QQ群](https://qm.qq.com/q/P6Qxx7XzC8) • [赞赏](#赞赏)
+[项目简述](#项目简述) • [核心功能](#核心功能) • [格式与媒体库支持](#格式与媒体库支持) • [当前开源范围](#当前开源范围) • [模块结构](#模块结构) • [依赖库与框架](#依赖库与框架) • [仓库统计](#仓库统计) • [构建方式](#构建方式) • [Star History](#star-history) • [QQ群](https://qm.qq.com/q/P6Qxx7XzC8) • [赞赏](#赞赏)
 
 </div>
 
 > 当前仓库正在持续整理为公开版本。UI、媒体库、歌单、歌词、扫描、常规播放框架、DSP 接线与大部分应用层代码已开放；完整的 USB 独占 Native 核心暂不包含在本仓库中，后续会拆分为独立仓库并采用 GPLv3。
 
-## 项目说明
+## 项目简述
 
-RawS Music 是一个以本地音乐为中心的 Android 音乐播放器项目。它不以流媒体聚合为主，而是把注意力放在本地媒体库组织、播放器交互质感、歌词体验、专辑与列表视图、音频链路表达，以及外接音频设备使用体验上。
+RawS Music 是一个面向本地音频收藏的 Android 音乐播放器，重点围绕媒体库整理、播放器交互、歌词显示、专辑封面与列表浏览，以及 Hi-Res、DSD、USB DAC 等高音质播放场景持续打磨。
 
-这个项目更在意“本地音乐播放器应该足够完整”这件事：不仅要把歌曲放出来，还要把扫描、入库、封面、歌词、播放状态、后台控制、曲库浏览、歌单组织、音频信息展示、DSD 与 USB DAC 场景都做成一条连贯的产品链路。
+项目主体采用 Kotlin + Jetpack Compose 构建，并结合 C++、FFmpeg、TagLib 与 AudioTrack 等能力处理音频解码、元数据读取、技术信息补全与播放链路控制。当前公开仓库主要包含应用层、媒体库、扫描、歌词、常规播放框架、DSP 接线与 USB 上层接入代码。
 
 ## 核心功能
 
