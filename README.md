@@ -17,7 +17,7 @@
 
 面向本地音乐收藏与高音质播放场景持续打磨的 Android 音乐播放器。
 
-[项目简述](#项目简述) • [核心功能](#核心功能) • [格式与媒体库支持](#格式与媒体库支持) • [当前开源范围](#当前开源范围) • [模块结构](#模块结构) • [依赖库与框架](#依赖库与框架) • [仓库统计](#仓库统计) • [构建方式](#构建方式) • [Star History](#star-history) • [QQ群](https://qm.qq.com/q/P6Qxx7XzC8) • [赞赏](#赞赏)
+[项目简述](#项目简述) • [核心功能](#核心功能) • [格式与媒体库支持](#格式与媒体库支持) • [当前开源范围](#当前开源范围) • [模块结构](#模块结构) • [依赖库与框架](#依赖库与框架) • [仓库统计](#仓库统计) • [构建方式](#构建方式) • [Star History](#star-history) • [访问统计](#访问统计) • [QQ群](https://qm.qq.com/q/P6Qxx7XzC8) • [赞赏](#赞赏)
 
 </div>
 
@@ -202,23 +202,24 @@ cd RawS-Music
 
 [![Star History Chart](https://api.star-history.com/svg?repos=QFDY-GZC/RawS-Music&type=Date)](https://star-history.com/#QFDY-GZC/RawS-Music&Date)
 
+## 访问统计
+
+<div align="center">
+  <img src="https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FQFDY-GZC%2FRawS-Music&count_bg=%233D7EFF&title_bg=%232C3440&icon=&icon_color=%23FFFFFF&title=views&edge_flat=false" alt="RawS Music 仓库访问统计" />
+</div>
+
 ## 赞赏
 
 如果这个项目对你有帮助，或者你愿意支持它继续往下打磨，可以通过下面的赞赏码支持开发。
 
 <div align="center">
-  <table>
-    <tr>
-      <td align="center">
-        <img src="docs/assets/wechat-donate-qrcode.png" alt="微信赞赏码" width="280" />
-        <div>微信赞赏</div>
-      </td>
-      <td align="center">
-        <img src="docs/assets/alipay-donate-qrcode.jpg" alt="支付宝赞赏码" width="280" />
-        <div>支付宝赞赏</div>
-      </td>
-    </tr>
-  </table>
+  <p><strong>微信赞赏</strong></p>
+  <img src="docs/assets/wechat-donate-qrcode.png" alt="微信赞赏码" width="320" />
+</div>
+
+<div align="center">
+  <p><strong>支付宝赞赏</strong></p>
+  <img src="docs/assets/alipay-donate-qrcode.jpg" alt="支付宝赞赏码" width="320" />
 </div>
 
 ## 致谢
