@@ -9,10 +9,11 @@
 ![License](https://img.shields.io/badge/license-Apache--2.0-1677ff?style=flat-square)
 ![Stars](https://img.shields.io/github/stars/QFDY-GZC/RawS-Music?style=flat-square)
 ![Views](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FQFDY-GZC%2FRawS-Music&count_bg=%233D7EFF&title_bg=%232C3440&icon=&icon_color=%23FFFFFF&title=views&edge_flat=false)
+[![QQ Group](https://img.shields.io/badge/QQ群-1093312333-12B7F5?style=flat-square)](https://qm.qq.com/q/P6Qxx7XzC8)
 
 面向本地音乐收藏、高音质播放与播放器界面质感持续打磨的 Android 音乐播放器。
 
-[项目说明](#项目说明) • [主要能力](#主要能力) • [当前开源范围](#当前开源范围) • [模块结构](#模块结构) • [构建方式](#构建方式) • [Star History](#star-history) • [赞赏](#赞赏)
+[项目说明](#项目说明) • [主要能力](#主要能力) • [当前开源范围](#当前开源范围) • [模块结构](#模块结构) • [构建方式](#构建方式) • [Star History](#star-history) • [QQ群](https://qm.qq.com/q/P6Qxx7XzC8) • [赞赏](#赞赏)
 
 </div>
 
