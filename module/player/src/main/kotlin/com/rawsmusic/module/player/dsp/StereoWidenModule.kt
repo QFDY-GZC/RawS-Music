@@ -16,7 +16,6 @@ class StereoWidenModule : DspModule {
         const val MODULE_ID = 2
         private const val FACTOR_SMOOTH = 0.003f
         private const val SIDE_HP_FREQ = 600f       // Side 高通截止频率
-        private const val MID_HP_FREQ = 2500f       // Mid 高通截止频率（人声临场感）
     }
 
     private var _isEnabled = AppPreferences.Equalizer.virtualizer > 0
@@ -32,36 +31,27 @@ class StereoWidenModule : DspModule {
     private var smoothedFactor = 0f
     private var currentSampleRate = 44100
 
-    // === Side 通道滤波器 ===
+    // === Side 通道滤波器 (仅高频展宽，避免低频膨胀) ===
     private var sideHpX1 = 0f
     private var sideHpY1 = 0f
     private var sideHpAlpha = 0f
-
-    // === Mid 通道高频滤波器 (人声临场感增强) ===
-    private var midHpX1 = 0f
-    private var midHpY1 = 0f
-    private var midHpAlpha = 0f
 
     // === 立体声联动压限器 ===
     private var limGain = 1.0f
     private var limAttack = 0.0f
     private var limRelease = 0.0f
-    private val limThreshold = 0.85f
+    private val limThreshold = 0.95f  // 阈值放宽，不压瞬态
 
     private fun updateCoeffs() {
         val dt = 1.0f / currentSampleRate.toFloat()
 
-        // Side 高通：600 Hz，提取侧边高频
+        // Side 高通：600 Hz，只展宽中高频，低频保持稳定
         val rcSide = 1.0f / (2.0f * Math.PI.toFloat() * SIDE_HP_FREQ)
         sideHpAlpha = rcSide / (rcSide + dt)
 
-        // Mid 高通：2500 Hz，提取人声临场感/齿音频段
-        val rcMid = 1.0f / (2.0f * Math.PI.toFloat() * MID_HP_FREQ)
-        midHpAlpha = rcMid / (rcMid + dt)
-
-        // 压限器参数
-        limAttack = (1.0f - exp(-1.0 / (0.0001 * currentSampleRate)).toFloat())
-        limRelease = (1.0f - exp(-1.0 / (0.150 * currentSampleRate)).toFloat())
+        // 压限器：attack 1ms（保留瞬态），release 200ms（平滑恢复）
+        limAttack = (1.0f - exp(-1.0 / (0.001 * currentSampleRate)).toFloat())
+        limRelease = (1.0f - exp(-1.0 / (0.200 * currentSampleRate)).toFloat())
     }
 
     override fun setEnabled(enabled: Boolean) {
@@ -71,8 +61,6 @@ class StereoWidenModule : DspModule {
             smoothedFactor = 0f
             sideHpX1 = 0f
             sideHpY1 = 0f
-            midHpX1 = 0f
-            midHpY1 = 0f
             limGain = 1.0f
         }
     }
@@ -99,45 +87,43 @@ class StereoWidenModule : DspModule {
             val L = samples[i].toFloat() / 32768f
             val R = samples[i + 1].toFloat() / 32768f
 
-            // 1. M/S 变换
+            // 1. M/S 变换（mid 原样通过，只放大 side）
             val mid = (L + R) * 0.5f
             val side = (L - R) * 0.5f
 
             // ==========================================
-            // 2. Mid 通道：人声临场感增强
-            // ==========================================
-            val midHp = midHpAlpha * (midHpY1 + mid - midHpX1)
-            midHpX1 = mid
-            midHpY1 = midHp
-            val midLp = mid - midHp // Mid 的低频部分（底鼓、贝斯，绝不碰）
-
-            // 增强中高频 Mid，让人声靠前。最大增强 1.5 倍
-            val midPresenceGain = 1.0f + smoothedFactor * 0.5f
-            val outMid = midLp + midHp * midPresenceGain
-
-            // ==========================================
-            // 3. Side 通道：立体声展宽
+            // 2. Side 通道：频率依赖展宽
+            //    高频：展宽因子 1.0x（max factor 时 side 高频 = 1.414x ≈ +3dB）
+            //    低频：微弱展宽 0.1x（max factor 时 side 低频 = 1.1x ≈ +0.8dB）
+            //    纯 M/S (side *= 1+width) 基础上加了频率分段更精细
             // ==========================================
             val sideHp = sideHpAlpha * (sideHpY1 + side - sideHpX1)
             sideHpX1 = side
             sideHpY1 = sideHp
             val sideLp = side - sideHp
 
-            // 高频强力展宽 (3.0倍) 再衰减 -3dB (0.707)
-            val highFreqExpandGain = (1.0f + smoothedFactor * 3.0f) * 0.707f
-            // 低频微弱展宽 (0.3倍)
-            val lowFreqExpandGain = 1.0f + smoothedFactor * 0.3f
-
-            val outSide = sideLp * lowFreqExpandGain + sideHp * highFreqExpandGain
+            val highFreqGain = (1.0f + smoothedFactor * 1.0f) * 0.707f  // max 1.414x
+            val lowFreqGain = 1.0f + smoothedFactor * 0.1f              // max 1.1x
+            val outSide = sideLp * lowFreqGain + sideHp * highFreqGain
 
             // ==========================================
-            // 4. 重组 L/R
+            // 3. 重组 L/R（mid 不变，side 展宽）
             // ==========================================
-            var outL = outMid + outSide
-            var outR = outMid - outSide
+            var outL = mid + outSide
+            var outR = mid - outSide
 
             // ==========================================
-            // 5. 立体声联动压限器 (死守防爆音底线)
+            // 4. 输出增益补偿：side 展宽会增加总能量，
+            //    按展宽比例反向衰减，防止后续环节削波
+            // ==========================================
+            val compensateGain = 1.0f / (1.0f + smoothedFactor * 0.3f)
+            outL *= compensateGain
+            outR *= compensateGain
+
+            // ==========================================
+            // 5. 立体声联动压限器（安全网）
+            //    阈值 0.95，attack 1ms，release 200ms
+            //    不压瞬态，不泵浦，只截极端峰值
             // ==========================================
             val maxAbs = max(abs(outL), abs(outR))
             val targetGain = if (maxAbs > limThreshold) {
@@ -172,8 +158,6 @@ class StereoWidenModule : DspModule {
         smoothedFactor = 0f
         sideHpX1 = 0f
         sideHpY1 = 0f
-        midHpX1 = 0f
-        midHpY1 = 0f
         limGain = 1.0f
     }
 }

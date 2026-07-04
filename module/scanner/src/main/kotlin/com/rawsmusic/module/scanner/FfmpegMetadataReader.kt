@@ -34,7 +34,8 @@ object FfmpegMetadataReader {
         val catalogNo: String = "",
         val barcode: String = "",
         val trackNumber: Int = 0,
-        val year: Int = 0
+        val year: Int = 0,
+        val cueSheet: String = ""
     )
 
     data class AudioStreamInfo(
@@ -60,53 +61,64 @@ object FfmpegMetadataReader {
      */
     fun readFullInfo(filePath: String): FullAudioInfo {
         return try {
-            // WAV 文件优先使用 TagLib 解析
-            val isWav = filePath.endsWith(".wav", ignoreCase = true) && TagLibBridge.isLoaded()
-            if (isWav && TagLibBridge.isWavFile(filePath)) {
-                Log.d(TAG, "readFullInfo: Using TagLib for WAV file: $filePath")
-                return readFullInfoFromTagLib(filePath)
-            }
+            var tagLibInfo: FullAudioInfo? = null
 
-            // 其他格式使用 FFmpeg 解析
-            Log.d(TAG, "readFullInfo: Using FFmpeg for file: $filePath")
-            val info = FFmpegBridge.getMediaInfo(filePath)
-            if (info == null) {
-                Log.e(TAG, "readFullInfo: FFmpegBridge.getMediaInfo returned NULL for $filePath")
-                return FullAudioInfo()
-            }
+            // 优先使用 TagLib（全格式支持，比 FFmpeg 更快）
+            if (TagLibBridge.isLoaded() && TagLibBridge.isSupported(filePath)) {
+                Log.d(TAG, "readFullInfo: Using TagLib for: $filePath")
+                tagLibInfo = readFullInfoFromTagLib(filePath)
 
-            val streamKeys = info.keys.filter { it.startsWith("stream_") }.sorted()
-            val tagKeys = info.keys.filter { !it.startsWith("stream_") && it != "format_name" }.sorted()
-            Log.d(TAG, "readFullInfo: file=$filePath, totalKeys=${info.size}")
-            Log.d(TAG, "  tagKeys=$tagKeys")
-            for (key in tagKeys) {
-                for ((k, v) in info) {
-                    if (k.toString() == key) {
-                        Log.d(TAG, "  TAG: $key = '$v'")
-                        break
-                    }
+                if (!tagLibInfo.stream.needsFfmpegStreamFallback(filePath)) {
+                    return tagLibInfo
                 }
+
+                Log.d(TAG, "readFullInfo: TagLib stream incomplete, fallback FFmpeg. " +
+                    "sr=${tagLibInfo.stream.sampleRate}, bits=${tagLibInfo.stream.bitsPerSample}, " +
+                    "ch=${tagLibInfo.stream.channels}, file=$filePath")
             }
 
-            val tags = parseTags(info)
-            val stream = parseStreamInfo(info)
+            // 回退到 FFmpeg
+            Log.d(TAG, "readFullInfo: Using FFmpeg for: $filePath")
+            val ffmpegInfo = readFullInfoFromFfmpeg(filePath)
 
-            Log.d(TAG, "readFullInfo result: sr=${stream.sampleRate}, bps=${stream.bitsPerSample}, " +
-                    "br=${stream.bitRate}, ch=${stream.channels}, codec=${stream.codecName}")
-
-            FullAudioInfo(tags = tags, stream = stream)
+            if (tagLibInfo != null) {
+                // 合并 TagLib 标签 + FFmpeg 流信息
+                FullAudioInfo(
+                    tags = mergeTags(tagLibInfo.tags, ffmpegInfo.tags),
+                    stream = mergeStreamInfo(tagLibInfo.stream, ffmpegInfo.stream, filePath)
+                )
+            } else {
+                ffmpegInfo
+            }
         } catch (e: Exception) {
             Log.w(TAG, "readFullInfo failed for $filePath: ${e.message}")
             FullAudioInfo()
         }
     }
 
+    private fun readFullInfoFromFfmpeg(filePath: String): FullAudioInfo {
+        val info = FFmpegBridge.getMediaInfo(filePath)
+        if (info == null) {
+            Log.e(TAG, "readFullInfoFromFfmpeg: FFmpegBridge.getMediaInfo returned NULL for $filePath")
+            return FullAudioInfo()
+        }
+
+        val tags = parseTags(info)
+        val stream = parseStreamInfo(info, filePath).withResolvedBitDepth(filePath)
+
+        Log.d(TAG, "readFullInfoFromFfmpeg result: sr=${stream.sampleRate}, " +
+            "bps=${stream.bitsPerSample}, br=${stream.bitRate}, " +
+            "ch=${stream.channels}, codec=${stream.codecName}")
+
+        return FullAudioInfo(tags = tags, stream = stream)
+    }
+
     /**
-     * 使用 TagLib 读取 WAV 文件的完整元数据。
+     * 使用 TagLib 读取音频文件的完整元数据（支持所有格式）。
      */
     private fun readFullInfoFromTagLib(filePath: String): FullAudioInfo {
         return try {
-            val metadata = TagLibBridge.readWavMetadata(filePath)
+            val metadata = TagLibBridge.readMetadata(filePath)
             if (metadata.isEmpty()) {
                 Log.w(TAG, "readFullInfoFromTagLib: TagLib returned empty metadata for $filePath")
                 return FullAudioInfo()
@@ -129,6 +141,83 @@ object FfmpegMetadataReader {
         } catch (e: Exception) {
             Log.w(TAG, "readFullInfoFromTagLib failed for $filePath: ${e.message}")
             FullAudioInfo()
+        }
+    }
+
+    // ==================== TagLib/FFmpeg 合并逻辑 ====================
+
+    private fun AudioStreamInfo.needsFfmpegStreamFallback(filePath: String): Boolean {
+        val ext = filePath.substringAfterLast('.', "").uppercase()
+        val needsBits = ext in setOf("FLAC", "WAV", "AIFF", "AIF", "ALAC", "APE", "DSF", "DFF")
+        val mp4Family = ext in setOf("M4A", "MP4", "M4B", "M4P", "M4R", "ALAC", "AAX")
+        if (sampleRate <= 0) return true
+        if (channels <= 0) return true
+        if (needsBits && bitsPerSample <= 0) return true
+        // MP4 家族（m4a/mp4 等）：需要 codecName 才能区分有损 AAC 与无损 ALAC，
+        // 且需要 bitsPerSample 才能拿到 ALAC 的真实位深，否则回退 FFmpeg 解析。
+        if (mp4Family && (codecName.isBlank() || bitsPerSample <= 0)) return true
+        return false
+    }
+
+    private fun mergeStreamInfo(
+        tagLib: AudioStreamInfo,
+        ffmpeg: AudioStreamInfo,
+        filePath: String
+    ): AudioStreamInfo {
+        val merged = AudioStreamInfo(
+            durationMs = if (tagLib.durationMs > 0) tagLib.durationMs else ffmpeg.durationMs,
+            sampleRate = if (tagLib.sampleRate > 0) tagLib.sampleRate else ffmpeg.sampleRate,
+            channels = if (tagLib.channels > 0) tagLib.channels else ffmpeg.channels,
+            bitsPerSample = when {
+                tagLib.bitsPerSample > 0 -> tagLib.bitsPerSample
+                ffmpeg.bitsPerSample > 0 -> ffmpeg.bitsPerSample
+                else -> inferBitDepthFromCodecOrExtension(
+                    codecName = ffmpeg.codecName.ifBlank { tagLib.codecName },
+                    filePath = filePath
+                )
+            },
+            bitRate = if (tagLib.bitRate > 0) tagLib.bitRate else ffmpeg.bitRate,
+            codecName = ffmpeg.codecName.ifBlank { tagLib.codecName },
+            codecLongName = ffmpeg.codecLongName.ifBlank { tagLib.codecLongName },
+            formatName = ffmpeg.formatName.ifBlank { tagLib.formatName }
+        )
+        return merged.withResolvedBitDepth(filePath)
+    }
+
+    private fun mergeTags(tagLib: ExtendedTags, ffmpeg: ExtendedTags): ExtendedTags {
+        return tagLib.copy(
+            title = tagLib.title.ifBlank { ffmpeg.title },
+            artist = tagLib.artist.ifBlank { ffmpeg.artist },
+            album = tagLib.album.ifBlank { ffmpeg.album },
+            genre = tagLib.genre.ifBlank { ffmpeg.genre },
+            composer = tagLib.composer.ifBlank { ffmpeg.composer },
+            albumArtist = tagLib.albumArtist.ifBlank { ffmpeg.albumArtist },
+            lyrics = tagLib.lyrics.ifBlank { ffmpeg.lyrics },
+            year = if (tagLib.year > 0) tagLib.year else ffmpeg.year,
+            trackNumber = if (tagLib.trackNumber > 0) tagLib.trackNumber else ffmpeg.trackNumber,
+            discNumber = if (tagLib.discNumber > 1) tagLib.discNumber else ffmpeg.discNumber,
+            bpm = if (tagLib.bpm > 0) tagLib.bpm else ffmpeg.bpm
+        )
+    }
+
+    private fun AudioStreamInfo.withResolvedBitDepth(filePath: String): AudioStreamInfo {
+        if (bitsPerSample > 0) return this
+        val resolved = inferBitDepthFromCodecOrExtension(codecName, filePath)
+        return if (resolved > 0) copy(bitsPerSample = resolved) else this
+    }
+
+    private fun inferBitDepthFromCodecOrExtension(codecName: String, filePath: String): Int {
+        val codec = codecName.lowercase()
+        val ext = filePath.substringAfterLast('.', "").lowercase()
+        return when {
+            codec.contains("pcm_s8") || codec.contains("pcm_u8") -> 8
+            codec.contains("pcm_s16") -> 16
+            codec.contains("pcm_s24") -> 24
+            codec.contains("pcm_s32") -> 32
+            codec.contains("pcm_f32") -> 32
+            codec.contains("pcm_f64") -> 64
+            codec.contains("dsd") || ext == "dsf" || ext == "dff" -> 1
+            else -> 0
         }
     }
 
@@ -251,7 +340,7 @@ object FfmpegMetadataReader {
 
     // ==================== 流信息解析 ====================
 
-    private fun parseStreamInfo(info: Map<String, String>): AudioStreamInfo {
+    private fun parseStreamInfo(info: Map<String, String>, filePath: String): AudioStreamInfo {
         var durationMs = 0L
         var formatName = ""
 
@@ -292,6 +381,9 @@ object FfmpegMetadataReader {
         var sampleRate = 0
         var channels = 0
         var bitsPerSample = 0
+        var bitsPerRawSample = 0
+        var bitsPerCodedSample = 0
+        var sampleFmt = ""
         var bitRate = 0
         var codecName = ""
         var codecLongName = ""
@@ -300,6 +392,9 @@ object FfmpegMetadataReader {
             "sample_rate" to { v: String -> sampleRate = v.toIntOrNull() ?: 0 },
             "channels" to { v: String -> channels = v.toIntOrNull() ?: 0 },
             "bits_per_sample" to { v: String -> bitsPerSample = v.toIntOrNull() ?: 0 },
+            "bits_per_raw_sample" to { v: String -> bitsPerRawSample = v.toIntOrNull() ?: 0 },
+            "bits_per_coded_sample" to { v: String -> bitsPerCodedSample = v.toIntOrNull() ?: 0 },
+            "sample_fmt" to { v: String -> sampleFmt = v },
             "bit_rate" to { v: String -> bitRate = v.toIntOrNull() ?: 0 },
             "codec_name" to { v: String -> codecName = v },
             "codec_long_name" to { v: String -> codecLongName = v }
@@ -326,10 +421,21 @@ object FfmpegMetadataReader {
             }
         }
 
-        val isLossy = codecName.contains("mp3", true) || codecName.contains("aac", true) ||
-                codecName.contains("opus", true) || codecName.contains("vorbis", true) ||
-                codecName.contains("wma", true) || codecName.contains("amr", true)
-        if (isLossy) bitsPerSample = 0
+        // 统一通过 AudioBitDepthResolver 解析源位深，metadata 与位深解耦：
+        // - 有损格式（AAC/MP3/Opus/Vorbis/WMA/AMR 等）一律返回 0
+        // - 无损格式按 bits_per_sample -> bits_per_raw_sample -> bits_per_coded_sample
+        //   -> sample_fmt -> codec/扩展名 的优先级回退推断真实位深
+        val resolvedBits = AudioBitDepthResolver.resolveSourceBitDepth(
+            codecName = codecName,
+            formatName = formatName,
+            filePath = filePath,
+            bitsPerSample = bitsPerSample,
+            bitsPerRawSample = bitsPerRawSample,
+            bitsPerCodedSample = bitsPerCodedSample,
+            sampleFmt = sampleFmt
+        )
+        val isLossy = AudioBitDepthResolver.isLossyCodec(codecName, formatName)
+        bitsPerSample = resolvedBits
 
         Log.d(TAG, "parseStreamInfo: idx=$audioStreamIndex, codec=$codecName, sr=$sampleRate, ch=$channels, " +
                 "bps=$bitsPerSample, br=$bitRate, lossy=$isLossy")

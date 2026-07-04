@@ -28,6 +28,79 @@ extern "C" {
 static thread_local sigjmp_buf s_abort_jmp_buf;
 static thread_local volatile sig_atomic_t s_abort_caught = 0;
 
+static jstring newJStringFromUtf8Lenient(JNIEnv *env, const char *text) {
+    if (!text) {
+        return env->NewString(nullptr, 0);
+    }
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(text);
+    std::vector<jchar> out;
+
+    auto appendReplacement = [&]() {
+        out.push_back(static_cast<jchar>(0xfffd));
+    };
+    auto appendCodePoint = [&](uint32_t cp) {
+        if (cp <= 0xffff) {
+            if (cp >= 0xd800 && cp <= 0xdfff) {
+                appendReplacement();
+            } else {
+                out.push_back(static_cast<jchar>(cp));
+            }
+        } else if (cp <= 0x10ffff) {
+            cp -= 0x10000;
+            out.push_back(static_cast<jchar>(0xd800 + (cp >> 10)));
+            out.push_back(static_cast<jchar>(0xdc00 + (cp & 0x3ff)));
+        } else {
+            appendReplacement();
+        }
+    };
+
+    while (*p) {
+        uint32_t cp = 0;
+        unsigned char c = *p;
+        if (c < 0x80) {
+            cp = c;
+            p += 1;
+        } else if ((c & 0xe0) == 0xc0) {
+            if ((p[1] & 0xc0) == 0x80 && c >= 0xc2) {
+                cp = ((c & 0x1f) << 6) | (p[1] & 0x3f);
+                p += 2;
+            } else {
+                appendReplacement();
+                p += 1;
+                continue;
+            }
+        } else if ((c & 0xf0) == 0xe0) {
+            if ((p[1] & 0xc0) == 0x80 && (p[2] & 0xc0) == 0x80 &&
+                !(c == 0xe0 && p[1] < 0xa0) &&
+                !(c == 0xed && p[1] >= 0xa0)) {
+                cp = ((c & 0x0f) << 12) | ((p[1] & 0x3f) << 6) | (p[2] & 0x3f);
+                p += 3;
+            } else {
+                appendReplacement();
+                p += 1;
+                continue;
+            }
+        } else if ((c & 0xf8) == 0xf0) {
+            if ((p[1] & 0xc0) == 0x80 && (p[2] & 0xc0) == 0x80 && (p[3] & 0xc0) == 0x80 &&
+                !(c == 0xf0 && p[1] < 0x90) &&
+                !(c == 0xf4 && p[1] >= 0x90) && c <= 0xf4) {
+                cp = ((c & 0x07) << 18) | ((p[1] & 0x3f) << 12) | ((p[2] & 0x3f) << 6) | (p[3] & 0x3f);
+                p += 4;
+            } else {
+                appendReplacement();
+                p += 1;
+                continue;
+            }
+        } else {
+            appendReplacement();
+            p += 1;
+            continue;
+        }
+        appendCodePoint(cp);
+    }
+    return env->NewString(out.data(), static_cast<jsize>(out.size()));
+}
+
 static void abort_signal_handler(int sig) {
     s_abort_caught = 1;
     siglongjmp(s_abort_jmp_buf, 1);
@@ -99,22 +172,81 @@ static int sample_format_bits(AVSampleFormat fmt) {
             return 0;
     }
 }
-// 对于有损压缩格式，根据解码器默认输出格式推断位深
+// 对于有损压缩格式，不再假装有源位深，返回 0 让上层按有损显示
 static int lossy_codec_default_bits(enum AVCodecID codec_id) {
-    // MP3 解码器默认输出 S16P
-    if (codec_id == AV_CODEC_ID_MP3) return 16;
-    // AAC 解码器默认输出 FLTP (float planar)
-    if (codec_id == AV_CODEC_ID_AAC) return 32;
-    // Vorbis/Opus 解码器默认输出 FLTP
-    if (codec_id == AV_CODEC_ID_VORBIS || codec_id == AV_CODEC_ID_OPUS) return 32;
-    // WMA 解码器默认输出 S16
-    if (codec_id == AV_CODEC_ID_WMAV1 || codec_id == AV_CODEC_ID_WMAV2) return 16;
-    // 其他有损格式默认 16 位
-    return 16;
+    // MP3 / AAC / Vorbis / Opus / WMA 等有损格式没有 PCM bit depth 概念
+    return 0;
+}
+
+// 从 ALAC extradata 解析真实 bitDepth
+static int detect_alac_bit_depth_from_extradata(const uint8_t *extradata, int extradata_size) {
+    // ALAC magic cookie structure (24+ bytes):
+    // offset 0: 'frma' atom (4 bytes) + 'alac' (4 bytes)
+    // offset 8: size (4 bytes, big-endian)
+    // offset 12: 'alac' (4 bytes)
+    // offset 16: version (1 byte)
+    // offset 17: flags (1 byte)
+    // offset 20-21: frameLength (4 bytes)
+    // offset 21-24: compatibleVersion(1), sampleRate(4), ...
+    // Actually ALAC specific box starts after 'alac' marker:
+    // Standard layout after 'alac' marker at offset 12:
+    //   version(1) flags(1) ?(1) ?(1) frameLength(4)
+    //   compatibleVersion(1) bitDepth(1) ...
+    // The bitDepth is at offset 21 from start of extradata (after frma+alac header)
+    if (!extradata || extradata_size < 24) return 0;
+    // Verify 'frma' + 'alac' signature
+    if (extradata[0] != 'f' || extradata[1] != 'r' ||
+        extradata[2] != 'm' || extradata[3] != 'a') return 0;
+    // Find 'alac' marker
+    int alac_offset = -1;
+    for (int i = 4; i + 4 <= extradata_size; i++) {
+        if (extradata[i] == 'a' && extradata[i + 1] == 'l' &&
+            extradata[i + 2] == 'a' && extradata[i + 3] == 'c') {
+            alac_offset = i + 4; // skip 'alac' marker
+            break;
+        }
+    }
+    if (alac_offset < 0) return 0;
+    // ALAC specific config:
+    // offset 0: version (1 byte)
+    // offset 1: flags (1 byte)
+    // offset 2-3: ?(2 bytes)
+    // offset 4-7: frameLength (4 bytes)
+    // offset 8: compatibleVersion (1 byte)
+    // offset 9: bitDepth (1 byte)
+    int bitdepth_offset = alac_offset + 9;
+    if (bitdepth_offset >= extradata_size) return 0;
+    int bit_depth = extradata[bitdepth_offset];
+    if (bit_depth == 16 || bit_depth == 20 || bit_depth == 24 || bit_depth == 32) {
+        return bit_depth;
+    }
+    return 0;
+}
+
+static bool is_dsd_codec(enum AVCodecID codec_id) {
+    switch (codec_id) {
+        case AV_CODEC_ID_DSD_LSBF:
+        case AV_CODEC_ID_DSD_MSBF:
+        case AV_CODEC_ID_DSD_LSBF_PLANAR:
+        case AV_CODEC_ID_DSD_MSBF_PLANAR:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static inline uint8_t reverse_bits_u8(uint8_t v) {
+    v = (uint8_t)(((v & 0xF0u) >> 4) | ((v & 0x0Fu) << 4));
+    v = (uint8_t)(((v & 0xCCu) >> 2) | ((v & 0x33u) << 2));
+    v = (uint8_t)(((v & 0xAAu) >> 1) | ((v & 0x55u) << 1));
+    return v;
 }
 
 static int detect_bits_per_sample(const AVCodecParameters *codecpar) {
     if (!codecpar) return 0;
+    if (is_dsd_codec(codecpar->codec_id)) {
+        return 1;
+    }
     if (codecpar->bits_per_raw_sample > 0) {
         return codecpar->bits_per_raw_sample;
     }
@@ -124,6 +256,12 @@ static int detect_bits_per_sample(const AVCodecParameters *codecpar) {
     int codec_bits = av_get_bits_per_sample(codecpar->codec_id);
     if (codec_bits > 0) {
         return codec_bits;
+    }
+    // ALAC: av_get_bits_per_sample returns 0; try to parse from extradata
+    if (codecpar->codec_id == AV_CODEC_ID_ALAC) {
+        int alac_bits = detect_alac_bit_depth_from_extradata(
+            codecpar->extradata, codecpar->extradata_size);
+        if (alac_bits > 0) return alac_bits;
     }
     // 对于有损压缩格式（av_get_bits_per_sample 返回 0），
     // 直接根据 codec_id 推断源文件位深。
@@ -212,8 +350,7 @@ static int convert_to_wav(const char *input_path, const char *output_path,
     {
         const AVCodec *codec = avcodec_find_decoder(fmt_ctx->streams[audio_stream_idx]->codecpar->codec_id);
         if (!codec) {
-            AVCodecParameters *cp = fmt_ctx->streams[audio_stream_idx]->codecpar;
-            LOGE("Unsupported codec (codec_id=%d, codec_tag=0x%x, bits=%d)", cp->codec_id, cp->codec_tag, cp->bits_per_coded_sample);
+            LOGE("Unsupported codec");
             goto cleanup;
         }
 
@@ -473,7 +610,7 @@ static int convert_to_raw_pcm(
         AVCodecParameters *codecpar = fmt_ctx->streams[audio_stream_idx]->codecpar;
         const AVCodec *codec = avcodec_find_decoder(codecpar->codec_id);
         if (!codec) {
-            LOGE("convert_to_raw_pcm: Unsupported codec (codec_id=%d, codec_tag=0x%x, bits=%d)", codecpar->codec_id, codecpar->codec_tag, codecpar->bits_per_coded_sample);
+            LOGE("convert_to_raw_pcm: Unsupported codec");
             goto cleanup_pcm;
         }
 
@@ -693,6 +830,8 @@ static jlong probe_duration(const char *path) {
     }
     int64_t dur = fmt_ctx->duration;
     avformat_close_input(&fmt_ctx);
+    // AV_NOPTS_VALUE is INT64_MIN, dividing by 1000 gives huge negative
+    if (dur == AV_NOPTS_VALUE || dur < 0) return 0;
     return dur / 1000;
 }
 
@@ -770,6 +909,23 @@ static int extract_cover(const char *input_path, const char *output_path) {
     }
 
     for (unsigned int i = 0; i < fmt_ctx->nb_streams; i++) {
+        AVStream *stream = fmt_ctx->streams[i];
+        if ((stream->disposition & AV_DISPOSITION_ATTACHED_PIC) &&
+            stream->attached_pic.data != nullptr &&
+            stream->attached_pic.size > 1024) {
+            FILE *fp = fopen(output_path, "wb");
+            if (fp) {
+                fwrite(stream->attached_pic.data, 1, stream->attached_pic.size, fp);
+                fclose(fp);
+                avformat_close_input(&fmt_ctx);
+                return 0;
+            }
+            avformat_close_input(&fmt_ctx);
+            return -1;
+        }
+    }
+
+    for (unsigned int i = 0; i < fmt_ctx->nb_streams; i++) {
         if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             AVPacket *pkt = av_packet_alloc();
             int ret = av_read_frame(fmt_ctx, pkt);
@@ -790,8 +946,12 @@ static int extract_cover(const char *input_path, const char *output_path) {
         }
     }
 
+    // 限制扫描帧数，避免对大文件（如1小时以上音频）扫描整个文件导致主线程长时间阻塞
     AVPacket *pkt = av_packet_alloc();
-    while (av_read_frame(fmt_ctx, pkt) >= 0) {
+    int frames_scanned = 0;
+    const int MAX_FRAMES_TO_SCAN = 64;
+    while (av_read_frame(fmt_ctx, pkt) >= 0 && frames_scanned < MAX_FRAMES_TO_SCAN) {
+        frames_scanned++;
         if (pkt->flags & AV_PKT_FLAG_KEY && pkt->size > 1024) {
             for (unsigned int i = 0; i < fmt_ctx->nb_streams; i++) {
                 if (pkt->stream_index == (int)i &&
@@ -889,6 +1049,44 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeExtractCover(
 // Streaming Decoder for zero-disk playback
 // ==========================
 
+// Patch: allow WAV PCM float64/float32 to play even when libavcodec has no PCM decoder.
+static bool streamRawPcmPassthroughFormat(
+        AVCodecID codecId,
+        AVSampleFormat* outFmt,
+        int* outBytesPerSample,
+        const char** outName
+) {
+    if (!outFmt || !outBytesPerSample || !outName) return false;
+
+    // Android/ARM64 is little-endian.  These WAV PCM codecs are byte-for-byte
+    // packet payloads from the demuxer, so we can feed them directly into swr
+    // without avcodec when the trimmed FFmpeg build omitted the PCM decoder.
+    switch (codecId) {
+        case AV_CODEC_ID_PCM_F64LE:
+            *outFmt = AV_SAMPLE_FMT_DBL;
+            *outBytesPerSample = 8;
+            *outName = "pcm_f64le(raw)";
+            return true;
+        case AV_CODEC_ID_PCM_F32LE:
+            *outFmt = AV_SAMPLE_FMT_FLT;
+            *outBytesPerSample = 4;
+            *outName = "pcm_f32le(raw)";
+            return true;
+        case AV_CODEC_ID_PCM_S32LE:
+            *outFmt = AV_SAMPLE_FMT_S32;
+            *outBytesPerSample = 4;
+            *outName = "pcm_s32le(raw)";
+            return true;
+        case AV_CODEC_ID_PCM_S16LE:
+            *outFmt = AV_SAMPLE_FMT_S16;
+            *outBytesPerSample = 2;
+            *outName = "pcm_s16le(raw)";
+            return true;
+        default:
+            return false;
+    }
+}
+
 struct StreamDecoder {
     AVFormatContext *fmt_ctx;
     AVCodecContext *codec_ctx;
@@ -918,46 +1116,92 @@ struct StreamDecoder {
     int src_sample_rate;
     int src_channels;
 
+    // Raw PCM fallback for codecs that may be omitted from trimmed libavcodec builds.
+    // Example: WAV pcm_f64le. avformat can demux packets, then swr converts raw doubles
+    // directly to S32LE/S16LE output requested by Kotlin/USB.
+    bool raw_pcm_passthrough;
+    AVSampleFormat raw_pcm_fmt;
+    int raw_pcm_bytes_per_sample;
+    int raw_pcm_frame_size;
+    const char* raw_pcm_name;
+
+    // Raw DSD passthrough mode. The decoder returns normalized, interleaved,
+    // MSB-first DSD bytes instead of PCM.
+    bool raw_dsd_passthrough;
+    bool raw_dsd_lsbf;
+    bool raw_dsd_planar;
+    int raw_dsd_bytes_per_channel_frame;
+
     // State
     bool eof_reached;
     bool flushed_decoder;
     bool flushed_swr;
-    bool raw_pcm_mode;
-    volatile bool closing;  // Set to true before close to prevent concurrent av_read_frame
-    AVSampleFormat raw_pcm_fmt;
 };
 
-static bool is_pcm_codec_id(int codec_id) {
-    return (codec_id >= 0x10001 && codec_id <= 0x10018) ||
-           codec_id == AV_CODEC_ID_PCM_S16LE_PLANAR ||
-           codec_id == AV_CODEC_ID_PCM_S24LE_PLANAR ||
-           codec_id == AV_CODEC_ID_PCM_S32LE_PLANAR ||
-           codec_id == AV_CODEC_ID_PCM_F16LE ||
-           codec_id == AV_CODEC_ID_PCM_F24LE;
+static int streamCopyResidual(StreamDecoder* sd, uint8_t* out_buf, int out_max_bytes, int* bytes_written) {
+    if (!sd || !out_buf || !bytes_written) return 0;
+    int residual_available = sd->residual_buf_size - sd->residual_buf_pos;
+    if (residual_available <= 0) return 0;
+
+    int to_copy = residual_available;
+    const int remaining = out_max_bytes - *bytes_written;
+    if (to_copy > remaining) to_copy = remaining;
+    if (to_copy <= 0) return 0;
+
+    memcpy(out_buf + *bytes_written, sd->residual_buf + sd->residual_buf_pos, to_copy);
+    sd->residual_buf_pos += to_copy;
+    *bytes_written += to_copy;
+
+    if (sd->residual_buf_pos >= sd->residual_buf_size) {
+        sd->residual_buf_size = 0;
+        sd->residual_buf_pos = 0;
+    }
+    return to_copy;
 }
 
-static AVSampleFormat pcm_codec_sample_fmt(int codec_id) {
-    switch (codec_id) {
-        case 0x10001: return AV_SAMPLE_FMT_S16; // PCM_S16LE
-        case 0x10002: return AV_SAMPLE_FMT_S16; // PCM_S16BE
-        case 0x10003: return AV_SAMPLE_FMT_S16; // PCM_U16LE
-        case 0x10004: return AV_SAMPLE_FMT_S16; // PCM_U16BE
-        case 0x10005: return AV_SAMPLE_FMT_U8;  // PCM_S8
-        case 0x10006: return AV_SAMPLE_FMT_U8;  // PCM_U8
-        case 0x10009: return AV_SAMPLE_FMT_S32; // PCM_S32LE
-        case 0x1000A: return AV_SAMPLE_FMT_S32; // PCM_S32BE
-        case 0x1000B: return AV_SAMPLE_FMT_S32; // PCM_U32LE
-        case 0x1000C: return AV_SAMPLE_FMT_S32; // PCM_U32BE
-        case 0x1000D: return AV_SAMPLE_FMT_S32; // PCM_S24LE
-        case 0x1000E: return AV_SAMPLE_FMT_S32; // PCM_S24BE
-        case 0x1000F: return AV_SAMPLE_FMT_S32; // PCM_U24LE
-        case 0x10010: return AV_SAMPLE_FMT_S32; // PCM_U24BE
-        case 0x10015: return AV_SAMPLE_FMT_FLT; // PCM_F32BE
-        case 0x10016: return AV_SAMPLE_FMT_FLT; // PCM_F32LE
-        case 0x10017: return AV_SAMPLE_FMT_DBL; // PCM_F64BE
-        case 0x10018: return AV_SAMPLE_FMT_DBL; // PCM_F64LE
-        default: return AV_SAMPLE_FMT_S16;
+static bool streamEnsureResidualCapacity(StreamDecoder* sd, int required_bytes) {
+    if (!sd || required_bytes <= 0) return false;
+    if (sd->residual_buf_capacity >= required_bytes && sd->residual_buf) return true;
+
+    uint8_t* new_buf = (uint8_t*)av_realloc(sd->residual_buf, required_bytes);
+    if (!new_buf) {
+        LOGE("streamEnsureResidualCapacity: realloc failed required=%d", required_bytes);
+        return false;
     }
+    sd->residual_buf = new_buf;
+    sd->residual_buf_capacity = required_bytes;
+    return true;
+}
+
+static int normalizeRawDsdPacket(StreamDecoder* sd, const AVPacket* pkt) {
+    if (!sd || !pkt || !pkt->data || pkt->size <= 0 || sd->src_channels <= 0) return 0;
+    if (!streamEnsureResidualCapacity(sd, pkt->size)) return -1;
+
+    const bool reverseBits = sd->raw_dsd_lsbf;
+    const int channels = sd->src_channels;
+    uint8_t* dst = sd->residual_buf;
+
+    if (sd->raw_dsd_planar) {
+        if (pkt->size % channels != 0) {
+            LOGI("normalizeRawDsdPacket: planar packet size %d not divisible by channels=%d",
+                 pkt->size, channels);
+        }
+        const int bytesPerChannel = pkt->size / channels;
+        int out = 0;
+        for (int i = 0; i < bytesPerChannel; ++i) {
+            for (int ch = 0; ch < channels; ++ch) {
+                const uint8_t v = pkt->data[ch * bytesPerChannel + i];
+                dst[out++] = reverseBits ? reverse_bits_u8(v) : v;
+            }
+        }
+        return bytesPerChannel * channels;
+    }
+
+    for (int i = 0; i < pkt->size; ++i) {
+        const uint8_t v = pkt->data[i];
+        dst[i] = reverseBits ? reverse_bits_u8(v) : v;
+    }
+    return pkt->size;
 }
 
 static StreamDecoder* stream_decoder_open(
@@ -976,6 +1220,15 @@ static StreamDecoder* stream_decoder_open(
     sd->frame = nullptr;
     sd->residual_buf = nullptr;
     sd->audio_stream_idx = -1;
+    sd->raw_pcm_passthrough = false;
+    sd->raw_pcm_fmt = AV_SAMPLE_FMT_NONE;
+    sd->raw_pcm_bytes_per_sample = 0;
+    sd->raw_pcm_frame_size = 0;
+    sd->raw_pcm_name = "";
+    sd->raw_dsd_passthrough = false;
+    sd->raw_dsd_lsbf = false;
+    sd->raw_dsd_planar = false;
+    sd->raw_dsd_bytes_per_channel_frame = 0;
 
     if (avformat_open_input(&sd->fmt_ctx, path, nullptr, nullptr) < 0) {
         LOGE("stream_decoder_open: Could not open input: %s", path);
@@ -996,26 +1249,85 @@ static StreamDecoder* stream_decoder_open(
 
     {
         AVCodecParameters *codecpar = sd->fmt_ctx->streams[sd->audio_stream_idx]->codecpar;
-        const AVCodec *codec = avcodec_find_decoder(codecpar->codec_id);
-        if (!codec) {
-            if (is_pcm_codec_id(codecpar->codec_id)) {
-                LOGI("stream_decoder_open: PCM decoder not found for codec_id=%d, using raw PCM fallback", codecpar->codec_id);
-                sd->raw_pcm_mode = true;
-                sd->raw_pcm_fmt = pcm_codec_sample_fmt(codecpar->codec_id);
-                sd->src_sample_rate = codecpar->sample_rate;
-                sd->src_channels = codecpar->ch_layout.nb_channels;
-                if (sd->src_channels <= 0) sd->src_channels = 2;
-                sd->duration_us = sd->fmt_ctx->duration;
-                sd->codec_ctx = nullptr;
-            } else {
-                LOGE("stream_decoder_open: Unsupported codec (codec_id=%d, codec_tag=0x%x, bits=%d, channels=%d, sample_rate=%d)",
-                      codecpar->codec_id, codecpar->codec_tag, codecpar->bits_per_coded_sample,
-                      codecpar->ch_layout.nb_channels, codecpar->sample_rate);
+        const bool requestRawDsd = is_dsd_codec(codecpar->codec_id) && bits_per_sample <= 1;
+        if (requestRawDsd) {
+            sd->raw_dsd_passthrough = true;
+            sd->raw_dsd_lsbf =
+                codecpar->codec_id == AV_CODEC_ID_DSD_LSBF ||
+                codecpar->codec_id == AV_CODEC_ID_DSD_LSBF_PLANAR;
+            sd->raw_dsd_planar =
+                codecpar->codec_id == AV_CODEC_ID_DSD_LSBF_PLANAR ||
+                codecpar->codec_id == AV_CODEC_ID_DSD_MSBF_PLANAR;
+            const int codecRate = codecpar->sample_rate > 0 ? codecpar->sample_rate : 2822400;
+            const int rawByteRatePerChannel = codecRate >= 2822400 ? (codecRate / 8) : codecRate;
+            sd->src_sample_rate = codecRate >= 2822400 ? codecRate : (codecRate * 8);
+            sd->src_channels = codecpar->channels > 0 ? codecpar->channels : (channels > 0 ? channels : 2);
+            sd->raw_dsd_bytes_per_channel_frame = 1;
+            sd->duration_us = (sd->fmt_ctx->duration == AV_NOPTS_VALUE || sd->fmt_ctx->duration < 0)
+                ? 0 : sd->fmt_ctx->duration;
+
+            sd->out_sample_rate = rawByteRatePerChannel;
+            if (sd->out_sample_rate <= 0) {
+                sd->out_sample_rate = target_sample_rate > 0 ? target_sample_rate : 352800;
+            }
+            sd->out_channels = sd->src_channels;
+            sd->out_bits = 1;
+            sd->out_bytes_per_sample = 1;
+            sd->file_bytes_per_sample = 1;
+            sd->out_fmt = AV_SAMPLE_FMT_NONE;
+
+            sd->residual_buf_capacity = sd->out_sample_rate * sd->out_channels;
+            if (sd->residual_buf_capacity < 32768) sd->residual_buf_capacity = 32768;
+            sd->residual_buf = (uint8_t*)av_malloc(sd->residual_buf_capacity);
+            if (!sd->residual_buf) {
+                LOGE("stream_decoder_open: Could not allocate raw DSD residual buffer");
                 goto fail;
             }
+            sd->residual_buf_size = 0;
+            sd->residual_buf_pos = 0;
+
+            sd->pkt = av_packet_alloc();
+            if (!sd->pkt) {
+                LOGE("stream_decoder_open: Could not allocate raw DSD packet");
+                goto fail;
+            }
+
+            sd->eof_reached = false;
+            sd->flushed_decoder = false;
+            sd->flushed_swr = false;
+
+            LOGI("stream_decoder_open: raw DSD passthrough %s sr=%d rawByteRate=%d ch=%d codec=%s",
+                 path,
+                 sd->src_sample_rate,
+                 sd->out_sample_rate,
+                 sd->out_channels,
+                 avcodec_get_name(codecpar->codec_id));
+            return sd;
         }
 
-        if (!sd->raw_pcm_mode) {
+        const AVCodec *codec = avcodec_find_decoder(codecpar->codec_id);
+        if (!codec) {
+            AVSampleFormat rawFmt = AV_SAMPLE_FMT_NONE;
+            int rawBps = 0;
+            const char* rawName = "";
+            if (!streamRawPcmPassthroughFormat(codecpar->codec_id, &rawFmt, &rawBps, &rawName)) {
+                LOGE("stream_decoder_open: Unsupported codec id=%d name=%s",
+                     codecpar->codec_id, avcodec_get_name(codecpar->codec_id));
+                goto fail;
+            }
+
+            sd->raw_pcm_passthrough = true;
+            sd->raw_pcm_fmt = rawFmt;
+            sd->raw_pcm_bytes_per_sample = rawBps;
+            sd->src_sample_rate = codecpar->sample_rate > 0 ? codecpar->sample_rate : target_sample_rate;
+            if (sd->src_sample_rate <= 0) sd->src_sample_rate = 44100;
+            sd->src_channels = codecpar->channels > 0 ? codecpar->channels : 2;
+            sd->raw_pcm_frame_size = sd->src_channels * sd->raw_pcm_bytes_per_sample;
+            sd->raw_pcm_name = rawName;
+            LOGI("stream_decoder_open: using raw PCM fallback for codec id=%d name=%s sr=%d ch=%d bps=%d",
+                 codecpar->codec_id, rawName, sd->src_sample_rate, sd->src_channels,
+                 sd->raw_pcm_bytes_per_sample);
+        } else {
             sd->codec_ctx = avcodec_alloc_context3(codec);
             if (!sd->codec_ctx) {
                 LOGE("stream_decoder_open: Could not allocate codec context");
@@ -1034,8 +1346,9 @@ static StreamDecoder* stream_decoder_open(
 
             sd->src_sample_rate = sd->codec_ctx->sample_rate;
             sd->src_channels = sd->codec_ctx->channels;
-            sd->duration_us = sd->fmt_ctx->duration;
         }
+        sd->duration_us = (sd->fmt_ctx->duration == AV_NOPTS_VALUE || sd->fmt_ctx->duration < 0) 
+                          ? 0 : sd->fmt_ctx->duration;
 
         // Output format
         sd->out_sample_rate = target_sample_rate > 0 ? target_sample_rate : sd->src_sample_rate;
@@ -1047,15 +1360,16 @@ static StreamDecoder* stream_decoder_open(
         sd->out_fmt = swr_output_format_for_bits(sd->out_bits);
 
         // Channel layout
-        AVSampleFormat src_fmt = sd->raw_pcm_mode ? sd->raw_pcm_fmt : sd->codec_ctx->sample_fmt;
-        int64_t in_ch_layout = sd->raw_pcm_mode ? av_get_default_channel_layout(sd->src_channels) : sd->codec_ctx->channel_layout;
+        int64_t in_ch_layout = sd->raw_pcm_passthrough ? codecpar->channel_layout : sd->codec_ctx->channel_layout;
         if (in_ch_layout == 0) in_ch_layout = av_get_default_channel_layout(sd->src_channels);
         if (in_ch_layout == 0) in_ch_layout = AV_CH_LAYOUT_STEREO;
         int64_t out_ch_layout = av_get_default_channel_layout(sd->out_channels);
 
+        AVSampleFormat in_fmt = sd->raw_pcm_passthrough ? sd->raw_pcm_fmt : sd->codec_ctx->sample_fmt;
+
         sd->swr_ctx = swr_alloc_set_opts(nullptr,
             out_ch_layout, sd->out_fmt, sd->out_sample_rate,
-            in_ch_layout, src_fmt, sd->src_sample_rate,
+            in_ch_layout, in_fmt, sd->src_sample_rate,
             0, nullptr);
         if (!sd->swr_ctx) {
             LOGE("stream_decoder_open: Could not allocate SwrContext");
@@ -1082,7 +1396,7 @@ static StreamDecoder* stream_decoder_open(
 
         sd->pkt = av_packet_alloc();
         sd->frame = av_frame_alloc();
-        if (!sd->pkt || !sd->frame) {
+        if (!sd->pkt || (!sd->raw_pcm_passthrough && !sd->frame)) {
             LOGE("stream_decoder_open: Could not allocate packet/frame");
             goto fail;
         }
@@ -1090,10 +1404,12 @@ static StreamDecoder* stream_decoder_open(
         sd->eof_reached = false;
         sd->flushed_decoder = false;
         sd->flushed_swr = false;
-        sd->closing = false;
 
-        LOGI("stream_decoder_open: OK, %s -> %dHz %dch %dbit, duration=%lldus",
-             path, sd->out_sample_rate, sd->out_channels, sd->out_bits, (long long)sd->duration_us);
+        LOGI("stream_decoder_open: OK, %s -> %dHz %dch %dbit, duration=%lldus%s%s",
+             path, sd->out_sample_rate, sd->out_channels, sd->out_bits,
+             (long long)sd->duration_us,
+             sd->raw_pcm_passthrough ? ", rawFallback=" : "",
+             sd->raw_pcm_passthrough ? sd->raw_pcm_name : "");
         return sd;
     }
 
@@ -1119,32 +1435,12 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
     int bytes_written = 0;
 
     // Step 1: Copy residual data first
-    int residual_available = sd->residual_buf_size - sd->residual_buf_pos;
-    if (residual_available > 0) {
-        int to_copy = residual_available;
-        if (to_copy > out_max_bytes) to_copy = out_max_bytes;
-        memcpy(out_buf, sd->residual_buf + sd->residual_buf_pos, to_copy);
-        sd->residual_buf_pos += to_copy;
-        bytes_written += to_copy;
+    streamCopyResidual(sd, out_buf, out_max_bytes, &bytes_written);
 
-        // Compact residual buffer
-        if (sd->residual_buf_pos >= sd->residual_buf_size) {
-            sd->residual_buf_size = 0;
-            sd->residual_buf_pos = 0;
-        }
-    }
-
-    // Step 2: If output still has space, decode more frames
-    while (bytes_written < out_max_bytes && !sd->eof_reached) {
-        if (sd->closing) return bytes_written > 0 ? bytes_written : -2;
-        if (sd->raw_pcm_mode) {
+    if (sd->raw_dsd_passthrough) {
+        while (bytes_written < out_max_bytes && !sd->eof_reached) {
             int ret = av_read_frame(sd->fmt_ctx, sd->pkt);
             if (ret < 0) {
-                if (ret == AVERROR_EOF) {
-                    sd->eof_reached = true;
-                    break;
-                }
-                LOGE("stream_decoder_read: av_read_frame failed: %d", ret);
                 sd->eof_reached = true;
                 break;
             }
@@ -1152,36 +1448,87 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
                 av_packet_unref(sd->pkt);
                 continue;
             }
-            int bytes_per_sample = av_get_bytes_per_sample(sd->raw_pcm_fmt);
-            if (bytes_per_sample <= 0) bytes_per_sample = 1;
-            int nb_samples = sd->pkt->size / (bytes_per_sample * sd->src_channels);
-            const uint8_t *data_ptr = sd->pkt->data;
-            int out_samples = swr_convert(sd->swr_ctx, &sd->residual_buf,
-                sd->residual_buf_capacity / sd->out_bytes_per_sample / sd->out_channels,
-                &data_ptr, nb_samples);
+
+            const int normalizedBytes = normalizeRawDsdPacket(sd, sd->pkt);
             av_packet_unref(sd->pkt);
-            if (out_samples > 0) {
-                int resampled_bytes = out_samples * sd->out_channels * sd->out_bytes_per_sample;
-                if (resampled_bytes > sd->residual_buf_capacity) {
-                    resampled_bytes = sd->residual_buf_capacity;
-                }
-                sd->residual_buf_size = resampled_bytes;
-                sd->residual_buf_pos = 0;
-                int available = sd->residual_buf_size;
-                int remaining = out_max_bytes - bytes_written;
-                int to_copy = (available < remaining) ? available : remaining;
-                memcpy(out_buf + bytes_written, sd->residual_buf + sd->residual_buf_pos, to_copy);
-                sd->residual_buf_pos += to_copy;
-                bytes_written += to_copy;
-                if (bytes_written >= out_max_bytes) break;
+            if (normalizedBytes < 0) {
+                LOGE("stream_decoder_read: normalizeRawDsdPacket failed");
+                sd->eof_reached = true;
+                break;
             }
-        } else {
-            // Try to receive more decoded frames
+            if (normalizedBytes == 0) {
+                continue;
+            }
+
+            sd->residual_buf_size = normalizedBytes;
+            sd->residual_buf_pos = 0;
+            streamCopyResidual(sd, out_buf, out_max_bytes, &bytes_written);
+        }
+        return bytes_written > 0 ? bytes_written : -1;
+    }
+
+    // Raw PCM fallback path: avformat gives us payload packets directly.
+    // Feed packet data into swr as packed float/double/S16/S32 and output S32LE/S16LE.
+    if (sd->raw_pcm_passthrough) {
+        while (bytes_written < out_max_bytes && !sd->eof_reached) {
+            int ret = av_read_frame(sd->fmt_ctx, sd->pkt);
+            if (ret < 0) {
+                sd->eof_reached = true;
+                break;
+            }
+            if (sd->pkt->stream_index != sd->audio_stream_idx) {
+                av_packet_unref(sd->pkt);
+                continue;
+            }
+
+            if (sd->raw_pcm_frame_size <= 0) {
+                av_packet_unref(sd->pkt);
+                sd->eof_reached = true;
+                break;
+            }
+
+            const int in_samples = sd->pkt->size / sd->raw_pcm_frame_size;
+            if (in_samples <= 0) {
+                av_packet_unref(sd->pkt);
+                continue;
+            }
+
+            const uint8_t* in_data[1] = { sd->pkt->data };
+            int out_samples = swr_convert(
+                    sd->swr_ctx,
+                    &sd->residual_buf,
+                    sd->residual_buf_capacity / sd->out_bytes_per_sample / sd->out_channels,
+                    in_data,
+                    in_samples
+            );
+            av_packet_unref(sd->pkt);
+
+            if (out_samples < 0) {
+                LOGE("stream_decoder_read: raw PCM swr_convert failed: %d", out_samples);
+                sd->eof_reached = true;
+                break;
+            }
+            if (out_samples == 0) continue;
+
+            int resampled_bytes = out_samples * sd->out_channels * sd->out_bytes_per_sample;
+            if (resampled_bytes > sd->residual_buf_capacity) {
+                LOGE("stream_decoder_read: raw PCM overflow! resampled=%d > capacity=%d, clamping",
+                     resampled_bytes, sd->residual_buf_capacity);
+                resampled_bytes = sd->residual_buf_capacity;
+            }
+            sd->residual_buf_size = resampled_bytes;
+            sd->residual_buf_pos = 0;
+            streamCopyResidual(sd, out_buf, out_max_bytes, &bytes_written);
+        }
+    } else {
+
+    // Step 2: If output still has space, decode more frames
+    while (bytes_written < out_max_bytes && !sd->eof_reached) {
+        // Try to receive more decoded frames
         int ret = avcodec_receive_frame(sd->codec_ctx, sd->frame);
         if (ret == AVERROR(EAGAIN)) {
             // Need more packets
             if (!sd->flushed_decoder) {
-                if (sd->closing) return bytes_written > 0 ? bytes_written : -2;
                 ret = av_read_frame(sd->fmt_ctx, sd->pkt);
                 if (ret < 0) {
                     if (ret == AVERROR_EOF) {
@@ -1258,7 +1605,7 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
 
             if (bytes_written >= out_max_bytes) break;
         }
-        } // end else (non-raw-pcm mode)
+    }
     }
 
     // If decoder EOF but swr has residual
@@ -1303,8 +1650,9 @@ static bool stream_decoder_seek(StreamDecoder *sd, int64_t position_us) {
     sd->eof_reached = false;
     sd->flushed_decoder = false;
     sd->flushed_swr = false;
-    if (sd->codec_ctx) avcodec_flush_buffers(sd->codec_ctx);
-    if (sd->swr_ctx) swr_init(sd->swr_ctx);
+    if (sd->codec_ctx) {
+        avcodec_flush_buffers(sd->codec_ctx);
+    }
 
     int ret = avformat_seek_file(sd->fmt_ctx, -1, INT64_MIN, position_us, INT64_MAX, 0);
     if (ret < 0) {
@@ -1318,7 +1666,6 @@ static bool stream_decoder_seek(StreamDecoder *sd, int64_t position_us) {
 
 static void stream_decoder_close(StreamDecoder *sd) {
     if (!sd) return;
-    sd->closing = true;  // Signal to decoder thread that we're closing
     if (sd->pkt) av_packet_free(&sd->pkt);
     if (sd->frame) av_frame_free(&sd->frame);
     if (sd->residual_buf) av_free(sd->residual_buf);
@@ -1336,7 +1683,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoder(
     const char *p = env->GetStringUTFChars(path, nullptr);
     StreamDecoder *sd = stream_decoder_open(p, targetRate, targetBits, channels);
     env->ReleaseStringUTFChars(path, p);
-    return reinterpret_cast<jlong>(sd);
+    return static_cast<jlong>(reinterpret_cast<uintptr_t>(sd));
 }
 
 extern "C" JNIEXPORT jint JNICALL
@@ -1430,8 +1777,8 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfo(
     jobject map = env->NewObject(mapClass, mapInit);
 
     auto putStr = [&](const char *key, const char *value) {
-        jstring jkey = env->NewStringUTF(key);
-        jstring jval = env->NewStringUTF(value);
+        jstring jkey = newJStringFromUtf8Lenient(env, key);
+        jstring jval = newJStringFromUtf8Lenient(env, value);
         env->CallObjectMethod(map, mapPut, jkey, jval);
         env->DeleteLocalRef(jkey);
         env->DeleteLocalRef(jval);
@@ -1483,13 +1830,14 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfo(
             putStr((std::string(prefix) + "bits_per_coded_sample").c_str(), buf);
 
             {
-                int bps = stream->codecpar->bits_per_raw_sample;
-                if (bps <= 0) bps = stream->codecpar->bits_per_coded_sample;
-                if (bps <= 0) {
-                    bps = av_get_bits_per_sample(stream->codecpar->codec_id);
-                }
+                int bps = detect_bits_per_sample(stream->codecpar);
                 snprintf(buf, sizeof(buf), "%d", bps);
                 putStr((std::string(prefix) + "bits_per_sample").c_str(), buf);
+            }
+
+            // 输出 sample_fmt 供 Kotlin 侧 fallback 推断位深
+            if (stream->codecpar->format != AV_SAMPLE_FMT_NONE) {
+                putStr((std::string(prefix) + "sample_fmt").c_str(), av_get_sample_fmt_name((AVSampleFormat)stream->codecpar->format));
             }
 
             const AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);

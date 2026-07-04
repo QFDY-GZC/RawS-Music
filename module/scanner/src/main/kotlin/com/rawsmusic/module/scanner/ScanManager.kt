@@ -1,6 +1,7 @@
 package com.rawsmusic.module.scanner
 
 import android.content.Context
+import android.util.Log
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.repository.MusicRepository
@@ -18,10 +19,36 @@ object ScanManager {
         val startTime = System.currentTimeMillis()
 
         if (useMediaStore) {
-            MediaStoreScanner.scan(context, customPaths, quickScan).collect { progress ->
+            MediaStoreScanner.scan(context, customPaths, quickScan, options = MediaStoreScanner.ScanOptions.fromPreferences()).collect { progress ->
                 when (progress) {
                     is ScanProgress.Completed -> {
-                        val deduplicated = deduplicate(progress.songs)
+                        val mediaStoreSongs = progress.songs.toMutableList()
+
+                        // 合并 SAF 用户选择文件夹的扫描结果
+                        val safUris = AppPreferences.Scanner.musicFolderUris
+                        if (safUris.isNotEmpty()) {
+                            try {
+                                val safSongs = SafMusicScanner.scanSelectedFolders(context)
+                                mediaStoreSongs.addAll(safSongs)
+                                Log.d("ScanManager", "SAF scan: ${safSongs.size} songs from ${safUris.size} folders")
+                            } catch (e: Exception) {
+                                Log.w("ScanManager", "SAF scan failed: ${e.message}")
+                            }
+                        }
+
+                        // 合并传统文件系统递归扫描结果（兜底 Download 等非 Music 目录）
+                        if (!quickScan && customPaths.isNotEmpty() && AppPreferences.Scanner.legacyFileAccessEnabled) {
+                            try {
+                                val legacySongs = MediaStoreScanner.scanCustomPathsByFileSystem(context, customPaths)
+                                mediaStoreSongs.addAll(legacySongs)
+                                Log.d("ScanManager", "legacy scan: ${legacySongs.size} songs from customPaths")
+                            } catch (e: Exception) {
+                                Log.w("ScanManager", "legacy scan failed: ${e.message}")
+                            }
+                        }
+
+                        val deduplicated = deduplicate(mediaStoreSongs)
+                        Log.d("ScanManager", "scan merged: mediaStore=${progress.songs.size}, total=${mediaStoreSongs.size}, deduplicated=${deduplicated.size}")
                         val inserted = MusicRepository.insertSongs(deduplicated)
                         AppPreferences.UI.lastScanTime = System.currentTimeMillis()
                         emit(ScanProgress.Completed(deduplicated, inserted, progress.timeMs))
@@ -65,7 +92,11 @@ object ScanManager {
     private fun deduplicate(songs: List<AudioFile>): List<AudioFile> {
         val seen = mutableSetOf<String>()
         return songs.filter { song ->
-            val key = song.path.lowercase()
+            val key = if (song.cueOffsetMs > 0 || song.cueTrackIndex > 0) {
+                "${song.path.lowercase()}@cue${song.cueOffsetMs}_${song.cueTrackIndex}"
+            } else {
+                song.path.lowercase()
+            }
             if (key in seen) false
             else {
                 seen.add(key)
@@ -75,12 +106,25 @@ object ScanManager {
     }
 
     fun incrementalScan(context: Context): Flow<ScanProgress> = flow {
-        val existingPaths = MusicRepository.getAllSongs().map { it.path }.toSet()
+        val existingKeys = MusicRepository.getAllSongs().map { song ->
+            if (song.cueOffsetMs > 0 || song.cueTrackIndex > 0) {
+                "${song.path}@cue${song.cueOffsetMs}_${song.cueTrackIndex}"
+            } else {
+                song.path
+            }
+        }.toSet()
 
-        MediaStoreScanner.scan(context).collect { progress ->
+        MediaStoreScanner.scan(context, options = MediaStoreScanner.ScanOptions.fromPreferences()).collect { progress ->
             when (progress) {
                 is ScanProgress.Completed -> {
-                    val newSongs = progress.songs.filter { it.path !in existingPaths }
+                    val newSongs = progress.songs.filter { song ->
+                        val key = if (song.cueOffsetMs > 0 || song.cueTrackIndex > 0) {
+                            "${song.path}@cue${song.cueOffsetMs}_${song.cueTrackIndex}"
+                        } else {
+                            song.path
+                        }
+                        key !in existingKeys
+                    }
                     if (newSongs.isNotEmpty()) {
                         MusicRepository.insertSongs(newSongs)
                     }

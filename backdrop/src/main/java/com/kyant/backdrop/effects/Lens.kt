@@ -11,6 +11,7 @@ import androidx.compose.ui.util.fastCoerceAtMost
 import com.kyant.backdrop.BackdropEffectScope
 import com.kyant.backdrop.RoundedRectRefractionShaderString
 import com.kyant.backdrop.RoundedRectRefractionWithDispersionShaderString
+import com.kyant.shapes.RoundedRectangularShape
 
 fun BackdropEffectScope.lens(
     @FloatRange(from = 0.0) refractionHeight: Float,
@@ -53,13 +54,23 @@ fun BackdropEffectScope.lens(
             }
             RenderEffect.createRuntimeShaderEffect(shader, "content")
         } else {
-            throwUnsupportedSDFException()
+            return  // 不支持的 shape 类型，静默跳过
         }
     effect(effect)
 }
 
 private val BackdropEffectScope.cornerRadii: FloatArray?
     get() = when (val shape = shape) {
+        is RoundedRectangularShape -> {
+            val corners = shape.corners(size, layoutDirection, this)
+            floatArrayOf(
+                corners.topLeft,
+                corners.topRight,
+                corners.bottomRight,
+                corners.bottomLeft
+            )
+        }
+
         is AbsoluteRoundedCornerShape -> {
             val size = size
             val maxRadius = size.minDimension / 2f
@@ -104,6 +115,6 @@ private val BackdropEffectScope.cornerRadii: FloatArray?
 
 private fun throwUnsupportedSDFException(): Nothing {
     throw UnsupportedOperationException(
-        "Only CornerBasedShape or AbsoluteRoundedCornerShape is supported in lens effects."
+        "Only RoundedRectangularShape or CornerBasedShape is supported in lens effects."
     )
 }

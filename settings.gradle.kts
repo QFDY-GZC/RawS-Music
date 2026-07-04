@@ -35,6 +35,4 @@ include(":module:player")
 include(":module:scanner")
 include(":module:data")
 include(":lyric:model")
-include(":lyric:view")
 include(":lyric:bridge:provider")
-

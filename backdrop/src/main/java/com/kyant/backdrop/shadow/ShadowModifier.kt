@@ -111,17 +111,25 @@ internal class ShadowNode(
     }
 
     override fun onAttach() {
-        val graphicsContext = requireGraphicsContext()
-        shadowLayer =
-            graphicsContext.createGraphicsLayer().apply {
-                compositingStrategy = CompositingStrategy.Offscreen
-            }
+        try {
+            val graphicsContext = requireGraphicsContext()
+            shadowLayer =
+                graphicsContext.createGraphicsLayer().apply {
+                    compositingStrategy = CompositingStrategy.Offscreen
+                }
+        } catch (_: Exception) {
+            shadowLayer = null
+        }
     }
 
     override fun onDetach() {
-        val graphicsContext = requireGraphicsContext()
-        shadowLayer?.let { layer ->
-            graphicsContext.releaseGraphicsLayer(layer)
+        try {
+            val graphicsContext = requireGraphicsContext()
+            shadowLayer?.let { layer ->
+                graphicsContext.releaseGraphicsLayer(layer)
+                shadowLayer = null
+            }
+        } catch (_: Exception) {
             shadowLayer = null
         }
     }

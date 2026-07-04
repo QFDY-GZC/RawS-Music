@@ -102,9 +102,15 @@ object RawSLyricsParser {
             val cleanText = tail.trim()
             if (cleanText.isEmpty()) continue
 
+            // Split inline translation: "Japanese_text Chinese_translation" or "English_text Chinese_translation"
+            val (originalText, translationText) = splitInlineTranslation(cleanText)
+
             for (bm in beginMatches) {
                 val ts = parseTimestamp(bm) ?: continue
-                rawData.add(RawLine(ts, cleanText, endTime = endTime))
+                rawData.add(RawLine(ts, originalText, endTime = endTime))
+                if (translationText.isNotEmpty()) {
+                    rawData.add(RawLine(ts, translationText, endTime = endTime))
+                }
             }
         }
 
@@ -115,6 +121,62 @@ object RawSLyricsParser {
         fillEndTimes(finalLines)
 
         return LyricData(lines = finalLines, offset = offset)
+    }
+
+    /**
+     * Detect inline original+translation on the same line, separated by a space.
+     * Pattern: "Japanese(kana) Chinese(no kana)" or "English Chinese(no kana, no latin)".
+     * Returns (original, translation). If no split detected, translation is empty.
+     */
+    private fun splitInlineTranslation(text: String): Pair<String, String> {
+        fun isKana(c: Char): Boolean =
+            c.code in 0x3040..0x309F || c.code in 0x30A0..0x30FF
+
+        fun isCJK(c: Char): Boolean =
+            c.code in 0x4E00..0x9FFF || c.code in 0x3400..0x4DBF
+
+        fun isLatin(c: Char): Boolean =
+            c in 'a'..'z' || c in 'A'..'Z'
+
+        // Covers regular space, thin space (U+2009), ideographic space (U+3000),
+        // narrow no-break space (U+202F), and all Unicode space separators.
+        fun isSpaceChar(c: Char): Boolean =
+            c == ' ' || c.isWhitespace() || Character.isSpaceChar(c)
+
+        val hasKana = text.any { isKana(it) }
+
+        if (hasKana) {
+            // Find first space where text before has kana and text after has no kana
+            for (i in text.indices) {
+                if (isSpaceChar(text[i])) {
+                    val before = text.substring(0, i)
+                    val after = text.substring(i + 1)
+                    val beforeHasKana = before.any { isKana(it) }
+                    val afterHasKana = after.any { isKana(it) }
+                    if (beforeHasKana && !afterHasKana) {
+                        return Pair(before.trim(), after.trim())
+                    }
+                }
+            }
+        } else {
+            // No kana — try Latin/CJK split for English + Chinese
+            for (i in text.indices) {
+                if (isSpaceChar(text[i])) {
+                    val before = text.substring(0, i)
+                    val after = text.substring(i + 1).trimStart()
+                    if (after.isEmpty()) continue
+                    val beforeHasLatin = before.any { isLatin(it) }
+                    val afterStartsWithCJK = isCJK(after.first())
+                    val afterHasNoLatin = !after.any { isLatin(it) }
+                    val afterHasNoKana = !after.any { isKana(it) }
+                    if (beforeHasLatin && afterStartsWithCJK && afterHasNoLatin && afterHasNoKana) {
+                        return Pair(before.trim(), after.trim())
+                    }
+                }
+            }
+        }
+
+        return Pair(text, "")
     }
 
     private fun isWordByWordLine(trimmed: String, matches: List<MatchResult>): Boolean {
@@ -453,7 +515,7 @@ object RawSLyricsParser {
                 }
 
                 if (currentWords.isEmpty()) {
-                    val fullText = collectTextContent(pElement).trim()
+                    val fullText = collectMainTextContent(pElement).trim()
                     if (fullText.isNotEmpty()) {
                         ttmlLines.add(LyricLine(
                             timeStamp = begin,
@@ -490,6 +552,7 @@ object RawSLyricsParser {
             }
 
             if (ttmlLines.isEmpty()) return LyricData()
+            fixTtmlEndTimes(ttmlLines)
             LyricData(lines = ttmlLines)
         } catch (e: Exception) {
             LyricData()
@@ -513,6 +576,12 @@ object RawSLyricsParser {
             for (child in element.children) {
                 val localName = child.name.substringAfterLast(':')
                 if (localName == "span") {
+                    val role = child.getAttribute("ttm:role")
+                        ?: child.getAttribute("role")
+                        ?: ""
+                    if (role in listOf("x-translation", "x-romanization", "x-bg", "x-bg-translation")) {
+                        continue
+                    }
                     collectSpanWords(child, spanBegin, spanEnd, words)
                 }
             }
@@ -531,6 +600,27 @@ object RawSLyricsParser {
         }
         for (child in element.children) {
             sb.append(collectTextContent(child))
+        }
+        return sb.toString()
+    }
+
+    /** 收集主文本内容，跳过翻译、罗马音、背景歌词等特殊 role 的 span */
+    private fun collectMainTextContent(element: SimpleXmlParser.XmlElement): String {
+        val sb = StringBuilder()
+        if (element.text.isNotEmpty()) {
+            sb.append(element.text)
+        }
+        for (child in element.children) {
+            val localName = child.name.substringAfterLast(':')
+            if (localName == "span") {
+                val role = child.getAttribute("ttm:role")
+                    ?: child.getAttribute("role")
+                    ?: ""
+                if (role in listOf("x-translation", "x-romanization", "x-bg", "x-bg-translation")) {
+                    continue
+                }
+            }
+            sb.append(collectMainTextContent(child))
         }
         return sb.toString()
     }
@@ -789,6 +879,21 @@ object RawSLyricsParser {
         }
         if (lines.isNotEmpty() && lines.last().endTime <= 0L) {
             lines[lines.lastIndex] = lines.last().copy(endTime = lines.last().timeStamp + 5000L)
+        }
+    }
+
+    private fun fixTtmlEndTimes(lines: MutableList<LyricLine>) {
+        for (k in 0 until lines.size - 1) {
+            val nextBegin = lines[k + 1].timeStamp
+            if (lines[k].endTime < nextBegin) {
+                lines[k] = lines[k].copy(endTime = nextBegin)
+            }
+        }
+        if (lines.isNotEmpty()) {
+            val last = lines.last()
+            if (last.endTime <= last.timeStamp + 1000L) {
+                lines[lines.lastIndex] = last.copy(endTime = last.timeStamp + 5000L)
+            }
         }
     }
 

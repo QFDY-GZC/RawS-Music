@@ -1,9 +1,7 @@
 package com.rawsmusic.ui.settings
 
 import android.os.Build
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -12,20 +10,18 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,6 +33,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -50,6 +47,15 @@ import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.Shadow
+import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Back
+import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.preference.SwitchPreference
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
 internal fun themeColors(): ThemeColors {
@@ -99,57 +105,51 @@ internal fun appFontFamily(): FontFamily {
     return if (tf != null) FontFamily(tf) else FontFamily.Default
 }
 
+/**
+ * 设置页面模板。
+ * 使用 Miuix SmallTopAppBar。
+ */
 @Composable
 internal fun SettingsPage(
     title: String,
     onBack: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val colors = themeColors()
-    val context = LocalContext.current
-    val pageBackground = colors.background
+    val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
+    val pageBackground = if (isDark) Color(0xFF101014) else Color(0xFFF4F4F7)
+
     Column(
         Modifier
             .fillMaxSize()
             .background(pageBackground)
-            .verticalScroll(rememberScrollState())
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
-        Spacer(Modifier.height(18.dp))
-        if (onBack == null) {
-            Text(
-                title,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = colors.onSurface,
-                modifier = Modifier.padding(horizontal = 8.dp),
-                fontFamily = appFontFamily()
-            )
-        } else {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = onBack) {
-                    Text("← 返回", color = colors.primary, fontSize = 14.sp, fontFamily = appFontFamily())
+        SmallTopAppBar(
+            title = title,
+            color = pageBackground,
+            titleColor = MiuixTheme.colorScheme.onBackground,
+            navigationIcon = {
+                if (onBack != null) {
+                    top.yukonga.miuix.kmp.basic.IconButton(onClick = onBack) {
+                        top.yukonga.miuix.kmp.basic.Icon(
+                            imageVector = MiuixIcons.Regular.Back,
+                            contentDescription = "返回",
+                            tint = MiuixTheme.colorScheme.onSurface
+                        )
+                    }
                 }
-                Text(
-                    title,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = colors.onSurface,
-                    fontFamily = appFontFamily()
-                )
-                Spacer(Modifier.weight(1f))
             }
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp)
+        ) {
+            Spacer(modifier = Modifier.height(8.dp))
+            content()
+            Spacer(modifier = Modifier.height(180.dp))
         }
-        Spacer(Modifier.height(22.dp))
-        content()
-        Spacer(Modifier.height(180.dp))
     }
 }
 
@@ -159,9 +159,17 @@ internal fun SettingsActionRow(
     description: String? = null,
     onClick: () -> Unit
 ) {
-    SettingsEntryRow(title, description.orEmpty(), onClick)
+    ArrowPreference(
+        title = title,
+        summary = description.orEmpty(),
+        onClick = onClick
+    )
 }
 
+/**
+ * 设置主页面。
+ * 使用 Miuix 组件。
+ */
 @Composable
 fun LiquidGlassSettingsScreen(
     onNavigateToLyricManagement: () -> Unit,
@@ -174,177 +182,251 @@ fun LiquidGlassSettingsScreen(
     onNavigateToGlobalFont: () -> Unit,
     onNavigateToAlbumArt: () -> Unit,
     onWebDavBackup: () -> Unit,
-    onNavigateToComposePlayerDemo: () -> Unit = {},
-    onNavigateToComposeScene: () -> Unit = {}
+    onNavigateToAbout: () -> Unit = {},
+    onNavigateToScanSettings: () -> Unit = {}
 ) {
-    val colors = themeColors()
-    val isDark = colors.onSurface == Color.White
-    val pageBackground = colors.background
+    val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
+    val pageBackground = if (isDark) Color(0xFF101014) else Color(0xFFF4F4F7)
+
+    // 搜索状态
+    var searchQuery by remember { mutableStateOf("") }
+    var isSearchActive by remember { mutableStateOf(false) }
+
+    // 可搜索的设置项
+    val searchableItems = remember(
+        onNavigateToAudioSettings, onNavigateToUsbDac, onNavigateToAudioEffects,
+        onNavigateToPlayerInterface, onNavigateToAppearance, onNavigateToLyricManagement,
+        onNavigateToStatusBarLyric, onNavigateToGlobalFont, onNavigateToAlbumArt, onWebDavBackup
+    ) {
+        listOf(
+            SearchableSetting("音质设置", "采样率 位深 输出模式 重采样 sample rate", onNavigateToAudioSettings),
+            SearchableSetting("USB DAC", "USB 独占 DAC PCM DSD 解码器", onNavigateToUsbDac),
+            SearchableSetting("音频效果", "均衡器 EQ 混响 reverb bass treble", onNavigateToAudioEffects),
+            SearchableSetting("播放器界面", "播放器 专辑图 控制 按钮 player", onNavigateToPlayerInterface),
+            SearchableSetting("外观", "主题 字体 颜色 暗色 深色 dark theme", onNavigateToAppearance),
+            SearchableSetting("歌词管理", "歌词 字体 大小 lrc lyric", onNavigateToLyricManagement),
+            SearchableSetting("状态栏歌词", "状态栏 通知 lyric status bar", onNavigateToStatusBarLyric),
+            SearchableSetting("全局字体", "字体 font typeface global", onNavigateToGlobalFont),
+            SearchableSetting("专辑图", "封面 缓存 高清 album art cover", onNavigateToAlbumArt),
+            SearchableSetting("WebDAV 备份", "备份 恢复 云同步 backup restore", onWebDavBackup),
+            SearchableSetting("关于", "关于 版本 项目 开源 about version", onNavigateToAbout),
+            SearchableSetting("扫描设置", "扫描 文件夹 重新扫描 短曲 播放次数 进度 scan folder", onNavigateToScanSettings),
+        )
+    }
+
+    val filteredItems = if (searchQuery.isBlank()) emptyList()
+    else searchableItems.filter { item ->
+        item.title.contains(searchQuery, ignoreCase = true) ||
+                item.keywords.contains(searchQuery, ignoreCase = true)
+    }
 
     Column(
-        Modifier
+        modifier = Modifier
             .fillMaxSize()
             .background(pageBackground)
-            .verticalScroll(rememberScrollState())
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        Spacer(Modifier.height(18.dp))
-        Text(
-            "设置",
-            fontSize = 24.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = colors.onSurface,
-            modifier = Modifier.padding(horizontal = 8.dp),
-            fontFamily = appFontFamily()
+        SmallTopAppBar(
+            title = "设置",
+            color = pageBackground,
+            titleColor = MiuixTheme.colorScheme.onBackground,
+            navigationIcon = {}
         )
-        Spacer(Modifier.height(26.dp))
 
-        MainSettingsSection("播放与界面") {
-            MainSettingsEntry(
-                title = "界面设置",
-                description = "默认背景、沉浸模式、常驻封面、音频可视化",
-                onClick = onNavigateToPlayerInterface
-            )
-            MainSettingsEntry(
-                title = "专辑图",
-                description = "画质、高清封面、24位 RGB、封面下载与动画",
-                onClick = onNavigateToAlbumArt
-            )
-            MainSettingsEntry(
-                title = "外观主题",
-                description = "主题模式、界面色彩与显示风格",
-                onClick = onNavigateToAppearance
-            )
-            MainSettingsEntry(
-                title = "全局字体",
-                description = "字体大小、字重、斜体与全局显示",
-                onClick = onNavigateToGlobalFont
+        // 搜索框
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+        ) {
+            TextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = "搜索设置"
             )
         }
 
-        MainSettingsSection("歌词") {
-            MainSettingsEntry(
-                title = "歌词管理",
-                description = "歌词源、歌词字体设置与歌词显示",
-                onClick = onNavigateToLyricManagement
-            )
-            MainSettingsEntry(
-                title = "状态栏歌词",
-                description = "Flyme、三星、蓝牙、Lyric Getter",
-                onClick = onNavigateToStatusBarLyric
-            )
-        }
+        if (searchQuery.isNotBlank() && filteredItems.isNotEmpty()) {
+            // 搜索结果
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp)
+            ) {
+                SmallTitle(text = "搜索结果")
+                SettingsCardGroup {
+                    Column {
+                        filteredItems.forEach { item ->
+                            ArrowPreference(
+                                title = item.title,
+                                summary = "点击进入",
+                                onClick = {
+                                    searchQuery = ""
+                                    item.onClick()
+                                }
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+        } else if (searchQuery.isNotBlank() && filteredItems.isEmpty()) {
+            // 无结果
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "未找到匹配的设置项",
+                    color = MiuixTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                    fontSize = 14.sp
+                )
+            }
+        } else {
+            // 正常设置列表
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp)
+            ) {
+                Spacer(modifier = Modifier.height(8.dp))
 
-        MainSettingsSection("音频") {
-            MainSettingsEntry(
-                title = "音质设置",
-                description = "采样率、位深、输出模式与重采样",
-                onClick = onNavigateToAudioSettings
-            )
-            MainSettingsEntry(
-                title = "音效设置",
-                description = "均衡器、动态范围、空间音频与增强",
-                onClick = onNavigateToAudioEffects
-            )
-            MainSettingsEntry(
-                title = "USB DAC",
-                description = "USB 独占、DAC 状态、PCM 输出与 DSD",
-                onClick = onNavigateToUsbDac
-            )
-        }
+            SmallTitle(text = "音频输出")
 
-        MainSettingsSection("数据") {
-            MainSettingsEntry(
-                title = "WebDAV 备份",
-                description = "备份与恢复歌单、统计数据和应用配置",
-                onClick = onWebDavBackup
-            )
-        }
+            SettingsCardGroup {
+                Column {
+                    ArrowPreference(
+                        title = "音质设置",
+                        summary = "采样率、位深、输出模式与重采样",
+                        onClick = onNavigateToAudioSettings
+                    )
+                    ArrowPreference(
+                        title = "USB DAC",
+                        summary = "USB 独占、DAC 状态、PCM 输出与 DSD",
+                        onClick = onNavigateToUsbDac
+                    )
+                }
+            }
 
-        MainSettingsSection("开发") {
-            MainSettingsEntry(
-                title = "Compose Player Demo",
-                description = "纯 Compose 播放器演示：液态玻璃 + 捏合缩放 + 场景切换",
-                onClick = onNavigateToComposePlayerDemo
-            )
-            MainSettingsEntry(
-                title = "纯 Compose 场景系统",
-                description = "纯 Compose 版本的统一容器：双引擎 + SceneParams + 场景切换",
-                onClick = onNavigateToComposeScene
-            )
-        }
+            SmallTitle(text = "播放与界面")
 
-        Spacer(Modifier.height(180.dp))
+            SettingsCardGroup {
+                Column {
+                    ArrowPreference(
+                        title = "界面设置",
+                        summary = "默认背景、沉浸模式、常驻封面、音频可视化",
+                        onClick = onNavigateToPlayerInterface
+                    )
+                    ArrowPreference(
+                        title = "专辑图",
+                        summary = "画质、高清封面、24位 RGB、封面下载与动画",
+                        onClick = onNavigateToAlbumArt
+                    )
+                    ArrowPreference(
+                        title = "外观主题",
+                        summary = "主题模式、界面色彩与显示风格",
+                        onClick = onNavigateToAppearance
+                    )
+                    ArrowPreference(
+                        title = "全局字体",
+                        summary = "字体大小、字重、斜体与全局显示",
+                        onClick = onNavigateToGlobalFont
+                    )
+                }
+            }
+
+            SmallTitle(text = "歌词")
+
+            SettingsCardGroup {
+                Column {
+                    ArrowPreference(
+                        title = "歌词管理",
+                        summary = "歌词源、歌词字体设置与歌词显示",
+                        onClick = onNavigateToLyricManagement
+                    )
+                    ArrowPreference(
+                        title = "状态栏歌词",
+                        summary = "Flyme、三星、蓝牙、Lyric Getter",
+                        onClick = onNavigateToStatusBarLyric
+                    )
+                }
+            }
+
+            SmallTitle(text = "媒体库")
+
+            SettingsCardGroup {
+                Column {
+                    ArrowPreference(
+                        title = "扫描设置",
+                        summary = "音乐文件夹、重新扫描、短曲过滤、播放次数和进度恢复",
+                        onClick = onNavigateToScanSettings
+                    )
+                }
+            }
+
+            SmallTitle(text = "数据")
+
+            SettingsCardGroup {
+                Column {
+                    ArrowPreference(
+                        title = "WebDAV 备份",
+                        summary = "备份与恢复歌单、统计数据和应用配置",
+                        onClick = onWebDavBackup
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            SettingsCardGroup {
+                Column {
+                    ArrowPreference(
+                        title = "关于 RawS Music",
+                        summary = "版本、核心功能、项目主页与开源组件",
+                        onClick = onNavigateToAbout
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(180.dp))
+            }
+        }
     }
 }
+
+private data class SearchableSetting(
+    val title: String,
+    val keywords: String,
+    val onClick: () -> Unit
+)
 
 @Composable
 private fun MainSettingsSection(
     title: String,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val colors = themeColors()
-    val cardColor = colors.surface
-
-    Text(
-        title,
-        fontSize = 14.sp,
-        fontWeight = FontWeight.SemiBold,
-        color = colors.onSurface,
-        modifier = Modifier.padding(start = 8.dp, bottom = 8.dp),
-        fontFamily = appFontFamily()
-    )
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(9.dp))
-            .background(cardColor)
-            .padding(vertical = 6.dp),
-        content = content
-    )
-    Spacer(Modifier.height(12.dp))
+    SmallTitle(text = title)
+    SettingsCardGroup { Column(content = content) }
 }
 
 @Composable
-private fun MainSettingsEntry(
-    title: String,
-    description: String,
-    onClick: () -> Unit
+internal fun SettingsCardGroup(
+    content: @Composable () -> Unit
 ) {
-    val colors = themeColors()
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+    val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
+    val cardColor = if (isDark) Color(0xFF1E1E1E) else Color.White
+
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(cardColor)
+            .padding(vertical = 4.dp)
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                title,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Normal,
-                color = colors.onSurface,
-                fontFamily = appFontFamily()
-            )
-            Text(
-                description,
-                fontSize = 11.sp,
-                color = colors.secondaryText,
-                modifier = Modifier.padding(top = 4.dp),
-                fontFamily = appFontFamily()
-            )
-        }
-        Text(
-            "›",
-            fontSize = 24.sp,
-            color = colors.outline,
-            modifier = Modifier.padding(start = 12.dp)
-        )
+        content()
     }
+    Spacer(modifier = Modifier.height(12.dp))
 }
 
 @Composable
@@ -361,7 +443,11 @@ internal fun SettingsNavigationEntry(
     description: String,
     onClick: () -> Unit
 ) {
-    MainSettingsEntry(title = title, description = description, onClick = onClick)
+    ArrowPreference(
+        title = title,
+        summary = description,
+        onClick = onClick
+    )
 }
 
 @Composable
@@ -369,84 +455,29 @@ internal fun SettingsInfoEntry(
     title: String,
     description: String
 ) {
-    val colors = themeColors()
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .padding(horizontal = 16.dp, vertical = 10.dp)
     ) {
         Text(
             title,
             fontSize = 15.sp,
             fontWeight = FontWeight.Normal,
-            color = colors.onSurface,
-            fontFamily = appFontFamily()
+            color = MiuixTheme.colorScheme.onBackground
         )
         Text(
             description,
             fontSize = 11.sp,
-            color = colors.secondaryText,
-            modifier = Modifier.padding(top = 4.dp),
-            fontFamily = appFontFamily()
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.padding(top = 4.dp)
         )
     }
 }
-
-@Composable
-private fun SettingsEntryRow(
-    title: String,
-    description: String,
-    onClick: () -> Unit
-) {
-    val colors = themeColors()
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp, vertical = 14.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                title,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Medium,
-                color = colors.onSurface,
-                fontFamily = appFontFamily()
-            )
-            Text(
-                description,
-                fontSize = 13.sp,
-                color = colors.secondaryText,
-                modifier = Modifier.padding(top = 2.dp),
-                fontFamily = appFontFamily()
-            )
-        }
-        Text(
-            "→",
-            fontSize = 18.sp,
-            color = colors.outline,
-            modifier = Modifier.padding(start = 8.dp)
-        )
-    }
-    Divider()
-}
-
-// ==================== 通用组件 ====================
 
 @Composable
 internal fun SectionHeader(title: String) {
-    val colors = themeColors()
-    Text(
-        title,
-        fontSize = 14.sp,
-        fontWeight = FontWeight.SemiBold,
-        color = colors.onSurface,
-        modifier = Modifier.padding(start = 2.dp, top = 2.dp, bottom = 8.dp),
-        fontFamily = appFontFamily()
-    )
+    SmallTitle(text = title)
 }
 
 @Composable
@@ -458,17 +489,17 @@ internal fun SettingsCard(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val colors = themeColors()
-    val cardColor = colors.surface
+    val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
+    val cardColor = if (isDark) Color(0xFF1E1E1E) else Color.White
     Column(
         modifier
             .fillMaxWidth()
-            .padding(bottom = 12.dp)
-            .clip(RoundedCornerShape(9.dp))
+            .clip(RoundedCornerShape(18.dp))
             .background(cardColor)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         content = content
     )
+    Spacer(modifier = Modifier.height(12.dp))
 }
 
 @Composable
@@ -478,34 +509,12 @@ fun SwitchRow(
     enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit
 ) {
-    val colors = themeColors()
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            label,
-            fontSize = 14.sp,
-            color = if (enabled) colors.onSurface else colors.outline,
-            modifier = Modifier.weight(1f),
-            fontFamily = appFontFamily()
-        )
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            enabled = enabled,
-            modifier = Modifier.padding(start = 16.dp),
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color(0xFFFFFFFF),
-                checkedTrackColor = Color(0xFF4285F4),
-                uncheckedThumbColor = Color(0xFFF1F1F1),
-                uncheckedTrackColor = Color(0xFF9AA0A6)
-            )
-        )
-    }
+    SwitchPreference(
+        title = label,
+        checked = checked,
+        enabled = enabled,
+        onCheckedChange = onCheckedChange
+    )
 }
 
 // ==================== 液态玻璃组件（保留供后续扩展） ====================
@@ -648,12 +657,13 @@ private fun LiquidGlassCardFallback(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val colors = themeColors()
+    val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
+    val cardColor = if (isDark) Color(0xFF353130) else Color(0xFFE4E6F2)
     Column(
         modifier
             .shadow(4.dp, RoundedCornerShape(24.dp), ambientColor = Color(0x1A000000))
             .clip(RoundedCornerShape(24.dp))
-            .background(colors.surface.copy(alpha = 0.85f))
+            .background(cardColor.copy(alpha = 0.85f))
             .padding(16.dp),
         content = content
     )
@@ -664,9 +674,12 @@ fun GlassButton(
     onClick: () -> Unit,
     content: @Composable () -> Unit
 ) {
-    TextButton(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth()
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        contentAlignment = Alignment.Center
     ) {
         content()
     }

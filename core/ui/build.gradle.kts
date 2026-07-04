@@ -7,24 +7,19 @@ plugins {
 
 android {
     namespace = "com.rawsmusic.core.ui"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 23
         consumerProguardFiles("consumer-rules.pro")
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 
     buildFeatures {
-        viewBinding = true
         compose = true
     }
 
@@ -35,29 +30,18 @@ android {
 
 dependencies {
     implementation(project(":core:common"))
+    implementation(project(":module:data"))
 
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.appcompat)
     implementation(libs.androidx.activity.ktx)
-    implementation(libs.androidx.fragment.ktx)
-    implementation(libs.androidx.constraintlayout)
-    implementation(libs.androidx.coordinatorlayout)
-    implementation(libs.androidx.recyclerview)
-    implementation(libs.androidx.viewpager2)
-    implementation(libs.androidx.cardview)
-    implementation(libs.androidx.swiperefreshlayout)
+    implementation(libs.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.lifecycle.livedata.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.paging.runtime.ktx)
     implementation(libs.androidx.dynamicanimation)
-    implementation(libs.material)
-
     implementation(libs.glide)
     kapt(libs.glide.compiler)
-    implementation(libs.coil)
-    implementation(libs.coil.compose)
-
     implementation(libs.lottie)
 
     implementation(libs.mpandroidchart)
@@ -68,6 +52,15 @@ dependencies {
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
+    implementation(libs.compose.foundation)
     implementation(libs.compose.material3)
+    implementation(libs.compose.material.icons.core)
     implementation(project(":backdrop"))
+
+    // Miuix UI 库
+    implementation(libs.miuix.ui)
+    implementation(libs.miuix.icons)
+    implementation(libs.miuix.blur)
+    implementation(libs.miuix.preference)
+    implementation(libs.miuix.squircle)
 }

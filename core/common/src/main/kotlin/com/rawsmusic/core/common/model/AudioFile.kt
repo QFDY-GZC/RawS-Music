@@ -33,7 +33,10 @@ data class AudioFile(
     val trackGain: Float = 0f,
     val trackPeak: Float = 1.0f,
     val albumGain: Float = 0f,
-    val albumPeak: Float = 1.0f
+    val albumPeak: Float = 1.0f,
+    val cueOffsetMs: Long = 0L,
+    val cueEndMs: Long = 0L,
+    val cueTrackIndex: Int = 0
 ) : Parcelable {
 
     val displayName: String
@@ -46,12 +49,16 @@ data class AudioFile(
         get() = bitRate >= 320000 || format.equals("FLAC", true) || format.equals("WAV", true)
 
     val isHiRes: Boolean
-        get() = (bitsPerSample >= 24 && bitsPerSample > 0) || 
-                format.equals("DSD", true) || format.equals("DSF", true) || format.equals("DFF", true)
+        get() = (isLosslessFormat && bitsPerSample >= 24 && bitsPerSample > 0) ||
+                isDsdFormat
 
     /** 无损格式判定 */
     private val isLosslessFormat: Boolean
         get() = format.equals("FLAC", true) || format.equals("WAV", true) ||
                 format.equals("AIFF", true) || format.equals("ALAC", true) ||
                 format.equals("APE", true) || format.equals("OGGFLAC", true)
+
+    /** DSD 格式判定 */
+    val isDsdFormat: Boolean
+        get() = format.equals("DSD", true) || format.equals("DSF", true) || format.equals("DFF", true)
 }

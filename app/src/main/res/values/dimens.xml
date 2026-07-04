@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 侧边栏宽度比例 -->
+    <item name="side_menu_width_ratio" type="dimen" format="float">0.7</item>
+    
+    <!-- 歌词容器 padding 比例（竖屏） -->
+    <item name="lyric_top_padding_ratio_portrait" type="dimen" format="float">0.20</item>
+    <item name="lyric_bottom_padding_ratio_portrait" type="dimen" format="float">0.15</item>
+    
+    <!-- 歌词容器 padding 比例（横屏） -->
+    <item name="lyric_top_padding_ratio_landscape" type="dimen" format="float">0.08</item>
+    <item name="lyric_bottom_padding_ratio_landscape" type="dimen" format="float">0.12</item>
+    
+    <!-- 歌词场景 padding 比例 -->
+    <item name="lyric_top_padding_ratio_lyric_scene" type="dimen" format="float">0.03</item>
+    <item name="lyric_bottom_padding_ratio_lyric_scene" type="dimen" format="float">0.08</item>
+    
+    <!-- HiRes 标签尺寸 -->
+    <dimen name="hires_width">48dp</dimen>
+    <dimen name="hires_height">24dp</dimen>
+    
+    <!-- 播放模式按钮尺寸 -->
+    <dimen name="play_mode_container_size">38dp</dimen>
+    <dimen name="more_action_container_size">38dp</dimen>
+    
+    <!-- 标题边距 -->
+    <dimen name="title_margin">16dp</dimen>
+    <dimen name="title_margin_start">20dp</dimen>
+    <dimen name="title_margin_end">72dp</dimen>
+    
+    <!-- 封面相关 -->
+    <dimen name="cover_top_margin">56dp</dimen>
+    <dimen name="cover_height_default">200dp</dimen>
+    <item name="cover_width_ratio" type="dimen" format="float">0.97</item>
+    <item name="cover_max_height_ratio" type="dimen" format="float">0.5</item>
+    <item name="cover_split_y_ratio" type="dimen" format="float">0.55</item>
+    <item name="cover_small_width_ratio" type="dimen" format="float">0.35</item>
+    
+    <!-- 歌词底部边距 -->
+    <dimen name="lyric_bottom_pad">56dp</dimen>
+    
+    <!-- 最小宽度 -->
+    <dimen name="min_width">100dp</dimen>
+    
+    <!-- 音频信息弹窗 -->
+    <dimen name="audio_info_padding">24dp</dimen>
+    <dimen name="audio_info_item_padding_vertical">12dp</dimen>
+    <dimen name="audio_info_item_padding_vertical_small">6dp</dimen>
+    <dimen name="audio_info_item_padding_vertical_tiny">2dp</dimen>
+    
+    <!-- 圆角半径 -->
+    <dimen name="corner_radius_large">16dp</dimen>
+    
+    <!-- 小封面边距 -->
+    <dimen name="small_cover_margin">8dp</dimen>
+    
+    <!-- 按钮缩放 -->
+    <item name="button_scale_pressed" type="dimen" format="float">0.85</item>
+    <item name="button_alpha_pressed" type="dimen" format="float">0.4</item>
+    
+    <!-- 进度条高度 -->
+    <dimen name="seekbar_height">14dp</dimen>
+    
+    <!-- 封面拖拽阈值比例 -->
+    <item name="cover_drag_threshold_ratio" type="dimen" format="float">0.3</item>
+    
+    <!-- 元数据详情宽度比例 -->
+    <item name="metadata_detail_width_ratio" type="dimen" format="float">0.84</item>
+    
+    <!-- 滑动阈值比例 -->
+    <item name="swipe_threshold_ratio" type="dimen" format="float">0.7</item>
+    
+    <!-- 图标缩放 -->
+    <item name="icon_size_ratio" type="dimen" format="float">0.8</item>
+    
+    <!-- 常用间距 -->
+    <dimen name="spacing_xxs">2dp</dimen>
+    <dimen name="spacing_xs">4dp</dimen>
+    <dimen name="spacing_negative_xs">-5dp</dimen>
+    <dimen name="spacing_sm">6dp</dimen>
+    <dimen name="spacing_md">8dp</dimen>
+    <dimen name="spacing_lg">10dp</dimen>
+    <dimen name="spacing_xl">12dp</dimen>
+    <dimen name="spacing_xxl">16dp</dimen>
+    <dimen name="spacing_xxxl">20dp</dimen>
+    <dimen name="spacing_xxxxl">24dp</dimen>
+    
+    <!-- 弹窗/列表项 -->
+    <dimen name="dialog_padding">24dp</dimen>
+    <dimen name="dialog_padding_vertical">16dp</dimen>
+    <dimen name="list_item_margin_bottom">8dp</dimen>
+    
+    <!-- 播放列表模式图标 -->
+    <dimen name="play_mode_icon_size">44dp</dimen>
+    <dimen name="play_mode_icon_margin">10dp</dimen>
+    
+    <!-- 音频信息弹窗间距 -->
+    <dimen name="audio_info_header_padding">20dp</dimen>
+    <dimen name="audio_info_icon_size">12dp</dimen>
+    
+    <!-- 封面圆角 -->
+    <dimen name="corner_radius_small">18dp</dimen>
+    <dimen name="corner_radius_xl">14dp</dimen>
+    
+    <!-- 播放模式弹窗布局偏移 -->
+    <dimen name="play_mode_margin_top">4dp</dimen>
+    <dimen name="play_mode_margin_end">35dp</dimen>
+    <dimen name="play_mode_margin_end_immersive">45dp</dimen>
+    <dimen name="more_action_gap">2dp</dimen>
+    
+    <!-- 标题定位 -->
+    <dimen name="title_top_margin_portrait">28dp</dimen>
+    <dimen name="title_top_margin_lyric">20dp</dimen>
+    
+    <!-- 底部面板 -->
+    <dimen name="bottom_panel_width_offset">32dp</dimen>
+    
+    <!-- 场景动画偏移 -->
+    <dimen name="scene_translation_y">80dp</dimen>
+    <dimen name="scene_translation_y_large">100dp</dimen>
+    
+    <!-- 横屏封面最小顶部偏移 -->
+    <dimen name="cover_min_top_offset">48dp</dimen>
+    
+    <!-- 滑动手势阈值 -->
+    <dimen name="swipe_slop">30dp</dimen>
+    
+    <!-- 进度条滑块绘制 -->
+    <dimen name="dot_radius">2dp</dimen>
+    <dimen name="dot_spacing">5dp</dimen>
+    <dimen name="dot_start_offset">1dp</dimen>
+    
+    <!-- 歌词文本基础尺寸 -->
+    <dimen name="lyric_text_size_primary">24dp</dimen>
+    <dimen name="lyric_text_size_secondary">16dp</dimen>
+    
+    <!-- 淡出边缘长度 -->
+    <dimen name="fading_edge_length">14dp</dimen>
+    
+    <!-- 分隔线高度 -->
+    <dimen name="divider_height">1dp</dimen>
+    
+    <!-- 更大圆角 -->
+    <dimen name="corner_radius_xxl">20dp</dimen>
+    
+    <!-- USB 音量提示偏移 -->
+    <dimen name="usb_volume_top_margin">100dp</dimen>
+    
+    <!-- 左边缘触摸区域 -->
+    <dimen name="left_edge_touch_zone">24dp</dimen>
+    
+    <!-- 滑动手势距离阈值 -->
+    <dimen name="swipe_distance_threshold">60dp</dimen>
+    
+    <!-- 歌词横向滑动阈值 -->
+    <dimen name="lyric_h_swipe_threshold">200dp</dimen>
+    
+    <!-- 封面触摸收缩区域 -->
+    <dimen name="cover_shrink_touch_zone">16dp</dimen>
+    
+    <!-- 迷你播放器尺寸 -->
+    <dimen name="mini_player_cover_size">52dp</dimen>
+    <dimen name="mini_player_bar_height">64dp</dimen>
+    
+    <!-- 元数据滑动阈值 -->
+    <dimen name="metadata_swipe_slop">40dp</dimen>
+    
+    <!-- 播放模式弹窗卡片 -->
+    <dimen name="play_mode_card_width">36dp</dimen>
+    <dimen name="play_mode_card_min_height">60dp</dimen>
+
+    <!-- 文件夹树状视图 -->
+    <dimen name="folder_tree_item_height">40dp</dimen>
+    <dimen name="folder_tree_item_two_line_height">56dp</dimen>
+    <dimen name="folder_tree_indent_per_level">20dp</dimen>
+    <dimen name="folder_tree_base_padding">24dp</dimen>
+</resources>

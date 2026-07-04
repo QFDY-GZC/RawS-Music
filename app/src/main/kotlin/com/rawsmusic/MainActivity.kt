@@ -1,72 +1,50 @@
 package com.rawsmusic
 
 import android.Manifest
-import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
 import java.io.File
 import java.io.FileOutputStream
-import android.graphics.RectF
 import android.util.Log
-import android.graphics.drawable.BitmapDrawable
-import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.KeyEvent
-import android.view.ScaleGestureDetector
-import android.view.Surface
-import android.view.View
-import android.view.ViewConfiguration
-import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.Toast
-import io.github.proify.lyricon.lyric.view.RawsLyricView
-import io.github.proify.lyricon.lyric.view.PlaceholderFormat
-import io.github.proify.lyricon.lyric.model.interfaces.IRichLyricLine
+import io.github.proify.lyricon.lyric.model.Song
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.setContent
+import androidx.activity.ComponentActivity
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.core.content.ContextCompat
-import com.rawsmusic.core.ui.widget.ComposeMiniPlayer
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.activity.viewModels
-import androidx.navigation.NavController
-import androidx.navigation.NavOptions
-import androidx.navigation.fragment.NavHostFragment
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
-import com.rawsmusic.core.common.base.BaseActivity
 import com.rawsmusic.core.common.ext.isDarkMode
-import com.rawsmusic.core.common.ext.visible
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.common.model.PlayMode
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.core.common.model.toLyriconSong
 import com.rawsmusic.core.common.utils.AppLogger
-import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.common.utils.UiUtils
 import com.rawsmusic.core.ui.R as UiR
-import com.rawsmusic.core.ui.adapter.SongDataProvider
-import com.rawsmusic.core.ui.animation.ButtonAnimHelper
-import com.rawsmusic.core.ui.theme.CoverColorExtractor
 import com.rawsmusic.core.ui.theme.ThemeManager
-import com.rawsmusic.core.ui.widget.AnimatedMoreButton
-import com.rawsmusic.core.ui.widget.CoverGradientDrawable
-import com.rawsmusic.core.ui.widget.scene.AAItemView
-import androidx.compose.foundation.layout.fillMaxWidth
-import com.rawsmusic.core.ui.widget.SideMenuView
-import com.rawsmusic.core.ui.widget.UnifiedPlayerContainer
-import com.rawsmusic.databinding.ActivityMainBinding
+import com.rawsmusic.core.ui.theme.RawSMusicTheme
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.rawsmusic.core.ui.scene.CoverTransitionTarget
+import com.rawsmusic.core.ui.widget.DynamicCoverBackgroundState
+import com.rawsmusic.core.ui.widget.ImmersiveBackgroundState
+import com.rawsmusic.core.ui.widget.PlayerSceneController
 import com.rawsmusic.module.data.repository.MusicRepository
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.FontManager
+import com.rawsmusic.module.data.prefs.PlaybackStatsStore
 import com.rawsmusic.module.player.GlobalSettingsViewModel
 import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.LyriconProviderManager
@@ -78,232 +56,215 @@ import com.rawsmusic.module.player.lyrics.LyricGetterBridge
 import com.rawsmusic.module.player.lyrics.TickerBridge
 import com.rawsmusic.module.scanner.LyricReader
 import com.rawsmusic.ui.songs.PlayerHolder
-import com.rawsmusic.core.ui.util.AdaptivePadTransformation
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.abs
-import com.rawsmusic.gesture.CoverAnimState
-import com.rawsmusic.gesture.CoverGestureHandler
-import com.rawsmusic.gesture.DrawerState
-import com.rawsmusic.gesture.FullCoverViewerHelper
-import com.rawsmusic.gesture.LyricSwipeState
-import com.rawsmusic.gesture.PlayAreaSwipeState
-import com.rawsmusic.helper.AlbumDetailHelper
 import com.rawsmusic.helper.AlbumInfoNavigator
 import com.rawsmusic.helper.AudioCapsuleUiHelper
 import com.rawsmusic.helper.AudioPermissionHelper
 import com.rawsmusic.helper.AudioInfoCapsuleHelper
-import com.rawsmusic.helper.AudioVisualizerHelper
+import com.rawsmusic.helper.AudioInfoCapsuleOverlay
 import com.rawsmusic.helper.BatteryOptimizationHelper
+import com.rawsmusic.helper.BatteryOptimizationOverlay
+import com.rawsmusic.helper.CoverBackgroundLayerState
+import com.rawsmusic.helper.CoverCoordinator
 import com.rawsmusic.helper.DialogHelper
-import com.rawsmusic.helper.DrawerMotionHelper
-import com.rawsmusic.helper.EffectsPanelHelper
+import com.rawsmusic.helper.DialogOverlay
 import com.rawsmusic.helper.LastPlayingStateHelper
 import com.rawsmusic.helper.LogExportHelper
-import com.rawsmusic.helper.LyricHeaderHelper
+import com.rawsmusic.helper.GestureLockCoordinator
+import com.rawsmusic.helper.GestureLockReason
+import com.rawsmusic.helper.GestureLock
 import com.rawsmusic.helper.LyricLoadHelper
+import com.rawsmusic.helper.MainPlaybackQueueHelper
+import com.rawsmusic.helper.LyricsPublisher
+import com.rawsmusic.helper.LyricsCoordinator
+import com.rawsmusic.helper.MiniPlayerCoordinator
+import com.rawsmusic.helper.OverlayCoordinator
+import com.rawsmusic.helper.PlaybackCoordinator
 import com.rawsmusic.helper.LyricStyleHelper
 import com.rawsmusic.helper.MetadataCardPopupHelper
+import com.rawsmusic.helper.MetadataCardPopupOverlay
 import com.rawsmusic.helper.MetadataDetailHelper
+import com.rawsmusic.helper.MetadataDetailOverlay
 import com.rawsmusic.helper.MetadataEditorHelper
+import com.rawsmusic.helper.MetadataEditorOverlay
 import com.rawsmusic.helper.PlaybackStatsHelper
 import com.rawsmusic.helper.PlayerActionObserverHelper
 import com.rawsmusic.helper.PlayerControllerBindingHelper
 import com.rawsmusic.helper.PlayModePopupHelper
-import com.rawsmusic.helper.Quad
+import com.rawsmusic.helper.PlayModePopupOverlay
 import com.rawsmusic.helper.PlayerServiceBridgeHelper
-import com.rawsmusic.helper.PlayerSubPageHelper
-import com.rawsmusic.helper.QueueListHelper
 import com.rawsmusic.helper.SearchStateHelper
 import com.rawsmusic.helper.SongActionSheetHelper
+import com.rawsmusic.helper.SongActionSheetOverlay
 import com.rawsmusic.helper.StartupPermissionFlowHelper
 import com.rawsmusic.helper.StartupScanHelper
+import com.rawsmusic.helper.ThemeCoordinator
+import com.rawsmusic.helper.ScannerCoordinator
 import com.rawsmusic.helper.SystemBarsHelper
-import com.rawsmusic.helper.TextMarqueeHelper
 import com.rawsmusic.helper.UsbVolumeKeyHandler
 
-
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.shape.RoundedCornerShape
-import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.drawBackdrop
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color as ComposeColor
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.unit.sp
-class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.CoverGestureCallbacks {
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
+import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
+import androidx.navigationevent.compose.rememberNavigationEventDispatcherOwner
+class MainActivity : ComponentActivity() {
 
-    override val bindingInflater = { ActivityMainBinding.inflate(layoutInflater) }
+    private val ioScope = CoroutineScope(Dispatchers.IO)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var startupWorkScheduled = false
 
-    private val lyricPlayerView: RawsLyricView get() = binding.lyricView as RawsLyricView
-    private val playCoverView: com.rawsmusic.core.ui.widget.CoverImageView get() = binding.ivPlayCover as com.rawsmusic.core.ui.widget.CoverImageView
-    private var currentLyricData: LyricData = LyricData()
+    private var currentLyricData by mutableStateOf(LyricData())
+    private var composeLyricSong by mutableStateOf<Song?>(null)
+    private var composeLyricPositionMs by mutableLongStateOf(0L)
+    private var composeDisplayTranslation by mutableStateOf(AppPreferences.Lyricon.displayTranslation)
+    private var composeDisplayRoma by mutableStateOf(AppPreferences.Lyricon.displayRoma)
+    private var composeLyricIsLight by mutableStateOf(false)
 
-    private lateinit var navController: NavController
-    private lateinit var unifiedContainer: UnifiedPlayerContainer
+    private var legacyDestinationId: Int = R.id.nav_songs
+    private lateinit var playerSceneController: PlayerSceneController
     internal var playerController: PlayerController? = null
     private val globalSettingsVM: GlobalSettingsViewModel by viewModels()
-
-    // 封面手势处理器
-    private lateinit var coverGestureHandler: CoverGestureHandler
 
     // 封面 URI 解析器
     private lateinit var coverUriResolver: com.rawsmusic.helper.CoverUriResolver
 
     // 封面背景管理器
     private lateinit var coverBackgroundManager: com.rawsmusic.helper.CoverBackgroundManager
+    private val backgroundState = DynamicCoverBackgroundState()
+    private val playBackgroundState = DynamicCoverBackgroundState()
+    private val lyricBackgroundState = DynamicCoverBackgroundState()
+    private val immersiveBackgroundState = ImmersiveBackgroundState()
+    private val mainPersistentCoverState = ImmersiveBackgroundState()
+    private val backgroundLayerState = CoverBackgroundLayerState()
+    private var composeImmersiveEnabled by mutableStateOf(AppPreferences.UI.isImmersiveEnabled)
+    private var composeMiniCoverEnabled by mutableStateOf(AppPreferences.UI.isMiniCoverEnabled)
+    private var composeDefaultBackgroundEnabled by mutableStateOf(AppPreferences.UI.isDefaultBackgroundEnabled)
+    private var playingCoverBoundsForTransition by mutableStateOf<android.graphics.RectF?>(null)
+    private var miniPlayerCoverBoundsForTransition by mutableStateOf<android.graphics.RectF?>(null)
+    private var coverTargetForTransition by mutableStateOf<CoverTransitionTarget?>(null)
+    private var lockedPlayerCoverBoundsForTransition by mutableStateOf<android.graphics.RectF?>(null)
+    private var lockedPlayerCoverPathForTransition by mutableStateOf<String?>(null)
+    private var playerReturnRevealIndex by mutableIntStateOf(-1)
+    private var acceptingReturnCoverBounds = false
+    private var returnCoverBoundsResolved = false
 
-    // 场景参数注册中心
-    private lateinit var sceneRegistry: com.rawsmusic.helper.SceneRegistry
-
-    // 场景参数注册函数族
-    private lateinit var sceneParamsHelper: com.rawsmusic.helper.SceneParamsHelper
-
-    // 封面布局参数计算与横竖屏切换
-    private lateinit var coverLayoutHelper: com.rawsmusic.helper.CoverLayoutHelper
-
-    /** 是否正在拖动进度条 */
-    private var isSeeking = false
-    // seek 目标位置，用于延迟清除 seeking 状态避免 UI 回跳
-    private var seekTargetMs: Long = -1L
-    private var seekFinishTimeMs: Long = 0L
-    // seek 后歌词需要执行一次 seekTo（而非 setPosition）以重置内部时钟
-    private var lyricsNeedSeekTo = false
-
-    private val playAreaSwipe = PlayAreaSwipeState()
-    private val playAreaCoverLoc = IntArray(2)
-
-    private val lyricSwipe = LyricSwipeState()
-    private val lyricHSwipeThreshold by lazy { resources.getDimension(R.dimen.lyric_h_swipe_threshold) }
-
-    /** 是否手动拖拽侧边栏 */
-    private val drawerState = DrawerState()
-    private val coverAnimState = CoverAnimState()
-    private val drawerMotionHelper by lazy {
-        DrawerMotionHelper(
-            binding,
-            unifiedContainer,
-            drawerState,
-            ::applyDrawerColorSync
-        )
+    /** 手势锁协调器：统一管理"谁正在禁止父级手势" */
+    private val gestureLockCoordinator by lazy {
+        GestureLockCoordinator { blocked ->
+            if (::playerSceneController.isInitialized) {
+                playerSceneController.disableGestureIntercept = blocked
+            }
+        }
     }
 
-    /** 已加载封面图片的实际尺寸，用于动态计算容器宽高比 */
-    private var loadedCoverImageWidth = 0
-    private var loadedCoverImageHeight = 0
+    /** 进度条拖动锁 */
+    private var progressSeekLock: GestureLock? = null
+    private var progressSeekActive = false
+
+    /** seek 后 UI 防回跳状态 */
+    private var isSeekUiHolding by mutableStateOf(false)
+    private var seekTargetMs: Long = -1L
+    private var seekFinishTimeMs: Long = 0L
+    private var lyricsNeedSeekTo = false
+
+    private fun beginProgressSeek() {
+        progressSeekActive = true
+        progressSeekLock?.release()
+        progressSeekLock = null
+    }
+
+    private fun endProgressSeek() {
+        progressSeekActive = false
+        progressSeekLock?.release()
+        progressSeekLock = null
+    }
+
+    private fun startSeekUiHold(targetMs: Long) {
+        seekTargetMs = targetMs
+        seekFinishTimeMs = System.currentTimeMillis()
+        isSeekUiHolding = true
+    }
+
+    private fun stopSeekUiHold() {
+        isSeekUiHolding = false
+        seekTargetMs = -1L
+    }
+
+    private var isSideMenuOpen by mutableStateOf(false)
 
     /** 进入播放器前的 Fragment 导航目标，用于返回时恢复正确的页面 */
     private var prePlayerFragmentDest: Int? = null
-    /** 进入播放器前是否在 Fragment 模式（而非 UnifiedMainContainer 内部页面模式） */
+    /** 进入播放器前是否从独立页面入口进入（历史字段，Compose 迁移期间保留恢复语义） */
     private var prePlayerWasInFragmentMode: Boolean = false
-    /** 进入播放器前 UnifiedMainContainer 的当前场景（容器模式下使用） */
+    /** 进入播放器前主 Compose 导航的当前场景 */
     private var prePlayerContainerScene: com.rawsmusic.core.ui.scene.NavScene? = null
-    /** 从专辑详情页进入播放器时，保存专辑封面的屏幕坐标，用于返回时动画对齐 */
-    private var savedAlbumDetailCoverRect: android.graphics.RectF? = null
-    /** 从歌曲列表进入播放器时，保存列表封面的屏幕坐标，用于返回时与进入动画保持同一落点 */
-    private var savedListCoverRect: android.graphics.RectF? = null
+    /** 播放器关闭后需要进入的 Compose 设置场景。 */
+    private var pendingSettingsSceneAfterPlayerClose: com.rawsmusic.core.ui.scene.NavScene? = null
+    private var settingsActivityLaunched = false
 
-    // ==================== Compose 状态属性 ====================
-    /** Compose 可观察的播放状态 */
-    var composeIsPlaying by mutableStateOf(false)
-        private set
-
-    /** Compose 可观察的当前播放进度 (0..1) */
-    var composePlayProgress by mutableFloatStateOf(0f)
-        private set
-
-    /** Compose 可观察的总时长 (ms) */
-    var composeTotalDurationMs by mutableLongStateOf(0L)
-        private set
-
-    /** Compose 可观察的当前播放位置 (ms) */
-    var composeCurrentPositionMs by mutableLongStateOf(0L)
-        private set
-
-    /** Compose 可观察的播放模式 */
-    var composePlayMode by mutableStateOf(PlayMode.SEQUENTIAL)
-        private set
+    private fun launchSettingsActivity(activityClass: Class<*>) {
+        settingsActivityLaunched = true
+        startActivity(android.content.Intent(this, activityClass))
+    }
 
     /*观察播放器动作（通过 PlayerEventBus）*/
     private fun observePlayerActions() {
         playerActionObserverHelper.observe()
     }
 
-    private val settingsChangeReceiver = object : android.content.BroadcastReceiver() {
-        override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
-            when (intent?.action) {
-                "com.rawsmusic.action.IMMERSIVE_SETTING_CHANGED" -> {
-                    if (::unifiedContainer.isInitialized) {
-                        // 先应用默认背景设置，确保 isDefaultBackgroundEnabled 在 refreshImmersiveState 之前更新
-                        applyDefaultBackground()
-                        unifiedContainer.refreshImmersiveState(com.rawsmusic.module.data.prefs.AppPreferences.UI.isImmersiveEnabled)
-                        playerController?.currentSong?.value?.let { song ->
-                            val coverUri = coverUriResolver.resolveCoverUri(song)
-                            val playCoverUri = coverUri.ifBlank { song.albumArtPath }
-                            unifiedContainer.updateImmersiveCover(playCoverUri)
-                        }
-                        unifiedContainer.post {
-                            setupCoverLayoutParams()
-                            updateHiresBadge()
-                        }
-                    }
-                }
-                "com.rawsmusic.action.DEFAULT_BACKGROUND_SETTING_CHANGED" -> {
-                    applyDefaultBackground()
-                }
-                "com.rawsmusic.action.MINI_COVER_SETTING_CHANGED" -> {
-                    if (::unifiedContainer.isInitialized) {
-                        unifiedContainer.updateMiniCoverEnabled(com.rawsmusic.module.data.prefs.AppPreferences.UI.isMiniCoverEnabled)
-                        playerController?.currentSong?.value?.let { song ->
-                            val coverUri = coverUriResolver.resolveCoverUri(song)
-                            val playCoverUri = coverUri.ifBlank { song.albumArtPath }
-                            unifiedContainer.updateImmersiveCover(playCoverUri)
-                        }
-                        unifiedContainer.post {
-                            setupCoverLayoutParams()
-                            updateHiresBadge()
-                        }
-                    }
-                }
-                "com.rawsmusic.action.FLOWING_LIGHT_SETTING_CHANGED" -> {
-                    if (::unifiedContainer.isInitialized) {
-                        unifiedContainer.post {
-                            unifiedContainer.forceReapplyCurrentScene()
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /** 上次同步播放位置的时间*/
     private var lastSyncPositionTime = 0L
-
-    /** 全屏封面查看器辅助类 */
-    private lateinit var fullCoverViewerHelper: FullCoverViewerHelper
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val allGranted = permissions.all { it.value }
         if (allGranted) {
-            startupScanHelper.start()
+            scannerCoordinator.onPermissionGranted()
         } else {
             Toast.makeText(this, R.string.permission_denied, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val folderPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK) {
+            val uri = result.data?.data ?: return@registerForActivityResult
+            folderPickerResultUri = uri
         }
     }
 
@@ -325,51 +286,82 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         ThemeManager.applyTheme(ThemeManager.getCurrentTheme())
         super.onCreate(savedInstanceState)
 
-        // 默认背景关闭时，动态封面背景使用深色兜底，避免亮色主题的白底残留。
-        val isLightTheme = !ThemeManager.isDarkMode(this)
-        binding.backgroundView.setThemeLightMode(
-            isLightTheme && com.rawsmusic.module.data.prefs.AppPreferences.UI.isDefaultBackgroundEnabled
-        )
+        // 恢复导航状态（划掉后台重开时回到之前的页面）
+        com.rawsmusic.core.ui.scene.NavigationPersistence.restore(this, mainNavState)
 
-        // 默认背景模式：启动时立即应用纯色背景
-        if (com.rawsmusic.module.data.prefs.AppPreferences.UI.isDefaultBackgroundEnabled) {
-            binding.backgroundView.visibility = View.GONE
-            binding.drawerLayout.setBackgroundColor(if (isLightTheme) Color.WHITE else Color.BLACK)
-            ThemeManager.isLightBackground = isLightTheme
-        } else {
-            binding.drawerLayout.setBackgroundColor(Color.TRANSPARENT)
-            ThemeManager.isLightBackground = false
-        }
+        playerSceneController = PlayerSceneController()
+        setContent { RootContent() }
+
+        val isLightTheme = !ThemeManager.isDarkMode(this)
+        backgroundState.setThemeLightMode(isLightTheme)
+
+        backgroundLayerState.backgroundVisible = false
+        ThemeManager.isLightBackground = isLightTheme
 
         prePlayerWasInFragmentMode = savedInstanceState?.getBoolean("prePlayerWasInFragmentMode", false)
             ?: com.rawsmusic.module.data.prefs.AppPreferences.UI.wasInFragmentMode
         val savedDest = savedInstanceState?.getInt("prePlayerFragmentDest", -1)
             ?: com.rawsmusic.module.data.prefs.AppPreferences.UI.lastFragmentDest
         if (savedDest != -1) prePlayerFragmentDest = savedDest
+        legacyDestinationId = savedInstanceState?.getInt("legacyDestinationId", R.id.nav_songs) ?: R.id.nav_songs
         savedInstanceState?.getString("prePlayerContainerScene")?.let {
             prePlayerContainerScene = com.rawsmusic.core.ui.scene.NavScene.entries.find { s -> s.name == it }
         }
         FontManager.init(this)
-        binding.root.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
-            override fun onGlobalLayout() {
-                binding.root.viewTreeObserver.removeOnGlobalLayoutListener(this)
-                FontManager.applyRecursive(binding.root)
-            }
-        })
-        requestAudioPermission()
-
         metadataEditorHelper
 
-        val filter = android.content.IntentFilter().apply {
-            addAction("com.rawsmusic.action.IMMERSIVE_SETTING_CHANGED")
-            addAction("com.rawsmusic.action.DEFAULT_BACKGROUND_SETTING_CHANGED")
-            addAction("com.rawsmusic.action.MINI_COVER_SETTING_CHANGED")
-            addAction("com.rawsmusic.action.FLOWING_LIGHT_SETTING_CHANGED")
-        }
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(settingsChangeReceiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
+        themeCoordinator.register()
+        initView()
+        initData()
+        initObserver()
+        initListener()
+        handleUsbAttachIntent(intent, reason = "activity_on_create")
+        setUsbAttachAliasEnabled(true, "on_create_restore")
+        scheduleDeferredStartupWork()
+        window.decorView.postDelayed({
+            if (!isFinishing && !isDestroyed) {
+                playerController?.onAppForegroundResumed()
+            }
+        }, 360)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleUsbAttachIntent(intent, reason = "activity_on_new_intent")
+    }
+
+    private fun handleUsbAttachIntent(intent: Intent?, reason: String) {
+        if (intent?.action != android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED) return
+        val device = if (android.os.Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(
+                android.hardware.usb.UsbManager.EXTRA_DEVICE,
+                android.hardware.usb.UsbDevice::class.java
+            )
         } else {
-            registerReceiver(settingsChangeReceiver, filter)
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(android.hardware.usb.UsbManager.EXTRA_DEVICE)
+        } ?: return
+        AppLogger.i("MainActivity", "USB attach intent received: ${device.deviceName} reason=$reason")
+        playerController?.handleUsbDeviceAttachIntent(device, reason)
+    }
+
+    private fun setUsbAttachAliasEnabled(enabled: Boolean, reason: String) {
+        val component = android.content.ComponentName(packageName, "$packageName.UsbAttachActivityAlias")
+        val state = if (enabled) {
+            android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+        } else {
+            android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+        }
+        try {
+            packageManager.setComponentEnabledSetting(
+                component,
+                state,
+                android.content.pm.PackageManager.DONT_KILL_APP
+            )
+            AppLogger.i("MainActivity", "USB attach alias enabled=$enabled reason=$reason")
+        } catch (e: Exception) {
+            AppLogger.w("MainActivity", "USB attach alias toggle failed enabled=$enabled reason=$reason: ${e.message}")
         }
     }
 
@@ -378,20 +370,17 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (!::unifiedContainer.isInitialized) return
-        val currentScene = unifiedContainer.currentScene
-        val isLandscape = newConfig.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        adjustLayoutForOrientation(newConfig.orientation)
-        if (currentScene == UnifiedPlayerContainer.Scene.PLAYER ||
-            currentScene == UnifiedPlayerContainer.Scene.LYRIC) {
-            unifiedContainer.post {
-                setupCoverLayoutParams()
+        if (!::playerSceneController.isInitialized) return
+        val currentScene = playerSceneController.currentScene
+        if (currentScene == PlayerSceneController.Scene.PLAYER ||
+            currentScene == PlayerSceneController.Scene.LYRIC) {
+            mainHandler.post {
                 setupSceneParams()
                 updateHiresBadge()
-                if (currentScene == UnifiedPlayerContainer.Scene.LYRIC) {
+                if (currentScene == PlayerSceneController.Scene.LYRIC) {
                     registerCoverLyricParams()
                 }
-                unifiedContainer.switchToSceneSilent(currentScene)
+                playerSceneController.switchToSceneSilent(currentScene)
             }
         }
     }
@@ -400,6 +389,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         super.onSaveInstanceState(outState)
         outState.putBoolean("prePlayerWasInFragmentMode", prePlayerWasInFragmentMode)
         prePlayerFragmentDest?.let { outState.putInt("prePlayerFragmentDest", it) }
+        outState.putInt("legacyDestinationId", legacyDestinationId)
         prePlayerContainerScene?.let { outState.putString("prePlayerContainerScene", it.name) }
     }
 
@@ -415,19 +405,50 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
 
     private val usbVolumeKeyHandler by lazy {
         UsbVolumeKeyHandler(
-            this,
-            resources,
             { playerController },
-            { window.decorView as? android.view.ViewGroup }
+            { text -> showUsbVolumeOverlay(text) }
         )
     }
-    private val batteryOptimizationHelper by lazy { BatteryOptimizationHelper(this) }
-    private val dialogHelper by lazy { DialogHelper(this) }
+    private val batteryOptimizationHelper by lazy {
+        BatteryOptimizationHelper(this) { visible -> updateComposeRootVisibility(visible) }
+    }
+    private val dialogHelper by lazy {
+        DialogHelper { visible -> updateComposeRootVisibility(visible) }
+    }
     private val logExportHelper by lazy { LogExportHelper(this) }
-    private val metadataCardPopupHelper by lazy { MetadataCardPopupHelper(binding, resources) }
-    private val startupScanHelper by lazy { StartupScanHelper(this, lifecycleScope) }
+    private val metadataCardPopupHelper by lazy {
+        MetadataCardPopupHelper(
+            resources = resources,
+            onVisibilityChanged = { visible -> updateComposeRootVisibility(visible) }
+        )
+    }
+    private val startupScanHelper by lazy { StartupScanHelper(this) }
+    private val themeCoordinator: ThemeCoordinator by lazy {
+        ThemeCoordinator(
+            context = this,
+            applyDefaultBackground = { applyDefaultBackground() },
+            syncImmersiveBackgroundSettings = { syncImmersiveBackgroundSettings() },
+            refreshImmersiveState = {
+                if (::playerSceneController.isInitialized) {
+                    playerSceneController.refreshImmersiveState(com.rawsmusic.module.data.prefs.AppPreferences.UI.isImmersiveEnabled)
+                }
+            },
+            updateHiresBadge = { updateHiresBadge() },
+            reapplyScene = {
+                if (::playerSceneController.isInitialized) {
+                    playerSceneController.forceReapplyCurrentScene()
+                }
+            }
+        )
+    }
+    private val scannerCoordinator: ScannerCoordinator by lazy {
+        ScannerCoordinator(
+            context = this,
+            isActivityAlive = { !isFinishing && !isDestroyed },
+            startupScanHelper = startupScanHelper
+        )
+    }
     private val systemBarsHelper by lazy { SystemBarsHelper(this) }
-    private val effectsPanelHelper by lazy { EffectsPanelHelper(binding) { playerController } }
     private val audioPermissionHelper by lazy { AudioPermissionHelper(this) }
     private val startupPermissionFlowHelper by lazy {
         StartupPermissionFlowHelper(
@@ -443,67 +464,121 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             { song: AudioFile -> coverUriResolver.resolveCoverUri(song) }
         )
     }
-    private val playerSubPageHelper by lazy {
-        PlayerSubPageHelper(
-            unifiedContainer,
-            { playerController?.currentSong?.value },
-            { refreshQueueList() },
-            { song -> loadAlbumDetail(song) },
-            { syncEffectsPanelState() }
-        )
-    }
-    private val albumDetailHelper by lazy {
-        AlbumDetailHelper(
-            this,
-            binding,
-            lifecycleScope,
-            { playerController },
-            { song: AudioFile -> coverUriResolver.resolveCoverUri(song) },
-            { setupAlbumDetailEffectCard() }
-        )
-    }
-    private val lyricHeaderHelper by lazy {
-        LyricHeaderHelper(
-            binding,
-            { playerController?.currentSong?.value },
-            { song: AudioFile -> coverUriResolver.resolveCoverUri(song) }
-        )
-    }
     private val lyricStyleHelper by lazy {
-        LyricStyleHelper(binding, lyricPlayerView) { playerController }
+        LyricStyleHelper({ lyricBackgroundState.isLightBackground }) { playerController }
+    }
+    private val lyricsPublisher by lazy {
+        LyricsPublisher(
+            getCurrentPositionMs = { playerController?.position?.value ?: 0L },
+            getLyricOffsetMs = { playerController?.lyricManualOffsetMs?.toLong() ?: 0L },
+            isPlaying = { playerController?.playState?.value == PlayState.PLAYING },
+            pushServiceLyrics = { playerServiceBridgeHelper.pushLyricsUpdate() }
+        )
     }
     private val lyricLoadHelper by lazy {
         LyricLoadHelper(
             this,
             lifecycleScope,
-            unifiedContainer,
-            lyricPlayerView,
+            { enabled -> if (::playerSceneController.isInitialized) playerSceneController.lyricEnabled = enabled },
             { playerController?.currentSong?.value },
-            { data -> currentLyricData = data },
+            { data -> setCurrentLyricDataForCompose(data) },
             { _ -> /* mini lyric removed */ },
             { currentLyricText = "" },
-            { updateLyricAnchor() },
+            { },
             { applyLyricColors() },
-            { playerServiceBridgeHelper.pushLyricsUpdate() }
+            lyricsPublisher
+        )
+    }
+
+    private val miniPlayerCoordinator by lazy {
+        MiniPlayerCoordinator(
+            resolveCover = { song -> coverCoordinator.resolve(song) },
+            noMusicText = { getString(R.string.no_music_playing) }
+        )
+    }
+
+    private val lyricsCoordinator by lazy {
+        LyricsCoordinator(
+            context = this,
+            lifecycleScope = lifecycleScope,
+            getController = { playerController },
+            onLyricEnabledChanged = { enabled ->
+                if (::playerSceneController.isInitialized) playerSceneController.lyricEnabled = enabled
+            },
+            onApplyLyricColors = { applyLyricColors() },
+            onCapsuleTextNeedRefresh = {
+                mainHandler.post {
+                    audioInfoCapsuleHelper.updateText()
+                    updateHiresBadge()
+                }
+            },
+            serviceBridge = playerServiceBridgeHelper
+        )
+    }
+
+    private val coverCoordinator by lazy {
+        CoverCoordinator(
+            context = this,
+            lifecycleOwner = this,
+            getCurrentSong = { playerController?.currentSong?.value },
+            onMiniPlayerCoverNeedRefresh = { updateMiniPlayerBarSong() },
+            onMirrorCoverChanged = { uri -> syncMirrorCover(uri) }
+        )
+    }
+
+    private val playbackCoordinator by lazy {
+        PlaybackCoordinator(
+            sceneController = { if (::playerSceneController.isInitialized) playerSceneController else null },
+            miniPlayer = miniPlayerCoordinator,
+            lyrics = lyricsCoordinator,
+            playerServiceBridgeHelper = playerServiceBridgeHelper,
+            onCurrentSongChangedExtra = { song ->
+                coverCoordinator.onCurrentSongChanged(song)
+                coverBackgroundManager.loadCoverBackground(song.albumArtPath)
+                audioInfoCapsuleHelper.updateText()
+                audioInfoCapsuleHelper.updateHiresBadge(
+                    isTransitioning = ::playerSceneController.isInitialized && playerSceneController.isTransitioning,
+                    isPlayerScene = ::playerSceneController.isInitialized && playerSceneController.currentScene == com.rawsmusic.core.ui.widget.PlayerSceneController.Scene.PLAYER
+                )
+                if (::playerSceneController.isInitialized) {
+                    playerSceneController.syncRotationState(
+                        playerController?.playState?.value == PlayState.PLAYING
+                    )
+                }
+            },
+            onPositionChangedExtra = { pos, duration ->
+                // seek 后 UI 防回跳
+                if (isSeekUiHolding && seekTargetMs >= 0L) {
+                    val tolerance = (duration * 0.02f).toLong().coerceIn(300L, 2000L)
+                    val elapsed = System.currentTimeMillis() - seekFinishTimeMs
+                    if (kotlin.math.abs(pos - seekTargetMs) < tolerance || elapsed > 2000L) {
+                        stopSeekUiHold()
+                    }
+                }
+            },
+            context = this
         )
     }
     private val searchStateHelper by lazy {
-        SearchStateHelper(unifiedMainContainer)
-    }
-    private val audioVisualizerHelper by lazy {
-        AudioVisualizerHelper(this) { playerController }
+        SearchStateHelper()
     }
     private val albumInfoNavigator by lazy {
-        AlbumInfoNavigator(navController)
+        AlbumInfoNavigator(
+            { song -> coverUriResolver.resolveCoverUri(song) },
+            { albumName, albumArtist, coverPath ->
+                mainNavState.navigateTo(
+                    com.rawsmusic.core.ui.scene.NavScene.ALBUM_DETAIL,
+                    "$albumName|$albumArtist|$coverPath"
+                )
+            }
+        )
     }
     private val lastPlayingStateHelper by lazy {
         LastPlayingStateHelper(
-            binding,
-            playCoverView,
             { playerController },
             coverUriResolver::resolveCoverUri,
             ::syncMirrorCover,
-            ::loadCoverBackground
+            {}
         )
     }
     private val playerActionObserverHelper by lazy {
@@ -518,26 +593,47 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             playerController = controller
         }
     }
-    private val queueListHelper by lazy {
-        QueueListHelper(this, binding, { playerController }) { refreshQueueList() }
+    private val playbackQueueHelper by lazy { MainPlaybackQueueHelper { playerController } }
+    private val audioInfoCapsuleHelper by lazy {
+        AudioInfoCapsuleHelper(
+            this,
+            { playerController },
+            { visible -> updateComposeRootVisibility(visible) },
+            { destinationId -> openDestinationFromPlayerPopup(destinationId) }
+        )
     }
-    private val audioInfoCapsuleHelper by lazy { AudioInfoCapsuleHelper(this, binding) { playerController } }
     private val audioCapsuleUiHelper by lazy {
         AudioCapsuleUiHelper(
-            unifiedContainer,
+            { ::playerSceneController.isInitialized && playerSceneController.isTransitioning },
+            { ::playerSceneController.isInitialized && playerSceneController.currentScene == PlayerSceneController.Scene.PLAYER },
             audioInfoCapsuleHelper,
-            { currentLyricText }
+            { lyricsCoordinator.currentLyricText }
         )
     }
     private val metadataEditorHelper: MetadataEditorHelper by lazy { MetadataEditorHelper(
-        this, { binding }, { playerController },
+        this, { playerController },
         { s: AudioFile -> coverUriResolver.resolveCoverUri(s) }, { uri -> syncMirrorCover(uri) },
         { songActionSheetHelper.hide() },
         { v -> songActionSheetHelper.hasCustomCover = v },
-        { songActionSheetHelper.updateCoverRestoreButton() }
+        { songActionSheetHelper.updateCoverRestoreButton() },
+        { visible -> updateComposeRootVisibility(visible) }
     ) }
     private val songActionSheetHelper: SongActionSheetHelper by lazy {
-        SongActionSheetHelper(this, binding, { playerController }, unifiedContainer, { navController }, { s: AudioFile -> coverUriResolver.resolveCoverUri(s) }, { lifecycleScope }).apply {
+        SongActionSheetHelper(
+            this,
+            { playerController },
+            { disabled -> if (::playerSceneController.isInitialized) playerSceneController.disableGestureIntercept = disabled },
+            { if (::playerSceneController.isInitialized) playerSceneController.closePlayPage(false) },
+            { s: AudioFile -> coverUriResolver.resolveCoverUri(s) },
+            { lifecycleScope },
+            { albumName, albumArtist, coverPath ->
+                mainNavState.navigateTo(
+                    com.rawsmusic.core.ui.scene.NavScene.ALBUM_DETAIL,
+                    "$albumName|$albumArtist|$coverPath"
+                )
+            },
+            { visible -> updateComposeRootVisibility(visible) }
+        ).apply {
             onEditMetadata = { metadataEditorHelper.editMetadata() }
             onOpenMetadataDetail = { metadataDetailHelper.open() }
             onShowSleepTimer = { dialogHelper.showSleepTimer(playerController) }
@@ -546,31 +642,22 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             onRestoreCover = { metadataEditorHelper.restoreOriginalCover() }
         }
     }
-    private val metadataDetailHelper by lazy { MetadataDetailHelper(this, binding, { playerController }, unifiedContainer) }
-    private val playModePopupHelper by lazy { PlayModePopupHelper(this, { binding }, { playerController }) { window.decorView as? android.view.ViewGroup } }
-    private fun adjustLayoutForOrientation(orientation: Int) {
-        val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            display?.rotation ?: Surface.ROTATION_0
-        } else {
-            @Suppress("DEPRECATION")
-            windowManager.defaultDisplay.rotation
-        }
-        coverLayoutHelper.adjustLayoutForOrientation(orientation, rotation)
+    private val metadataDetailHelper by lazy {
+        MetadataDetailHelper(
+            this,
+            { playerController },
+            { disabled -> if (::playerSceneController.isInitialized) playerSceneController.disableGestureIntercept = disabled },
+            { visible -> updateComposeRootVisibility(visible) }
+        )
     }
-
-    private fun applyLandscapeLyricConstraints(isReverse: Boolean) {
-        coverLayoutHelper.applyLandscapeLyricConstraints(isReverse)
+    private val playModePopupHelper by lazy {
+        PlayModePopupHelper(
+            this,
+            { playerController },
+            { visible -> updateComposeRootVisibility(visible) }
+        )
     }
-
-    private fun restorePortraitLyricLayout() {
-        coverLayoutHelper.restorePortraitLyricLayout()
-    }
-
-    private fun updateLyricSongInfo() {
-        lyricHeaderHelper.updateSongInfo()
-    }
-
-    override fun initView() {
+    private fun initView() {
         val tInitStart = System.currentTimeMillis()
         AppLogger.d("Startup", "initView: start")
 
@@ -581,114 +668,82 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         PlayerHolder.controller = playerController
 
         // 初始化封面 URI 解析器
-        coverUriResolver = com.rawsmusic.helper.CoverUriResolver(this)
+        coverUriResolver = coverCoordinator.resolver
 
-        val navHostFragment = supportFragmentManager
-            .findFragmentById(R.id.nav_host_fragment) as NavHostFragment
-        navController = navHostFragment.navController
-
-        // 统一为所有设置 Fragment 的根 View 设置不透明背景
-        // 解决 Jetpack Navigation 中新旧 Fragment 视图叠加导致的重叠问题
-        navHostFragment.childFragmentManager.registerFragmentLifecycleCallbacks(
-            object : androidx.fragment.app.FragmentManager.FragmentLifecycleCallbacks() {
-                override fun onFragmentViewCreated(fm: androidx.fragment.app.FragmentManager, f: androidx.fragment.app.Fragment, v: View, savedInstanceState: Bundle?) {
-                    if (v.background == null) {
-                        val isDark = com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(this@MainActivity)
-                        v.setBackgroundColor(if (isDark) 0xFF2A2624.toInt() else 0xFFF7F6F4.toInt())
-                    }
-                }
-            }, false
-        )
-
-        // 关键修复：在 UI 收集 StateFlow 之前，先从 MMKV 加载缓存数据到内存
-        // 这样 observeMainContainerFlows() 收集时就能立即拿到数据，不用等扫描完成
-        val tPreload = System.currentTimeMillis()
-        MusicRepository.refreshAll()
-        AppLogger.d("Startup", "initView: MusicRepository.refreshAll() preload done in ${System.currentTimeMillis() - tPreload}ms")
-
-        setupUnifiedMainContainer()
-        AppLogger.d("Startup", "initView: setupUnifiedMainContainer done in ${System.currentTimeMillis() - tInitStart}ms total")
-        setupUnifiedContainer()
+        setupMainComposeView()
+        AppLogger.d("Startup", "initView: setupMainComposeView done in ${System.currentTimeMillis() - tInitStart}ms total")
+        setupplayerSceneController()
 
         // 初始化封面背景管理器
         coverBackgroundManager = com.rawsmusic.helper.CoverBackgroundManager(
             lifecycleOwner = this,
-            playBgView = binding.playBgView,
-            lyricBgView = binding.lyricBgView,
-            backgroundView = binding.backgroundView,
-            immersiveBackground = binding.immersiveBackground,
-            mainPersistentCover = binding.mainPersistentCover,
-            mainBgScrim = binding.mainBgScrim,
-            playBgScrim = binding.playBgScrim,
-            drawerLayout = binding.drawerLayout,
-            sideMenu = binding.sideMenu,
-            unifiedMainContainer = unifiedMainContainer,
-            unifiedContainer = unifiedContainer,
-            coverUriResolver = coverUriResolver,
-            applyLyricColors = { lyricStyleHelper.applyLyricColors() }
+            playBgView = playBackgroundState,
+            lyricBgView = lyricBackgroundState,
+            backgroundView = backgroundState,
+            immersiveBackground = immersiveBackgroundState,
+            mainPersistentCover = mainPersistentCoverState,
+            layerState = backgroundLayerState,
+            updateDefaultBackgroundEnabled = { enabled ->
+                composeDefaultBackgroundEnabled = enabled
+                if (::playerSceneController.isInitialized) playerSceneController.updateDefaultBackgroundEnabled(enabled)
+                syncImmersiveBackgroundSettings()
+            },
+            updateImmersiveCover = {
+                updateImmersiveCoverState(null)
+            },
+            applyLyricColors = { applyLyricColors() }
         )
 
-        // 恢复上次播放状态（需要在 coverBackgroundManager 初始化之后）
-        restoreLastPlayingState()
-
-        // 在 unifiedContainer 初始化后同步默认背景状态；关闭状态也要走恢复分支，避免冷启动亮色主题白底残留。
+        // 在 playerSceneController 初始化后同步默认背景状态；关闭状态也要走恢复分支，避免冷启动亮色主题白底残留。
         applyDefaultBackground()
 
         setupDrawerLayout()
         setupSideMenu()
-        playerController?.setEqualizerController { newSessionId ->
-            binding.audioVisualizer?.bindAudioSession(newSessionId)
-        }
+        playerController?.setEqualizerController { }
         playerController?.onPcmWaveformFrame = { buffer, read, channels, sampleRate, bitsPerSample ->
-            binding.audioVisualizer?.post {
-                binding.audioVisualizer?.updatePcmWaveform(buffer, read, channels, sampleRate, bitsPerSample)
+            if (AppPreferences.UI.isAudioVisualizerEnabled) {
+                runOnUiThread {
+                    visualizerLevels = com.rawsmusic.core.ui.widget.player.pcmWaveformLevels(
+                        buffer = buffer,
+                        read = read,
+                        channels = channels,
+                        bitsPerSample = bitsPerSample
+                    )
+                }
             }
         }
-        setupPlayPageListeners()
-        setupLyricPageListeners()
         metadataDetailHelper.setup()
+        metadataCardPopupHelper.onMetadataClick = {
+            metadataDetailHelper.open()
+        }
+        songActionSheetHelper.setup()
         setupEdgeToEdge()
         setupPredictiveBack()
 
-        // 绑定PlayerService服务连接
-        playerServiceBridgeHelper.startForegroundServiceIfNeeded()
-
         // 使用StateFlow和SharedFlow来管理状态       observePlayerActions()
 
-        LyriconProviderManager.init(this, R.mipmap.ic_launcher)
-        playerController?.let { LyriconProviderManager.startPositionSync(it) }
-
-        LyricGetterBridge.init(this)
-
         LyriconProviderManager.onProviderConnected = {
-            val currentSong = playerController?.currentSong?.value
-            val isPlaying = playerController?.playState?.value == PlayState.PLAYING
-            LyriconProviderManager.setSong(currentSong, if (currentLyricData.isEmpty) null else currentLyricData)
-            LyriconProviderManager.setPlaybackState(isPlaying)
+            lyricsCoordinator.resendToLyricon()
         }
     }
+
+    private fun initData() = Unit
 
     /**
      * DDrawerLayout 侧边栏设置...HOME场景时允许滑动手动打开侧边栏...深层页面时禁用侧边栏...    */
     private fun setupDrawerLayout() {
-        drawerMotionHelper.setupLayout(
-            screenWidth = resources.displayMetrics.widthPixels,
-            menuWidthRatio = resources.getFloat(R.dimen.side_menu_width_ratio)
-        )
+        // 侧边栏点击关闭已迁移到 RootContent 的 Compose pointer input。
     }
 
     private fun openSideMenu() {
-        drawerMotionHelper.open()
+        isSideMenuOpen = true
     }
 
     /**
-     * 从 UnifiedMainContainer 模式切换到 Fragment 模式
-     * 注册场景参数、切换可见性
+     * 历史 Fragment 模式已由 Compose 导航替代，保留空实现兼容旧恢复链路。
      */
     private fun switchToFragmentMode() {
-        // 切换到 Fragment 模式：显示 Fragment，隐藏容器
-        binding.navHostFragment.visibility = View.VISIBLE
-        unifiedMainContainer?.visibility = View.GONE
+        updateComposeRootVisibility(true)
     }
 
     /**
@@ -700,37 +755,85 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             registerCoverCollapseParams()
         } catch (_: Exception) {}
 
-        prePlayerWasInFragmentMode = true
-        prePlayerFragmentDest = destinationId
+        val targetScene = settingsSceneForDestination(destinationId)
 
         val scene = try {
-            unifiedContainer.currentScene
+            playerSceneController.currentScene
         } catch (_: Exception) {
             null
         }
-        if (scene == UnifiedPlayerContainer.Scene.LYRIC) {
-            unifiedContainer.closeLyricPage(true)
-            unifiedContainer.postDelayed({
-                if (unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.PLAYER) {
-                    unifiedContainer.closePlayPageWithCoverAlign(true)
+        if (scene == PlayerSceneController.Scene.LYRIC) {
+            pendingSettingsSceneAfterPlayerClose = targetScene
+            playerSceneController.closeLyricPage(true)
+            mainHandler.postDelayed({
+                if (playerSceneController.currentScene == PlayerSceneController.Scene.PLAYER) {
+                    playerSceneController.closePlayPageWithCoverAlign(true)
                 }
             }, 180L)
             return
         }
-        if (scene == UnifiedPlayerContainer.Scene.PLAYER) {
-            unifiedContainer.closePlayPageWithCoverAlign(true)
+        if (scene == PlayerSceneController.Scene.PLAYER) {
+            pendingSettingsSceneAfterPlayerClose = targetScene
+            playerSceneController.closePlayPageWithCoverAlign(true)
             return
         }
 
-        // 设置页面现在使用独立 Activity，无需 fragment 模式切换
-        startActivity(android.content.Intent(this, com.rawsmusic.ui.settings.SettingsActivity::class.java))
+        navigateToSettingsScene(targetScene)
     }
 
     fun navigateSettingsForward(destinationId: Int) {
-        startActivity(android.content.Intent(this, com.rawsmusic.ui.settings.SettingsActivity::class.java))
+        navigateToSettingsScene(settingsSceneForDestination(destinationId))
     }
 
-    fun navigateSettingsBack() { finish() }
+    fun navigateSettingsBack() {
+        if (!mainNavState.navigateBackAnimated()) {
+            mainNavState.navigateHome()
+        }
+    }
+
+    private fun navigateToSettingsScene(scene: com.rawsmusic.core.ui.scene.NavScene) {
+        updateComposeRootVisibility(true)
+        if (::playerSceneController.isInitialized &&
+            playerSceneController.currentScene != PlayerSceneController.Scene.MAIN
+        ) {
+            pendingSettingsSceneAfterPlayerClose = scene
+            playerSceneController.closePlayPageWithCoverAlign(true)
+            return
+        }
+        // 设置页由独立 Activity 承载，主界面保持 HOME，避免返回后底部栏残留设置选中态。
+        val activityClass = SETTINGS_ACTIVITY_MAP[scene]
+        if (activityClass != null) {
+            mainNavState.navigateHome()
+            launchSettingsActivity(activityClass)
+        } else if (mainNavState.currentScene != scene) {
+            mainNavState.navigateToSettings(scene)
+        }
+        updateDrawerLockMode()
+    }
+
+    private fun settingsSceneForDestination(destinationId: Int): com.rawsmusic.core.ui.scene.NavScene {
+        return when (destinationId) {
+            R.id.nav_lyric_management -> com.rawsmusic.core.ui.scene.NavScene.LYRIC_MANAGEMENT
+            R.id.nav_status_bar_lyric -> com.rawsmusic.core.ui.scene.NavScene.STATUS_BAR_LYRIC
+            R.id.nav_appearance -> com.rawsmusic.core.ui.scene.NavScene.APPEARANCE
+            R.id.nav_audio_settings -> com.rawsmusic.core.ui.scene.NavScene.AUDIO_SETTINGS
+            R.id.nav_audio_effects -> com.rawsmusic.core.ui.scene.NavScene.AUDIO_EFFECTS
+            R.id.nav_player_interface -> com.rawsmusic.core.ui.scene.NavScene.PLAYER_INTERFACE
+            R.id.nav_usb_dac_settings -> com.rawsmusic.core.ui.scene.NavScene.USB_DAC_SETTINGS
+            R.id.nav_peq -> com.rawsmusic.core.ui.scene.NavScene.PEQ
+            R.id.nav_compressor -> com.rawsmusic.core.ui.scene.NavScene.COMPRESSOR
+            R.id.nav_bass_treble_boost -> com.rawsmusic.core.ui.scene.NavScene.BASS_TREBLE_BOOST
+            R.id.nav_spatial_sound -> com.rawsmusic.core.ui.scene.NavScene.SPATIAL_SOUND
+            R.id.nav_surround_360 -> com.rawsmusic.core.ui.scene.NavScene.SURROUND_360
+            R.id.nav_panoramic_360 -> com.rawsmusic.core.ui.scene.NavScene.PANORAMIC_360
+            R.id.nav_lyric_font_settings -> com.rawsmusic.core.ui.scene.NavScene.LYRIC_FONT_SETTINGS
+            R.id.nav_global_font_settings -> com.rawsmusic.core.ui.scene.NavScene.GLOBAL_FONT_SETTINGS
+            R.id.nav_webdav_backup -> com.rawsmusic.core.ui.scene.NavScene.WEBDAV_BACKUP
+            R.id.nav_log_viewer -> com.rawsmusic.core.ui.scene.NavScene.LOG_VIEWER
+            R.id.nav_album_art_settings -> com.rawsmusic.core.ui.scene.NavScene.ALBUM_ART_SETTINGS
+            else -> com.rawsmusic.core.ui.scene.NavScene.SETTINGS
+        }
+    }
 
     private fun startSettingsBackDrag() {}
     private fun updateSettingsBackDrag(progress: Float) {}
@@ -747,391 +850,493 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             R.id.nav_player_interface, R.id.nav_usb_dac_settings, R.id.nav_peq,
             R.id.nav_compressor, R.id.nav_bass_treble_boost, R.id.nav_spatial_sound,
             R.id.nav_surround_360, R.id.nav_panoramic_360, R.id.nav_lyric_font_settings,
-            R.id.nav_global_font_settings, R.id.nav_webdav_backup, R.id.nav_log_viewer
+            R.id.nav_global_font_settings, R.id.nav_webdav_backup, R.id.nav_log_viewer,
+            R.id.nav_album_art_settings, R.id.nav_scan_settings
         )
+    }
+
+    private fun legacyNavigateTo(destinationId: Int) {
+        legacyDestinationId = destinationId
+    }
+
+    private fun legacyNavigateUp(): Boolean {
+        if (legacyDestinationId == R.id.nav_songs) return false
+        legacyDestinationId = R.id.nav_songs
+        return true
+    }
+
+    private fun legacyPopToSongs(): Boolean {
+        val changed = legacyDestinationId != R.id.nav_songs
+        legacyDestinationId = R.id.nav_songs
+        return changed
     }
 
     private fun switchToContainerMode(targetScene: com.rawsmusic.core.ui.scene.NavScene? = null) {
-        if (unifiedMainContainer == null) return
-        // 先隐藏 Fragment
-        binding.navHostFragment.visibility = View.GONE
+        if (false) return
         // 先静默切换场景（内部会隐藏其他页面），再显示容器，避免闪现所有内容
         if (targetScene != null) {
-            unifiedMainContainer?.switchToScene(targetScene)
+            mainNavState.switchToSilent(targetScene)
         }
-        unifiedMainContainer?.visibility = View.VISIBLE
+        updateComposeRootVisibility(true)
+    }
+
+    private fun prepareContainerForPlayerReturn() {
+        val songsDest = prePlayerWasInFragmentMode &&
+            (prePlayerFragmentDest == null || prePlayerFragmentDest == R.id.nav_songs)
+        when {
+            songsDest -> switchToContainerMode(com.rawsmusic.core.ui.scene.NavScene.SONGS)
+            !prePlayerWasInFragmentMode -> switchToContainerMode(prePlayerContainerScene)
+            else -> updateComposeRootVisibility(true)
+        }
     }
 
     private fun closeSideMenu() {
-        drawerMotionHelper.close()
+        isSideMenuOpen = false
     }
 
     private fun setupSideMenu() {
-        val menuGroups = listOf(
-            "音乐" to listOf(
-                SideMenuView.MenuItem(R.id.nav_songs, "歌曲", R.drawable.ic_music_note_dark),
-                SideMenuView.MenuItem(R.id.nav_albums, "专辑", R.drawable.ic_album),
-                SideMenuView.MenuItem(R.id.nav_artists, "艺术家", R.drawable.ic_person),
-                SideMenuView.MenuItem(R.id.nav_song_stats, "听歌统计", UiR.drawable.ic_bar_chart),
-                SideMenuView.MenuItem(R.id.nav_webdav, "WebDAV", R.drawable.ic_folder_2_fill),
-                SideMenuView.MenuItem(R.id.nav_playlist, "歌单", R.drawable.ic_heart_fill)
-            ),
-            "系统" to listOf(
-                SideMenuView.MenuItem(R.id.nav_settings, "设置", R.drawable.ic_settings),
-                SideMenuView.MenuItem(R.id.nav_about, "关于", UiR.drawable.ic_info),
-                SideMenuView.MenuItem(R.id.nav_qq_group, "QQ群", UiR.drawable.ic_info),
-                SideMenuView.MenuItem(R.id.nav_log_export, "日志导出", R.drawable.ic_log),
-                SideMenuView.MenuItem(R.id.nav_log_viewer, "日志分析", R.drawable.ic_log)
-            )
-        )
-        binding.sideMenu.setMenuItems(menuGroups, R.id.nav_songs)
-
-        binding.sideMenu.onMenuItemClick = { itemId ->
-            if (itemId == R.id.nav_qq_group) {
-                dialogHelper.showQqGroupInfo()
-            } else if (itemId == R.id.nav_log_export) {
-                exportLogWithSaf()
-            } else if (itemId == R.id.nav_songs || itemId == R.id.nav_albums) {
-                // 歌曲列表和专辑列表已在 UnifiedMainContainer 中管理，切换到容器模式
-                if (unifiedMainContainer != null) {
-                    val scene = if (itemId == R.id.nav_songs) com.rawsmusic.core.ui.scene.NavScene.SONGS
-                    else com.rawsmusic.core.ui.scene.NavScene.ALBUMS
-                    switchToContainerMode(scene)
-                }
-            } else if (itemId == R.id.nav_settings) {
-                startActivity(android.content.Intent(this, com.rawsmusic.ui.settings.SettingsActivity::class.java))
-                @Suppress("DEPRECATION")
-                overridePendingTransition(android.R.anim.fade_in, 0)
-            } else {
-                // 侧边菜单导航到 Fragment 页面（与 HOME 卡片点击一致）
-                val fragmentId = when (itemId) {
-                    R.id.nav_artists -> R.id.nav_artists
-                    R.id.nav_playlist -> R.id.nav_playlist
-                    R.id.nav_webdav -> R.id.nav_webdav
-                    else -> itemId
-                }
-                if (unifiedMainContainer != null) {
-                    switchToFragmentMode()
-                }
-                // 清除起始目的地（nav_songs），避免返回时跳到从未访问的歌曲列表
-                val sideMenuNavOptions = NavOptions.Builder()
-                    .setPopUpTo(navController.graph.startDestinationId, true)
-                    .build()
-                try {
-                    navController.navigate(fragmentId, null, sideMenuNavOptions)
-                } catch (_: Exception) {}
-            }
-            closeSideMenu()
-        }
-
-        binding.sideMenu.onMenuToggle = { isOpen ->
-            if (isOpen) {
-                openSideMenu()
-            } else {
-                closeSideMenu()
-            }
-        }
-
-        navController.addOnDestinationChangedListener { _, destination, _ ->
-            val menuId = when (destination.id) {
-                R.id.nav_songs -> R.id.nav_songs
-                R.id.nav_albums -> R.id.nav_albums
-                R.id.nav_artists -> R.id.nav_artists
-                R.id.nav_song_stats -> R.id.nav_song_stats
-                R.id.nav_webdav -> R.id.nav_webdav
-                R.id.nav_playlist -> R.id.nav_playlist
-                R.id.nav_settings -> R.id.nav_settings
-                R.id.nav_about -> R.id.nav_about
-                R.id.nav_log_viewer -> R.id.nav_log_viewer
-                else -> null
-            }
-            if (menuId != null) binding.sideMenu.setSelectedMenuId(menuId)
-            updateDrawerLockMode()
-            if (binding.navHostFragment.visibility == View.VISIBLE) {
-                // 从专辑详情页返回到歌曲页面时，切换到专辑容器页面
-                if (destination.id == R.id.nav_songs &&
-                    com.rawsmusic.module.data.prefs.AppPreferences.UI.lastFragmentDest == R.id.nav_album_detail) {
-                    switchToContainerMode(com.rawsmusic.core.ui.scene.NavScene.ALBUMS)
-                }
-                com.rawsmusic.module.data.prefs.AppPreferences.UI.lastFragmentDest = destination.id
-            }
-        }
+        // 已由 Compose SideMenuDrawer 替代，此函数保留为空
     }
 
     private fun updateDrawerLockMode() {
-        if (!::unifiedContainer.isInitialized) return
-        val isHomeLevel = unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.MAIN
-        val isDeepPage = if (unifiedMainContainer != null) {
-            unifiedMainContainer?.isAtHome() != true
-        } else {
-            navController.previousBackStackEntry != null
-        }
-        val inFragmentMode = binding.navHostFragment.visibility == View.VISIBLE
-        unifiedContainer.disableDeepPageSwipe = inFragmentMode
-        unifiedContainer.isDeepHomePage = isHomeLevel && isDeepPage && !inFragmentMode
-        android.util.Log.d("GestureDebug", "updateDrawerLockMode: isHomeLevel=$isHomeLevel, isDeepPage=$isDeepPage, inFragmentMode=$inFragmentMode, isDeepHomePage=${unifiedContainer.isDeepHomePage}, canNavigateBack=${unifiedMainContainer?.canNavigateBack()}")
+        if (!::playerSceneController.isInitialized) return
+        val isHomeLevel = playerSceneController.currentScene == PlayerSceneController.Scene.MAIN
+        val isDeepPage = mainNavState.isAtHome() != true
+        val inFragmentMode = false
+        playerSceneController.disableDeepPageSwipe = inFragmentMode
+        playerSceneController.isDeepHomePage = isHomeLevel && isDeepPage && !inFragmentMode
+        android.util.Log.d("GestureDebug", "updateDrawerLockMode: isHomeLevel=$isHomeLevel, isDeepPage=$isDeepPage, inFragmentMode=$inFragmentMode, isDeepHomePage=${playerSceneController.isDeepHomePage}, canNavigateBack=${mainNavState.canNavigateBack()}")
     }
 
-    private var unifiedMainContainer: com.rawsmusic.core.ui.scene.UnifiedMainContainer? = null
+    /** 纯 Compose 主界面导航状态 */
+    private val mainNavState = com.rawsmusic.core.ui.scene.NavigationState()
 
-    private fun setupUnifiedMainContainer() {
-        val container = findViewById<com.rawsmusic.core.ui.scene.UnifiedMainContainer>(R.id.unifiedMainContainer)
-        if (container == null) {
-            AppLogger.w("MainActivity", "setupUnifiedMainContainer: unifiedMainContainer view missing in current layout")
-            return
-        }
-        unifiedMainContainer = container
-        unifiedMainContainer?.initialize()
-
-        binding.navHostFragment.visibility = View.GONE
-        unifiedMainContainer?.visibility = View.VISIBLE
-
+    private fun setupMainComposeView() {
         observeMainContainerFlows()
+    }
 
-        unifiedMainContainer?.onNavigateToPlayer = {
-            if (playerController?.currentSong?.value != null) {
-                openPlayPageWithSharedElement()
-            } else {
-                moveTaskToBack(true)
-            }
-        }
-
-        // HOME 卡片点击 → 导航到已有 Fragment 或容器内页面
-        unifiedMainContainer?.onNavigateToFragment = { scene ->
-            if (scene == com.rawsmusic.core.ui.scene.NavScene.SONGS ||
-                scene == com.rawsmusic.core.ui.scene.NavScene.ALBUMS ||
-                scene == com.rawsmusic.core.ui.scene.NavScene.ARTISTS) {
-                // 歌曲/专辑/艺术家列表已在容器内，直接导航
-                unifiedMainContainer?.navigateTo(scene)
-            } else {
-                val fragmentId = when (scene) {
-                    com.rawsmusic.core.ui.scene.NavScene.PLAYLISTS -> R.id.nav_playlist
-                    com.rawsmusic.core.ui.scene.NavScene.WEBDAV -> R.id.nav_webdav
-                    else -> null
-                }
-                if (fragmentId != null) {
-                    switchToFragmentMode()
-                    // 清除起始目的地（nav_songs），避免返回时跳到从未访问的歌曲列表
-                    val navOptions = NavOptions.Builder()
-                        .setPopUpTo(navController.graph.startDestinationId, true)
-                        .build()
-                    try { navController.navigate(fragmentId, null, navOptions) } catch (_: Exception) {}
+    @Composable
+    private fun RootContent() {
+        val themeKey = com.rawsmusic.core.ui.theme.RawThemeRuntimeState.version
+        val navEventOwner = rememberNavigationEventDispatcherOwner(true, null)
+        RawSMusicTheme(key = themeKey) {
+            CompositionLocalProvider(LocalNavigationEventDispatcherOwner provides navEventOwner) {
+                val rootColor = MiuixTheme.colorScheme.background
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(rootColor)
+                        .sideMenuDismissInput()
+                        .sceneGestureInput()
+                ) {
+                    BackgroundLayers()
+                    MainComposeContent()
+                    PlayerOverlayContent()
                 }
             }
         }
+    }
 
-        unifiedMainContainer?.onSongClick = { song, pos ->
-            val currentPlayingId = playerController?.currentSong?.value?.id
-            if (song.id == currentPlayingId) {
-                // 点击当前播放的歌曲 → 打开播放界面（共享元素动画）
-                openPlayPageFromSongClick()
-            } else {
-                playSongFromList(song, pos, unifiedMainContainer?.getCurrentScene() ?: com.rawsmusic.core.ui.scene.NavScene.SONGS)
-            }
-        }
-        unifiedMainContainer?.onAlbumClick = { album ->
-            unifiedMainContainer?.navigateTo(com.rawsmusic.core.ui.scene.NavScene.ALBUMS)
-        }
-        unifiedMainContainer?.onAlbumItemClick = { album ->
-            val bundle = android.os.Bundle().apply {
-                putString(com.rawsmusic.ui.albums.AlbumDetailFragment.ARG_ALBUM_NAME, album.name)
-                putString(com.rawsmusic.ui.albums.AlbumDetailFragment.ARG_ALBUM_ARTIST, album.artist)
-                putString(com.rawsmusic.ui.albums.AlbumDetailFragment.ARG_COVER_PATH, album.coverPath)
-            }
-            switchToFragmentMode()
-            try { navController.navigate(R.id.nav_album_detail, bundle) } catch (_: Exception) {}
-        }
-        unifiedMainContainer?.onArtistClick = { artist ->
-            // 跳到容器内的艺术家详情页 (Compose 渲染)
-            unifiedMainContainer?.navigateToArtistDetail(artist.name)
-        }
-        // 注入播放队列回调 (从外部获取 PlayerHolder, 避免 core/ui 依赖 app 模块)
-        unifiedMainContainer?.onPlayQueue = playQueueLambda@{ songs, index ->
-            val controller = com.rawsmusic.ui.songs.PlayerHolder.controller
-            if (controller == null) return@playQueueLambda
-            try {
-                controller.playQueue(songs, index)
-            } catch (_: Exception) {
-                try { songs.getOrNull(index)?.let { controller.play(it) } } catch (_: Exception) {}
-            }
-        }
-        unifiedMainContainer?.onPlaylistClick = { playlist ->
-            unifiedMainContainer?.navigateTo(
-                com.rawsmusic.core.ui.scene.NavScene.PLAYLIST_DETAIL,
-                playlist.id.toString()
-            )
-        }
-        unifiedMainContainer?.onFolderClick = { folder ->
-            unifiedMainContainer?.navigateTo(
-                com.rawsmusic.core.ui.scene.NavScene.FOLDER_HIERARCHY,
-                folder.path
-            )
-        }
-        unifiedMainContainer?.onFolderHierarchyClick = { folder ->
-            unifiedMainContainer?.navigateTo(
-                com.rawsmusic.core.ui.scene.NavScene.FOLDER_HIERARCHY,
-                folder.path
-            )
-        }
-        unifiedMainContainer?.onQueueSongClick = { song, pos ->
-            lyricsNeedSeekTo = true
-            playerController?.seekTo(pos.toLong())
-        }
-        unifiedMainContainer?.onRecentlyAddedClick = { song, pos ->
-            playSongFromList(song, pos, com.rawsmusic.core.ui.scene.NavScene.RECENTLY_ADDED)
-        }
-        unifiedMainContainer?.onPlayAll = { songs ->
-            playerController?.setPlayQueue(songs, 0)
-        }
-        unifiedMainContainer?.onShuffleAll = { songs ->
-            playerController?.setPlayQueue(songs.shuffled(), 0)
-        }
-        unifiedMainContainer?.onSearchClick = {
-            try { navController.navigate(R.id.nav_search) } catch (_: Exception) {}
-        }
-        unifiedMainContainer?.onSongsRefresh = {
-            MusicRepository.refreshAll()
-        }
-        unifiedMainContainer?.onSongsSortChanged = {
-            MusicRepository.refreshAll()
-        }
-        unifiedMainContainer?.onOpenFolderPicker = {
-            val dialog = com.rawsmusic.ui.folderfilter.MusicFoldersDialog(
-                this,
-                onFolderPickerLauncher = {
-                    try {
-                        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT_TREE)
-                        startActivityForResult(intent, 1001)
-                    } catch (_: Exception) {}
-                },
-                onScanStarted = {
-                    MusicRepository.refreshAll()
+    private fun Modifier.sideMenuDismissInput(): Modifier = pointerInput(Unit) {
+        awaitEachGesture {
+            val down = awaitPointerEvent(PointerEventPass.Final)
+                .changes
+                .firstOrNull { it.changedToDownIgnoreConsumed() }
+                ?: return@awaitEachGesture
+            var moved = false
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Final)
+                val change = event.changes.firstOrNull() ?: return@awaitEachGesture
+                if (change.positionChange().getDistance() > viewConfiguration.touchSlop) {
+                    moved = true
                 }
-            )
-            dialog.show()
+                if (change.changedToUpIgnoreConsumed()) {
+                    if (!moved && isSideMenuOpen) closeSideMenu()
+                    return@awaitEachGesture
+                }
+            }
+        }
+    }
+
+    private fun Modifier.sceneGestureInput(): Modifier = pointerInput(Unit) {
+        awaitEachGesture {
+            val down = awaitPointerEvent(PointerEventPass.Main)
+                .changes
+                .firstOrNull { it.changedToDownIgnoreConsumed() }
+                ?: return@awaitEachGesture
+            if (progressSeekActive || gestureLockCoordinator.isBlocked || playerSceneController.disableGestureIntercept || playerSceneController.isTransitioning) return@awaitEachGesture
+            if (playerSceneController.currentScene == PlayerSceneController.Scene.MAIN && mainNavState.canNavigateBack()) {
+                return@awaitEachGesture
+            }
+
+            val start = down.position
+            val pointerId = down.id
+            var last = start
+            var dragging = false
+            var totalDx = 0f
+            val touchSlop = viewConfiguration.touchSlop
+            val widthPx = size.width.toFloat().coerceAtLeast(1f)
+            val edgeBackWidthPx = viewConfiguration.touchSlop * 4f
+            var velocityX = 0f
+            var lastTime = down.uptimeMillis
+
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Main)
+                val change = event.changes.firstOrNull { it.id == pointerId }
+                    ?: event.changes.firstOrNull()
+                    ?: return@awaitEachGesture
+
+                // 进度条拖动期间，持续退出根部手势
+                if (progressSeekActive || gestureLockCoordinator.isBlocked || playerSceneController.disableGestureIntercept) {
+                    return@awaitEachGesture
+                }
+
+                if (change.changedToUpIgnoreConsumed()) {
+                    if (dragging) {
+                        playerSceneController.releaseGestureDrag(totalDx, velocityX, widthPx)
+                        change.consume()
+                    }
+                    return@awaitEachGesture
+                }
+
+                val dxFromStart = change.position.x - start.x
+                val dyFromStart = change.position.y - start.y
+                val dxFromLast = change.position.x - last.x
+                val dyFromLast = change.position.y - last.y
+                if (!dragging && dxFromLast == 0f && dyFromLast == 0f) continue
+                if (!dragging && kotlin.math.abs(dxFromStart) > touchSlop && kotlin.math.abs(dxFromStart) > kotlin.math.abs(dyFromStart) * 1.25f) {
+                    if (playerSceneController.currentScene == PlayerSceneController.Scene.MAIN && !playerSceneController.isDeepHomePage) {
+                        return@awaitEachGesture
+                    }
+                    dragging = true
+                    val forceBackToMain = playerSceneController.currentScene == PlayerSceneController.Scene.PLAYER &&
+                            dxFromStart > 0f &&
+                            start.x <= edgeBackWidthPx
+                    playerSceneController.onDragStart(dxFromStart < 0f, forceBackToMain)
+                }
+                if (dragging) {
+                    val dt = (change.uptimeMillis - lastTime).coerceAtLeast(1L)
+                    velocityX = dxFromLast / dt * 1000f
+                    totalDx = dxFromStart
+                    last = change.position
+                    lastTime = change.uptimeMillis
+                    playerSceneController.updateGestureDrag(totalDx, widthPx)
+                    change.consume()
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun BackgroundLayers() {
+        MainBackgroundLayers()
+    }
+
+    @Composable
+    private fun MainComposeContent() {
+        val songs by MusicRepository.songs.collectAsState()
+        val playbackStats by PlaybackStatsStore.getInstance(this).stats.collectAsState()
+        val currentSong by playerController?.currentSong?.collectAsState()
+            ?: androidx.compose.runtime.mutableStateOf(null)
+
+        // 监听扫描状态，首次运行时自动弹出文件夹选择器
+        val scanStatus by com.rawsmusic.module.scanner.ScanStateBus.status.collectAsState()
+        androidx.compose.runtime.LaunchedEffect(scanStatus.state) {
+            if (scanStatus.state == com.rawsmusic.module.scanner.ScanStateBus.ScanState.FOLDER_SELECTION_NEEDED) {
+                overlayCoordinator.showFolderDialog = true
+            }
+        }
+        // 首次启动检查：如果 scanPaths 为空且数据库为空，直接弹出文件夹选择器
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            kotlinx.coroutines.delay(1500) // 等待 Activity 完全初始化
+            val scanPaths = com.rawsmusic.module.data.prefs.AppPreferences.UI.scanPaths
+            val dbEmpty = withContext(Dispatchers.IO) { MusicRepository.getAllSongsSuspend().isEmpty() }
+            if (scanPaths.isEmpty() && dbEmpty && !overlayCoordinator.showFolderDialog) {
+                overlayCoordinator.showFolderDialog = true
+            }
         }
 
-        unifiedMainContainer?.submitPlaylists(com.rawsmusic.module.data.db.PlaylistDao.getAll())
+        var songsSelectionMode by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+
+        val callbacks = com.rawsmusic.core.ui.scene.NavCallbacks(
+            onSongClick = { song, _ ->
+                lockedPlayerCoverPathForTransition = resolveSongCoverForCompose(song)
+                playbackQueueHelper.playSongFromScene(song, mainNavState.currentScene)
+                mainHandler.post { openPlayPageWithSharedElement() }
+            },
+            onSongLongClick = { _, _ -> },
+            onAlbumClick = { mainNavState.navigateTo(com.rawsmusic.core.ui.scene.NavScene.ALBUMS) },
+            onAlbumItemClick = { album ->
+                val arg = "${album.name}|${album.artist}|${album.coverPath}"
+                mainNavState.navigateTo(com.rawsmusic.core.ui.scene.NavScene.ALBUM_DETAIL, arg)
+            },
+            onArtistClick = { artist -> mainNavState.navigateTo(com.rawsmusic.core.ui.scene.NavScene.ARTISTS) },
+            onPlayQueue = { songs, idx ->
+                lockedPlayerCoverPathForTransition = resolveSongCoverForCompose(songs[idx])
+                playbackQueueHelper.playQueue(songs, idx)
+                mainHandler.post { openPlayPageWithSharedElement() }
+            },
+            onPlaylistClick = {},
+            onFolderClick = {},
+            onFolderHierarchyClick = {},
+            onQueueSongClick = { song, _ ->
+                lockedPlayerCoverPathForTransition = resolveSongCoverForCompose(song)
+                playbackQueueHelper.playSongFromScene(song, mainNavState.currentScene)
+                mainHandler.post { openPlayPageWithSharedElement() }
+            },
+            onRecentlyAddedClick = { song, _ ->
+                lockedPlayerCoverPathForTransition = resolveSongCoverForCompose(song)
+                playbackQueueHelper.playSongFromScene(song, mainNavState.currentScene)
+                mainHandler.post { openPlayPageWithSharedElement() }
+            },
+            onPlayAll = { songs ->
+                songs.firstOrNull()?.let { first ->
+                    lockedPlayerCoverPathForTransition = resolveSongCoverForCompose(first)
+                    playbackQueueHelper.playQueue(songs, 0)
+                    mainHandler.post { openPlayPageWithSharedElement() }
+                }
+            },
+            onShuffleAll = { songs ->
+                songs.firstOrNull()?.let { first ->
+                    lockedPlayerCoverPathForTransition = resolveSongCoverForCompose(first)
+                    playbackQueueHelper.playQueue(songs, 0)
+                    mainHandler.post { openPlayPageWithSharedElement() }
+                }
+            },
+            onSearchClick = { mainNavState.navigateTo(com.rawsmusic.core.ui.scene.NavScene.SEARCH) },
+            onNavigateToPlayer = {
+                if (playerController?.currentSong?.value != null) openPlayPageWithSharedElement()
+                else moveTaskToBack(true)
+            },
+            onMiniPlayerPlayPause = { playerController?.playPause() },
+            onMiniPlayerPrevious = { playerController?.previous() },
+            onMiniPlayerNext = { playerController?.next() },
+            onOpenFolderPicker = { overlayCoordinator.showFolderDialog = true },
+            onSortClick = {},
+            onSongSortSelected = { order ->
+                AppPreferences.Sort.songSortOrder = order
+                lifecycleScope.launch(Dispatchers.IO) {
+                    MusicRepository.refreshSongsOnlySuspend(invalidate = true)
+                }
+            },
+            onSelectionAddToPlaylist = { selected ->
+                songActionSheetHelper.showPlaylistPickerForSongs(selected)
+            },
+            onSelectionAddToQueue = { selected ->
+                selected.forEach { song -> playerController?.addToQueue(song) }
+                Toast.makeText(this@MainActivity, "已添加到播放队列", Toast.LENGTH_SHORT).show()
+            },
+            onSelectionDelete = { selected ->
+                lifecycleScope.launch(Dispatchers.IO) {
+                    var deletedCount = 0
+                    selected.forEach { song ->
+                        if (MusicRepository.deleteSongFromDevice(this@MainActivity, song)) deletedCount++
+                    }
+                    MusicRepository.refreshSongsOnlySuspend(invalidate = true)
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "已删除 $deletedCount 首", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onSelectionPlayNext = { selected ->
+                selected.asReversed().forEach { song -> playerController?.playNext(song) }
+                Toast.makeText(this@MainActivity, "已加入下一首播放", Toast.LENGTH_SHORT).show()
+            },
+            onSongsSelectionModeChanged = { active ->
+                songsSelectionMode = active
+            },
+            onSongsRefresh = {},
+            onPlayingCoverBoundsChanged = { rect ->
+                rect?.let {
+                    val copy = android.graphics.RectF(it)
+                    playingCoverBoundsForTransition = copy
+                    if (playerSceneController.currentScene == PlayerSceneController.Scene.MAIN && !acceptingReturnCoverBounds) {
+                        lockedPlayerCoverBoundsForTransition = android.graphics.RectF(copy)
+                    }
+                }
+            },
+            onPlayingCoverTargetChanged = { target ->
+                val current = playerController?.currentSong?.value
+                val currentId = current?.id ?: -1L
+                val currentCover = current?.let { resolveSongCoverForCompose(it) }.orEmpty()
+
+                if (
+                    target != null &&
+                    target.isForSong(currentId, currentCover) &&
+                    playerSceneController.currentScene == PlayerSceneController.Scene.MAIN &&
+                    !acceptingReturnCoverBounds
+                ) {
+                    val bounds = android.graphics.RectF(target.bounds)
+                    playingCoverBoundsForTransition = bounds
+                    lockedPlayerCoverBoundsForTransition = android.graphics.RectF(bounds)
+                    coverTargetForTransition = target.copyBounds()
+                }
+            },
+            onRevealCoverTargetResolved = { target ->
+                val current = playerController?.currentSong?.value
+                val currentId = current?.id ?: -1L
+                val currentCover = current?.let { resolveSongCoverForCompose(it) }.orEmpty()
+
+                if (
+                    acceptingReturnCoverBounds &&
+                    target != null &&
+                    target.isForSong(currentId, currentCover)
+                ) {
+                    val bounds = android.graphics.RectF(target.bounds)
+                    playingCoverBoundsForTransition = bounds
+                    lockedPlayerCoverBoundsForTransition = android.graphics.RectF(bounds)
+                    coverTargetForTransition = target.copyBounds()
+                    returnCoverBoundsResolved = true
+                }
+            },
+            onMiniPlayerCoverBoundsChanged = { rect ->
+                rect?.let {
+                    miniPlayerCoverBoundsForTransition = android.graphics.RectF(it)
+                }
+            }
+        )
+
+        val hidePlayingCoverForReturn = false
+
+        val data = com.rawsmusic.core.ui.scene.NavData(
+            songs = songs,
+            currentPlayingIndex = songs.indexOfFirst { it.id == (currentSong?.id ?: -1L) },
+            currentSong = currentSong,
+            miniPlayerTitle = miniPlayerCoordinator.title,
+            miniPlayerArtist = miniPlayerCoordinator.artist,
+            miniPlayerIsPlaying = miniPlayerCoordinator.isPlaying,
+            miniPlayerProgress = miniPlayerCoordinator.progress,
+            miniPlayerCoverPath = miniPlayerCoordinator.coverPath,
+            playerReturnRevealIndex = playerReturnRevealIndex,
+            hidePlayingCover = hidePlayingCoverForReturn,
+            currentSortOrder = AppPreferences.Sort.songSortOrder,
+            artistDataSource = null,
+            playCounts = playbackStats.associate { it.songId to it.playCount },
+            bottomChromeHidden = songsSelectionMode || songActionSheetHelper.isPlaylistPickerShowing
+        )
+
+        com.rawsmusic.core.ui.scene.AppMainLayout(
+            navState = mainNavState,
+            navCallbacks = callbacks,
+            navData = data,
+            externalPageRenderer = AppPageRendererImpl(mainNavState),
+            onNavigateToPlayer = {
+                if (playerController?.currentSong?.value != null) openPlayPageWithSharedElement()
+                else moveTaskToBack(true)
+            },
+            onSettingsClick = {
+                launchSettingsActivity(com.rawsmusic.ui.settings.SettingsActivity::class.java)
+            }
+        )
+    }
+
+    internal fun playSongFromSearch(song: AudioFile) {
+        val songs = MusicRepository.songs.value
+        val index = songs.indexOfFirst { it.id == song.id || it.path == song.path }.coerceAtLeast(0)
+        val queue = songs.ifEmpty { listOf(song) }
+        val targetIndex = if (index in queue.indices) index else 0
+        lockedPlayerCoverPathForTransition = resolveSongCoverForCompose(queue[targetIndex])
+        playbackQueueHelper.playQueue(queue, targetIndex)
+        mainHandler.post { openPlayPageWithSharedElement() }
+    }
+
+    internal fun openAlbumFromSearch(album: com.rawsmusic.core.common.model.Album) {
+        val arg = "${album.name}|${album.artist}|${album.coverPath}"
+        mainNavState.navigateTo(com.rawsmusic.core.ui.scene.NavScene.ALBUM_DETAIL, arg)
+    }
+
+    internal fun openArtistFromSearch(artist: com.rawsmusic.core.common.model.Artist) {
+        mainNavState.navigateTo(
+            com.rawsmusic.core.ui.scene.NavScene.ARTIST_DETAIL,
+            android.net.Uri.encode(artist.name)
+        )
+    }
+
+    internal fun openFolderFromSearch(folder: com.rawsmusic.core.common.model.Folder) {
+        mainNavState.navigateTo(
+            com.rawsmusic.core.ui.scene.NavScene.FOLDER_HIERARCHY,
+            android.net.Uri.encode(folder.path)
+        )
     }
 
     private fun observeMainContainerFlows() {
+        // Compose 版本：数据通过 collectAsState 在 Composable 中自动同步
+        // 只保留场景变化监听
         lifecycleScope.launch {
-            unifiedMainContainer?.currentSceneFlow?.collect { scene ->
+            snapshotFlow { mainNavState.currentScene }.collect { scene ->
                 updateDrawerLockMode()
             }
         }
-        lifecycleScope.launch {
-            MusicRepository.songs.collect { songs ->
-                AppLogger.d("Startup", "observeFlows: songs emitted, count=${songs.size}")
-                unifiedMainContainer?.submitSongs(songs)
-                val sevenDaysAgo = System.currentTimeMillis() - 7 * 24 * 60 * 60 * 1000L
-                val recent = songs.filter { it.dateAdded * 1000 > sevenDaysAgo || it.dateModified * 1000 > sevenDaysAgo }
-                unifiedMainContainer?.submitRecentlyAdded(recent)
-                unifiedMainContainer?.updateHomeCounts(
-                    songs = songs.size,
-                    albums = MusicRepository.albums.value.size,
-                    artists = MusicRepository.artists.value.size,
-                    folders = MusicRepository.folders.value.size,
-                    playlists = com.rawsmusic.module.data.db.PlaylistDao.getAll().size
+    }
+
+    private fun scheduleDeferredStartupWork() {
+        if (startupWorkScheduled) return
+        startupWorkScheduled = true
+
+        ioScope.launch {
+            val start = System.currentTimeMillis()
+            try {
+                val songs = MusicRepository.refreshSongsOnlySuspend(invalidate = true)
+                AppLogger.d(
+                    "Startup",
+                    "deferred MusicRepository.refreshSongsOnly() done in ${System.currentTimeMillis() - start}ms"
                 )
+                kotlinx.coroutines.delay(2_000L)
+                val indexStart = System.currentTimeMillis()
+                MusicRepository.refreshLibraryIndexes(songs)
+                AppLogger.d(
+                    "Startup",
+                    "deferred MusicRepository.refreshLibraryIndexes() done in ${System.currentTimeMillis() - indexStart}ms"
+                )
+            } catch (e: Exception) {
+                AppLogger.e("Startup", "deferred MusicRepository startup load failed", e)
             }
         }
-        lifecycleScope.launch {
-            MusicRepository.albums.collect { albums ->
-                unifiedMainContainer?.submitAlbums(albums)
+
+        mainHandler.postDelayed({
+            if (isFinishing || isDestroyed) return@postDelayed
+            restoreLastPlayingState()
+            playerServiceBridgeHelper.startForegroundServiceIfNeeded()
+            // Lyricon 已在 PlayerService.onCreate() 初始化，此处只设回调
+            LyriconProviderManager.onProviderConnected = {
+                lyricsCoordinator.resendToLyricon()
             }
-        }
-        lifecycleScope.launch {
-            MusicRepository.artists.collect { artists ->
-                unifiedMainContainer?.submitArtists(artists)
+            LyricGetterBridge.init(this)
+        }, 250L)
+
+        mainHandler.postDelayed({
+            if (!isFinishing && !isDestroyed) {
+                requestAudioPermission()
             }
-        }
-        lifecycleScope.launch {
-            MusicRepository.folders.collect { folders ->
-                unifiedMainContainer?.submitFolders(folders)
-            }
-        }
-        lifecycleScope.launch {
-            playerController?.queue?.collect { playQueue ->
-                unifiedMainContainer?.submitQueueSongs(playQueue.songs)
-            }
-        }
+        }, 750L)
     }
 
-    private fun playSongFromList(song: AudioFile, position: Int, scene: com.rawsmusic.core.ui.scene.NavScene) {
-        val songs = when (scene) {
-            com.rawsmusic.core.ui.scene.NavScene.SONGS -> MusicRepository.songs.value
-            com.rawsmusic.core.ui.scene.NavScene.RECENTLY_ADDED -> {
-                val sevenDaysAgo = System.currentTimeMillis() - 7 * 24 * 60 * 60 * 1000L
-                MusicRepository.songs.value.filter { it.dateAdded * 1000 > sevenDaysAgo || it.dateModified * 1000 > sevenDaysAgo }
-            }
-            else -> listOf(song)
+    private fun setupplayerSceneController() {
+        composeImmersiveEnabled = com.rawsmusic.module.data.prefs.AppPreferences.UI.isImmersiveEnabled
+        composeMiniCoverEnabled = com.rawsmusic.module.data.prefs.AppPreferences.UI.isMiniCoverEnabled
+        composeDefaultBackgroundEnabled = com.rawsmusic.module.data.prefs.AppPreferences.UI.isDefaultBackgroundEnabled
+        playerSceneController.refreshImmersiveState(composeImmersiveEnabled)
+        playerSceneController.updateMiniCoverEnabled(composeMiniCoverEnabled)
+        syncImmersiveBackgroundSettings()
+
+        immersiveBackgroundState.onImmersiveDrawingChanged = { drawing ->
+            // 非沉浸模式下保持 playBgView 隐藏，避免背景层叠加过亮。
+            val isImmersive = composeImmersiveEnabled
+            backgroundLayerState.playBackgroundAlpha = if (drawing || !isImmersive) 0f else 1f
         }
-        val idx = songs.indexOf(song).coerceAtLeast(0)
-        playerController?.setPlayQueue(songs, idx)
-    }
-
-    private fun setupUnifiedContainer() {
-        unifiedContainer = binding.unifiedContainer
-
-        // 修复横屏 layout 缺少 immersiveBackground 时 NPE: 跳过 initImmersiveViews 但不 return
-        // 后续的 lambda 注册/事件回调/OnResume 重应用都依赖此函数完整执行
-        val immersiveBg = binding.immersiveBackground
-        if (immersiveBg != null) {
-            unifiedContainer.initImmersiveViews(
-                immersiveBg = immersiveBg,
-                coverImg = binding.ivPlayCover,
-                playScrim = binding.playBgScrim,
-                miniCover = binding.mainPersistentCover,
-                isImmersiveEnabled = com.rawsmusic.module.data.prefs.AppPreferences.UI.isImmersiveEnabled,
-                isMiniCoverEnabled = com.rawsmusic.module.data.prefs.AppPreferences.UI.isMiniCoverEnabled
-            )
-        } else {
-            AppLogger.w("MainActivity", "setupUnifiedContainer: immersiveBackground view missing in current layout, skip initImmersiveViews only")
-        }
-
-        binding.immersiveBackground?.onImmersiveDrawingChanged = { drawing ->
-            // 非沉浸模式下保持 playBgView 隐藏，避免与 ivPlayCover 重叠
-            val isImmersive = unifiedContainer.isImmersiveEnabled
-            binding.playBgView.alpha = if (drawing || !isImmersive) 0f else 1f
-        }
-
-        unifiedContainer.bindViews(
-            navHostFragment = binding.navHostFragment,
-            playBgView = binding.playBgView,
-            lyricContentContainer = binding.lyricContentContainer,
-            lyricBgView = binding.lyricBgView,
-            lyricMainLayer = binding.lyricMainLayer
-        )
 
         setupComposeLayer()
 
-        sceneRegistry = com.rawsmusic.helper.SceneRegistry(unifiedContainer, resources)
-        sceneParamsHelper = com.rawsmusic.helper.SceneParamsHelper(
-            unifiedContainer, binding, resources, navController,
-            { getPlayCoverTargetRect() },
-            { getListCoverPosition() },
-            { getAlbumDetailCoverRect() }
-        )
-        coverLayoutHelper = com.rawsmusic.helper.CoverLayoutHelper(
-            unifiedContainer, binding, resources, coverAnimState,
-            { loadedCoverImageWidth to loadedCoverImageHeight },
-            { updateLyricSongInfo() }
-        )
         setupSceneParams()
 
-        // 设置主界面容器引用，用于手势拖拽返回动画
-        unifiedContainer.mainContainer = unifiedMainContainer
+        syncImmersiveBackgroundSettings()
 
-        unifiedContainer.applyImmersiveSceneParams()
-
-        unifiedContainer.post {
-            setupCoverLayoutParams()
+        mainHandler.post {
             if (prePlayerWasInFragmentMode && com.rawsmusic.module.data.prefs.AppPreferences.UI.lastScene == "MAIN") {
                 val savedDest = prePlayerFragmentDest
                 if (savedDest != null && savedDest != -1 && savedDest != R.id.nav_songs) {
                     switchToFragmentMode()
-                    try { navController.navigate(savedDest) } catch (_: Exception) {}
+                    legacyNavigateTo(savedDest)
                 } else {
                     // 歌曲列表已迁移到容器模式，无需切换到 Fragment 模式
                     switchToContainerMode(com.rawsmusic.core.ui.scene.NavScene.SONGS)
@@ -1140,56 +1345,50 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             }
         }
 
-        binding.playBgView.setDimAmount(0f)
-        binding.playBgView.setAppleMusicStyle(true)
+        playBackgroundState.setDimAmount(0f)
+        playBackgroundState.setBlurredCoverStyle(true)
 
         // 沉浸模式...
-        binding.lyricBgView.setDimAmount(0f)
-        binding.lyricBgView.setAppleMusicStyle(true)
+        lyricBackgroundState.setDimAmount(0f)
+        lyricBackgroundState.setBlurredCoverStyle(true)
 
         // 非沉浸模式
-        binding.backgroundView.setDimAmount(0f)
-        binding.backgroundView.setAppleMusicStyle(true)
+        backgroundState.setDimAmount(0f)
+        backgroundState.setBlurredCoverStyle(true)
 
-        unifiedContainer.onTransitionProgress = { targetScene, ratio ->
+        playerSceneController.onTransitionProgress = { targetScene, ratio ->
             // 导航栏始终保持可见，不做任何 alpha/visibility 变化，避免"先淡出再显示"的闪烁
             // 场景切换的状态由 onSceneChanged 统一管理
         }
 
-        unifiedContainer.onSceneChanged = { newScene, oldScene ->
+        playerSceneController.onSceneChanged = { newScene, oldScene ->
             val playState = playerController?.playState?.value
             val ffmpegState = playerController?.ffmpegPlayerRef?.state
             AppLogger.w("SceneTransition", "=== onSceneChanged: $oldScene -> $newScene, isRealTransition=${oldScene != newScene}, playState=$playState, ffmpegState=$ffmpegState, prePlayerWasInFragmentMode=$prePlayerWasInFragmentMode, prePlayerFragmentDest=$prePlayerFragmentDest ===")
+            syncComposePlayerScene(newScene)
             val isRealTransition = oldScene != newScene
             com.rawsmusic.module.data.prefs.AppPreferences.UI.lastScene = newScene.name
-            if (newScene == UnifiedPlayerContainer.Scene.MAIN) {
-                val inFragmentMode = binding.navHostFragment.visibility == View.VISIBLE
-                com.rawsmusic.module.data.prefs.AppPreferences.UI.wasInFragmentMode = inFragmentMode
-                if (inFragmentMode) {
-                    navController.currentDestination?.id?.let { destId ->
-                        com.rawsmusic.module.data.prefs.AppPreferences.UI.lastFragmentDest = destId
-                    }
-                }
+            if (newScene == PlayerSceneController.Scene.MAIN) {
+                com.rawsmusic.module.data.prefs.AppPreferences.UI.wasInFragmentMode = false
             }
             // 只在状态栏设置实际会改变时才更新，避免 PLAYER↔LYRIC 等切换时触发 insets 重算导致导航栏闪烁
-            val needsUpdate = (oldScene == UnifiedPlayerContainer.Scene.MAIN) != (newScene == UnifiedPlayerContainer.Scene.MAIN)
+            val needsUpdate = (oldScene == PlayerSceneController.Scene.MAIN) != (newScene == PlayerSceneController.Scene.MAIN)
             if (needsUpdate) {
                 updateStatusBarForLevel(newScene)
             }
             when (newScene) {
-                UnifiedPlayerContainer.Scene.MAIN -> {
-                    val decorView = window.decorView as? android.view.ViewGroup
-                    decorView?.let { dv ->
-                        for (i in dv.childCount - 1 downTo 0) {
-                            val child = dv.getChildAt(i)
-                            if (child.tag == "play_mode_overlay") {
-                                try { dv.removeView(child) } catch (_: Exception) {}
-                            }
-                        }
-                    }
+                PlayerSceneController.Scene.MAIN -> {
+                    // 返回主界面：隐藏播放器容器，显示 Compose 主界面
+                    updateComposeRootVisibility(true)
+
                     // 先切换容器内场景（隐藏其他页面），再恢复默认参数（设容器为 VISIBLE）
                     // 顺序不能反：如果先 restoreDefaultSceneParams 设容器 VISIBLE，所有页面会闪现
-                    if (isRealTransition && (oldScene == UnifiedPlayerContainer.Scene.PLAYER || oldScene == UnifiedPlayerContainer.Scene.LYRIC)) {
+                    if (isRealTransition && (
+                            oldScene == PlayerSceneController.Scene.PLAYER ||
+                                oldScene == PlayerSceneController.Scene.LYRIC ||
+                                oldScene == PlayerSceneController.Scene.ALBUM_DETAIL
+                            )
+                    ) {
                         AppLogger.w("SceneTransition", "=== Restoring UI mode: prePlayerWasInFragmentMode=$prePlayerWasInFragmentMode ===")
                         val songsDest = prePlayerWasInFragmentMode && (prePlayerFragmentDest == null || prePlayerFragmentDest == R.id.nav_songs)
                         if (songsDest) {
@@ -1212,217 +1411,85 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                         if (prePlayerWasInFragmentMode && (prePlayerFragmentDest != null && prePlayerFragmentDest != R.id.nav_songs)) {
                             val savedDest = prePlayerFragmentDest!!
                             // 若页面仍在导航栈顶（如专辑详情页），直接复用，不 pop 不重新导航
-                            if (navController.currentDestination?.id == savedDest) {
+                            if (legacyDestinationId == savedDest) {
                                 AppLogger.w("SceneTransition", "=== dest $savedDest still on top, skip pop/navigate ===")
                             } else if (savedDest != R.id.nav_songs) {
                                 // 页面已不在栈顶，先回到歌曲列表，再重新导航
-                                try { navController.popBackStack(R.id.nav_songs, false) } catch (_: Exception) {}
-                                try { navController.navigate(savedDest) } catch (_: Exception) {}
+                                legacyPopToSongs()
+                                legacyNavigateTo(savedDest)
                             } else {
-                                try { navController.popBackStack(R.id.nav_songs, false) } catch (_: Exception) {}
+                                legacyPopToSongs()
                             }
                         }
-                        // 在容器模式下不需要导航，UnifiedMainContainer 会保持当前页面
+                        // Compose 主界面会保持当前页面
                         prePlayerFragmentDest = null
                         prePlayerWasInFragmentMode = false
                     }
-                    getListCoverView()?.visibility = View.VISIBLE
-                    binding.ivPlayCover.alpha = 1f
-                    // 从专辑详情页返回时，恢复专辑封面并隐藏播放页封面
-                    if (navController.currentDestination?.id == R.id.nav_album_detail) {
-                        getAlbumDetailCoverView()?.visibility = View.VISIBLE
-                        binding.ivPlayCover.apply {
-                            alpha = 0f
-                            visibility = View.GONE
-                            translationX = 0f
-                            translationY = 0f
-                            scaleX = 1f
-                            scaleY = 1f
+                    pendingSettingsSceneAfterPlayerClose?.let { pendingScene ->
+                        pendingSettingsSceneAfterPlayerClose = null
+                        val activityClass = SETTINGS_ACTIVITY_MAP[pendingScene]
+                        if (activityClass != null) {
+                            mainNavState.navigateHome()
+                            launchSettingsActivity(activityClass)
+                        } else if (mainNavState.currentScene != pendingScene) {
+                            mainNavState.navigateToSettings(pendingScene)
                         }
                     }
-                    savedAlbumDetailCoverRect = null
-                    savedListCoverRect = null
                     updateDrawerLockMode()
                     // 注意：以下 view 的 visibility/alpha 由 sceneRegistry 动画引擎管理，
                     // onSceneChanged 中不再重复设置，避免与动画最终状态冲突
-                    binding.playMetadataCard.collapse()
-                    binding.lyricMetadataCard.collapse()
-                    coverAnimState.reset()
+                    metadataCardPopupHelper.hide()
                     // 恢复流动光效果
-                    binding.playBgView.setDynamic(true)
-                    binding.playBgView.setAllowDynamicRunning(true)
+                    playBackgroundState.setDynamic(true)
+                    playBackgroundState.setAllowDynamicRunning(true)
                 }
-                UnifiedPlayerContainer.Scene.PLAYER -> {
-                    binding.navHostFragment.alpha = 0f
-                    unifiedContainer.syncRotationState(unifiedContainer.isCurrentlyPlaying)
-                    binding.ivPlayCover.pivotX = binding.ivPlayCover.width / 2f
-                    binding.ivPlayCover.pivotY = binding.ivPlayCover.height / 2f
-                    binding.playTitleGroup.pivotX = binding.playTitleGroup.width / 2f
-                    binding.playTitleGroup.pivotY = binding.playTitleGroup.height / 2f
-                    val density = resources.displayMetrics.density
-                    val isImmersive = unifiedContainer.isImmersiveEnabled
+                PlayerSceneController.Scene.PLAYER -> {
+                    playerSceneController.syncRotationState(playerSceneController.isCurrentlyPlaying)
+                    val isImmersive = composeImmersiveEnabled
                     val isFlowingLightOff = com.rawsmusic.module.data.prefs.AppPreferences.UI.isFlowingLightDisabled
-                    // 封面：沉浸模式隐藏
-                    val coverAlpha = if (isImmersive) 0f else 1f
-                    val coverVisibility = if (isImmersive) View.INVISIBLE else View.VISIBLE
-                    unifiedContainer.registerSceneParams(
-                        R.id.ivPlayCover,
-                        UnifiedPlayerContainer.Scene.PLAYER,
-                        UnifiedPlayerContainer.SceneParams(
-                            scene = UnifiedPlayerContainer.Scene.PLAYER,
-                            alpha = coverAlpha,
-                            visibility = coverVisibility,
-                            translationX = 0f,
-                            translationY = 0f,
-                            scaleX = 1f,
-                            scaleY = 1f,
-                            cornerRadius = (18f) * resources.displayMetrics.density
-                        )
-                    )
                     if (isFlowingLightOff) {
-                        binding.playBgView.setDynamic(false)
-                        binding.playBgView.setAllowDynamicRunning(false)
-                        binding.playBgView.pauseAnimations()
+                        playBackgroundState.setDynamic(false)
+                        playBackgroundState.setAllowDynamicRunning(false)
+                        playBackgroundState.pauseAnimations()
                     } else {
-                        binding.playBgView.setDynamic(true)
-                        binding.playBgView.setAllowDynamicRunning(true)
-                        binding.playBgView.resumeAnimations()
+                        playBackgroundState.setDynamic(true)
+                        playBackgroundState.setAllowDynamicRunning(true)
+                        playBackgroundState.resumeAnimations()
                     }
-                    // 普通模式
-                    binding.audioVisualizer?.visibility = View.GONE
-                    binding.playBottomPanel?.apply {
-                        visibility = View.VISIBLE
-                        alpha = 1f
-                    }
-                    binding.playTitleGroup.apply {
-                        visibility = View.VISIBLE
-                        alpha = 1f
-                        scaleX = 1f
-                        scaleY = 1f
-                        translationX = 0f
-                        translationY = 0f
-                    }
-                    binding.btnPlayMode.visibility = View.VISIBLE
-                    updateHiresBadge()
-                    coverAnimState.reset()
-                    val isLandscapePlayer = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-                    val screenHeight = resources.displayMetrics.heightPixels
-                    if (isLandscapePlayer) {
-                        // 使用屏幕高度的 8% 和 12% 作为歌词容器 padding
-                        val lyricTopRatio = resources.getFloat(R.dimen.lyric_top_padding_ratio_landscape)
-                        val lyricBottomRatio = resources.getFloat(R.dimen.lyric_bottom_padding_ratio_landscape)
-                        val lyricTopPad = (screenHeight * lyricTopRatio).toInt()
-                        val lyricBottomPad = (screenHeight * lyricBottomRatio).toInt()
-                        binding.lyricContentContainer.setPadding(0, lyricTopPad, 0, lyricBottomPad)
-                    } else {
-                        // 使用屏幕高度的 20% 和 15% 作为歌词容器 padding
-                        val lyricTopRatio = resources.getFloat(R.dimen.lyric_top_padding_ratio_portrait)
-                        val lyricBottomRatio = resources.getFloat(R.dimen.lyric_bottom_padding_ratio_portrait)
-                        val lyricTopPad = (screenHeight * lyricTopRatio).toInt()
-                        val lyricBottomPad = (screenHeight * lyricBottomRatio).toInt()
-                        binding.lyricContentContainer.setPadding(0, lyricTopPad, 0, lyricBottomPad)
-                    }
-                    setupCoverLayoutParams()
-                    binding.queuePageContainer?.visibility = View.GONE
-                    binding.albumDetailContainer?.visibility = View.GONE
-                    binding.mainBgScrim?.visibility = View.GONE
-                    binding.mainBgScrim?.alpha = 0f
+                    backgroundLayerState.mainScrimVisible = false
+                    backgroundLayerState.mainScrimAlpha = 0f
                 }
-                UnifiedPlayerContainer.Scene.LYRIC -> {
-                    binding.navHostFragment.alpha = 0f
-                    binding.audioVisualizer?.visibility = View.GONE
-                    val isLandscapeScene = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-                    if (isLandscapeScene) {
-                        val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            display?.rotation ?: Surface.ROTATION_0
-                        } else {
-                            @Suppress("DEPRECATION")
-                            windowManager.defaultDisplay.rotation
-                        }
-                        applyLandscapeLyricConstraints(rotation == Surface.ROTATION_270)
-                        updateLyricSongInfo()
-                    }
-                    val density = resources.displayMetrics.density
-                    val coverBottom = getCoverBottomInContainer()
-                    // 使用屏幕高度的百分比作为歌词容器 margin
-                    val screenHeight = resources.displayMetrics.heightPixels
-                    val lyricTopRatio = resources.getFloat(R.dimen.lyric_top_padding_ratio_lyric_scene)
-                    val lyricBottomRatio = resources.getFloat(R.dimen.lyric_bottom_padding_ratio_lyric_scene)
-                    val lyricTopPad = (screenHeight * lyricTopRatio).toInt()
-                    val lyricBottomPad = (screenHeight * lyricBottomRatio).toInt()
-
-                    val lyricLp = binding.lyricContentContainer.layoutParams as? android.widget.FrameLayout.LayoutParams
-                    if (lyricLp != null) {
-                        lyricLp.topMargin = lyricTopPad
-                        lyricLp.bottomMargin = lyricBottomPad
-                        lyricLp.gravity = android.view.Gravity.TOP
-                        binding.lyricContentContainer.layoutParams = lyricLp
-                    }
-                    binding.lyricContentContainer.setPadding(0, 0, 0, 0)
-
-                    binding.lyricControls.visibility = View.VISIBLE
-                    binding.btnMoreLyric.visibility = View.GONE
-                    binding.lyricMainLayer.visibility = View.GONE
-                    binding.playTitleGroup.bringToFront()
-                    binding.playTitleGroup.pivotX = binding.playTitleGroup.width / 2f
-                    binding.playTitleGroup.pivotY = binding.playTitleGroup.height / 2f
-                    updateLyricAnchor()
-                    val topPadForLyrics = maxOf(0f, coverBottom.toFloat() - lyricTopPad + 60f * density)
-                    lyricPlayerView.setTopContentPadding(topPadForLyrics)
-
+                PlayerSceneController.Scene.LYRIC -> {
                     val pos = playerController?.position?.value ?: 0L
+                    composeLyricPositionMs = pos
                     playerController?.currentSong?.value?.let { song ->
                         val lyricData = currentLyricData
                         if (!lyricData.isEmpty) {
-                            val lyriconSong = lyricData.toLyriconSong(
+                            composeLyricSong = lyricData.toLyriconSong(
                                 name = song.title,
                                 artist = song.artist
                             )
-                            lyricPlayerView.song = lyriconSong
-                            lyricPlayerView.setPosition(pos)
-                            lyricPlayerView.onLineClickListener = object : RawsLyricView.OnLineClickListener {
-                                override fun onLineClick(beginMs: Long) {
-                                    lyricsNeedSeekTo = true
-                                    playerController?.seekTo(beginMs)
-                                }
-                            }
                             val displayTrans = com.rawsmusic.module.data.prefs.AppPreferences.Lyricon.displayTranslation
-                            lyricPlayerView.updateDisplayTranslation(
-                                displayTranslation = displayTrans,
-                                displayRoma = displayTrans
-                            )
+                            composeDisplayTranslation = displayTrans
+                            composeDisplayRoma = com.rawsmusic.module.data.prefs.AppPreferences.Lyricon.displayRoma
                         }
                     }
 
-                    binding.lyricBgView.resumeAnimations()
-                    binding.ivHiresSmall.visibility = View.GONE
-                    binding.ivHiresSmall.alpha = 0f
-                    binding.mainBgScrim?.visibility = View.GONE
-                    binding.mainBgScrim?.alpha = 0f
+                    lyricBackgroundState.resumeAnimations()
+                    backgroundLayerState.mainScrimVisible = false
+                    backgroundLayerState.mainScrimAlpha = 0f
                 }
-                UnifiedPlayerContainer.Scene.QUEUE -> {
-                    binding.playBgScrim?.visibility = View.GONE
-                    binding.playBgScrim?.alpha = 0f
-                    binding.ivPlayCoverMirror?.visibility = View.GONE
-                    binding.queuePageContainer?.visibility = View.VISIBLE
-                    binding.queuePageContainer?.alpha = 1f
-                    binding.queuePageContainer?.translationY = 0f
-                    refreshQueueList()
-                    binding.mainBgScrim?.visibility = View.GONE
-                    binding.mainBgScrim?.alpha = 0f
+                PlayerSceneController.Scene.QUEUE -> {
+                    backgroundLayerState.playScrimVisible = false
+                    backgroundLayerState.playScrimAlpha = 0f
+                    backgroundLayerState.mainScrimVisible = false
+                    backgroundLayerState.mainScrimAlpha = 0f
                 }
-                UnifiedPlayerContainer.Scene.ALBUM_DETAIL -> {
-                    binding.playBgScrim?.visibility = View.GONE
-                    binding.playBgScrim?.alpha = 0f
-                    binding.ivPlayCoverMirror?.visibility = View.GONE
-                    binding.albumDetailContainer?.visibility = View.VISIBLE
-                    binding.albumDetailContainer?.alpha = 1f
-                    binding.albumDetailContainer?.translationX = 0f
-                    binding.mainBgScrim?.visibility = View.GONE
-                    binding.mainBgScrim?.alpha = 0f
-                }
-                UnifiedPlayerContainer.Scene.EFFECTS -> {
-                    syncEffectsPanelState()
+                PlayerSceneController.Scene.ALBUM_DETAIL -> {
+                    backgroundLayerState.playScrimVisible = false
+                    backgroundLayerState.playScrimAlpha = 0f
+                    backgroundLayerState.mainScrimVisible = false
+                    backgroundLayerState.mainScrimAlpha = 0f
                 }
             }
             // 场景变化后更新预测性返回回调注册状态
@@ -1430,391 +1497,636 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         }
 
         // 根据当前PLAY/LYRIC 场景更新参数
-        unifiedContainer.onLeftEdgeSwipe = {
-            if (unifiedContainer.currentScene != UnifiedPlayerContainer.Scene.MAIN) {
-                navController.navigateUp()
+        playerSceneController.onLeftEdgeSwipe = {
+            if (playerSceneController.currentScene != PlayerSceneController.Scene.MAIN) {
+                legacyNavigateUp()
             }
         }
 
         // 返回上一级，使用 navigateUp() 返回主界面
-        unifiedContainer.onSwipeBack = {
-            if (unifiedMainContainer != null && unifiedMainContainer?.isAtHome() != true) {
-                unifiedMainContainer?.navigateHome()
+        playerSceneController.onSwipeBack = {
+            if (mainNavState.canNavigateBack()) {
+                mainNavState.navigateBackAnimated()
+            } else if (true && mainNavState.isAtHome() != true) {
+                mainNavState.navigateHome()
             } else {
-                navController.navigateUp()
+                legacyNavigateUp()
             }
         }
 
-        // 沉浸模式左滑：启动独立歌词界面
-        unifiedContainer.onImmersiveSwipeLeft = {
-            launchImmersiveLyric()
-        }
+        playerSceneController.onImmersiveSwipeLeft = null
 
-        unifiedContainer.onPlayerSwipeToMain = {
+        playerSceneController.onPlayerSwipeToMain = {
             // 保存当前 Fragment 目标，用于返回时恢复（如果尚未保存）
             if (prePlayerFragmentDest == null) {
-                prePlayerFragmentDest = navController.currentDestination?.id
+                prePlayerFragmentDest = legacyDestinationId
             }
-            if (!prePlayerWasInFragmentMode) {
-                prePlayerWasInFragmentMode = binding.navHostFragment.visibility == View.VISIBLE
+            if (prePlayerContainerScene == null && true) {
+                prePlayerContainerScene = mainNavState.currentScene
             }
-            if (prePlayerContainerScene == null && unifiedMainContainer != null) {
-                prePlayerContainerScene = unifiedMainContainer?.getCurrentScene()
-            }
-            unifiedContainer.closePlayPageWithCoverAlign(true)
+            playerSceneController.closePlayPageWithCoverAlign(true)
         }
 
-        unifiedContainer.onPreparePlayerToMain = { onReady ->
-            binding.ivHiresSmall.visibility = View.GONE
-            binding.ivHiresSmall.alpha = 0f
-            binding.root.post {
-                // 判断是否返回专辑详情页
-                val returningToAlbumDetail = prePlayerWasInFragmentMode &&
-                        prePlayerFragmentDest == R.id.nav_album_detail
+        playerSceneController.onPreparePlayerToMain = { onReady ->
+            registerCoverCollapseParams()
+            updateComposeRootVisibility(true)
+            prepareContainerForPlayerReturn()
+            val currentId = playerController?.currentSong?.value?.id ?: -1L
+            playerReturnRevealIndex = MusicRepository.songs.value.indexOfFirst { it.id == currentId }
+            acceptingReturnCoverBounds = playerReturnRevealIndex >= 0
+            returnCoverBoundsResolved = false
+            coverTargetForTransition = null
 
-                fun registerMainSceneContainers() {
-                    unifiedContainer.registerSceneParams(
-                        R.id.unifiedMainContainer,
-                        UnifiedPlayerContainer.Scene.MAIN,
-                        UnifiedPlayerContainer.SceneParams(
-                            scene = UnifiedPlayerContainer.Scene.MAIN,
-                            alpha = if (prePlayerWasInFragmentMode) 0f else 1f,
-                            translationY = 0f,
-                            scaleX = 1f,
-                            scaleY = 1f,
-                            visibility = if (prePlayerWasInFragmentMode) View.GONE else View.VISIBLE
-                        )
+            // 只有返回 SONGS 场景时，列表才有封面元素可以做共享过渡；
+            // 返回 HOME 等其他场景时，封面坐标全部是过期的，直接跳过。
+            val returningToSongList = prePlayerContainerScene == com.rawsmusic.core.ui.scene.NavScene.SONGS
+
+            if (!returningToSongList) {
+                acceptingReturnCoverBounds = false
+                playerReturnRevealIndex = -1
+                playingCoverBoundsForTransition = null
+                lockedPlayerCoverBoundsForTransition = null
+                onReady()
+            } else {
+                val current = playerController?.currentSong?.value
+                val fallbackTarget = miniPlayerCoverBoundsForTransition?.let {
+                    val source = coverTargetForTransition?.source ?: CoverTransitionTarget.Source.MiniPlayer
+                    val radius = coverTargetForTransition?.radiusDp
+                        ?: if (source == CoverTransitionTarget.Source.MiniPlayer) 22f else 24f
+                    CoverTransitionTarget(
+                        bounds = android.graphics.RectF(it),
+                        radiusDp = radius,
+                        source = source,
+                        songId = current?.id ?: -1L,
+                        coverKey = current?.let { s -> resolveSongCoverForCompose(s) }.orEmpty()
                     )
-                    // nav_host_fragment 在 MAIN 场景的可见性取决于进入播放器前的状态
-                    unifiedContainer.registerSceneParams(
-                        R.id.nav_host_fragment,
-                        UnifiedPlayerContainer.Scene.MAIN,
-                        UnifiedPlayerContainer.SceneParams(
-                            scene = UnifiedPlayerContainer.Scene.MAIN,
-                            alpha = if (prePlayerWasInFragmentMode) 1f else 0f,
-                            translationY = 0f,
-                            scaleX = 1f,
-                            scaleY = 1f,
-                            visibility = if (prePlayerWasInFragmentMode) View.VISIBLE else View.GONE
-                        )
+                } ?: playingCoverBoundsForTransition?.let {
+                    val radius = coverTargetForTransition?.radiusDp ?: 24f
+                    CoverTransitionTarget(
+                        bounds = android.graphics.RectF(it),
+                        radiusDp = radius,
+                        source = CoverTransitionTarget.Source.ListCover,
+                        songId = current?.id ?: -1L,
+                        coverKey = current?.let { s -> resolveSongCoverForCompose(s) }.orEmpty()
+                    )
+                } ?: lockedPlayerCoverBoundsForTransition?.let {
+                    val radius = coverTargetForTransition?.radiusDp ?: 24f
+                    CoverTransitionTarget(
+                        bounds = android.graphics.RectF(it),
+                        radiusDp = radius,
+                        source = CoverTransitionTarget.Source.ListCover,
+                        songId = current?.id ?: -1L,
+                        coverKey = current?.let { s -> resolveSongCoverForCompose(s) }.orEmpty()
                     )
                 }
-
-                // 先获取专辑封面位置，因为 registerCoverCollapseParams 会把 nav_host_fragment 设为 GONE
-                // 导致后续 getLocationOnScreen 返回错误坐标
-                val albumCoverQuad: Quad<Float, Float, Float, Float>? = if (returningToAlbumDetail) {
-                    // 专辑详情页的封面需要先显示出来（动画目标）
-                    binding.navHostFragment.visibility = View.VISIBLE
-                    binding.navHostFragment.alpha = 0f
-                    getAlbumDetailCoverView()?.visibility = View.VISIBLE
-                    getAlbumDetailCoverRect()?.let { rect ->
-                        Quad(rect.left, rect.top, rect.width(), rect.height())
-                    } ?: savedAlbumDetailCoverRect?.let { rect ->
-                        // 回退：使用进入播放器前保存的封面坐标
-                        Quad(rect.left, rect.top, rect.width(), rect.height())
-                    }
-                } else null
-
-                fun finishPrepare(targetCoverRect: Quad<Float, Float, Float, Float>?) {
-                    registerCoverCollapseParams()
-                    registerMainSceneContainers()
-                    if (targetCoverRect == null) {
-                        // Step 10: 共享 View 不可见 → 淡出（对标 Poweramp: 无目标 item 时不执行共享动画）
-                        unifiedContainer.registerSceneParams(
-                            R.id.ivPlayCover,
-                            UnifiedPlayerContainer.Scene.MAIN,
-                            UnifiedPlayerContainer.SceneParams(
-                                scene = UnifiedPlayerContainer.Scene.MAIN,
-                                alpha = 0f,
-                                visibility = View.GONE
-                            )
-                        )
-                    } else {
-                        // Step 8: 始终从当前布局计算目标位置（对标 Poweramp LayoutEngine 实时计算，不使用缓存）
-                        val targetRect = getPlayCoverTargetRect()
-                        val targetW = if (targetRect.width() > 0f) targetRect.width() else binding.ivPlayCover.width.toFloat()
-                        val targetH = if (targetRect.height() > 0f) targetRect.height() else binding.ivPlayCover.height.toFloat()
-                        val sourceCornerDp = if (returningToAlbumDetail) {
-                            22f
-                        } else {
-                            18f
-                        }
-                        sceneParamsHelper.registerCoverCollapseParamsWithSourcePos(
-                            targetCoverRect,
-                            targetRect,
-                            targetW,
-                            targetH,
-                            binding.ivPlayCover,
-                            resources.displayMetrics.density,
-                            sourceCornerDp
-                        )
-                    }
-                    // 动画开始前隐藏容器内非目标页面，避免返回时闪现所有内容
-                    if (unifiedMainContainer != null && !prePlayerWasInFragmentMode) {
-                        val targetScene = prePlayerContainerScene ?: com.rawsmusic.core.ui.scene.NavScene.HOME
-                        unifiedMainContainer?.hideAllPagesExcept(targetScene)
-                    }
+                playingCoverBoundsForTransition = null
+                lockedPlayerCoverBoundsForTransition = null
+                if (playerReturnRevealIndex < 0) {
+                    acceptingReturnCoverBounds = false
+                    coverTargetForTransition = fallbackTarget
+                    lockedPlayerCoverBoundsForTransition = fallbackTarget?.bounds?.let { android.graphics.RectF(it) }
                     onReady()
-                }
-
-                if (returningToAlbumDetail) {
-                    finishPrepare(albumCoverQuad)
                 } else {
-                    // Step 7: 先让目标列表参与布局但保持透明，等一帧取真实 aa_image 坐标
-                    // 对标 Poweramp: sE.p(true, false) 准备布局 → 重新获取 oE
-                    binding.navHostFragment.visibility = View.GONE
-                    unifiedMainContainer?.apply {
-                        visibility = View.VISIBLE
-                        alpha = 0f
-                        translationX = 0f
-                        translationY = 0f
-                        scaleX = 1f
-                        scaleY = 1f
-                        requestLayout()
-                    }
-                    binding.root.post {
-                        // Step 2-4: 解析目标位置（对标 Poweramp: 通过 wV.A 获取 View → getLocationOnScreen）
-                        getCurrentSongCoverRectWhenReady { rect ->
-                            val stableRect = savedListCoverRect ?: rect
-                            val targetCoverQuad = stableRect?.let {
-                                Quad(it.left, it.top, it.width(), it.height())
+                    val startedAt = System.currentTimeMillis()
+                    fun waitForReturnBounds() {
+                        if (!acceptingReturnCoverBounds) return
+                        val hasTarget = returnCoverBoundsResolved && lockedPlayerCoverBoundsForTransition != null
+                        val timedOut = System.currentTimeMillis() - startedAt >= 700L
+                        if (hasTarget || timedOut || playerReturnRevealIndex < 0) {
+                            acceptingReturnCoverBounds = false
+                            if (!hasTarget && fallbackTarget != null) {
+                                coverTargetForTransition = fallbackTarget
+                                lockedPlayerCoverBoundsForTransition = android.graphics.RectF(fallbackTarget.bounds)
                             }
-                            // Step 9-10: 隐藏源 View（对标 Poweramp: field P = source view → setVisibility(GONE)）
-                            // 不创建 overlay，由 scene transition 引擎统一驱动动画（对标 Poweramp: z1 单一动画器）
-                            getListCoverView()?.visibility = View.INVISIBLE
-                            // Step 5/8: 注册 SceneParams 并触发 transition
-                            finishPrepare(targetCoverQuad)
+                            onReady()
+                        } else {
+                            mainHandler.postDelayed({ waitForReturnBounds() }, 16L)
                         }
                     }
+                    waitForReturnBounds()
                 }
             }
         }
 
-        unifiedContainer.onPreparePlayerToLyric = {
-            binding.ivHiresSmall.visibility = View.GONE
-            binding.ivHiresSmall.alpha = 0f
-            binding.ivPlayCover.pivotX = 0f
-            binding.ivPlayCover.pivotY = 0f
-            if (!binding.lyricBgView.syncFrom(binding.playBgView)) {
-                binding.lyricBgView.syncFrom(binding.backgroundView)
+        playerSceneController.onPreparePlayerToLyric = {
+            if (!lyricBackgroundState.syncFrom(playBackgroundState)) {
+                lyricBackgroundState.syncFrom(backgroundState)
             }
-            binding.lyricBgView.resumeAnimations()
+            lyricBackgroundState.resumeAnimations()
             registerCoverLyricParams()
         }
 
-        unifiedContainer.onPrepareMainToPlayer = {
-            loadedCoverImageWidth = 0
-            loadedCoverImageHeight = 0
-            val isImmersive = unifiedContainer.isImmersiveEnabled
-            // 非沉浸模式下检查封面是否可用，无封面则隐藏避免透明矩形
-            val currentSong = playerController?.currentSong?.value
-            val coverUri = currentSong?.let { coverUriResolver.resolveCoverUri(it) } ?: ""
-            val playCoverUri = coverUri.ifBlank { currentSong?.albumArtPath ?: "" }
-            val hasCover = playCoverUri.isNotBlank()
-            playCoverView.apply {
-                visibility = View.INVISIBLE
-                alpha = if (isImmersive) 0f else 1f
-                scaleX = 1f
-                scaleY = 1f
-                translationX = 0f
-                translationY = 0f
-                pivotX = width / 2f
-                pivotY = height / 2f
-                cornerRadius = (18f) * resources.displayMetrics.density
-            }
-            // 从主界面进入播放界面时，确保封面图片已加载
-            if (hasCover && !isImmersive) {
-                BitmapProvider.load(
-                    key = playCoverUri,
-                    imageView = null,
-                    targetWidth = 1080,
-                    targetHeight = 1080,
-                    callback = { bitmap ->
-                        AppLogger.d("CoverAdjust", "onPrepareMainToPlayer target onSuccess")
-                        if (bitmap != null && !bitmap.isRecycled) {
-                            AppLogger.d("CoverAdjust", "bitmap: ${bitmap.width}x${bitmap.height}")
-                            loadedCoverImageWidth = bitmap.width
-                            loadedCoverImageHeight = bitmap.height
-                        }
-                        // 先同步更新 LayoutParams，确保 setCoverBitmap 触发 requestLayout 时参数正确
-                        setupCoverLayoutParams()
-                        if (bitmap != null) {
-                            playCoverView.setCoverBitmap(bitmap)
-                        }
-                        playCoverView.visibility = View.VISIBLE
-                        unifiedContainer.post { setupCoverLayoutParams() }
-                    }
-                )
-            }
+        playerSceneController.onPrepareMainToPlayer = {
+            registerCoverCollapseParams()
         }
 
         // HOME场景：恢复默认布局参数
-        unifiedContainer.onHomeSwipeRightDrag = { offset ->
-            setDrawerDragOffset(offset)
-        }
-        // HHOME场景：恢复默认布局参数
-        unifiedContainer.onHomeSwipeRightRelease = { shouldOpen ->
-            finishDrawerDrag(shouldOpen)
+        playerSceneController.onHomeSwipeRightDrag = { }
+        playerSceneController.onHomeSwipeRightRelease = { shouldOpen ->
+            if (shouldOpen) openSideMenu()
         }
         // 重置 ViewModel 相关状态
     }
 
     /**
-     * 设置 ivPlayCover 在playLayer 中的布局参数...竖屏: 宽度为容器宽度* 0.93...
-     */
-    private fun setupCoverLayoutParams() {
-        coverLayoutHelper.setupCoverLayoutParams()
-    }
-
-
-
-    /**
      */
     private fun setupSceneParams() {
-        sceneRegistry.registerAll()
+        syncImmersiveBackgroundSettings()
     }
 
-    private fun getCoverBottomInContainer(): Int {
-        val density = resources.displayMetrics.density
-        val containerWidth = unifiedContainer.width
-        val containerHeight = unifiedContainer.height
-        val isLandscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-
-        if (isLandscape) {
-            val coverSize = minOf(
-                (containerWidth * 0.35f).toInt(),
-                containerHeight - resources.getDimensionPixelSize(R.dimen.cover_min_top_offset)
-            )
-            val coverTop = ((containerHeight - coverSize) / 2f).toInt()
-            val lyricScale = 0.3f
-            return (coverTop + coverSize * lyricScale).toInt()
-        }
-
-        val coverHeight: Int
-        if (containerWidth == 0) {
-            coverHeight = resources.getDimensionPixelSize(R.dimen.cover_height_default)
-        } else {
-            val hPad = resources.getDimension(R.dimen.spacing_md)
-            val availW = containerWidth - 2 * hPad
-            coverHeight = (availW * 0.93f).toInt()
-        }
-        val coverTop = resources.getDimensionPixelSize(R.dimen.cover_top_margin)
-        val lyricScale = 0.3f
-        return (coverTop + coverHeight * lyricScale).toInt()
+    private fun syncImmersiveBackgroundSettings() {
+        composeImmersiveEnabled = AppPreferences.UI.isImmersiveEnabled
+        composeMiniCoverEnabled = AppPreferences.UI.isMiniCoverEnabled
+        composeDefaultBackgroundEnabled = true
+        immersiveBackgroundState.isImmersiveEnabled = false
+        immersiveBackgroundState.isMiniCoverEnabled = false
+        immersiveBackgroundState.isDarkMode = isDarkMode
+        mainPersistentCoverState.isImmersiveEnabled = false
+        mainPersistentCoverState.isMiniCoverEnabled = false
+        mainPersistentCoverState.isDarkMode = isDarkMode
+        mainPersistentCoverState.coverAlpha = 0f
     }
 
-    private fun triggerCoverBreathingIfNeeded() {
-        if (!::unifiedContainer.isInitialized) return
-        if (unifiedContainer.isTransitioning || unifiedContainer.currentScene != UnifiedPlayerContainer.Scene.PLAYER) return
-        val isPlaying = playerController?.playState?.value == PlayState.PLAYING
-        animateCoverBreathing(isPlaying)
-    }
-
-    private fun animateCoverBreathing(isPlaying: Boolean) {
-        coverLayoutHelper.animateCoverBreathing(isPlaying)
-    }
-
-    private fun updateLyricAnchor() {
-        val density = resources.displayMetrics.density
-        val coverBottom = getCoverBottomInContainer()
-        val lyricBottomPad = resources.getDimensionPixelSize(R.dimen.lyric_bottom_pad)
-        val availableHeight = unifiedContainer.height.toFloat() - coverBottom - lyricBottomPad
-        val anchorOffset = availableHeight * 0.5f
-        lyricPlayerView.updateAnchorOffset(anchorOffset)
+    private fun updateImmersiveCoverState(path: String?) {
+        immersiveBackgroundState.clear()
+        mainPersistentCoverState.clear()
     }
 
     // Compose 播放栏状态
-    private var miniPlayerTitle by mutableStateOf("")
-    private var miniPlayerArtist by mutableStateOf("")
-    private var miniPlayerIsPlaying by mutableStateOf(false)
-    private var miniPlayerProgress by mutableFloatStateOf(0f)
-    private var miniPlayerCoverPath by mutableStateOf<String?>(null)
+    // 旧字段代理到 miniPlayerCoordinator，保留兼容
+    private val miniPlayerTitle get() = miniPlayerCoordinator.title
+    private val miniPlayerArtist get() = miniPlayerCoordinator.artist
+    private val miniPlayerIsPlaying get() = miniPlayerCoordinator.isPlaying
+    private val miniPlayerProgress get() = miniPlayerCoordinator.progress
+    private val miniPlayerCoverPath get() = miniPlayerCoordinator.coverPath
+    private var visualizerLevels by mutableStateOf(FloatArray(80))
+    private var playerAlbumSongs by mutableStateOf<List<AudioFile>>(emptyList())
+    private var playerAlbumCoverPath by mutableStateOf<String?>(null)
+    private val overlayCoordinator by lazy {
+        OverlayCoordinator(
+            isPlayerPageVisible = {
+                playerSceneState.currentScene != com.rawsmusic.core.ui.widget.PlayerScene.MAIN
+            }
+        )
+    }
+    private val usbVolumeHideRunnable = Runnable { overlayCoordinator.hideUsbVolume() }
+    private var folderPickerResultUri by mutableStateOf<android.net.Uri?>(null)
 
     private fun updateMiniPlayerBarSong() {
-        val song = playerController?.currentSong?.value
-        miniPlayerTitle = song?.title ?: getString(R.string.no_music_playing)
-        miniPlayerArtist = song?.artist.orEmpty()
-        miniPlayerCoverPath = song?.let { coverUriResolver.resolveCoverUri(it).ifBlank { it.albumArtPath ?: "" } }
+        miniPlayerCoordinator.updateSong(playerController?.currentSong?.value)
     }
 
     private fun updateMiniPlayerBarPlayback() {
-        miniPlayerIsPlaying = playerController?.playState?.value == PlayState.PLAYING
+        miniPlayerCoordinator.updatePlaybackState(
+            playerController?.playState?.value == PlayState.PLAYING
+        )
     }
 
-    private fun updateMiniPlayerBarProgress() {
-        val pos = playerController?.position?.value ?: 0L
-        val duration = playerController?.duration?.value ?: 0L
-        miniPlayerProgress = if (duration > 0) pos.toFloat() / duration else 0f
+    private fun resolveSongCoverForCompose(song: AudioFile): String {
+        return if (::coverUriResolver.isInitialized) {
+            coverUriResolver.resolveCoverUri(song).ifBlank { song.albumArtPath ?: "" }
+        } else {
+            song.albumArtPath ?: ""
+        }
     }
+
 
     /**
      * 设置 Compose 层
-     * 在现有 View 布局之上渲染纯 Compose 内容
+     * 渲染主 Activity 的纯 Compose 内容
      * 液态玻璃效果在 Compose 树内生效
      */
-    private fun setupComposeLayer() {
-        val composeView = binding.composeRoot ?: run {
-            AppLogger.w("MainActivity", "setupComposeLayer: composeRoot is null!")
-            return
-        }
-        AppLogger.d("MainActivity", "setupComposeLayer: composeRoot found, setting content")
-        composeView.visibility = View.VISIBLE
-        composeView.setContent {
-            val isLight = !com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(this@MainActivity)
-            val backdrop = com.kyant.backdrop.backdrops.rememberLayerBackdrop()
+    // 播放器场景状态（纯 Compose）
+    private val playerSceneState = com.rawsmusic.core.ui.widget.PlayerSceneState()
 
-            unifiedContainer.ComposeFullLayout(
-                // 背景
-                isLight = isLight,
-                backdrop = backdrop,
-                // 播放页
-                title = miniPlayerTitle,
-                artist = miniPlayerArtist,
-                coverPath = miniPlayerCoverPath,
-                isPlaying = miniPlayerIsPlaying,
-                progress = miniPlayerProgress,
-                // 回调
-                onPlayPause = { playerController?.playPause() },
-                onPrevious = { playerController?.previous() },
-                onNext = { playerController?.next() },
-                onSeek = { progress ->
-                    val durationMs = playerController?.duration?.value ?: 0L
-                    if (durationMs > 0) {
-                        playerController?.seekTo((progress * durationMs).toLong())
-                    }
-                },
-                // 主界面内容 - 注册到 Backdrop 以支持液态玻璃
-                mainContent = {
-                    val mainContainer = unifiedMainContainer
-                    if (backdrop != null) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .layerBackdrop(backdrop)
-                        ) {
-                            if (mainContainer != null) {
-                                mainContainer.ComposePageContent(mainContainer.composeCurrentScene)
-                            }
+    private fun setupComposeLayer() {
+        updateComposeRootVisibility(
+            songActionSheetHelper.isSongActionSheetShowing ||
+                songActionSheetHelper.isPlaylistPickerShowing ||
+                metadataDetailHelper.isVisible ||
+                metadataEditorHelper.isMetadataEditorShowing ||
+                metadataEditorHelper.isDeleteConfirmShowing ||
+                audioInfoCapsuleHelper.isPopupShowing ||
+                metadataCardPopupHelper.isShowing ||
+                playModePopupHelper.isShowing ||
+                dialogHelper.isShowing ||
+                batteryOptimizationHelper.isShowing
+        )
+    }
+
+    @Composable
+    private fun PlayerOverlayContent() {
+        if (!overlayCoordinator.composeOverlayContentVisible) return
+        Box(Modifier.fillMaxSize()) {
+            val currentScene = playerSceneState.currentScene
+            val controllerPlayerVisible = ::playerSceneController.isInitialized &&
+                playerSceneController.composeIsTransitioning &&
+                (
+                    playerSceneController.composeFromScene != PlayerSceneController.Scene.MAIN ||
+                        playerSceneController.composeToScene != PlayerSceneController.Scene.MAIN
+                    )
+            if (currentScene != com.rawsmusic.core.ui.widget.PlayerScene.MAIN || controllerPlayerVisible) {
+                com.rawsmusic.core.ui.widget.PlayerDismissMotionHost(
+                    openToken = currentScene.hashCode(),
+                    onDismissProgressChange = { /* progress reporting if needed */ },
+                    onDismiss = {
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.closeCurrentPlayerStackToMain(true)
                         }
-                    } else {
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            if (mainContainer != null) {
-                                mainContainer.ComposePageContent(mainContainer.composeCurrentScene)
-                            }
-                        }
+                    },
+                    // 禁用 PlayerDismissMotionHost 的 BackHandler，避免触发 LocalNavigationEventDispatcherOwner 崩溃
+                    backEnabled = false,
+                    gestureEnabled = !gestureLockCoordinator.isBlocked
+                ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = {}
+                        )
+                )
+                val currentSong by playerController?.currentSong?.collectAsState() ?: androidx.compose.runtime.mutableStateOf(null)
+                val playState by playerController?.playState?.collectAsState()
+                    ?: androidx.compose.runtime.mutableStateOf(PlayState.IDLE)
+                val positionMs by playerController?.position?.collectAsState()
+                    ?: androidx.compose.runtime.mutableStateOf(0L)
+                val durationMs by playerController?.duration?.collectAsState()
+                    ?: androidx.compose.runtime.mutableStateOf(0L)
+                val playMode by playerController?.playMode?.collectAsState()
+                    ?: androidx.compose.runtime.mutableStateOf(PlayMode.SEQUENTIAL)
+                val queue by playerController?.queue?.collectAsState()
+                    ?: androidx.compose.runtime.mutableStateOf(com.rawsmusic.core.common.model.PlayQueue())
+                val coverPath = currentSong?.let { song ->
+                    resolveSongCoverForCompose(song)
+                }
+                val isMainPlayerSharedTransition =
+                    playerSceneController.composeIsTransitioning &&
+                        ((playerSceneController.composeFromScene == PlayerSceneController.Scene.MAIN &&
+                            playerSceneController.composeToScene == PlayerSceneController.Scene.PLAYER) ||
+                            (playerSceneController.composeFromScene == PlayerSceneController.Scene.PLAYER &&
+                                playerSceneController.composeToScene == PlayerSceneController.Scene.MAIN))
+                val transitionCoverPath = if (isMainPlayerSharedTransition) {
+                    lockedPlayerCoverPathForTransition ?: coverPath
+                } else {
+                    coverPath
+                }
+
+                val displayPositionMs = if (isSeekUiHolding && seekTargetMs >= 0L) {
+                    seekTargetMs
+                } else {
+                    positionMs
+                }
+                val displayLyricPositionMs = if (isSeekUiHolding && seekTargetMs >= 0L) {
+                    (seekTargetMs - (playerController?.lyricManualOffsetMs?.toLong() ?: 0L))
+                        .coerceAtLeast(0L)
+                } else {
+                    lyricsCoordinator.lyricPositionMs
+                }
+                val isPlayerReturningToMain =
+                    playerSceneController.composeIsTransitioning &&
+                        playerSceneController.composeFromScene == PlayerSceneController.Scene.PLAYER &&
+                        playerSceneController.composeToScene == PlayerSceneController.Scene.MAIN
+                val playerSharedSourceBounds = if (isPlayerReturningToMain) {
+                    lockedPlayerCoverBoundsForTransition
+                } else {
+                    lockedPlayerCoverBoundsForTransition
+                        ?: if (mainNavState.currentScene == com.rawsmusic.core.ui.scene.NavScene.SONGS) playingCoverBoundsForTransition else null
+                }
+                val playerSharedSourceTarget = if (isPlayerReturningToMain) {
+                    coverTargetForTransition
+                } else {
+                    coverTargetForTransition ?: playerSharedSourceBounds?.let { bounds ->
+                        val source = coverTargetForTransition?.source ?: CoverTransitionTarget.Source.ListCover
+                        val radius = coverTargetForTransition?.radiusDp
+                            ?: if (source == CoverTransitionTarget.Source.MiniPlayer) 22f else 24f
+                        val current = playerController?.currentSong?.value
+                        CoverTransitionTarget(
+                            bounds = android.graphics.RectF(bounds),
+                            radiusDp = radius,
+                            source = source,
+                            songId = current?.id ?: -1L,
+                            coverKey = transitionCoverPath.orEmpty()
+                        )
                     }
                 }
+                val lyricSong = lyricsCoordinator.lyricSong
+                val displayTranslation = lyricsCoordinator.displayTranslation
+                val displayRoma = lyricsCoordinator.displayRoma
+                val prioritySongs = playerController?.getPriorityQueue().orEmpty()
+                val queueSongs = prioritySongs + queue.songs
+                val queueCurrentIndex = queue.currentIndex + prioritySongs.size
+                com.rawsmusic.core.ui.widget.ComposePlayerContainer(
+                    sceneState = playerSceneState,
+                    currentSong = currentSong,
+                    coverPath = transitionCoverPath,
+                    isPlaying = playState == PlayState.PLAYING,
+                    currentPositionMs = displayPositionMs,
+                    totalDurationMs = durationMs,
+                    previousIconRes = R.drawable.ic_rewind_fill,
+                    playIconRes = R.drawable.ic_play,
+                    pauseIconRes = R.drawable.ic_pause,
+                    nextIconRes = R.drawable.ic_speed_fill,
+                    playModeIconRes = playModeIconRes(playMode),
+                    moreIconRes = R.drawable.ic_more_vert,
+                    audioQualityIconRes = R.drawable.ic_equalizer_bars,
+                    audioInfoText = audioInfoCapsuleHelper.capsuleText,
+                    onSeekStart = {
+                        beginProgressSeek()
+                    },
+                    onSeekStop = { fraction ->
+                        val seekPos = (fraction * durationMs).toLong()
+                        startSeekUiHold(seekPos)
+                        lyricsNeedSeekTo = true
+                        playerController?.seekTo(seekPos)
+                        endProgressSeek()
+                    },
+                    onPrevious = { playerController?.previous() },
+                    onPlayPause = { playerController?.playPause() },
+                    onNext = { playerController?.next() },
+                    onPlayMode = {
+                        playerController?.let { ctrl ->
+                            ctrl.cyclePlayMode()
+                            playModePopupHelper.updatePlayModeIcon(ctrl.playMode.value)
+                        }
+                    },
+                    onPlayModeLongPress = { playModePopupHelper.show() },
+                    onMore = { songActionSheetHelper.show() },
+                    onAudioQuality = {
+                        audioInfoCapsuleHelper.cycleCapsule()
+                    },
+                    onAudioQualityLongPress = {
+                        audioInfoCapsuleHelper.showInfoPopup()
+                    },
+                    onOpenLyric = {
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.openLyricPage(true)
+                        }
+                    },
+                    onOpenQueue = { openQueuePage() },
+                    onPlayerCoverSwipeUpStart = {
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.startCoverSwipeUpDrag(
+                                PlayerSceneController.Scene.PLAYER,
+                                PlayerSceneController.Scene.LYRIC
+                            )
+                        }
+                    },
+                    onPlayerCoverSwipeUpProgress = { ratio ->
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.updateCoverSwipeUpDrag(ratio)
+                        }
+                    },
+                    onPlayerCoverSwipeUpEnd = { commit, velocity ->
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.endCoverSwipeUpDrag(commit, velocity = velocity)
+                        }
+                    },
+                    onPlayerCoverSwipeDownStart = {
+                        if (::playerSceneController.isInitialized) {
+                            registerCoverCollapseParams()
+                            playerSceneController.startCoverDrag(PlayerSceneController.Scene.MAIN)
+                        }
+                    },
+                    onPlayerCoverSwipeDownProgress = { ratio ->
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.updateCoverDrag(ratio)
+                        }
+                    },
+                    onPlayerCoverSwipeDownEnd = { commit, velocity ->
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.endCoverDrag(commit, velocity = velocity)
+                        }
+                    },
+                    onLyricCoverSwipeDownStart = {
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.startCoverSwipeUpDrag(
+                                PlayerSceneController.Scene.PLAYER,
+                                PlayerSceneController.Scene.LYRIC
+                            )
+                        }
+                    },
+                    onLyricCoverSwipeDownProgress = { ratio ->
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.updateCoverSwipeUpDrag(ratio)
+                        }
+                    },
+                    onLyricCoverSwipeDownEnd = { commit, velocity ->
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.endCoverSwipeUpDrag(commit, velocity = velocity)
+                        }
+                    },
+                    queueSongs = queueSongs,
+                    queueCurrentIndex = queueCurrentIndex,
+                    onQueueSongClick = { song, index ->
+                        if (index < prioritySongs.size) {
+                            playerController?.play(song, queueSongs, index)
+                        } else {
+                            val adjustedIndex = index - prioritySongs.size
+                            playerController?.play(song, queue.songs, adjustedIndex)
+                        }
+                    },
+                    onClearPriorityQueue = { playerController?.clearPriorityQueue() },
+                    albumSongs = playerAlbumSongs,
+                    albumCoverPath = playerAlbumCoverPath,
+                    onAlbumSongClick = { song, index -> playerController?.play(song, playerAlbumSongs, index) },
+                    lyricSong = lyricSong,
+                    lyricPositionMs = displayLyricPositionMs,
+                    displayTranslation = displayTranslation,
+                    displayRoma = displayRoma,
+                    onLyricSeek = { ms ->
+                        lyricsNeedSeekTo = true
+                        playerController?.seekTo(ms)
+                    },
+                    onLyricTranslationToggle = {
+                        lyricsCoordinator.toggleTranslation()
+                    },
+                    isImmersiveEnabled = composeImmersiveEnabled,
+                    onClosePlayer = {
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.closeCurrentPlayerStackToMain(true)
+                        }
+                    },
+                    onBackToPlayer = {
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.closeLyricPage(true)
+                        }
+                    },
+                    onModalVisibleChange = { visible ->
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.disableGestureIntercept = visible
+                        }
+                    },
+                    controllerScene = playerSceneController.composeCurrentScene,
+                    controllerFromScene = playerSceneController.composeFromScene,
+                    controllerToScene = playerSceneController.composeToScene,
+                    controllerProgress = playerSceneController.composeTransitionProgress,
+                    controllerIsTransitioning = playerSceneController.composeIsTransitioning,
+                    sourceCoverTarget = playerSharedSourceTarget,
+                    modifier = Modifier.fillMaxSize()
+                )
+                } // PlayerDismissMotionHost
+            }
+            if (AppPreferences.UI.isAudioVisualizerEnabled &&
+                (currentScene != com.rawsmusic.core.ui.widget.PlayerScene.MAIN || controllerPlayerVisible) &&
+                currentScene != com.rawsmusic.core.ui.widget.PlayerScene.QUEUE &&
+                visualizerLevels.any { it > 0f }
+            ) {
+                com.rawsmusic.core.ui.widget.player.ComposeAudioVisualizer(
+                    levels = visualizerLevels.toList(),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(72.dp)
+                        .padding(horizontal = 20.dp, vertical = 8.dp)
+                )
+            }
+            SongActionSheetOverlay(
+                helper = songActionSheetHelper,
+                isImmersiveEnabled = composeImmersiveEnabled
             )
+            MetadataDetailOverlay(helper = metadataDetailHelper)
+            MetadataCardPopupOverlay(helper = metadataCardPopupHelper)
+            PlayModePopupOverlay(helper = playModePopupHelper)
+            DialogOverlay(helper = dialogHelper)
+            BatteryOptimizationOverlay(helper = batteryOptimizationHelper)
+            MetadataEditorOverlay(helper = metadataEditorHelper)
+            AudioInfoCapsuleOverlay(helper = audioInfoCapsuleHelper)
+            UsbVolumeOverlay(
+                visible = overlayCoordinator.isUsbVolumeOverlayVisible,
+                text = overlayCoordinator.usbVolumeOverlayText,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+            if (overlayCoordinator.showFolderDialog) {
+                com.rawsmusic.ui.folderfilter.MusicFoldersDialog(
+                    onDismiss = { overlayCoordinator.showFolderDialog = false },
+                    onFolderPickerLauncher = {
+                        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT_TREE)
+                        folderPickerLauncher.launch(intent)
+                    },
+                    pendingFolderUri = folderPickerResultUri,
+                    onFolderUriConsumed = { folderPickerResultUri = null }
+                )
+            }
         }
     }
 
-    override fun initObserver() {
-        observePlaybackState()
-        observeCurrentSong()
-        observeCoverExtracted()
+    private fun updateComposeRootVisibility(forceVisible: Boolean = false) {
+        overlayCoordinator.refresh(
+            forceVisible = forceVisible,
+            songActionSheetVisible = songActionSheetHelper.isSongActionSheetShowing,
+            playlistPickerVisible = songActionSheetHelper.isPlaylistPickerShowing,
+            metadataDetailVisible = metadataDetailHelper.isVisible,
+            metadataEditorVisible = metadataEditorHelper.isMetadataEditorShowing,
+            metadataDeleteConfirmVisible = metadataEditorHelper.isDeleteConfirmShowing,
+            audioInfoVisible = audioInfoCapsuleHelper.isPopupShowing,
+            metadataCardVisible = metadataCardPopupHelper.isShowing,
+            playModeVisible = playModePopupHelper.isShowing,
+            dialogVisible = dialogHelper.isShowing,
+            batteryVisible = batteryOptimizationHelper.isShowing
+        )
+    }
+
+    private fun showUsbVolumeOverlay(text: String) {
+        overlayCoordinator.showUsbVolume(text)
+        mainHandler.removeCallbacks(usbVolumeHideRunnable)
+        mainHandler.postDelayed(usbVolumeHideRunnable, 1500L)
+    }
+
+    @Composable
+    private fun UsbVolumeOverlay(
+        visible: Boolean,
+        text: String,
+        modifier: Modifier = Modifier
+    ) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn(tween(120)),
+            exit = fadeOut(tween(250)),
+            modifier = modifier.padding(top = 96.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .background(ComposeColor(0xAA000000), RoundedCornerShape(24.dp))
+                    .padding(horizontal = 24.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = text,
+                    color = ComposeColor.White,
+                    fontSize = 14.sp
+                )
+            }
+        }
+    }
+
+    private fun syncComposePlayerScene(scene: PlayerSceneController.Scene) {
+        when (scene) {
+            PlayerSceneController.Scene.MAIN -> {
+                playerSceneState.switchToSilent(com.rawsmusic.core.ui.widget.PlayerScene.MAIN)
+            }
+            PlayerSceneController.Scene.PLAYER -> {
+                val current = playerSceneState.currentScene
+                if (current == com.rawsmusic.core.ui.widget.PlayerScene.MAIN ||
+                    current == com.rawsmusic.core.ui.widget.PlayerScene.LYRIC
+                ) {
+                    playerSceneState.switchToSilent(com.rawsmusic.core.ui.widget.PlayerScene.PLAYER)
+                }
+            }
+            PlayerSceneController.Scene.LYRIC -> {
+                playerSceneState.switchToSilent(com.rawsmusic.core.ui.widget.PlayerScene.LYRIC)
+            }
+            PlayerSceneController.Scene.QUEUE -> {
+                playerSceneState.switchToSilent(com.rawsmusic.core.ui.widget.PlayerScene.QUEUE)
+            }
+            PlayerSceneController.Scene.ALBUM_DETAIL -> {
+                playerSceneState.switchToSilent(com.rawsmusic.core.ui.widget.PlayerScene.ALBUM_DETAIL)
+            }
+        }
+        updateComposeRootVisibility()
+    }
+
+    private fun playModeIconRes(playMode: PlayMode): Int = when (playMode) {
+        PlayMode.SEQUENTIAL -> R.drawable.ic_order_play_fill
+        PlayMode.SHUFFLE_ALL,
+        PlayMode.SHUFFLE_ONCE -> R.drawable.ic_shuffle_fill
+        PlayMode.REPEAT_ONE -> R.drawable.ic_repeat_one_fill
+    }
+
+    private fun initObserver() {
+        coverCoordinator.start()
+        observePlayerThroughCoordinator()
         observeUsbSampleRate()
-        observePosition()
         observePlayMode()
+    }
+
+    private fun observePlayerThroughCoordinator() {
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            playerController?.playState?.collect { state ->
+                playbackCoordinator.onPlaybackStateChanged(state)
+            }
+        }
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            playerController?.currentSong?.collect { song ->
+                if (song != null) {
+                    playbackCoordinator.onCurrentSongChanged(song)
+                }
+            }
+        }
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            playerController?.position?.collect { pos ->
+                val duration = playerController?.duration?.value ?: 0L
+                if (isSeekUiHolding && seekTargetMs >= 0L) {
+                    val tolerance = (duration * 0.02f).toLong().coerceIn(300L, 2000L)
+                    val elapsed = System.currentTimeMillis() - seekFinishTimeMs
+                    if (kotlin.math.abs(pos - seekTargetMs) < tolerance || elapsed > 2000L) {
+                        stopSeekUiHold()
+                    }
+                }
+                playbackCoordinator.onPositionChanged(pos, duration)
+            }
+        }
     }
 
     /**
@@ -1826,14 +2138,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             if (coverUri.isBlank()) return@observe
 
             // 更新封面 URI 缓存
-            coverUriResolver.updateCache(songPath, coverUri)
-
-            // 如果是当前歌曲，更新封面图和背景取色
             val currentSong = playerController?.currentSong?.value
             if (currentSong != null && songPath == currentSong.path) {
+                coverUriResolver.updateCache(currentSong, coverUri)
                 AppLogger.d("CoverDebug", "coverExtractedEvent: path=$coverUri for ${currentSong.title}")
-                playCoverView.loadCover(coverUri)
-                loadCoverBackground(coverUri)
                 updateMiniPlayerBarSong()
             }
         }
@@ -1844,33 +2152,12 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             playerController?.playState?.collect { state ->
                 val isPlaying = state == PlayState.PLAYING
                 val song = playerController?.currentSong?.value
-                binding.btnPlayPause.setImageResource(
-                    if (isPlaying) R.drawable.ic_pause
-                    else R.drawable.ic_play
-                )
-                unifiedContainer.syncRotationState(isPlaying)
-                unifiedContainer.isCurrentlyPlaying = isPlaying
+                playerSceneController.syncRotationState(isPlaying)
+                playerSceneController.isCurrentlyPlaying = isPlaying
                 updateMiniPlayerBarPlayback()
-
-                if (isPlaying) {
-                    binding.btnPlayPause.imageTintList = android.content.res.ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.white_70))
-                } else {
-                    binding.btnPlayPause.imageTintList = android.content.res.ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.white_full))
-                }
-                binding.btnPlayPause.alpha = 1f
 
                 LyriconProviderManager.setPlaybackState(isPlaying)
                 LyricGetterBridge.updatePlaybackState(this@MainActivity, isPlaying)
-
-                if (!isSeeking && !unifiedContainer.isTransitioning && unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.PLAYER) {
-                    animateCoverBreathing(isPlaying)
-                }
-
-                if (isPlaying) {
-                    binding.seekBar.stopBreathing()
-                } else {
-                    binding.seekBar.startBreathing()
-                }
 
                 playerController?.currentSong?.value?.let { song ->
                     playerServiceBridgeHelper.pushSongUpdate(song)
@@ -1886,92 +2173,22 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                     AppLogger.d("MetaObserver", "song changed: ${it.title}, sr=${it.sampleRate}, br=${it.bitRate}, " +
                             "bps=${it.bitsPerSample}, ch=${it.channelCount}, isHiRes=${it.isHiRes}")
 
-                    // 更新 UnifiedMainContainer 中歌曲列表的播放位置
-                    val songs = MusicRepository.songs.value
-                    val index = songs.indexOfFirst { s -> s.id == it.id }
-                    unifiedMainContainer?.updatePlayingPosition(index, it.id)
-
                     val coverUri = coverUriResolver.resolveCoverUri(it)
                     val playCoverUri = coverUri.ifBlank { it.albumArtPath }
-                    binding.tvTitle.text = it.title
-                    binding.tvArtist.text = it.artist
-                    binding.tvAlbum.text = it.album
-                    updateMiniPlayerBarSong()
-                    updateLyricSongInfo()
-
-                    if (unifiedContainer.currentScene != UnifiedPlayerContainer.Scene.MAIN) {
-                        binding.ivPlayCover.animate().cancel()
-                        val isImmersive = unifiedContainer.isImmersiveEnabled
-                        val hasCover = playCoverUri.isNotBlank()
-                        binding.ivPlayCover.alpha = if (isImmersive) 0f else 1f
-                        binding.ivPlayCover.visibility = View.INVISIBLE
-                        binding.ivPlayCover.translationX = 0f
-                        binding.ivPlayCover.translationY = 0f
-                        binding.ivPlayCover.rotationY = 0f
-                        when {
-                            unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.LYRIC -> {
-                                binding.ivPlayCover.scaleX = 0.3f
-                                binding.ivPlayCover.scaleY = 0.3f
-                            }
-                            else -> {
-                                binding.ivPlayCover.scaleX = 1f
-                                binding.ivPlayCover.scaleY = 1f
-                            }
-                        }
-                        if (hasCover) {
-                            BitmapProvider.load(
-                                key = playCoverUri,
-                                imageView = null,
-                                targetWidth = 1080,
-                                targetHeight = 1080,
-                                callback = { bitmap ->
-                                    AppLogger.d("CoverAdjust", "songObserver target onSuccess")
-                                    if (bitmap != null && !bitmap.isRecycled) {
-                                        loadedCoverImageWidth = bitmap.width
-                                        loadedCoverImageHeight = bitmap.height
-                                    }
-                                    setupCoverLayoutParams()
-                                    if (bitmap != null) {
-                                        playCoverView.setCoverBitmap(bitmap)
-                                    }
-                                    val isImmers = unifiedContainer.isImmersiveEnabled
-                                    if (!isImmers) {
-                                        binding.ivPlayCover.visibility = View.VISIBLE
-                                    }
-                                    unifiedContainer.post { setupCoverLayoutParams() }
-                                }
-                            )
-                        } else if (playCoverUri.isNotBlank()) {
-                            BitmapProvider.load(
-                                key = playCoverUri,
-                                imageView = null,
-                                targetWidth = 1024,
-                                targetHeight = 1024,
-                                callback = { bitmap ->
-                                    if (bitmap != null && !bitmap.isRecycled) {
-                                        loadedCoverImageWidth = bitmap.width
-                                        loadedCoverImageHeight = bitmap.height
-                                    }
-                                }
-                            )
-                        }
+                    if (!playerSceneController.composeIsTransitioning) {
+                        lockedPlayerCoverPathForTransition = null
+                        lockedPlayerCoverBoundsForTransition = null
+                        coverTargetForTransition = null
                     }
-                    // 取色由 loadCoverBackground → applyCoverColors 统一处理，不再重复提取
-
-                    unifiedContainer.updateImmersiveCover(playCoverUri.ifBlank { null })
+                    playerReturnRevealIndex = MusicRepository.songs.value.indexOfFirst { song -> song.id == it.id }
+                    updateMiniPlayerBarSong()
                     syncMirrorCover(playCoverUri.ifBlank { null })
 
                     loadLyrics(it.path)
                     updateCapsuleText()
                     updateHiresBadge()
 
-                    loadCoverBackground(playCoverUri)
-
                     playerServiceBridgeHelper.pushSongUpdate(it)
-
-                    startMarqueeIfNeeded(binding.tvTitle)
-                    startMarqueeIfNeeded(binding.tvArtist)
-                    startMarqueeIfNeeded(binding.tvAlbum)
                 }
             }
         }
@@ -1994,23 +2211,18 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
                 val lyricOffset = playerController?.lyricManualOffsetMs?.toLong() ?: 0L
                 val lyricPos = (pos - lyricOffset).coerceAtLeast(0L)
 
-                // seek 目标检测：位置接近目标后清除 seeking 状态
-                if (isSeeking && seekTargetMs >= 0) {
+                // seek 目标检测：位置接近目标后清除 UI hold 状态
+                if (isSeekUiHolding && seekTargetMs >= 0L) {
                     val tolerance = (duration * 0.02f).toLong().coerceIn(300L, 2000L)
                     val elapsed = System.currentTimeMillis() - seekFinishTimeMs
                     if (kotlin.math.abs(pos - seekTargetMs) < tolerance || elapsed > 2000L) {
-                        isSeeking = false
-                        binding.seekBar.isSeekingByUser = false
-                        seekTargetMs = -1L
+                        stopSeekUiHold()
                     }
                 }
 
-                binding.seekBar.setProgress(pos, duration)
-                binding.tvCurrentTime.text = AudioUtils.formatDuration(pos)
-                binding.tvTotalTime.text = AudioUtils.formatDuration(duration)
-                miniPlayerProgress = if (duration > 0) pos.toFloat() / duration else 0f
-                // setPosition 现在对 scroll-only 行也能正确更新 lastPosition（已修复 LyricLineView）
-                lyricPlayerView.setPosition(lyricPos)
+                // 旧 observePosition 已停用，进度由 playbackCoordinator 管理
+                // miniPlayerProgress = if (duration > 0) pos.toFloat() / duration else 0f
+                composeLyricPositionMs = lyricPos
                 val needSeekTo = lyricsNeedSeekTo
                 if (needSeekTo) lyricsNeedSeekTo = false
                 if (!currentLyricData.isEmpty) {
@@ -2055,388 +2267,66 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
     }
 
     /** 启动跑马灯效果（focusable + requestFocus） */
-    private fun startMarqueeIfNeeded(tv: android.widget.TextView) {
-        TextMarqueeHelper.startIfNeeded(tv)
-    }
-
-    override fun initListener() {}
-
-    /**
-     * 获取 PowerList 当前播放封面的真实屏幕矩形。
-     *
-     * PowerList item 自身通过 translationX/Y 定位，aa_image 的 left/top 只是 item-local
-     * 坐标。直接对 aa_image 调 getLocationOnScreen 在场景返回/双 slot 布局刚稳定时容易混入
-     * 子 View 的旧 matrix 或上一帧位置。这里对标 Poweramp：先拿 item 的屏幕位置，再用
-     * Compose 版本：封面由 ComposeAAItemView 渲染，返回 null。
-     */
-    private fun getListCoverScreenRect(): RectF? {
-        return null
-    }
-
-    /**
-     * Gets the screen-space bounding rect of the currently playing song's cover art.
-     */
-    private fun getCurrentSongCoverRectWhenReady(attempt: Int = 0, onReady: (RectF?) -> Unit) {
-        val coverRect = getListCoverScreenRect()
-        if (coverRect == null) {
-            if (attempt < 6) {
-                binding.root.post { getCurrentSongCoverRectWhenReady(attempt + 1, onReady) }
-                return
-            }
-            onReady(null)
-            return
-        }
-        onReady(coverRect)
-    }
-
-    /**
-     * 获取专辑详情页的封面 View（ivAlbumCover）
-     */
-    private fun getAlbumDetailCoverView(): View? {
-        if (navController.currentDestination?.id != R.id.nav_album_detail) return null
-        val navHostFragment = supportFragmentManager.findFragmentById(R.id.nav_host_fragment) as? NavHostFragment
-        val currentFragment = navHostFragment?.childFragmentManager?.fragments?.firstOrNull()
-        if (currentFragment !is com.rawsmusic.ui.albums.AlbumDetailFragment) return null
-        return currentFragment.view?.findViewById(R.id.ivAlbumCover)
-    }
-
-    /**
-     * 获取专辑详情页封面的屏幕空间矩形
-     */
-    private fun getAlbumDetailCoverRect(): RectF? {
-        val coverView = getAlbumDetailCoverView() ?: return null
-        val loc = IntArray(2)
-        coverView.getLocationOnScreen(loc)
-        return RectF(
-            loc[0].toFloat(),
-            loc[1].toFloat(),
-            (loc[0] + coverView.width).toFloat(),
-            (loc[1] + coverView.height).toFloat()
-        )
-    }
-
-    /**
-     * Finds the cover ImageView of the currently playing song.
-     * Compose 版本：返回 null（封面由 Compose 渲染）
-     */
-    private fun getListCoverView(): View? {
-        // Compose 版本：封面由 ComposeAAItemView 渲染，无法直接获取 View
-        return null
-    }
-
-    /**
-     */
-    private fun getListCoverPosition(): Quad<Float, Float, Float, Float>? {
-        val rect = getListCoverScreenRect() ?: return null
-        return Quad(
-            rect.left,
-            rect.top,
-            rect.width(),
-            rect.height()
-        )
-    }
-
-    private fun getViewScreenRect(view: View): RectF {
-        val loc = IntArray(2)
-        view.getLocationOnScreen(loc)
-        return RectF(
-            loc[0].toFloat(),
-            loc[1].toFloat(),
-            (loc[0] + view.width).toFloat(),
-            (loc[1] + view.height).toFloat()
-        )
-    }
-
-    /** 获取播放页封面目标矩形位置 */
-    /**
-     */
-    /**
-     * 计算播放页封面目标矩形，宽度和高度与 setupCoverLayoutParams 保持一致
-     */
-    private fun getPlayCoverTargetRect(): android.graphics.RectF {
-        val density = resources.displayMetrics.density
-        val isLandscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-
-        if (isLandscape) {
-            val containerW = unifiedContainer.width.toFloat()
-            val containerH = unifiedContainer.height.toFloat()
-            val coverSize = minOf(containerW * 0.35f, containerH - resources.getDimension(R.dimen.cover_min_top_offset))
-            val coverLeft = (containerW * 0.5f - coverSize) / 2f
-            val coverTop = (containerH - coverSize) / 2f
-            return android.graphics.RectF(coverLeft, coverTop, coverLeft + coverSize, coverTop + coverSize)
-        } else {
-            val containerW = unifiedContainer.width.toFloat()
-            val containerH = unifiedContainer.height.toFloat()
-            val hPad = resources.getDimension(R.dimen.spacing_md)
-            val availW = containerW - 2f * hPad
-            val coverWidth = (availW * 0.97f).toInt()
-            val maxHeightPx = (containerH * 0.5f).toInt()
-
-            var desiredWidth = coverWidth
-            if (loadedCoverImageWidth > 0 && loadedCoverImageHeight > 0) {
-                val aspectRatio = loadedCoverImageHeight.toFloat() / loadedCoverImageWidth.toFloat()
-                val desiredHeight = (coverWidth * aspectRatio).toInt()
-                if (desiredHeight > maxHeightPx) {
-                    desiredWidth = (maxHeightPx / aspectRatio).toInt()
-                    val minWidth = resources.getDimensionPixelSize(R.dimen.min_width)
-                    desiredWidth = desiredWidth.coerceIn(minWidth, coverWidth)
-                }
-            }
-
-            val w = desiredWidth.toFloat()
-            val h = if (binding.ivPlayCover.height > 0) {
-                binding.ivPlayCover.height.toFloat()
-            } else if (loadedCoverImageWidth > 0 && loadedCoverImageHeight > 0) {
-                val aspectRatio = loadedCoverImageHeight.toFloat() / loadedCoverImageWidth.toFloat()
-                (w * aspectRatio).coerceAtMost(maxHeightPx.toFloat())
-            } else {
-                (w * 1.2f).coerceAtMost(maxHeightPx.toFloat())
-            }
-
-            val left = (containerW - w) / 2f
-            val top = resources.displayMetrics.heightPixels * 0.06f
-            return android.graphics.RectF(left, top, left + w, top + h)
-        }
-    }
+    private fun initListener() {}
 
     fun openPlayPageFromSongClick() {
-        if (unifiedContainer.currentScene != UnifiedPlayerContainer.Scene.MAIN) return
+        if (playerSceneController.currentScene != PlayerSceneController.Scene.MAIN) return
         openPlayPageWithSharedElement()
     }
 
     fun navigateToFolderFromSearch(folderPath: String) {
         try {
-            binding.navHostFragment.visibility = View.GONE
-            unifiedMainContainer?.visibility = View.VISIBLE
-            unifiedMainContainer?.navigateTo(
+            updateComposeRootVisibility(true)
+            mainNavState.navigateTo(
                 com.rawsmusic.core.ui.scene.NavScene.FOLDER_HIERARCHY,
                 folderPath
             )
         } catch (_: Exception) {}
     }
 
+
     private fun openPlayPageWithSharedElement() {
-        if (unifiedContainer.currentScene != UnifiedPlayerContainer.Scene.MAIN) return
+        if (playerSceneController.currentScene != PlayerSceneController.Scene.MAIN) return
 
-        // 保存进入播放器前的 Fragment 导航目标，用于返回时恢复
-        prePlayerFragmentDest = navController.currentDestination?.id
-        prePlayerWasInFragmentMode = binding.navHostFragment.visibility == View.VISIBLE
-        prePlayerContainerScene = if (unifiedMainContainer != null) unifiedMainContainer?.getCurrentScene() else null
+        prePlayerContainerScene = mainNavState.currentScene
+        if (isSideMenuOpen) closeSideMenu()
 
-        if (drawerState.isOpen) closeSideMenu()
-
-        val currentSong = playerController?.currentSong?.value ?: run {
-            unifiedContainer.openPlayPage(true)
-            return
+        updateComposeRootVisibility(true)
+        registerCoverCollapseParams()
+        playerController?.currentSong?.value?.let { song ->
+            lockedPlayerCoverPathForTransition = lockedPlayerCoverPathForTransition ?: resolveSongCoverForCompose(song)
         }
-
-        // 无专辑图时直接淡入，不参与共享元素动画
-        val coverUri = coverUriResolver.resolveCoverUri(currentSong)
-        val playCoverUri = coverUri.ifBlank { currentSong.albumArtPath ?: "" }
-        if (playCoverUri.isBlank()) {
-            unifiedContainer.openPlayPage(true)
-            return
-        }
-
-        unifiedContainer.isTransitioning = true
-        coverAnimState.isActive = true
-
-        loadedCoverImageWidth = 0
-        loadedCoverImageHeight = 0
-
-        unifiedContainer.postDelayed({
-            if (unifiedContainer.isTransitioning && unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.MAIN) {
-                AppLogger.w("SceneTransition", "=== openPlayPageWithSharedElement safety timeout, resetting isTransitioning ===")
-                unifiedContainer.isTransitioning = false
-                coverAnimState.reset()
-                unifiedContainer.openPlayPage(true)
-            }
-        }, 2000)
-
-        // 根据当前页面选择封面来源：专辑详情页用自己的封面，歌曲列表用列表中的封面
-        val isFromAlbumDetail = navController.currentDestination?.id == R.id.nav_album_detail
-        val sourceCoverRect = if (isFromAlbumDetail) getAlbumDetailCoverRect() else null
-        // 保存进入播放器时的源封面坐标，用于返回时与进入动画对齐
-        savedAlbumDetailCoverRect = if (isFromAlbumDetail) sourceCoverRect else null
-        savedListCoverRect = if (isFromAlbumDetail) null else null
-
-        // 根据当前页面选择封面来源：专辑详情页用自己的封面，歌曲列表用列表中的封面
-        fun startCoverAnimation(coverRect: RectF?) {
-            // 封面不可见，跳过共享元素动画，直接淡入
-            if (coverRect == null) {
-                coverAnimState.reset()
-                unifiedContainer.isTransitioning = false
-                unifiedContainer.openPlayPage(true)
-                return
-            }
-
-            val containerLoc = IntArray(2)
-            unifiedContainer.getLocationOnScreen(containerLoc)
-            coverAnimState.freezeLocation(containerLoc)
-
-            val startRect = coverRect
-            if (!isFromAlbumDetail) {
-                savedListCoverRect = RectF(startRect)
-            }
-
-            // 先用旧布局获取目标宽高（封面在 MAIN 场景的布局尺寸）
-            val targetRect = getPlayCoverTargetRect()
-            if (targetRect.width() <= 0f || targetRect.height() <= 0f) {
-                coverAnimState.reset()
-                unifiedContainer.isTransitioning = false
-                unifiedContainer.openPlayPage(true)
-                return
-            }
-
-            val targetW = targetRect.width()
-            val targetH = targetRect.height()
-
-            binding.playBottomPanel?.visibility = View.VISIBLE
-            binding.playBottomPanel?.alpha = 0f
-            binding.playTitleGroup.apply {
-                pivotX = width / 2f
-                pivotY = height / 2f
-                translationX = 0f
-                translationY = 0f
-                scaleX = 1f
-                scaleY = 1f
-                visibility = View.VISIBLE
-                alpha = 0f
-            }
-            binding.btnMore?.visibility = View.GONE
-            binding.btnMore?.alpha = 0f
-            binding.playBgView.visibility = View.VISIBLE
-            binding.playBgView.alpha = 0f
-
-            // 先改布局参数（Poweramp 方式：先布局，再计算目标位置）
-            val marginXxl = resources.getDimensionPixelSize(R.dimen.spacing_xxl)
-            playCoverView.apply {
-                val lp = layoutParams as? android.widget.FrameLayout.LayoutParams
-                if (lp != null) {
-                    lp.width = targetW.toInt()
-                    lp.height = targetH.toInt()
-                    lp.gravity = android.view.Gravity.CENTER_HORIZONTAL
-                    lp.marginStart = marginXxl
-                    lp.marginEnd = marginXxl
-                    layoutParams = lp
-                }
-            }
-
-            // 从布局参数直接计算目标中心（Poweramp 方式：用 Rect 而非 getLocationOnScreen）
-            // 先改布局参数后，用 containerW/2f 作为水平中心（FrameLayout CENTER_HORIZONTAL）
-            val cl = coverAnimState.frozenLocation!!
-            val containerW = unifiedContainer.width.toFloat()
-            val targetCenterX = containerW / 2f
-            val targetCenterY = targetRect.centerY()
-
-            val startW = startRect.width()
-            val startH = startRect.height()
-
-            val startScaleX = startW / targetW
-            val startScaleY = startH / targetH
-
-            // 与返回动画使用一致的坐标系：屏幕坐标 + 容器 scale 补偿
-            // 两个动画必须用相同的公式，否则封面飞到不同位置
-            val startCenterScreenX = startRect.left + startW / 2f
-            val startCenterScreenY = startRect.top + startH / 2f
-            val cLoc = IntArray(2)
-            unifiedContainer.getLocationOnScreen(cLoc)
-            val mv = FloatArray(9)
-            unifiedContainer.matrix.getValues(mv)
-            val cScaleX = mv[android.graphics.Matrix.MSCALE_X]
-            val cScaleY = mv[android.graphics.Matrix.MSCALE_Y]
-            val cVisualLeft = cLoc[0] + unifiedContainer.pivotX * (1f - cScaleX)
-            val cVisualTop = cLoc[1] + unifiedContainer.pivotY * (1f - cScaleY)
-            val translatedX = (startCenterScreenX - cVisualLeft) / cScaleX - targetCenterX
-            val translatedY = (startCenterScreenY - cVisualTop) / cScaleY - targetCenterY
-
-            playCoverView.apply {
-                // 圆角：歌曲列表使用 zoom 状态的圆角，专辑详情页使用 22dp
-                val cornerDp = if (isFromAlbumDetail) 22f
-                else (18f)
-                cornerRadius = cornerDp * resources.displayMetrics.density
-                translationX = translatedX
-                translationY = translatedY
-                scaleX = startScaleX
-                scaleY = startScaleY
-                alpha = 1f
-                visibility = View.VISIBLE
-            }
-
-            // 隐藏源封面（歌曲列表或专辑详情页）
-            if (isFromAlbumDetail) {
-                getAlbumDetailCoverView()?.visibility = View.INVISIBLE
-            } else {
-                getListCoverView()?.visibility = View.INVISIBLE
-            }
-
-            // 圆角：歌曲列表使用 zoom 状态的圆角，专辑详情页使用 22dp
-            val sourceCornerDp = if (isFromAlbumDetail) 22f
-            else (18f)
-            val baseCornerPx = sourceCornerDp * resources.displayMetrics.density
-            val playerCornerPx = baseCornerPx
-            val mainCornerPx = if (startScaleX > 0.01f) playerCornerPx / startScaleX else playerCornerPx
-            val mainCoverParams = UnifiedPlayerContainer.SceneParams(
-                scene = UnifiedPlayerContainer.Scene.MAIN,
-                alpha = 1f,
-                scaleX = startScaleX,
-                scaleY = startScaleY,
-                translationX = translatedX,
-                translationY = translatedY,
-                visibility = View.VISIBLE,
-                cornerRadius = mainCornerPx
-            )
-            unifiedContainer.registerSceneParams(
-                R.id.ivPlayCover,
-                UnifiedPlayerContainer.Scene.MAIN,
-                mainCoverParams
-            )
-
-            listOf(R.id.playBottomPanel, R.id.btnMore).forEach { viewId ->
-                unifiedContainer.registerSceneParams(
-                    viewId,
-                    UnifiedPlayerContainer.Scene.MAIN,
-                    UnifiedPlayerContainer.SceneParams(
-                        scene = UnifiedPlayerContainer.Scene.MAIN,
-                        alpha = 0f,
-                        visibility = View.GONE
-                    )
-                )
-            }
-            unifiedContainer.registerSceneParams(
-                R.id.playTitleGroup,
-                UnifiedPlayerContainer.Scene.MAIN,
-                UnifiedPlayerContainer.SceneParams(
-                    scene = UnifiedPlayerContainer.Scene.MAIN,
-                    alpha = 0f,
-                    visibility = View.GONE
-                )
-            )
-            unifiedContainer.registerSceneParams(
-                R.id.playBgView,
-                UnifiedPlayerContainer.Scene.MAIN,
-                UnifiedPlayerContainer.SceneParams(
-                    scene = UnifiedPlayerContainer.Scene.MAIN,
-                    alpha = 0f,
-                    visibility = View.VISIBLE
-                )
-            )
-
-            unifiedContainer.transitionToScene(
-                UnifiedPlayerContainer.Scene.PLAYER,
-                duration = 500
-            )
-        }
-
-        // 专辑详情页直接使用已获取的封面矩形，歌曲列表异步获取
-        if (isFromAlbumDetail) {
-            startCoverAnimation(sourceCoverRect)
+        // playingCoverBounds 和 miniPlayerCoverBounds 都由 SongsPage 的回调设置，
+        // 只有当前场景是 SONGS 时才有效；其他场景（HOME 等）用的是过期坐标，会导致
+        // 返回时封面飞到不存在的位置。
+        val hasCoverBounds = mainNavState.currentScene == com.rawsmusic.core.ui.scene.NavScene.SONGS
+        val entryBounds = if (hasCoverBounds) {
+            playingCoverBoundsForTransition?.let { android.graphics.RectF(it) }
+                ?: miniPlayerCoverBoundsForTransition?.let { android.graphics.RectF(it) }
         } else {
-            getCurrentSongCoverRectWhenReady { rect -> startCoverAnimation(rect) }
+            null
         }
+        lockedPlayerCoverBoundsForTransition = entryBounds?.let { android.graphics.RectF(it) }
+        coverTargetForTransition = if (entryBounds != null) {
+            coverTargetForTransition
+                ?.takeIf { target -> target.bounds.nearlyEquals(entryBounds, 2f) }
+                ?.copy(bounds = android.graphics.RectF(entryBounds))
+                ?: CoverTransitionTarget(
+                    bounds = android.graphics.RectF(entryBounds),
+                    radiusDp = if (playingCoverBoundsForTransition != null) 24f else 22f,
+                    source = if (playingCoverBoundsForTransition != null) {
+                        CoverTransitionTarget.Source.ListCover
+                    } else {
+                        CoverTransitionTarget.Source.MiniPlayer
+                    }
+                )
+        } else {
+            null
+        }
+        playerSceneController.openPlayPage(true)
     }
 
-    // ==================== 封面手势处理（参考 Poweramp 的 r + c0） ====================
+    // ==================== 封面手势处理 ====================
 
     private var isSwitchingSong = false
     private var currentLyricText = ""
@@ -2446,7 +2336,7 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
     }
 
     private fun updateHiresBadge() {
-        if (!::unifiedContainer.isInitialized) return
+        if (!::playerSceneController.isInitialized) return
         audioCapsuleUiHelper.updateHiresBadge()
     }
 
@@ -2458,160 +2348,39 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         audioCapsuleUiHelper.updateText()
     }
 
-    private fun setupCoverGesture() {
-        // 初始化封面手势处理器
-        coverGestureHandler = CoverGestureHandler(this, unifiedContainer, this)
-
-        // 创建封面触摸处理器
-        val coverTouchHandler = coverGestureHandler.createCoverTouchHandler()
-
-        binding.ivPlayCover.setOnTouchListener(coverTouchHandler)
-        binding.playTitleGroup.setOnTouchListener(coverTouchHandler)
-
-        // 沉浸模式播放界面：在沉浸背景的封面区域上滑进入歌词页
-        binding.immersiveBackground?.setOnTouchListener(coverGestureHandler.createImmersiveBackgroundTouchHandler())
-
-        // 歌词内容容器触摸处理器
-        binding.lyricContentContainer.setOnTouchListener(coverGestureHandler.createLyricContentTouchHandler(coverTouchHandler))
-    }
-
     private fun openQueuePage() {
-        playerSubPageHelper.openQueuePage()
+        if (playerSceneController.currentScene == PlayerSceneController.Scene.LYRIC) {
+            playerSceneController.switchToSceneSilent(PlayerSceneController.Scene.PLAYER)
+        }
+        playerSceneState.openQueue()
+        updateComposeRootVisibility(true)
     }
 
     private fun closeQueuePage() {
-        playerSubPageHelper.closeQueuePage()
+        playerSceneState.backToPlayer()
+        updateComposeRootVisibility()
     }
 
     private fun openAlbumDetailPage() {
-        playerSubPageHelper.openAlbumDetailPage()
+        val song = playerController?.currentSong?.value ?: return
+        loadAlbumDetail(song)
+        playerSceneState.openAlbumDetail()
+        updateComposeRootVisibility(true)
     }
 
     private fun closeAlbumDetailPage() {
-        playerSubPageHelper.closeAlbumDetailPage()
+        playerSceneState.backToPlayer()
+        updateComposeRootVisibility()
     }
 
-    private fun openEffectsPage() {
-        playerSubPageHelper.openEffectsPage()
+    private fun onLyricTapToPlayer() {
+        playBackgroundState.syncFrom(lyricBackgroundState)
+        playBackgroundState.resumeAnimations()
+        playerSceneController.startCoverSwipeUpDrag()
+        playerSceneController.endCoverSwipeUpDrag(shouldOpen = true)
     }
 
-    private fun closeEffectsPage() {
-        playerSubPageHelper.closeEffectsPage()
-    }
-
-    /**
-     */
-    private fun performSwipeToChangeSong(direction: Int) {
-        if (direction > 0) {
-            playerController?.next()
-        } else {
-            playerController?.previous()
-        }
-        binding.ivPlayCover.animate().cancel()
-        binding.ivPlayCover.translationX = 0f
-        binding.ivPlayCover.rotationY = 0f
-        // 沉浸模式下封面由 ImmersiveBackgroundView 渲染，ivPlayCover 保持隐藏
-        val isImmersive = unifiedContainer.isImmersiveEnabled
-        binding.ivPlayCover.alpha = if (isImmersive) 0f else 1f
-        if (isImmersive) {
-            binding.ivPlayCover.visibility = View.INVISIBLE
-        }
-        isSwitchingSong = false
-    }
-
-    // CoverGestureCallbacks 接口实现
-    override fun isSwitchingSong(): Boolean = isSwitchingSong
-
-    override fun getCoverView(): View = binding.ivPlayCover
-
-    override fun onCoverLongPress() {
-        showFullCoverViewer()
-    }
-
-    override fun onCoverDragStart() {
-        // 保存当前 Fragment 目标，用于返回时恢复（如果尚未保存）
-        if (prePlayerFragmentDest == null) {
-            prePlayerFragmentDest = navController.currentDestination?.id
-        }
-        if (!prePlayerWasInFragmentMode) {
-            prePlayerWasInFragmentMode = binding.navHostFragment.visibility == View.VISIBLE
-        }
-        // PLAYER 场景下 navHostFragment 为 GONE，临时设为 INVISIBLE 使其参与布局
-        if (prePlayerWasInFragmentMode) {
-            binding.navHostFragment.visibility = View.INVISIBLE
-        }
-        // 对标 onPreparePlayerToMain：先让列表参与布局，等一帧取真实封面坐标
-        binding.navHostFragment.visibility = View.GONE
-        unifiedMainContainer?.apply {
-            visibility = View.VISIBLE
-            alpha = 0f
-            translationX = 0f
-            translationY = 0f
-            scaleX = 1f
-            scaleY = 1f
-            requestLayout()
-        }
-        binding.root.post {
-            getCurrentSongCoverRectWhenReady { rect ->
-                val stableRect = savedListCoverRect ?: rect
-                val targetCoverQuad = stableRect?.let {
-                    Quad(it.left, it.top, it.width(), it.height())
-                }
-                // 注册正确的 MAIN 参数（对标 Poweramp: 在拖拽前设置目标位置）
-                if (targetCoverQuad != null) {
-                    val targetRect = getPlayCoverTargetRect()
-                    val targetW = if (targetRect.width() > 0f) targetRect.width() else binding.ivPlayCover.width.toFloat()
-                    val targetH = if (targetRect.height() > 0f) targetRect.height() else binding.ivPlayCover.height.toFloat()
-                    val sourceCornerDp = 18f
-                    sceneParamsHelper.registerCoverCollapseParamsWithSourcePos(
-                        targetCoverQuad, targetRect, targetW, targetH,
-                        binding.ivPlayCover, resources.displayMetrics.density, sourceCornerDp
-                    )
-                } else {
-                    registerCoverCollapseParams()
-                }
-                unifiedContainer.startCoverDrag()
-            }
-        }
-    }
-
-    override fun onCoverDragUpdate(ratio: Float) {
-        unifiedContainer.updateCoverDrag(ratio)
-    }
-
-    override fun onCoverDragEnd(shouldClose: Boolean) {
-        unifiedContainer.endCoverDrag(shouldClose)
-    }
-
-    override fun onCoverSwipeUpStart() {
-        registerCoverLyricParams()
-        unifiedContainer.startCoverSwipeUpDrag()
-    }
-
-    override fun onCoverSwipeUpUpdate(ratio: Float) {
-        unifiedContainer.updateCoverSwipeUpDrag(ratio)
-    }
-
-    override fun onCoverSwipeUpEnd(shouldOpen: Boolean) {
-        unifiedContainer.endCoverSwipeUpDrag(shouldOpen)
-    }
-
-    override fun onSwipeToChangeSong(direction: Int) {
-        performSwipeToChangeSong(direction)
-    }
-
-    override fun onSwipeCancel() {
-        binding.ivPlayCover.animate().translationX(0f).rotationY(0f).setDuration(resources.getInteger(R.integer.animation_duration_normal).toLong()).start()
-    }
-
-    override fun onLyricTapToPlayer() {
-        binding.playBgView.syncFrom(binding.lyricBgView)
-        binding.playBgView.resumeAnimations()
-        unifiedContainer.startCoverSwipeUpDrag()
-        unifiedContainer.endCoverSwipeUpDrag(shouldOpen = true)
-    }
-
-    override fun onImmersiveSwipeLeft() {
+    private fun onImmersiveSwipeLeft() {
         launchImmersiveLyric()
     }
 
@@ -2629,174 +2398,39 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         }
     }
 
-    override fun onImmersiveSwipeDown() {
-        if (prePlayerWasInFragmentMode) {
-            unifiedContainer.registerSceneParams(
-                R.id.ivPlayCover,
-                UnifiedPlayerContainer.Scene.MAIN,
-                UnifiedPlayerContainer.SceneParams(
-                    scene = UnifiedPlayerContainer.Scene.MAIN,
-                    alpha = 0f,
-                    visibility = View.GONE
-                )
-            )
-        }
-        unifiedContainer.closePlayPage(false)
-    }
-
-    private fun getMiniPlayerCoverPosition(): Quad<Float, Float, Float, Float>? {
-        val coverSize = resources.getDimension(R.dimen.mini_player_cover_size)
-        val padding = resources.getDimension(R.dimen.spacing_lg)
-        val marginStart = resources.getDimension(R.dimen.spacing_xl)
-        val marginBottom = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-            val windowInsets = windowManager.currentWindowMetrics.windowInsets
-            val navigationBars = windowInsets.getInsetsIgnoringVisibility(android.view.WindowInsets.Type.navigationBars())
-            navigationBars.bottom.toFloat()
-        } else {
-            @Suppress("DEPRECATION")
-            resources.displayMetrics.heightPixels - window.decorView.height
-        }.toFloat()
-
-        val barHeight = resources.getDimension(R.dimen.mini_player_bar_height)
-        val containerHeight = unifiedContainer.height.toFloat()
-
-        val x = marginStart + padding
-        val y = containerHeight - marginBottom - barHeight + (barHeight - coverSize) / 2f
-
-        return Quad(x, y, coverSize, coverSize)
+    private fun onImmersiveSwipeDown() {
+        playerSceneController.closePlayPage(false)
     }
 
     private fun registerCoverCollapseParams() {
-        sceneParamsHelper.registerCoverCollapseParams(prePlayerWasInFragmentMode, prePlayerFragmentDest, savedAlbumDetailCoverRect)
+        registerMainShellParams()
     }
 
-    private fun registerImmersiveCoverCollapseParams() {
-        sceneParamsHelper.registerImmersiveCoverCollapseParams()
-    }
-
-    /**
-     * 沉浸模式下，上滑封面会触发淡入淡出效果，封面缩小到左上角。     */
     private fun registerCoverLyricParams() {
-        sceneParamsHelper.registerCoverLyricParams()
+        lyricBackgroundState.resumeAnimations()
     }
 
-    /**
-     * 在 openPlayPageWithSharedElement 之后恢复默认场景参数
-     * 防止动画参数残留导致后续转场异常
-     */
     private fun restoreDefaultSceneParams() {
-        sceneParamsHelper.restoreDefaultSceneParams(
-            prePlayerWasInFragmentMode,
-            if (unifiedMainContainer != null) unifiedMainContainer else null
-        )
+        registerMainShellParams()
+        if (playerSceneController.currentScene == PlayerSceneController.Scene.MAIN) {
+            backgroundLayerState.playBackgroundVisible = false
+            backgroundLayerState.playBackgroundAlpha = 0f
+            backgroundLayerState.mainScrimVisible = true
+            backgroundLayerState.mainScrimAlpha = 1f
+        }
+        syncImmersiveBackgroundSettings()
     }
 
-    private fun setupPlayPageListeners() {
-        // 播放控制按钮 - 点击事件绑定到容器
-        binding.btnPlayPauseContainer.setOnClickListener {
-            ButtonAnimHelper.playPauseAnim(it, true) {
-                playerController?.playPause()
-            }
-        }
-        binding.btnNextContainer.setOnClickListener {
-            ButtonAnimHelper.pressReleaseAnim(it)
-            ButtonAnimHelper.coverSwitchAnim(binding.ivPlayCover, true)
-            playerController?.next()
-        }
-        binding.btnPreviousContainer.setOnClickListener {
-            ButtonAnimHelper.pressReleaseAnim(it)
-            ButtonAnimHelper.coverSwitchAnim(binding.ivPlayCover, false)
-            playerController?.previous()
-        }
-
-        // 播放模式按钮 - 点击事件绑定到容器
-        binding.btnPlayModeContainer.setOnClickListener {
-            ButtonAnimHelper.secondaryPressAnim(it)
-            playerController?.let { ctrl ->
-                ctrl.cyclePlayMode()
-                playModePopupHelper.updatePlayModeIcon(ctrl.playMode.value)
-            }
-        }
-        binding.btnPlayModeContainer.setOnLongClickListener {
-            playModePopupHelper.show()
-            true
-        }
-
-        // 更多按钮 - 点击事件绑定到容器
-        binding.btnMoreActionContainer.setOnClickListener {
-            ButtonAnimHelper.secondaryPressAnim(it)
-            songActionSheetHelper.show()
-        }
-
-
-
-        binding.btnMore?.setOnClickListener {
-            ButtonAnimHelper.secondaryPressAnim(it)
-            (it as? AnimatedMoreButton)?.toggleExpanded()
-            metadataCardPopupHelper.togglePlayCard()
-        }
-        // 根据播放模式更新图标和文字
-        binding.playMetadataCard.onMetadataClick = {
-            metadataDetailHelper.open()
-        }
-        setupCoverGesture()
-        setupAudioInfoCapsule()
-        binding.btnFullCoverBack.setOnClickListener {
-            hideFullCoverViewer()
-        }
-        fullCoverViewerHelper = FullCoverViewerHelper(this, binding, resources)
-        setupFullCoverViewerGestures()
-        binding.seekBar.onSeekStartListener = {
-            isSeeking = true
-            binding.seekBar.isSeekingByUser = true
-            unifiedContainer.disableGestureIntercept = true
-        }
-        binding.seekBar.onSeekStopListener = { fraction ->
-            val duration = playerController?.duration?.value ?: 0L
-            val seekPos = (fraction * duration).toLong()
-            // 不立刻清除 isSeeking/isSeekingByUser，等 observePosition 检测到位置接近目标后再清除
-            seekTargetMs = seekPos
-            seekFinishTimeMs = System.currentTimeMillis()
-            lyricsNeedSeekTo = true  // 下一帧歌词更新使用 seekTo 重置时钟
-            playerController?.seekTo(seekPos)
-            unifiedContainer.disableGestureIntercept = false
-            triggerCoverBreathingIfNeeded()
-        }
-        // 计算进度条位置
-        playerController?.let { ctrl ->
-            playModePopupHelper.updatePlayModeIcon(ctrl.playMode.value)
-        }
-
-        binding.playBgView.setOnClickListener { /* 防止点击穿透 */ }
-
-        binding.btnAudioQuality.setOnClickListener {
-            registerCoverCollapseParams()
-            AppLogger.w("SceneTransition", "=== btnAudioQuality clicked: setting prePlayerWasInFragmentMode=true, prePlayerFragmentDest=nav_audio_settings ===")
-            prePlayerWasInFragmentMode = true
-            prePlayerFragmentDest = R.id.nav_audio_settings
-            unifiedContainer.closePlayPage(false)
-        }
-
-        binding.btnQueueBack?.setOnClickListener {
-            closeQueuePage()
-        }
-        binding.btnQueueClear?.setOnClickListener {
-            playerController?.clearPriorityQueue()
-            refreshQueueList()
-        }
-
-        binding.btnAlbumDetailBack?.setOnClickListener {
-            closeAlbumDetailPage()
-        }
-
-        songActionSheetHelper.setup()
+    private fun registerMainShellParams() {
+        // Background scene params are rendered by Compose BackgroundLayers.
     }
 
-    /**
-     * 启动音频可视化
-     */
-    private fun updateLetterModeContent() {
-        audioVisualizerHelper.update(binding.audioVisualizer)
+    private fun android.graphics.RectF.nearlyEquals(other: android.graphics.RectF?, tolerance: Float): Boolean {
+        other ?: return false
+        return kotlin.math.abs(left - other.left) <= tolerance &&
+            kotlin.math.abs(top - other.top) <= tolerance &&
+            kotlin.math.abs(right - other.right) <= tolerance &&
+            kotlin.math.abs(bottom - other.bottom) <= tolerance
     }
 
     private fun showAlbumInfo() {
@@ -2804,19 +2438,16 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
     }
 
     private fun refreshQueueList() {
-        queueListHelper.refresh()
+        // Queue is rendered by ComposePlayerContainer from PlayerController.queue.
     }
 
     private fun loadAlbumDetail(song: com.rawsmusic.core.common.model.AudioFile) {
-        albumDetailHelper.load(song)
-    }
-
-    private fun setupAlbumDetailEffectCard() {
-        effectsPanelHelper.setupAlbumDetailEffectCard()
-    }
-
-    private fun syncEffectsPanelState() {
-        effectsPanelHelper.syncEffectsPanelState()
+        val queueSongs = playerController?.queue?.value?.songs.orEmpty()
+        val albumSongs = queueSongs.filter { it.albumId == song.albumId && it.albumId > 0 }
+            .ifEmpty { queueSongs.filter { it.album == song.album && song.album.isNotBlank() } }
+            .ifEmpty { listOf(song) }
+        playerAlbumSongs = albumSongs
+        playerAlbumCoverPath = coverUriResolver.resolveCoverUri(song).ifBlank { song.albumArtPath }
     }
 
     private val logExportLauncher = registerForActivityResult(
@@ -2830,65 +2461,42 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         logExportLauncher.launch(logExportHelper.createExportFileName())
     }
 
-    private fun setupLyricPageListeners() {
-        // Lyric page: only translation toggle, no play controls
-        // More button in lyric header
-        binding.btnMoreLyric.setOnClickListener {
-            ButtonAnimHelper.secondaryPressAnim(it)
-            (it as? AnimatedMoreButton)?.toggleExpanded()
-            metadataCardPopupHelper.toggleLyricCard()
-        }
-        binding.lyricMetadataCard.onMetadataClick = {
-            metadataDetailHelper.open()
-        }
-        binding.btnTranslationToggle?.setOnClickListener {
-            val prefs = com.rawsmusic.module.data.prefs.AppPreferences.Lyricon
-            val current = prefs.displayTranslation
-            val newState = !current
-            prefs.displayTranslation = newState
-            lyricPlayerView.updateDisplayTranslation(displayTranslation = newState, displayRoma = !newState)
-            binding.btnTranslationToggle?.alpha = if (newState) 1f else 0.4f
-        }
-        binding.btnTranslationToggle?.alpha = if (com.rawsmusic.module.data.prefs.AppPreferences.Lyricon.displayTranslation) 1f else 0.4f
-        // Lyric scroll boundary callback - handled by LyricPlayerView internally
-        lyricPlayerView.lyricCountChangeListeners.add(object : RawsLyricView.LyricCountChangeListener {
-            override fun onLyricTextChanged(old: String, new: String) {}
-            override fun onLyricChanged(news: List<IRichLyricLine>, removes: List<IRichLyricLine>) {
-            }
-        })
-    }
-
-
-
     fun setPlayerController(controller: PlayerController) {
         playerControllerBindingHelper.bind(controller)
     }
 
     fun toggleSideMenu() {
-        drawerMotionHelper.toggle()
-    }
-
-    private fun applyDrawerColorSync(@Suppress("UNUSED_PARAMETER") drawerOpen: Boolean) {
-    }
-
-
-
-
-    private fun setDrawerDragOffset(offset: Float) {
-        drawerMotionHelper.setDragOffset(offset)
-    }
-
-    /** 完成抽屉拖拽（根据速度和位置决定是否打开） */
-    private fun finishDrawerDrag(shouldOpen: Boolean) {
-        drawerMotionHelper.finishDrag(shouldOpen)
+        isSideMenuOpen = !isSideMenuOpen
     }
 
     private fun loadLyrics(songPath: String) {
         lyricLoadHelper.load(songPath)
     }
 
+    private fun setCurrentLyricDataForCompose(data: LyricData) {
+        currentLyricData = data
+        val song = playerController?.currentSong?.value
+        composeLyricSong = if (!data.isEmpty && song != null) {
+            data.toLyriconSong(
+                name = song.title,
+                artist = song.artist,
+                durationMs = song.duration
+            )
+        } else {
+            null
+        }
+        composeDisplayTranslation = com.rawsmusic.module.data.prefs.AppPreferences.Lyricon.displayTranslation
+        composeDisplayRoma = com.rawsmusic.module.data.prefs.AppPreferences.Lyricon.displayRoma
+        composeLyricPositionMs = playerController?.position?.value ?: 0L
+    }
+
     private fun requestAudioPermission() {
-        startupPermissionFlowHelper.request()
+        val permissions = audioPermissionHelper.requiredStartupPermissions()
+        if (audioPermissionHelper.areGranted(permissions)) {
+            scannerCoordinator.scheduleStartupScan()
+        } else {
+            permissionLauncher.launch(permissions)
+        }
     }
 
     private enum class BackDragType { NONE, COVER, CONTAINER }
@@ -2905,8 +2513,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
      *   - 主界面无子页面时注销回调，让系统显示默认关闭动画
      *
      * 支持两种预测性返回：
-     *   1. 播放界面/歌词界面 → 封面拖拽返回（对标 Poweramp c0 手势）
-     *   2. 主界面子页面 → 容器拖拽返回上级（对标 Poweramp SceneController 拖拽）
+     *   1. 播放界面/歌词界面 → 封面拖拽返回
+     *   2. 主界面子页面 → 容器拖拽返回上级
      */
     private var predictiveBackCallback: android.window.OnBackAnimationCallback? = null
     private var isPredictiveBackRegistered = false
@@ -2919,32 +2527,53 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             private var dragType = BackDragType.NONE
 
             override fun onBackStarted(backEvent: android.window.BackEvent) {
-                val currentScene = unifiedContainer.currentScene
+                // 弹窗/浮层显示时不启动封面拖拽，交给 onBackInvoked → onBackPressed 关闭弹窗
+                if (audioInfoCapsuleHelper.isPopupShowing ||
+                    metadataEditorHelper.isMetadataEditorShowing ||
+                    metadataEditorHelper.isDeleteConfirmShowing ||
+                    metadataDetailHelper.isVisible ||
+                    songActionSheetHelper.isSongActionSheetShowing ||
+                    songActionSheetHelper.isPlaylistPickerShowing ||
+                    playModePopupHelper.isShowing ||
+                    metadataCardPopupHelper.isShowing
+                ) {
+                    dragType = BackDragType.NONE
+                    return
+                }
+
+                val currentScene = playerSceneController.currentScene
                 val swipeRight = backEvent.swipeEdge == android.window.BackEvent.EDGE_LEFT
 
                 when {
                     // 播放界面 → 封面拖拽返回主界面
-                    currentScene == UnifiedPlayerContainer.Scene.PLAYER -> {
-                        onCoverDragStart()
-                        unifiedContainer.startCoverDrag(swipeRight, UnifiedPlayerContainer.Scene.MAIN)
+                    currentScene == PlayerSceneController.Scene.PLAYER -> {
+                        playerSceneController.startCoverDrag(swipeRight, PlayerSceneController.Scene.MAIN)
                         dragType = BackDragType.COVER
                     }
-                    // 歌词界面 → 封面拖拽返回播放界面
-                    currentScene == UnifiedPlayerContainer.Scene.LYRIC -> {
-                        unifiedContainer.startCoverDrag(swipeRight, UnifiedPlayerContainer.Scene.PLAYER)
-                        dragType = BackDragType.COVER
-                    }
-                    // 主界面 + 容器模式 + 不在HOME → 容器拖拽返回上级
-                    currentScene == UnifiedPlayerContainer.Scene.MAIN &&
-                            unifiedMainContainer != null &&
-                            !unifiedMainContainer!!.isAtHome() -> {
-                        val started = unifiedMainContainer?.startDragBack(
-                            swipeRight = swipeRight,
-                            initialTouchX = backEvent.touchX,
-                            initialTouchY = backEvent.touchY
+                    // 子播放页的系统侧滑先回到播放页，保持播放器内部层级一致。
+                    currentScene == PlayerSceneController.Scene.LYRIC -> {
+                        playerSceneController.startCoverSwipeUpDrag(
+                            PlayerSceneController.Scene.PLAYER,
+                            PlayerSceneController.Scene.LYRIC
                         )
-                        if (started == true) {
-                            dragType = BackDragType.CONTAINER
+                        dragType = BackDragType.COVER
+                    }
+                    currentScene == PlayerSceneController.Scene.QUEUE -> {
+                        playerSceneController.startCoverDrag(swipeRight, PlayerSceneController.Scene.MAIN)
+                        dragType = BackDragType.COVER
+                    }
+                    currentScene == PlayerSceneController.Scene.ALBUM_DETAIL -> {
+                        playerSceneController.startCoverDrag(swipeRight, PlayerSceneController.Scene.PLAYER)
+                        dragType = BackDragType.COVER
+                    }
+                    // 主界面 + 不在HOME → Compose 导航返回
+                    currentScene == PlayerSceneController.Scene.MAIN &&
+                            !mainNavState.isAtHome() -> {
+                        val direction = if (swipeRight) 1f else -1f
+                        dragType = if (mainNavState.startBackDrag(direction)) {
+                            BackDragType.CONTAINER
+                        } else {
+                            BackDragType.NONE
                         }
                     }
                 }
@@ -2952,8 +2581,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
 
             override fun onBackProgressed(backEvent: android.window.BackEvent) {
                 when (dragType) {
-                    BackDragType.COVER -> unifiedContainer.updateCoverDragProgress(backEvent.progress)
-                    BackDragType.CONTAINER -> unifiedMainContainer?.updateDragBackProgress(backEvent.progress)
+                    BackDragType.COVER -> playerSceneController.updateCoverDragProgress(backEvent.progress)
+                    BackDragType.CONTAINER -> mainNavState.updateBackDrag(backEvent.progress)
                     BackDragType.NONE -> {}
                 }
             }
@@ -2961,17 +2590,31 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             override fun onBackInvoked() {
                 when (dragType) {
                     BackDragType.COVER -> {
-                        onCoverDragEnd(true)
-                        unifiedContainer.releaseCoverDrag(true, 0f)
+                        playerSceneController.releaseCoverDrag(true, 0f)
                         dragType = BackDragType.NONE
                     }
                     BackDragType.CONTAINER -> {
-                        unifiedMainContainer?.endDragBack(true)
+                        mainNavState.releaseBackDrag(commit = true)
                         dragType = BackDragType.NONE
                     }
                     BackDragType.NONE -> {
-                        @Suppress("DEPRECATION")
-                        onBackPressed()
+                        // 弹窗/浮层显示时优先关闭弹窗
+                        if (audioInfoCapsuleHelper.isPopupShowing) {
+                            audioInfoCapsuleHelper.dismissPopup()
+                        } else if (metadataDetailHelper.isVisible) {
+                            metadataDetailHelper.close()
+                        } else if (playModePopupHelper.isShowing) {
+                            playModePopupHelper.hide()
+                        } else {
+                            val scene = playerSceneController.currentScene
+                            if (scene != PlayerSceneController.Scene.MAIN) {
+                                playerSceneController.closeCurrentPlayerStackToMain(true)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                onBackPressed()
+                            }
+                        }
+                        dragType = BackDragType.NONE
                     }
                 }
             }
@@ -2979,12 +2622,11 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             override fun onBackCancelled() {
                 when (dragType) {
                     BackDragType.COVER -> {
-                        onCoverDragEnd(false)
-                        unifiedContainer.releaseCoverDrag(false, 0f)
+                        playerSceneController.releaseCoverDrag(false, 0f)
                         dragType = BackDragType.NONE
                     }
                     BackDragType.CONTAINER -> {
-                        unifiedMainContainer?.endDragBack(false)
+                        mainNavState.releaseBackDrag(commit = false)
                         dragType = BackDragType.NONE
                     }
                     BackDragType.NONE -> {}
@@ -3021,8 +2663,8 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         lastPlayingStateHelper.restore()
     }
 
-    private fun updateStatusBarForLevel(level: UnifiedPlayerContainer.Scene) {
-        systemBarsHelper.updateForScene(level, isDarkMode)
+    private fun updateStatusBarForLevel(level: PlayerSceneController.Scene) {
+        systemBarsHelper.updateForScene(level == PlayerSceneController.Scene.MAIN, isDarkMode)
     }
 
     /**
@@ -3033,79 +2675,24 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
     }
 
     /**
-     * DynamicCoverBackgroundView 加载封面背景并提取主色调 + 暗色调 + 歌词背景色 + 渐变叠加 + 模糊效果
-     */
-    private fun loadCoverBackground(albumArtPath: String) {
-        coverBackgroundManager.loadCoverBackground(albumArtPath)
-    }
-
-    private fun applyDefaultColors() {
-        coverBackgroundManager.applyDefaultColors()
-    }
-
-    /**
      * 应用默认背景：亮色模式白底黑字，暗色模式纯黑底白字
      * 强制覆盖所有沉浸/封面背景层
      */
     private fun applyDefaultBackground() {
         coverBackgroundManager.applyDefaultBackground()
 
-        // ivPlayCover 可见性由 MainActivity 控制
-        val isDefaultBg = com.rawsmusic.module.data.prefs.AppPreferences.UI.isDefaultBackgroundEnabled
-        if (isDefaultBg) {
-            val isOnMainScene = ::unifiedContainer.isInitialized && unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.MAIN
-            binding.ivPlayCover.visibility = if (isOnMainScene) View.INVISIBLE else View.VISIBLE
-            binding.ivPlayCover.alpha = if (isOnMainScene) 0f else 1f
-        } else {
-            // 重新加载封面背景（异步更新封面数据）
-            playerController?.currentSong?.value?.let { song ->
-                val coverUri = coverUriResolver.resolveCoverUri(song).ifBlank { song.albumArtPath }
-                if (coverUri.isNotBlank()) {
-                    coverBackgroundManager.loadCoverBackground(coverUri)
-                } else {
-                    coverBackgroundManager.applyDefaultColors()
-                }
-            } ?: run {
-                coverBackgroundManager.applyDefaultColors()
-            }
-        }
-    }
-
-    private fun resetDynamicBackgroundFallback() {
-        // 已移至 CoverBackgroundManager
-    }
-
-    /**
-     * 应用封面提取的颜色到各个背景视图
-     * 同时更新侧边菜单 DynamicCoverBackgroundView 的颜色
-     */
-    private fun applyCoverColors() {
-        coverBackgroundManager.applyCoverColors()
     }
 
     private fun applyLyricColors() {
         lyricStyleHelper.applyLyricColors()
+        composeLyricIsLight = lyricBackgroundState.isLightBackground
     }
 
     /** 显示全屏封面查看器 */
     private fun showFullCoverViewer() {
-        val song = playerController?.currentSong?.value ?: return
-        val coverUri = coverUriResolver.resolveCoverUri(song)
-        fullCoverViewerHelper.show(coverUri)
-    }
-
-    private fun setupFullCoverViewerGestures() {
-        fullCoverViewerHelper.setupGestures()
-    }
-
-    /** 隐藏全屏封面查看器 */
-    private fun hideFullCoverViewer() {
-        fullCoverViewerHelper.hide()
-    }
-
-    override fun onSupportNavigateUp(): Boolean {
-        if (!::navController.isInitialized) return super.onSupportNavigateUp()
-        return navController.navigateUp() || super.onSupportNavigateUp()
+        if (playerController?.currentSong?.value == null) return
+        playerSceneState.openFullCover()
+        updateComposeRootVisibility(true)
     }
 
     /**
@@ -3114,26 +2701,51 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
     @Deprecated("Deprecated in Java")
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
-        if (::unifiedContainer.isInitialized && unifiedContainer.isTransitioning) {
+        // 纯 Compose 播放器返回处理
+        // Compose 播放器辅助页面（歌词、队列等）的返回处理
+        if (playerSceneState.currentScene != com.rawsmusic.core.ui.widget.PlayerScene.MAIN &&
+            playerSceneState.currentScene != com.rawsmusic.core.ui.widget.PlayerScene.PLAYER
+        ) {
+            playerSceneState.backToPlayer()
+            updateComposeRootVisibility()
+            return
+        }
+        if (::playerSceneController.isInitialized && playerSceneController.isTransitioning) {
             return
         }
         if (metadataDetailHelper.isVisible) {
             metadataDetailHelper.close()
             return
         }
-        if (binding.playMetadataCard.isExpanded) {
-            binding.playMetadataCard.collapse()
+        if (metadataEditorHelper.isMetadataEditorShowing) {
+            metadataEditorHelper.dismissMetadataEditor()
             return
         }
-        if (binding.lyricMetadataCard.isExpanded) {
-            binding.lyricMetadataCard.collapse()
+        if (metadataEditorHelper.isDeleteConfirmShowing) {
+            metadataEditorHelper.dismissDeleteConfirm()
             return
         }
-        if (::fullCoverViewerHelper.isInitialized && fullCoverViewerHelper.isVisible()) {
-            hideFullCoverViewer()
+        if (audioInfoCapsuleHelper.isPopupShowing) {
+            audioInfoCapsuleHelper.dismissPopup()
             return
         }
-        if (drawerState.isOpen) {
+        if (songActionSheetHelper.isPlaylistPickerShowing) {
+            songActionSheetHelper.hidePlaylistPicker()
+            return
+        }
+        if (playModePopupHelper.isShowing) {
+            playModePopupHelper.hide()
+            return
+        }
+        if (metadataCardPopupHelper.isShowing) {
+            metadataCardPopupHelper.hide()
+            return
+        }
+        if (batteryOptimizationHelper.isShowing) {
+            batteryOptimizationHelper.dismiss()
+            return
+        }
+        if (isSideMenuOpen) {
             closeSideMenu()
             return
         }
@@ -3141,75 +2753,39 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             closeSearch()
             return
         }
-        if (!::unifiedContainer.isInitialized) { super.onBackPressed(); return }
-        when (unifiedContainer.currentScene) {
-            UnifiedPlayerContainer.Scene.LYRIC -> {
-                unifiedContainer.closeLyricPage(true)
+        if (!::playerSceneController.isInitialized) { super.onBackPressed(); return }
+        when (playerSceneController.currentScene) {
+            PlayerSceneController.Scene.LYRIC -> {
+                playerSceneController.closeLyricPage(true)
                 return
             }
-            UnifiedPlayerContainer.Scene.QUEUE -> {
+            PlayerSceneController.Scene.QUEUE -> {
                 closeQueuePage()
                 return
             }
-            UnifiedPlayerContainer.Scene.ALBUM_DETAIL -> {
+            PlayerSceneController.Scene.ALBUM_DETAIL -> {
                 closeAlbumDetailPage()
                 return
             }
-            UnifiedPlayerContainer.Scene.EFFECTS -> {
-                closeEffectsPage()
-                return
-            }
-            UnifiedPlayerContainer.Scene.PLAYER -> {
+            PlayerSceneController.Scene.PLAYER -> {
                 // 与上滑手势保持一致：仅保存状态（如果尚未保存），然后执行带封面对齐的关闭动画
                 // 不要提前调用 navigateHome()，否则会先闪一下主界面
                 if (prePlayerFragmentDest == null) {
-                    prePlayerFragmentDest = navController.currentDestination?.id
+                    prePlayerFragmentDest = legacyDestinationId
                 }
-                if (!prePlayerWasInFragmentMode) {
-                    prePlayerWasInFragmentMode = binding.navHostFragment.visibility == View.VISIBLE
+                if (prePlayerContainerScene == null && true) {
+                    prePlayerContainerScene = mainNavState.currentScene
                 }
-                if (prePlayerContainerScene == null && unifiedMainContainer != null) {
-                    prePlayerContainerScene = unifiedMainContainer?.getCurrentScene()
-                }
-                unifiedContainer.closePlayPageWithCoverAlign(true)
+                playerSceneController.closePlayPageWithCoverAlign(true)
                 return
             }
-            UnifiedPlayerContainer.Scene.MAIN -> {
-                if (binding.navHostFragment.visibility == View.VISIBLE) {
-                    val destId = navController.currentDestination?.id
-                    AppLogger.w("SceneTransition", "=== onBackPressed MAIN+Fragment: destId=$destId ===")
-                    // 从专辑详情页返回时，切换到专辑容器页面
-                    if (destId == R.id.nav_album_detail) {
-                        switchToContainerMode(com.rawsmusic.core.ui.scene.NavScene.ALBUMS)
-                        return
-                    }
-                    if (isSettingsDestination(destId)) {
-                        navigateSettingsBack()
-                        return
-                    }
-                    val popped = navController.popBackStack()
-                    AppLogger.w("SceneTransition", "=== onBackPressed: popBackStack=$popped, newDest=${navController.currentDestination?.id} ===")
-                    if (!popped || navController.currentDestination?.id == R.id.nav_songs) {
-                        AppLogger.w("SceneTransition", "=== onBackPressed: no more back stack, switching to container mode ===")
-                        switchToContainerMode()
-                    }
-                    return
-                }
-                // 容器模式：如果不是 HOME，返回 HOME
-                if (unifiedMainContainer != null && !unifiedMainContainer!!.isAtHome()) {
-                    unifiedMainContainer?.navigateHome()
+            PlayerSceneController.Scene.MAIN -> {
+                // Compose 模式：如果不是 HOME，返回 HOME
+                if (!mainNavState.isAtHome()) {
+                    mainNavState.navigateHome()
                     return
                 }
             }
-        }
-        if (unifiedMainContainer != null) {
-            if (unifiedMainContainer?.onBackPressed() == true) return
-            moveTaskToBack(true)
-            return
-        }
-        if (navController.currentDestination?.id != R.id.nav_songs) {
-            navController.navigateUp()
-            return
         }
         moveTaskToBack(true)
     }
@@ -3223,145 +2799,6 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
     }
 
     override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
-        if (unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.PLAYER && !unifiedContainer.isTransitioning
-            && !metadataDetailHelper.isVisible) {
-            val coverView = binding.ivPlayCover
-            coverView.getLocationOnScreen(playAreaCoverLoc)
-            val coverRight = playAreaCoverLoc[0] + coverView.width
-            val coverBottom = playAreaCoverLoc[1] + coverView.height
-            val shrink = resources.getDimension(R.dimen.cover_shrink_touch_zone)
-            val touchOnCover = ev.rawX >= playAreaCoverLoc[0] + shrink && ev.rawX <= coverRight - shrink &&
-                    ev.rawY >= playAreaCoverLoc[1] + shrink && ev.rawY <= coverBottom - shrink
-
-            val titleGroup = binding.playTitleGroup
-            val titleGroupLoc = IntArray(2)
-            titleGroup.getLocationOnScreen(titleGroupLoc)
-            val titleGroupRight = titleGroupLoc[0] + titleGroup.width
-            val titleGroupBottom = titleGroupLoc[1] + titleGroup.height
-            val touchOnTitleGroup = ev.rawX >= titleGroupLoc[0] && ev.rawX <= titleGroupRight &&
-                    ev.rawY >= titleGroupLoc[1] && ev.rawY <= titleGroupBottom
-
-            if (!touchOnCover || touchOnTitleGroup) {
-                val leftEdgeZone = resources.getDimension(R.dimen.left_edge_touch_zone)
-                val touchOnLeftEdge = ev.rawX < leftEdgeZone
-
-                val seekBar = binding.seekBar
-                val seekBarLoc = IntArray(2)
-                seekBar.getLocationOnScreen(seekBarLoc)
-                val touchOnSeekBar = ev.rawX >= seekBarLoc[0] && ev.rawX <= seekBarLoc[0] + seekBar.width &&
-                        ev.rawY >= seekBarLoc[1] && ev.rawY <= seekBarLoc[1] + seekBar.height
-
-                when (ev.actionMasked) {
-                    android.view.MotionEvent.ACTION_DOWN -> {
-                        if (!touchOnLeftEdge && !touchOnSeekBar) {
-                            playAreaSwipe.startTracking(ev.rawX, ev.rawY)
-                        }
-                    }
-                    android.view.MotionEvent.ACTION_MOVE -> {
-                        if (playAreaSwipe.isTracking && !playAreaSwipe.isSwipeUp && !playAreaSwipe.isSwipeRight) {
-                            val dx = ev.rawX - playAreaSwipe.startX
-                            val dy = ev.rawY - playAreaSwipe.startY
-                            val slop = ViewConfiguration.get(this).scaledTouchSlop * 1.5f
-                            if (abs(dy) > slop && abs(dy) > abs(dx) * 0.7f && dy < 0) {
-                                playAreaSwipe.isSwipeUp = true
-                            } else if (dx > slop && abs(dx) > abs(dy) * 0.7f) {
-                                playAreaSwipe.isSwipeRight = true
-                            }
-                        }
-                    }
-                    android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                        if (playAreaSwipe.isTracking) {
-                            val threshold = resources.getDimension(R.dimen.swipe_distance_threshold)
-                            if (playAreaSwipe.isSwipeUp) {
-                                val dy = ev.rawY - playAreaSwipe.startY
-                                if (dy < -threshold) {
-                                    openQueuePage()
-                                }
-                            } else if (playAreaSwipe.isSwipeRight) {
-                                val dx = ev.rawX - playAreaSwipe.startX
-                                if (dx > threshold) {
-                                    openAlbumDetailPage()
-                                }
-                            }
-                            playAreaSwipe.stopTracking()
-                        }
-                    }
-                }
-            } else {
-                playAreaSwipe.isTracking = false
-            }
-        }
-        if (unifiedContainer.currentScene == UnifiedPlayerContainer.Scene.LYRIC &&
-            (!unifiedContainer.isTransitioning || lyricSwipe.dragStarted)) {
-            // 歌词页横向滑动返回播放界面（跟手）
-            when (ev.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> {
-                    lyricSwipe.startTracking(ev.rawX, ev.rawY)
-                }
-                android.view.MotionEvent.ACTION_MOVE -> {
-                    if (lyricSwipe.isTracking && !lyricSwipe.isActive) {
-                        val dx = ev.rawX - lyricSwipe.startX
-                        val dy = ev.rawY - lyricSwipe.startY
-                        val slop = ViewConfiguration.get(this).scaledTouchSlop * 1.5f
-                        if (abs(dx) > slop && abs(dx) > abs(dy) * 0.7f) {
-                            lyricSwipe.isActive = true
-                            // 开始跟手拖拽
-                            binding.playBgView.syncFrom(binding.lyricBgView)
-                            binding.playBgView.resumeAnimations()
-                            unifiedContainer.startCoverSwipeUpDrag()
-                            lyricSwipe.dragStarted = true
-                        }
-                    }
-                    if (lyricSwipe.isActive && lyricSwipe.dragStarted) {
-                        val dx = ev.rawX - lyricSwipe.startX
-                        val ratio = (abs(dx) / lyricHSwipeThreshold).coerceIn(0f, 1f)
-                        unifiedContainer.updateCoverSwipeUpDrag(ratio)
-                        return true
-                    }
-                }
-                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                    if (lyricSwipe.isTracking && lyricSwipe.isActive && lyricSwipe.dragStarted) {
-                        val dx = ev.rawX - lyricSwipe.startX
-                        val ratio = (abs(dx) / lyricHSwipeThreshold).coerceIn(0f, 1f)
-                        val shouldOpen = ratio > 0.4f
-                        unifiedContainer.endCoverSwipeUpDrag(shouldOpen)
-                        lyricSwipe.stopTracking()
-                        return true
-                    }
-                    lyricSwipe.stopTracking()
-                }
-            }
-            // 歌词页底部区域下滑打开队列（仅在横向滑动未激活时）
-            val screenHeight = resources.displayMetrics.heightPixels
-            val bottomZone = screenHeight * 0.66f
-            if (ev.rawY > bottomZone && !lyricSwipe.isActive && !lyricSwipe.dragStarted) {
-                when (ev.actionMasked) {
-                    android.view.MotionEvent.ACTION_DOWN -> {
-                        playAreaSwipe.startTracking(ev.rawX, ev.rawY)
-                    }
-                    android.view.MotionEvent.ACTION_MOVE -> {
-                        if (playAreaSwipe.isTracking) {
-                            val dy = ev.rawY - playAreaSwipe.startY
-                            val dx = ev.rawX - playAreaSwipe.startX
-                            val slop = ViewConfiguration.get(this).scaledTouchSlop * 1.5f
-                            if (dy > slop && abs(dy) > abs(dx) * 0.7f) {
-                                playAreaSwipe.isSwipeUp = true
-                            }
-                        }
-                    }
-                    android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                        if (playAreaSwipe.isTracking && playAreaSwipe.isSwipeUp) {
-                            val dy = ev.rawY - playAreaSwipe.startY
-                            val threshold = resources.getDimension(R.dimen.swipe_distance_threshold)
-                            if (dy > threshold) {
-                                openQueuePage()
-                            }
-                        }
-                        playAreaSwipe.stopTracking()
-                    }
-                }
-            }
-        }
         return super.dispatchTouchEvent(ev)
     }
 
@@ -3373,134 +2810,80 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
 
     override fun onResume() {
         super.onResume()
-        if (!::unifiedContainer.isInitialized) return
+        setUsbAttachAliasEnabled(true, "on_resume_restore")
+        if (!::playerSceneController.isInitialized) return
+
+        // 从 SettingsActivity 返回，保持之前的导航栈
+        if (settingsActivityLaunched) {
+            settingsActivityLaunched = false
+            android.util.Log.d("SettingsReturn", "returned from settings: currentScene=${mainNavState.currentScene}, backStack=${mainNavState.backStack}")
+        }
 
         playbackStatsHelper.start()
 
-        unifiedContainer.resetInteractionState()
+        playerSceneController.resetInteractionState()
 
-        unifiedContainer.refreshImmersiveState(com.rawsmusic.module.data.prefs.AppPreferences.UI.isImmersiveEnabled)
-        unifiedContainer.updateMiniCoverEnabled(com.rawsmusic.module.data.prefs.AppPreferences.UI.isMiniCoverEnabled)
+        playerSceneController.refreshImmersiveState(com.rawsmusic.module.data.prefs.AppPreferences.UI.isImmersiveEnabled)
+        playerSceneController.updateMiniCoverEnabled(com.rawsmusic.module.data.prefs.AppPreferences.UI.isMiniCoverEnabled)
 
-        // 保存当前是否在 Fragment 模式（设置/关于等页面），防止 setupSceneParams 重置后丢失
-        val wasInFragmentMode = binding.navHostFragment.visibility == View.VISIBLE
-                || com.rawsmusic.module.data.prefs.AppPreferences.UI.wasInFragmentMode
-        val currentScene = unifiedContainer.currentScene
+        val currentScene = playerSceneController.currentScene
 
         // 只在非 PLAYER/LYRIC 场景下才重新设置场景参数，避免从设置返回时重置播放器视图
-        if (currentScene != UnifiedPlayerContainer.Scene.PLAYER && currentScene != UnifiedPlayerContainer.Scene.LYRIC) {
+        if (currentScene != PlayerSceneController.Scene.PLAYER && currentScene != PlayerSceneController.Scene.LYRIC) {
             setupSceneParams()
-            unifiedContainer.forceReapplyCurrentScene()
-
-            // 如果之前在 Fragment 模式，恢复正确的模式，避免设置/关于页面被重置回主界面
-            if (wasInFragmentMode) {
-                switchToFragmentMode()
-            }
-        } else {
-            // PLAYER/LYRIC 场景下，只刷新封面布局，不重置场景参数
-            setupCoverLayoutParams()
-        }
-
-        playerController?.currentSong?.value?.let { song ->
-            val coverUri = coverUriResolver.resolveCoverUri(song)
-            if (coverUri.isNotBlank()) {
-                loadCoverBackground(coverUri)
-            }
+            playerSceneController.forceReapplyCurrentScene()
         }
 
         if (!hasRestoredScene && com.rawsmusic.module.data.prefs.AppPreferences.UI.isPlayPageMemoryEnabled) {
             hasRestoredScene = true
             val savedScene = com.rawsmusic.module.data.prefs.AppPreferences.UI.lastScene
-            val currentScene = unifiedContainer.currentScene
-            if (currentScene == UnifiedPlayerContainer.Scene.MAIN && savedScene != "MAIN") {
+            val currentScene = playerSceneController.currentScene
+            if (currentScene == PlayerSceneController.Scene.MAIN && savedScene != "MAIN") {
                 val song = playerController?.currentSong?.value
                 if (song != null) {
                     val targetScene = try {
-                        UnifiedPlayerContainer.Scene.valueOf(savedScene)
+                        PlayerSceneController.Scene.valueOf(savedScene)
                     } catch (_: Exception) {
                         null
                     }
                     if (targetScene != null) {
-                        unifiedContainer.post {
-                            loadedCoverImageWidth = 0
-                            loadedCoverImageHeight = 0
-                            val isImmersive = unifiedContainer.isImmersiveEnabled
-                            val coverUri = coverUriResolver.resolveCoverUri(song)
-                            val playCoverUri = coverUri.ifBlank { song.albumArtPath ?: "" }
-                            val hasCover = playCoverUri.isNotBlank()
-                            if (hasCover && !isImmersive) {
-                                BitmapProvider.load(
-                                    key = playCoverUri,
-                                    imageView = null,
-                                    targetWidth = 1080,
-                                    targetHeight = 1080,
-                                    callback = { bitmap ->
-                                        if (bitmap != null && !bitmap.isRecycled) {
-                                            loadedCoverImageWidth = bitmap.width
-                                            loadedCoverImageHeight = bitmap.height
-                                        }
-                                        setupCoverLayoutParams()
-                                        if (bitmap != null) {
-                                            playCoverView.setCoverBitmap(bitmap)
-                                        }
-                                        binding.ivPlayCover.visibility = View.VISIBLE
-                                        unifiedContainer.post {
-                                            setupCoverLayoutParams()
-                                            unifiedContainer.switchToSceneSilent(targetScene)
-                                            if (targetScene == UnifiedPlayerContainer.Scene.LYRIC) {
-                                                binding.ivPlayCover.pivotX = 0f
-                                                binding.ivPlayCover.pivotY = 0f
-                                                registerCoverLyricParams()
-                                            } else {
-                                                registerCoverCollapseParams()
-                                            }
-                                            unifiedContainer.forceReapplyCurrentScene()
-                                            setupCoverLayoutParams()
-                                            updateHiresBadge()
-                                        }
-                                    }
-                                )
+                        mainHandler.post {
+                            playerSceneController.switchToSceneSilent(targetScene)
+                            if (targetScene == PlayerSceneController.Scene.LYRIC) {
+                                registerCoverLyricParams()
                             } else {
-                                unifiedContainer.switchToSceneSilent(targetScene)
-                                if (targetScene == UnifiedPlayerContainer.Scene.LYRIC) {
-                                    registerCoverLyricParams()
-                                } else {
-                                    registerCoverCollapseParams()
-                                }
-                                unifiedContainer.forceReapplyCurrentScene()
-                                setupCoverLayoutParams()
-                                updateHiresBadge()
+                                registerCoverCollapseParams()
                             }
+                            playerSceneController.forceReapplyCurrentScene()
+                            updateHiresBadge()
                         }
                     }
                 }
             }
         }
 
-        unifiedContainer.post {
-            setupCoverLayoutParams()
+        mainHandler.post {
             updateHiresBadge()
 
-            val currentScene = unifiedContainer.currentScene
-            if (currentScene == UnifiedPlayerContainer.Scene.LYRIC) {
-                binding.ivPlayCover.pivotX = 0f
-                binding.ivPlayCover.pivotY = 0f
+            val currentScene = playerSceneController.currentScene
+            if (currentScene == PlayerSceneController.Scene.LYRIC) {
                 registerCoverLyricParams()
-                unifiedContainer.forceReapplyCurrentScene()
+                playerSceneController.forceReapplyCurrentScene()
             }
         }
 
         val song = playerController?.currentSong?.value
 
         if (LyriconProviderManager.isEnabled() && LyriconProviderManager.isConnected()) {
-            val currentSong = playerController?.currentSong?.value
-            val isPlaying = playerController?.playState?.value == PlayState.PLAYING
-            LyriconProviderManager.setSong(currentSong, if (currentLyricData.isEmpty) null else currentLyricData)
-            LyriconProviderManager.setPlaybackState(isPlaying)
+            lyricsCoordinator.resendToLyricon()
         }
 
-        // 后台恢复：确保 WakeLock 持有
-        playerController?.onAppForegroundResumed()
+        mainHandler.postDelayed({
+            if (!isFinishing && !isDestroyed) {
+                playerController?.requestUsbAttachPermissionIfPresent("activity_on_resume_scan")
+                playerController?.onAppForegroundResumed()
+            }
+        }, 180)
 
         // USB 独占模式播放中，跳过 USB 重新扫描
         if (playerController?.playState?.value == PlayState.PLAYING &&
@@ -3508,96 +2891,10 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
             return
         }
 
-        // 延迟处理 USB 权限，确保Activity 完全显示
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            val usbMgr = playerController?.usbExclusiveManager ?: return@postDelayed
-            val device = usbMgr.findUsbAudioDevice()
-            if (device != null) {
-                usbMgr.requestPermissionSafely(device)
-            }
-        }, 500)
     }
 
-    // ==================== Compose 播放控制方法 ====================
-
-    /**
-     * Compose 版本：切换播放/暂停
-     */
-    fun composeTogglePlayPause() {
-        playerController?.playPause()
-    }
-
-    /**
-     * Compose 版本：播放上一首
-     */
-    fun composePlayPrevious() {
-        playerController?.previous()
-    }
-
-    /**
-     * Compose 版本：播放下一首
-     */
-    fun composePlayNext() {
-        playerController?.next()
-    }
-
-    /**
-     * Compose 版本：跳转到指定进度
-     * @param progress 0..1 的进度值
-     */
-    fun composeSeekTo(progress: Float) {
-        val durationMs = playerController?.duration?.value ?: 0L
-        if (durationMs > 0) {
-            val targetMs = (progress * durationMs).toLong()
-            playerController?.seekTo(targetMs)
-        }
-    }
-
-    /**
-     * Compose 版本：切换重复模式
-     */
-    fun composeToggleRepeatMode() {
-        playerController?.toggleRepeatMode()
-    }
-
-    /**
-     * Compose 版本：切换随机播放
-     */
-    fun composeToggleShuffle() {
-        playerController?.toggleShuffle()
-    }
-
-    /**
-     * Compose 版本：同步播放状态到 Compose
-     * 在 onResume 或播放状态变化时调用
-     */
-    fun syncPlayStateToCompose() {
-        playerController?.let { controller ->
-            composeIsPlaying = controller.playState.value == PlayState.PLAYING
-            composeTotalDurationMs = controller.duration.value ?: 0L
-            composeCurrentPositionMs = controller.position.value ?: 0L
-            composePlayMode = controller.playMode.value ?: PlayMode.SEQUENTIAL
-
-            val duration = composeTotalDurationMs
-            if (duration > 0) {
-                composePlayProgress = composeCurrentPositionMs.toFloat() / duration
-            } else {
-                composePlayProgress = 0f
-            }
-        }
-    }
-
-    /**
-     * Compose 版本：启动播放进度同步协程
-     * 在 Composable 的 LaunchedEffect 中调用
-     */
-    fun startComposeProgressSync(scope: kotlinx.coroutines.CoroutineScope) {
-        scope.launch {
-            while (true) {
-                syncPlayStateToCompose()
-                delay(100) // 每 100ms 更新一次
-            }
-        }
+    override fun onStop() {
+        super.onStop()
     }
 
     override fun onDestroy() {
@@ -3606,18 +2903,24 @@ class MainActivity : BaseActivity<ActivityMainBinding>(), CoverGestureHandler.Co
         AppLogger.w("SceneTransition", "=== MainActivity.onDestroy CALLED, isFinishing=$finishing, isChangingConfigurations=$changingConfig ===")
         super.onDestroy()
         playbackStatsHelper.stop()
-        try { unregisterReceiver(settingsChangeReceiver) } catch (_: Exception) {}
-        LyriconProviderManager.stopPositionSync()
-        LyriconProviderManager.destroy()
-        TickerBridge.destroy(this)
-        LyricGetterBridge.destroy()
-        BluetoothLyricBridge.destroy()
+        themeCoordinator.unregister()
+        progressSeekActive = false
+        progressSeekLock?.release()
+        progressSeekLock = null
+        gestureLockCoordinator.clear()
+
         if (finishing) {
+            LyriconProviderManager.destroy()
+            TickerBridge.destroy(this)
+            LyricGetterBridge.destroy()
+            BluetoothLyricBridge.destroy()
             playerController?.release()
             playerController = null
             PlayerHolder.controller = null
         } else {
-            AppLogger.w("SceneTransition", "=== onDestroy: NOT finishing, keeping PlayerController alive ===")
+            // 配置变化（主题切换、旋转等）：只暂停位置同步，保留 provider
+            LyriconProviderManager.stopPositionSync()
+            AppLogger.w("SceneTransition", "=== onDestroy: NOT finishing, keeping PlayerController + Lyricon alive ===")
         }
     }
 

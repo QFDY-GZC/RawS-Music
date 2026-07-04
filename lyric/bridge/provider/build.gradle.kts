@@ -7,10 +7,10 @@ plugins {
 
 android {
     namespace = "io.github.proify.lyricon.provider"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 23
         consumerProguardFiles("consumer-rules.pro")
     }
 
@@ -25,12 +25,8 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 
     buildFeatures {
@@ -42,7 +38,6 @@ android {
 dependencies {
     api(project(":lyric:model"))
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.appcompat)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)

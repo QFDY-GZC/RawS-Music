@@ -1,5 +1,6 @@
 package com.rawsmusic.module.player
 
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -24,6 +25,10 @@ class RingBuffer(private val capacity: Int) {
 
     @Volatile
     private var closed = false
+
+    /** 标记 decoder 已 EOF —— buffer 空时 readWithTimeout 立即返回 0 */
+    @Volatile
+    private var eof = false
 
     /**
      * Write data into the ring buffer. Blocks if the buffer is full.
@@ -95,6 +100,37 @@ class RingBuffer(private val capacity: Int) {
     }
 
     /**
+     * Read with timeout. Blocks until data is available, timeout expires, or closed/EOF.
+     * @param timeoutMs timeout in milliseconds
+     * @return number of bytes read, 0 if EOF (closed/EOF and empty), -1 if timeout and no data
+     */
+    fun readWithTimeout(dest: ByteArray, offset: Int, maxBytes: Int, timeoutMs: Long): Int {
+        if (maxBytes <= 0) return 0
+        lock.withLock {
+            // Wait for data with timeout
+            // 关键修复：eof 时不再阻塞等待，直接检查 buffer 是否有数据
+            if (count == 0 && !closed && !eof) {
+                notEmpty.await(timeoutMs, TimeUnit.MILLISECONDS)
+            }
+
+            if (count == 0) return if (closed || eof) 0 else -1  // EOF or timeout
+
+            val toRead = minOf(maxBytes, count)
+            val firstSegment = minOf(toRead, capacity - readPos)
+            System.arraycopy(buffer, readPos, dest, offset, firstSegment)
+            if (toRead > firstSegment) {
+                System.arraycopy(buffer, 0, dest, offset + firstSegment, toRead - firstSegment)
+            }
+
+            readPos = (readPos + toRead) % capacity
+            count -= toRead
+
+            notFull.signal()
+            return toRead
+        }
+    }
+
+    /**
      * Non-blocking read. Returns immediately with available data.
      * @return number of bytes read, or 0 if no data available. -1 if closed and empty.
      */
@@ -148,6 +184,28 @@ class RingBuffer(private val capacity: Int) {
     fun open() {
         lock.withLock {
             closed = false
+        }
+    }
+
+    /**
+     * 标记 decoder 已 EOF。buffer 空时 readWithTimeout 立即返回 0（不再等 2 秒超时）。
+     * 与 close() 不同：标记 EOF 后 write 仍然允许，read 仍可消费剩余数据。
+     */
+    fun markEOF() {
+        lock.withLock {
+            eof = true
+            notEmpty.signalAll()
+        }
+    }
+
+    /**
+     * Wake up any threads blocked in [read] or [readWithTimeout] without closing the buffer.
+     * Used when the writer (decoder) has finished but we don't want to signal EOF yet —
+     * the reader (streaming loop) should drain remaining data first.
+     */
+    fun wakeUpReaders() {
+        lock.withLock {
+            notEmpty.signalAll()
         }
     }
 

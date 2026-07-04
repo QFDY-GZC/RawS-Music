@@ -133,23 +133,39 @@ internal class InnerShadowNode(
     }
 
     override fun onAttach() {
-        val graphicsContext = requireGraphicsContext()
-        shadowLayer =
-            graphicsContext.createGraphicsLayer().apply {
-                compositingStrategy = CompositingStrategy.Offscreen
-            }
+        try {
+            val graphicsContext = requireGraphicsContext()
+            shadowLayer =
+                graphicsContext.createGraphicsLayer().apply {
+                    compositingStrategy = CompositingStrategy.Offscreen
+                }
+        } catch (_: Exception) {
+            shadowLayer = null
+        }
     }
 
     override fun onDetach() {
-        val graphicsContext = requireGraphicsContext()
-        shadowLayer?.let { layer ->
-            graphicsContext.releaseGraphicsLayer(layer)
+        try {
+            val graphicsContext = requireGraphicsContext()
+            shadowLayer?.let { layer ->
+                graphicsContext.releaseGraphicsLayer(layer)
+                shadowLayer = null
+            }
+        } catch (_: Exception) {
             shadowLayer = null
         }
     }
 
     private fun DrawScope.configurePaint(shadow: InnerShadow) {
         paint.color = shadow.color
+    }
+
+    private fun DrawScope.drawMaskedShadow(outline: Outline, layer: GraphicsLayer) {
+        val canvas = drawContext.canvas
+        canvas.save()
+        canvas.clipOutline(outline, clipPath)
+        drawLayer(layer)
+        canvas.restore()
     }
 }
 

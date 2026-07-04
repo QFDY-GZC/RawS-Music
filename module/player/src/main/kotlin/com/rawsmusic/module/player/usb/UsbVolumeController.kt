@@ -6,7 +6,7 @@ import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
-import android.util.Log
+import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
 
 class UsbVolumeController(
@@ -41,17 +41,17 @@ class UsbVolumeController(
         val h = if (nativeHandle != 0L) nativeHandle else UsbAudioEngine.currentHandle
         val rc = UsbAudioEngine.nativeSetVolume(h, linear)
         if (rc < 0) {
-            Log.w(TAG, "nativeSetVolume failed, rc=$rc, linear=$linear")
+            AppLogger.w(TAG, "nativeSetVolume failed, rc=$rc, linear=$linear")
         } else {
             curLinear = linear
             AppPreferences.Player.usbHardwareVolume = linear
-            Log.d(TAG, "hardware volume set → $linear")
+            AppLogger.d(TAG, "hardware volume set → $linear")
         }
     }
 
     fun stepVolume(delta: Float = DEFAULT_STEP) {
         if (!canControlHardwareVolume) {
-            Log.w(TAG, "stepVolume ignored – Feature Unit disabled or not present")
+            AppLogger.w(TAG, "stepVolume ignored – Feature Unit disabled or not present")
             return
         }
         nativeSet((curLinear + delta).coerceIn(0f, 1f))
@@ -59,7 +59,7 @@ class UsbVolumeController(
 
     fun setVolumeLinear(linear: Float, persist: Boolean = true) {
         if (!canControlHardwareVolume) {
-            Log.w(TAG, "setVolumeLinear ignored – Feature Unit disabled or not present")
+            AppLogger.w(TAG, "setVolumeLinear ignored – Feature Unit disabled or not present")
             return
         }
         val target = linear.coerceIn(0f, 1f)
@@ -86,7 +86,7 @@ class UsbVolumeController(
         curLinear = AppPreferences.Player.usbHardwareVolume
         if (canControlHardwareVolume) nativeSet(curLinear)
         else syncFromSystemVolume() // 非硬件音量模式：立即同步系统音量到软件音量
-        Log.d(TAG, "UsbVolumeController registered, curLinear=$curLinear, bitPerfect=${AppPreferences.Player.bitPerfectEnabled}, canHw=$canControlHardwareVolume")
+        AppLogger.d(TAG, "UsbVolumeController registered, curLinear=$curLinear, bitPerfect=${AppPreferences.Player.bitPerfectEnabled}, canHw=$canControlHardwareVolume")
     }
 
     fun unregister() {
@@ -94,7 +94,7 @@ class UsbVolumeController(
             context.contentResolver.unregisterContentObserver(volumeObserver)
         }
         AppPreferences.Player.usbHardwareVolume = curLinear
-        Log.d(TAG, "UsbVolumeController unregistered, saved curLinear=$curLinear")
+        AppLogger.d(TAG, "UsbVolumeController unregistered, saved curLinear=$curLinear")
     }
 
     private fun syncFromSystemVolume() {
@@ -113,13 +113,13 @@ class UsbVolumeController(
             val db = (1.0f - ratio) * MIN_HARDWARE_DB  // -60dB ~ 0dB
             val linear = Math.pow(10.0, db / 20.0).toFloat()
             nativeSet(linear)
-            Log.d(TAG, "bit-perfect hw volume sync → ${"%.3f".format(linear)} (${db.toInt()}dB, sys=$curSys/$maxSys)")
+            AppLogger.d(TAG, "bit-perfect hw volume sync → ${"%.3f".format(linear)} (${db.toInt()}dB, sys=$curSys/$maxSys)")
             return
         }
 
         val linear = curSys.toFloat() / maxSys
         val gain = linear * linear
         nativeSet(gain)
-        Log.d(TAG, "system volume sync → $gain (sys=$curSys/$maxSys)")
+        AppLogger.d(TAG, "system volume sync → $gain (sys=$curSys/$maxSys)")
     }
 }

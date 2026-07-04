@@ -17,7 +17,7 @@ import android.graphics.drawable.Drawable
 import android.os.Parcelable
 import androidx.annotation.DrawableRes
 import androidx.annotation.Px
-import androidx.appcompat.content.res.AppCompatResources
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
 import io.github.proify.lyricon.provider.ProviderLogo.Companion.TYPE_BITMAP
 import io.github.proify.lyricon.provider.ProviderLogo.Companion.TYPE_SVG
@@ -69,7 +69,7 @@ data class ProviderLogo(
             @Px height: Int = -1,
             config: Config? = null,
         ): ProviderLogo {
-            val drawable = AppCompatResources.getDrawable(context, id)
+            val drawable = ContextCompat.getDrawable(context, id)
             require(drawable != null) { "Drawable not found" }
             return if (width > 0 && height > 0) fromBitmap(drawable.toBitmap(width, height, config))
             else fromBitmap(drawable.toBitmap(config = config))

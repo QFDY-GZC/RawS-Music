@@ -145,13 +145,13 @@ data class LyricData(
 
     fun findCurrentLine(positionMs: Long, advanceMs: Long = 0L): Int {
         if (lines.isEmpty()) return -1
-        val adjusted = positionMs + offset - advanceMs
+        val adjusted = positionMs + advanceMs
         var low = 0
         var high = lines.size - 1
         var result = -1
         while (low <= high) {
             val mid = (low + high) ushr 1
-            if (lines[mid].timeStamp <= adjusted) {
+            if (lines[mid].timeStamp + offset <= adjusted) {
                 result = mid
                 low = mid + 1
             } else {

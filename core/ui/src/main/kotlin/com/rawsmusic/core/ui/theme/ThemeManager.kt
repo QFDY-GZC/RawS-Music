@@ -1,7 +1,6 @@
 package com.rawsmusic.core.ui.theme
 
 import android.content.Context
-import androidx.appcompat.app.AppCompatDelegate
 import com.rawsmusic.core.common.prefs.UIPreferences
 
 object ThemeManager {
@@ -33,12 +32,10 @@ object ThemeManager {
 
     fun applyTheme(mode: ThemeMode) {
         UIPreferences.themeMode = mode.value
-        when (mode) {
-            ThemeMode.SYSTEM -> AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
-            ThemeMode.LIGHT -> AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
-            ThemeMode.DARK -> AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
-        }
+        RawThemeRuntimeState.invalidate()
     }
+
+    fun applyStoredTheme() = Unit
 
     fun getCurrentTheme(): ThemeMode {
         return ThemeMode.entries.getOrElse(UIPreferences.themeMode) { ThemeMode.SYSTEM }

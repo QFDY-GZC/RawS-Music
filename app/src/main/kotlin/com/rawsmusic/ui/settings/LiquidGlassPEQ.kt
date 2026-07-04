@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -83,7 +82,7 @@ private object PEQUiColors {
 }
 
 /**
- * 参量均衡器界面 — 紧凑单行布局，10 段标准倍频程
+ * 参量均衡器界面 — 10–40 段动态 PEQ
  */
 @Composable
 fun LiquidGlassPEQScreen(
@@ -98,6 +97,9 @@ fun LiquidGlassPEQScreen(
     val filters by peqController.filters.collectAsState()
     val frequencyResponse by peqController.frequencyResponse.collectAsState()
     val preamp by peqController.preamp.collectAsState()
+    val bandCount by peqController.bandCount.collectAsState()
+
+    var tempBandCount by remember(bandCount) { mutableStateOf(bandCount) }
 
     // AutoEq 对话框状态
     var showAutoEqDialog by remember { mutableStateOf(false) }
@@ -114,7 +116,6 @@ fun LiquidGlassPEQScreen(
         Modifier
             .fillMaxSize()
             .background(PEQUiColors.Background)
-            .statusBarsPadding()
             .padding(horizontal = 16.dp)
     ) {
         // 顶部栏
@@ -251,6 +252,72 @@ fun LiquidGlassPEQScreen(
 
         Spacer(Modifier.height(8.dp))
 
+        // 段数控制
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "段数",
+                color = PEQUiColors.TextSecondary,
+                fontSize = 13.sp,
+                modifier = Modifier.width(52.dp)
+            )
+
+            Slider(
+                value = tempBandCount.toFloat(),
+                onValueChange = {
+                    tempBandCount = it.toInt().coerceIn(
+                        PEQFilter.MIN_FILTERS,
+                        PEQFilter.MAX_FILTERS
+                    )
+                },
+                onValueChangeFinished = {
+                    peqController.setBandCount(tempBandCount)
+                },
+                valueRange = PEQFilter.MIN_FILTERS.toFloat()..PEQFilter.MAX_FILTERS.toFloat(),
+                steps = PEQFilter.MAX_FILTERS - PEQFilter.MIN_FILTERS - 1,
+                colors = SliderDefaults.colors(
+                    thumbColor = PEQUiColors.Accent,
+                    activeTrackColor = PEQUiColors.Accent,
+                    inactiveTrackColor = PEQUiColors.SliderTrack
+                ),
+                modifier = Modifier.weight(1f)
+            )
+
+            Text(
+                "${tempBandCount}段",
+                color = PEQUiColors.Accent,
+                fontSize = 13.sp,
+                modifier = Modifier.width(48.dp)
+            )
+        }
+
+        // 快捷段数按钮
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf(10, 15, 20, 31, 40).forEach { count ->
+                TextButton(
+                    onClick = {
+                        tempBandCount = count
+                        peqController.setBandCount(count)
+                    }
+                ) {
+                    Text(
+                        "${count}段",
+                        color = if (bandCount == count) PEQUiColors.Accent else PEQUiColors.TextSecondary,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+
         // 表头
         Row(
             Modifier
@@ -271,7 +338,7 @@ fun LiquidGlassPEQScreen(
         LazyColumn(
             state = rememberLazyListState(),
             modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(bottom = 160.dp),
+            contentPadding = PaddingValues(bottom = 300.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             itemsIndexed(filters) { index, filter ->
@@ -328,13 +395,15 @@ private fun ExportPresetDialog(
     val context = androidx.compose.ui.platform.LocalContext.current
     val filters by peqController.filters.collectAsState()
     val preamp by peqController.preamp.collectAsState()
-    
+    val bandCount by peqController.bandCount.collectAsState()
+
     // 创建预设对象
-    val preset = remember(filters, preamp) {
+    val preset = remember(filters, preamp, bandCount) {
         PEQPreset(
             name = "PEQ预设_${System.currentTimeMillis()}",
             preamp = preamp,
-            filters = filters
+            filters = filters,
+            bandCount = bandCount
         )
     }
     
@@ -396,8 +465,7 @@ private fun ExportPresetDialog(
                 TextButton(
                     onClick = {
                         val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                        val clip = android.content.ClipData.newRawUri("PEQ预设", null)
-                        clip.addItem(android.content.ClipData.Item(presetJson))
+                        val clip = android.content.ClipData.newPlainText("PEQ预设", presetJson)
                         clipboard.setPrimaryClip(clip)
                         android.widget.Toast.makeText(context, "已复制到剪贴板", android.widget.Toast.LENGTH_SHORT).show()
                         onDismiss()
@@ -428,6 +496,11 @@ private fun ImportPresetDialog(
     val context = androidx.compose.ui.platform.LocalContext.current
     var importText by remember { mutableStateOf(initialImportText) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    val currentBandCount by peqController.bandCount.collectAsState()
+
+    // 段数选择弹窗状态
+    var pendingPreset by remember { mutableStateOf<PEQPreset?>(null) }
+    var showBandChoiceDialog by remember { mutableStateOf(false) }
 
     androidx.compose.runtime.LaunchedEffect(initialImportText) {
         if (initialImportText.isNotEmpty()) {
@@ -463,7 +536,7 @@ private fun ImportPresetDialog(
 
                 OutlinedTextField(
                     value = importText,
-                    onValueChange = { 
+                    onValueChange = {
                         importText = it
                         errorMessage = null
                     },
@@ -480,7 +553,7 @@ private fun ImportPresetDialog(
                         .fillMaxWidth()
                         .height(200.dp)
                 )
-                
+
                 // 错误信息
                 if (errorMessage != null) {
                     Text(
@@ -499,30 +572,41 @@ private fun ImportPresetDialog(
                         errorMessage = "请输入预设JSON文本"
                         return@TextButton
                     }
-                    
+
                     try {
                         val preset = PEQPreset.fromJson(importText)
                         if (preset == null) {
                             errorMessage = "无效的预设格式"
                             return@TextButton
                         }
-                        
-                        // 应用预设
-                        peqController.setPreamp(preset.preamp)
-                        // 导入滤波器
-                        if (preset.filters.isNotEmpty()) {
-                            val maxFilters = PEQFilter.MAX_FILTERS
-                            val filtersToImport = if (preset.filters.size > maxFilters) {
-                                preset.filters.take(maxFilters)
-                            } else {
-                                preset.filters
-                            }
-                            // 直接设置滤波器列表
-                            peqController.importFilters(filtersToImport, preset.name)
+
+                        if (preset.filters.isEmpty()) {
+                            errorMessage = "预设中没有滤波器"
+                            return@TextButton
                         }
-                        
-                        android.widget.Toast.makeText(context, "预设导入成功", android.widget.Toast.LENGTH_SHORT).show()
-                        onDismiss()
+
+                        val presetBandCount = preset.bandCount.coerceIn(
+                            PEQFilter.MIN_FILTERS,
+                            PEQFilter.MAX_FILTERS
+                        )
+
+                        if (presetBandCount != currentBandCount) {
+                            // 段数不同，弹选择框
+                            pendingPreset = preset
+                            showBandChoiceDialog = true
+                        } else {
+                            // 段数相同，直接导入
+                            peqController.setPreamp(preset.preamp)
+                            peqController.importFilters(preset.filters, preset.name)
+
+                            android.widget.Toast.makeText(
+                                context,
+                                "预设导入成功：${currentBandCount} 段",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+
+                            onDismiss()
+                        }
                     } catch (e: Exception) {
                         errorMessage = "解析失败: ${e.message}"
                     }
@@ -537,6 +621,107 @@ private fun ImportPresetDialog(
             }
         }
     )
+
+    // 段数选择弹窗
+    if (showBandChoiceDialog && pendingPreset != null) {
+        val preset = pendingPreset!!
+        val presetBandCount = preset.bandCount.coerceIn(
+            PEQFilter.MIN_FILTERS,
+            PEQFilter.MAX_FILTERS
+        )
+
+        AlertDialog(
+            onDismissRequest = {
+                showBandChoiceDialog = false
+                pendingPreset = null
+            },
+            containerColor = PEQUiColors.CardBackground,
+            title = {
+                Text(
+                    "预设段数不同",
+                    color = PEQUiColors.TextPrimary,
+                    fontWeight = FontWeight.Medium
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        "该预设为 ${presetBandCount} 段，当前均衡器为 ${currentBandCount} 段。",
+                        color = PEQUiColors.TextSecondary,
+                        fontSize = 14.sp
+                    )
+
+                    Spacer(Modifier.height(8.dp))
+
+                    Text(
+                        "你可以保持当前段数并智能转换，也可以切换到预设原段数。",
+                        color = PEQUiColors.TextSecondary,
+                        fontSize = 13.sp
+                    )
+                }
+            },
+            confirmButton = {
+                Column {
+                    TextButton(
+                        onClick = {
+                            // 方案 A：保持当前段数，转换导入
+                            peqController.setPreamp(preset.preamp)
+                            peqController.importFilters(preset.filters, preset.name)
+
+                            android.widget.Toast.makeText(
+                                context,
+                                "已导入并适配为当前 ${currentBandCount} 段",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+
+                            showBandChoiceDialog = false
+                            pendingPreset = null
+                            onDismiss()
+                        }
+                    ) {
+                        Text(
+                            "保持当前 ${currentBandCount} 段并转换",
+                            color = PEQUiColors.Accent
+                        )
+                    }
+
+                    TextButton(
+                        onClick = {
+                            // 方案 B：切换到预设段数再导入（必须先 setBandCount 再 import）
+                            peqController.setBandCount(presetBandCount)
+                            peqController.setPreamp(preset.preamp)
+                            peqController.importFilters(preset.filters, preset.name)
+
+                            android.widget.Toast.makeText(
+                                context,
+                                "已切换到 ${presetBandCount} 段并导入",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+
+                            showBandChoiceDialog = false
+                            pendingPreset = null
+                            onDismiss()
+                        }
+                    ) {
+                        Text(
+                            "切换到预设 ${presetBandCount} 段",
+                            color = PEQUiColors.Success
+                        )
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showBandChoiceDialog = false
+                        pendingPreset = null
+                    }
+                ) {
+                    Text("取消", color = PEQUiColors.TextSecondary)
+                }
+            }
+        )
+    }
 }
 
 /**
@@ -617,7 +802,7 @@ private fun FilterRow(
 
             // 增益
             Text(
-                filter.gainText + "dB",
+                filter.gainText,
                 color = PEQUiColors.TextPrimary,
                 fontSize = 13.sp,
                 textDecoration = TextDecoration.Underline,
@@ -673,7 +858,7 @@ private fun FilterRow(
                     onValueClick = {
                         inputDialogType = "freq"
                         inputDialogTitle = "输入频率 (Hz)"
-                        inputDialogValue = filter.frequencyText
+                        inputDialogValue = String.format("%.1f", filter.frequency)
                         showInputDialog = true
                     }
                 )
@@ -681,14 +866,14 @@ private fun FilterRow(
                 // 增益滑块
                 CompactSliderRow(
                     label = "增益",
-                    valueText = filter.gainText + "dB",
+                    valueText = filter.gainText,
                     value = filter.gainDB,
                     onValueChange = { onUpdate(filter.copy(gainDB = String.format("%.1f", it).toFloat())) },
                     valueRange = PEQFilter.GAIN_RANGE,
                     onValueClick = {
                         inputDialogType = "gain"
                         inputDialogTitle = "输入增益 (dB)"
-                        inputDialogValue = filter.gainText
+                        inputDialogValue = String.format("%.1f", filter.gainDB)
                         showInputDialog = true
                     }
                 )
@@ -886,7 +1071,9 @@ fun AutoEqDialog(
     
     val cacheManager = remember { AutoEqCacheManager(context) }
     val repository = remember { AutoEqRepository() }
-    
+
+    val currentBandCount by peqController.bandCount.collectAsState()
+
     // 状态
     var searchQuery by remember { mutableStateOf("") }
     var isSearching by remember { mutableStateOf(false) }
@@ -894,6 +1081,21 @@ fun AutoEqDialog(
     var cachedPresets by remember { mutableStateOf(cacheManager.loadAll()) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var downloadingPreset by remember { mutableStateOf<String?>(null) }
+
+    fun applyAutoEqPreset(preset: AutoEqPreset) {
+        val sourceFilterCount = preset.filters.size
+        val preampText = String.format("%+.1f dB", preset.safePreamp)
+
+        peqController.importFromAutoEq(preset)
+
+        android.widget.Toast.makeText(
+            context,
+            "已导入 AutoEq：${preset.name}\n${sourceFilterCount} 个滤波器 → 当前 ${currentBandCount} 段，Preamp $preampText",
+            android.widget.Toast.LENGTH_LONG
+        ).show()
+
+        onDismiss()
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1019,8 +1221,7 @@ fun AutoEqDialog(
                                             // 从缓存加载
                                             val preset = cacheManager.load(result.headphoneName)
                                             if (preset != null) {
-                                                peqController.importFromAutoEq(preset)
-                                                onDismiss()
+                                                applyAutoEqPreset(preset)
                                             }
                                         } else {
                                             // 下载
@@ -1032,8 +1233,7 @@ fun AutoEqDialog(
                                                     if (preset != null) {
                                                         cacheManager.save(preset)
                                                         cachedPresets = cacheManager.loadAll()
-                                                        peqController.importFromAutoEq(preset)
-                                                        onDismiss()
+                                                        applyAutoEqPreset(preset)
                                                     } else {
                                                         errorMessage = "下载失败"
                                                     }
@@ -1101,8 +1301,7 @@ fun AutoEqDialog(
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(PEQUiColors.RowBackground)
                                     .clickable {
-                                        peqController.importFromAutoEq(preset)
-                                        onDismiss()
+                                        applyAutoEqPreset(preset)
                                     }
                                     .padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
@@ -1166,14 +1365,31 @@ data class PEQPreset(
     val name: String,
     val preamp: Float,
     val filters: List<PEQFilter>,
+    val bandCount: Int = filters.size.coerceIn(
+        PEQFilter.MIN_FILTERS,
+        PEQFilter.MAX_FILTERS
+    ),
     val timestamp: Long = System.currentTimeMillis()
 ) {
     companion object {
         private val gson = Gson()
-        
+
         fun fromJson(json: String): PEQPreset? {
             return try {
-                gson.fromJson(json, PEQPreset::class.java)
+                val raw = gson.fromJson(json, PEQPreset::class.java) ?: return null
+
+                val resolvedBandCount = raw.bandCount
+                    .takeIf { it in PEQFilter.MIN_FILTERS..PEQFilter.MAX_FILTERS }
+                    ?: raw.filters.size.coerceIn(
+                        PEQFilter.MIN_FILTERS,
+                        PEQFilter.MAX_FILTERS
+                    )
+
+                raw.copy(
+                    preamp = raw.preamp.coerceIn(-12f, 12f),
+                    filters = raw.filters.map { it.sanitized() },
+                    bandCount = resolvedBandCount
+                )
             } catch (e: Exception) {
                 null
             }

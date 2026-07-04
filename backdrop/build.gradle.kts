@@ -6,10 +6,10 @@ plugins {
 
 android {
     namespace = "com.kyant.backdrop"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 23
         consumerProguardFiles("consumer-rules.pro")
     }
 
@@ -19,22 +19,13 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
-
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 
     buildFeatures {
         compose = true
-    }
-
-    lint {
-        checkReleaseBuilds = false
     }
 }
 

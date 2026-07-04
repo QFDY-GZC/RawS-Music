@@ -7,22 +7,62 @@ enum class RepeatMode {
 }
 
 /**
- * 播放模式：4种组合
- * - SHUFFLE_OFF: 随机播放关闭（顺序播放）
- * - SHUFFLE_ALL: 随机播放全部（随机播放所有歌曲）
- * - SHUFFLE_SONG: 随机播放歌曲（按分类顺序）
- * - SHUFFLE_BOTH: 随机歌曲/分类
+ * 随机播放模式
+ * - OFF: 关闭随机（顺序播放）
+ * - SONGS: 按歌曲随机
  */
-enum class PlayMode {
-    SHUFFLE_OFF,
-    SHUFFLE_ALL,
-    SHUFFLE_SONG,
-    SHUFFLE_BOTH;
+enum class ShuffleMode {
+    OFF,
+    SONGS;
 
-    /** 是否为高亮状态（除 SHUFFLE_OFF 外全部高亮） */
-    val isHighlight: Boolean get() = this != SHUFFLE_OFF
+    val isOn: Boolean get() = this == SONGS
 
     companion object {
+        fun fromBoolean(isShuffle: Boolean): ShuffleMode =
+            if (isShuffle) SONGS else OFF
+    }
+}
+
+/**
+ * 播放模式：4种组合
+ * - SEQUENTIAL: 顺序播放（shuffle=OFF, repeat=ALL）
+ * - SHUFFLE_ALL: 全部随机循环（shuffle=ON, repeat=ALL）
+ * - SHUFFLE_ONCE: 随机播放一遍（shuffle=ON, repeat=OFF）
+ * - REPEAT_ONE: 单曲循环（shuffle=OFF, repeat=ONE）
+ */
+enum class PlayMode {
+    SEQUENTIAL,
+    SHUFFLE_ALL,
+    SHUFFLE_ONCE,
+    REPEAT_ONE;
+
+    val isHighlight: Boolean get() = this != SEQUENTIAL
+
+    val shuffleMode: ShuffleMode
+        get() = when (this) {
+            SEQUENTIAL, REPEAT_ONE -> ShuffleMode.OFF
+            SHUFFLE_ALL, SHUFFLE_ONCE -> ShuffleMode.SONGS
+        }
+
+    val repeatMode: RepeatMode
+        get() = when (this) {
+            SEQUENTIAL -> RepeatMode.ALL
+            SHUFFLE_ALL -> RepeatMode.ALL
+            SHUFFLE_ONCE -> RepeatMode.OFF
+            REPEAT_ONE -> RepeatMode.ONE
+        }
+
+    companion object {
+        fun from(shuffleMode: ShuffleMode, repeatMode: RepeatMode): PlayMode {
+            return when {
+                shuffleMode == ShuffleMode.OFF && repeatMode == RepeatMode.ALL -> SEQUENTIAL
+                shuffleMode == ShuffleMode.SONGS && repeatMode == RepeatMode.ALL -> SHUFFLE_ALL
+                shuffleMode == ShuffleMode.SONGS && repeatMode == RepeatMode.OFF -> SHUFFLE_ONCE
+                shuffleMode == ShuffleMode.OFF && repeatMode == RepeatMode.ONE -> REPEAT_ONE
+                else -> SEQUENTIAL
+            }
+        }
+
         fun cycle(current: PlayMode): PlayMode {
             return entries[(current.ordinal + 1) % entries.size]
         }
@@ -41,7 +81,13 @@ enum class SortOrder {
     DURATION_ASC,
     DURATION_DESC,
     YEAR_ASC,
-    YEAR_DESC
+    YEAR_DESC,
+    PLAYBACK_INFO,
+    FILE_NAME_ASC,
+    FILE_NAME_DESC,
+    PATH_ASC,
+    PATH_DESC,
+    PLAYBACK_INFO_DESC
 }
 
 enum class PlayState {
@@ -69,7 +115,8 @@ data class PlayQueue(
     val songs: List<AudioFile> = emptyList(),
     val currentIndex: Int = -1,
     val repeatMode: RepeatMode = RepeatMode.OFF,
-    val isShuffle: Boolean = false
+    val isShuffle: Boolean = false,
+    val originalSongs: List<AudioFile> = emptyList()
 ) {
     val currentSong: AudioFile?
         get() = if (currentIndex in songs.indices) songs[currentIndex] else null
@@ -77,6 +124,8 @@ data class PlayQueue(
     val size: Int get() = songs.size
 
     fun isEmpty(): Boolean = songs.isEmpty()
+
+    fun hasOriginalOrder(): Boolean = originalSongs.isNotEmpty()
 }
 
 data class EqualizerPreset(

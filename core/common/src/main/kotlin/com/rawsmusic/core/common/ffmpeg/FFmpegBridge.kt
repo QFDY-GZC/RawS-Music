@@ -1,26 +1,47 @@
 package com.rawsmusic.core.common.ffmpeg
 
 import android.util.Log
+import java.text.SimpleDateFormat
+import java.util.ArrayDeque
+import java.util.Date
+import java.util.Locale
 
 object FFmpegBridge {
     private const val TAG = "FFmpegBridge"
+    private const val MAX_DEBUG_ENTRIES = 240
     private var loaded = false
+    private val debugDateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
+    private val debugLock = Any()
+    private val recentDebugEntries = ArrayDeque<String>()
 
     init {
         try {
-            System.loadLibrary("avutil")
-            System.loadLibrary("swresample")
-            System.loadLibrary("avcodec")
-            System.loadLibrary("avformat")
+            // rawsmusic_ffmpeg is linked against split FFmpeg libs (avcodec, avformat, avutil, swresample)
+            // The dynamic linker loads them automatically — no need to load libffmpeg.so separately.
             System.loadLibrary("rawsmusic_ffmpeg")
             loaded = true
             Log.d(TAG, "FFmpeg native libraries loaded")
+            appendDebug("libraries loaded")
         } catch (e: UnsatisfiedLinkError) {
             Log.e(TAG, "Failed to load FFmpeg native libraries", e)
+            appendDebug("load failed: ${e.message ?: e.javaClass.simpleName}")
         }
     }
 
     fun isLoaded(): Boolean = loaded
+
+    fun resetDebugLog(reason: String) {
+        synchronized(debugLock) {
+            recentDebugEntries.clear()
+        }
+        appendDebug("reset: $reason")
+    }
+
+    fun getRecentDebugLog(): String? {
+        return synchronized(debugLock) {
+            if (recentDebugEntries.isEmpty()) null else recentDebugEntries.joinToString("\n")
+        }
+    }
 
     /**
      * 兼容旧调用：默认 16bit / stereo 输出。
@@ -65,7 +86,7 @@ object FFmpegBridge {
      *
      * bitsPerSample:
      * 16 -> s16le, 每采样 2 字节
-     * 24 -> s24le packed, 每采样 3 字节
+     * 24 -> s32le, 每采样 4 字节
      * 32 -> s32le, 每采样 4 字节
      */
     fun convertToRawPcm(
@@ -75,14 +96,23 @@ object FFmpegBridge {
         bitsPerSample: Int,
         channels: Int
     ): Int {
-        if (!loaded) return -1
-        return nativeConvertToRawPcm(
+        if (!loaded) {
+            appendDebug("convertToRawPcm skipped: bridge not loaded")
+            return -1
+        }
+        appendDebug(
+            "convertToRawPcm in=${shortPath(inputPath)} out=${shortPath(outputPath)} " +
+                "targetSr=$targetSampleRate bits=$bitsPerSample ch=$channels"
+        )
+        val result = nativeConvertToRawPcm(
             inputPath,
             outputPath,
             targetSampleRate,
             bitsPerSample,
             channels
         )
+        appendDebug("convertToRawPcm result=$result")
+        return result
     }
 
     fun probeDuration(path: String): Long {
@@ -91,18 +121,33 @@ object FFmpegBridge {
     }
 
     fun probeSampleRate(path: String): Int {
-        if (!loaded) return 0
-        return nativeProbeSampleRate(path)
+        if (!loaded) {
+            appendDebug("probeSampleRate skipped: bridge not loaded")
+            return 0
+        }
+        val result = nativeProbeSampleRate(path)
+        appendDebug("probeSampleRate ${shortPath(path)} -> $result")
+        return result
     }
 
     fun probeBitsPerSample(path: String): Int {
-        if (!loaded) return 0
-        return nativeProbeBitsPerSample(path)
+        if (!loaded) {
+            appendDebug("probeBitsPerSample skipped: bridge not loaded")
+            return 0
+        }
+        val result = nativeProbeBitsPerSample(path)
+        appendDebug("probeBitsPerSample ${shortPath(path)} -> $result")
+        return result
     }
 
     fun probeChannelCount(path: String): Int {
-        if (!loaded) return 0
-        return nativeProbeChannelCount(path)
+        if (!loaded) {
+            appendDebug("probeChannelCount skipped: bridge not loaded")
+            return 0
+        }
+        val result = nativeProbeChannelCount(path)
+        appendDebug("probeChannelCount ${shortPath(path)} -> $result")
+        return result
     }
 
     fun extractCover(inputPath: String, outputPath: String): Int {
@@ -138,8 +183,16 @@ object FFmpegBridge {
      * @param channels         输出声道数
      */
     fun openDecoder(path: String, targetSampleRate: Int, bitsPerSample: Int, channels: Int): Long {
-        if (!loaded) return 0L
-        return nativeOpenDecoder(path, targetSampleRate, bitsPerSample, channels)
+        if (!loaded) {
+            appendDebug("openDecoder skipped: bridge not loaded")
+            return 0L
+        }
+        appendDebug(
+            "openDecoder path=${shortPath(path)} targetSr=$targetSampleRate bits=$bitsPerSample ch=$channels"
+        )
+        val handle = nativeOpenDecoder(path, targetSampleRate, bitsPerSample, channels)
+        appendDebug("openDecoder result=0x${handle.toString(16)}")
+        return handle
     }
 
     /**
@@ -155,8 +208,13 @@ object FFmpegBridge {
      * Seek 到指定位置（毫秒）。
      */
     fun seekDecoder(handle: Long, positionMs: Long): Boolean {
-        if (!loaded) return false
-        return nativeSeekDecoder(handle, positionMs)
+        if (!loaded) {
+            appendDebug("seekDecoder skipped: bridge not loaded")
+            return false
+        }
+        val result = nativeSeekDecoder(handle, positionMs)
+        appendDebug("seekDecoder handle=0x${handle.toString(16)} posMs=$positionMs result=$result")
+        return result
     }
 
     fun getDecoderSampleRate(handle: Long): Int {
@@ -181,7 +239,25 @@ object FFmpegBridge {
 
     fun closeDecoder(handle: Long) {
         if (!loaded || handle == 0L) return
+        appendDebug("closeDecoder handle=0x${handle.toString(16)}")
         nativeCloseDecoder(handle)
+    }
+
+    private fun appendDebug(message: String) {
+        val line = "[${debugDateFormat.format(Date())}] $message"
+        synchronized(debugLock) {
+            while (recentDebugEntries.size >= MAX_DEBUG_ENTRIES) {
+                recentDebugEntries.removeFirst()
+            }
+            recentDebugEntries.addLast(line)
+        }
+    }
+
+    private fun shortPath(path: String?): String {
+        if (path.isNullOrBlank()) return "-"
+        val normalized = path.replace('\\', '/')
+        val name = normalized.substringAfterLast('/', normalized)
+        return if (name.isNotBlank()) name else normalized
     }
 
     private external fun nativeConvertToWav(

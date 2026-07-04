@@ -1,8 +1,5 @@
 package com.rawsmusic.module.player
 
-import android.media.audiofx.Virtualizer
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import com.rawsmusic.core.common.model.EqualizerPreset
 import com.rawsmusic.module.data.prefs.AppPreferences
@@ -48,50 +45,15 @@ class EqualizerController(private val audioSessionId: Int) {
     val numberOfBands: Int = 0
     val bandLevelRange: IntRange = -1500..1500
 
-    // ── 真正的 Virtualizer 实例 ──
-    private var virtualizer: Virtualizer? = null
-
-    private val handler = Handler(Looper.getMainLooper())
-
     fun init() {
-        Log.d("VirtualizerDebug", "init called, audioSessionId=$audioSessionId")
         _centerFrequencies.value = emptyList()
         loadPresets()
-
-        if (audioSessionId == 0) {
-            Log.w(TAG, "audioSessionId is 0, skipping Virtualizer creation")
-            return
-        }
-
-        try {
-            virtualizer = Virtualizer(0, audioSessionId)
-            virtualizer?.setEnabled(false)
-            Log.d(TAG, "System Virtualizer disabled (using custom DSP instead)")
-        } catch (e: RuntimeException) {
-            // USB DAC 等外部音频设备通常不支持 Virtualizer 引擎，这是正常情况，无需重试
-            Log.w(TAG, "Virtualizer not supported on current audio output (error: ${e.message})")
-        } catch (e: Exception) {
-            Log.w(TAG, "Virtualizer creation failed: ${e.message}")
-        }
+        Log.d(TAG, "Legacy equalizer shell initialized; native DSP owns the active audio chain")
     }
 
     fun setVirtualizer(strength: Int) {
-        Log.d("VirtualizerDebug", "setVirtualizer called with strength=$strength")
         _virtualizerStrength.value = strength
         AppPreferences.Equalizer.virtualizer = strength
-
-        val v = virtualizer
-        if (v == null) {
-            Log.w("VirtualizerDebug", "Virtualizer instance is null, cannot set strength")
-            return
-        }
-
-        try {
-            val result = v.setStrength(strength.toShort())
-            Log.d("VirtualizerDebug", "setStrength(${strength.toShort()}) returned $result, new roundedStrength=${v.roundedStrength}")
-        } catch (e: Exception) {
-            Log.e("VirtualizerDebug", "setStrength failed", e)
-        }
     }
 
     fun setEnabled(enabled: Boolean) {
@@ -155,13 +117,10 @@ class EqualizerController(private val audioSessionId: Int) {
     }
 
     fun release() {
-        Log.d("VirtualizerDebug", "release called")
-        virtualizer?.release()
-        virtualizer = null
+        Log.d(TAG, "Legacy equalizer shell released")
     }
 
     fun reinit(newAudioSessionId: Int) {
-        release()
-        // 外部调用 init() 重建 Virtualizer
+        Log.d(TAG, "Legacy equalizer shell ignores audioSessionId changes; native DSP remains canonical")
     }
 }

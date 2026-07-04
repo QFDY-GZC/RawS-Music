@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Slider
@@ -25,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -35,7 +35,7 @@ import com.rawsmusic.ui.songs.PlayerHolder
 fun LiquidGlassSpatialSoundScreen(
     onBack: () -> Unit
 ) {
-    val colors = themeColors()
+    
     var spatialEnabled by remember { mutableStateOf(AppPreferences.Equalizer.virtualizer > 0) }
     var strength by remember { mutableStateOf(AppPreferences.Equalizer.virtualizer.toFloat()) }
     var savedStrength by remember { mutableStateOf(AppPreferences.Equalizer.virtualizer) }
@@ -49,9 +49,8 @@ fun LiquidGlassSpatialSoundScreen(
     Column(
         Modifier
             .fillMaxSize()
-            .background(colors.background)
+            .background(MiuixTheme.colorScheme.background)
             .verticalScroll(rememberScrollState())
-            .statusBarsPadding()
             .padding(horizontal = 20.dp, vertical = 8.dp)
     ) {
         Spacer(Modifier.height(16.dp))
@@ -62,13 +61,13 @@ fun LiquidGlassSpatialSoundScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = onBack) {
-                Text("← 返回", color = colors.primary, fontSize = 16.sp, fontFamily = appFontFamily())
+                Text("← 返回", color = MiuixTheme.colorScheme.primary, fontSize = 16.sp, fontFamily = appFontFamily())
             }
             Text(
                 "立体声扩展",
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Medium,
-                color = colors.onSurface,
+                color = MiuixTheme.colorScheme.onBackground,
                 fontFamily = appFontFamily()
             )
             Spacer(Modifier.weight(1f))
@@ -99,7 +98,7 @@ fun LiquidGlassSpatialSoundScreen(
             SectionHeader("强度")
             Text(
                 "${(strength.toInt() / 10)}%",
-                fontSize = 14.sp, color = colors.primary,
+                fontSize = 14.sp, color = MiuixTheme.colorScheme.primary,
                 modifier = Modifier.padding(top = 4.dp)
             )
             Slider(
@@ -109,7 +108,7 @@ fun LiquidGlassSpatialSoundScreen(
                 },
                 valueRange = 0f..1000f,
                 steps = 99,
-                colors = SliderDefaults.colors(thumbColor = colors.primary, activeTrackColor = colors.primary),
+                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary),
                 onValueChangeFinished = {
                     val value = strength.toInt()
                     Log.d("SpatialSound", "Slider finished: value=$value")
@@ -129,7 +128,7 @@ fun LiquidGlassSpatialSoundScreen(
             Spacer(Modifier.height(8.dp))
             Text(
                 "模拟音箱串音，消除头中效应",
-                fontSize = 13.sp, color = colors.onSurface.copy(alpha = 0.6f),
+                fontSize = 13.sp, color = MiuixTheme.colorScheme.onBackground.copy(alpha = 0.6f),
                 fontFamily = appFontFamily()
             )
             Spacer(Modifier.height(8.dp))
@@ -145,7 +144,7 @@ fun LiquidGlassSpatialSoundScreen(
             SectionHeader("低切频率")
             Text(
                 "${cfLowCut.toInt()} Hz",
-                fontSize = 14.sp, color = colors.primary,
+                fontSize = 14.sp, color = MiuixTheme.colorScheme.primary,
                 modifier = Modifier.padding(top = 4.dp)
             )
             Slider(
@@ -155,7 +154,7 @@ fun LiquidGlassSpatialSoundScreen(
                 },
                 valueRange = 50f..1000f,
                 steps = 19,
-                colors = SliderDefaults.colors(thumbColor = colors.primary, activeTrackColor = colors.primary),
+                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary),
                 onValueChangeFinished = {
                     PlayerHolder.controller?.setCrossfeedParams(cfLowCut, cfHighCut, cfAttenuation)
                 }
@@ -168,7 +167,7 @@ fun LiquidGlassSpatialSoundScreen(
             SectionHeader("高切频率")
             Text(
                 "${cfHighCut.toInt()} Hz",
-                fontSize = 14.sp, color = colors.primary,
+                fontSize = 14.sp, color = MiuixTheme.colorScheme.primary,
                 modifier = Modifier.padding(top = 4.dp)
             )
             Slider(
@@ -178,7 +177,7 @@ fun LiquidGlassSpatialSoundScreen(
                 },
                 valueRange = 500f..8000f,
                 steps = 15,
-                colors = SliderDefaults.colors(thumbColor = colors.primary, activeTrackColor = colors.primary),
+                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary),
                 onValueChangeFinished = {
                     PlayerHolder.controller?.setCrossfeedParams(cfLowCut, cfHighCut, cfAttenuation)
                 }
@@ -191,7 +190,7 @@ fun LiquidGlassSpatialSoundScreen(
             SectionHeader("衰减量")
             Text(
                 "%.1f dB".format(cfAttenuation),
-                fontSize = 14.sp, color = colors.primary,
+                fontSize = 14.sp, color = MiuixTheme.colorScheme.primary,
                 modifier = Modifier.padding(top = 4.dp)
             )
             Slider(
@@ -201,13 +200,13 @@ fun LiquidGlassSpatialSoundScreen(
                 },
                 valueRange = 0f..15f,
                 steps = 29,
-                colors = SliderDefaults.colors(thumbColor = colors.primary, activeTrackColor = colors.primary),
+                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary),
                 onValueChangeFinished = {
                     PlayerHolder.controller?.setCrossfeedParams(cfLowCut, cfHighCut, cfAttenuation)
                 }
             )
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(300.dp))
     }
 }

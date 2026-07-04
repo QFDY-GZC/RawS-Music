@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 动画时长（毫秒） -->
+    <integer name="animation_duration_fast">100</integer>
+    <integer name="animation_duration_fast_plus">120</integer>
+    <integer name="animation_duration_normal">150</integer>
+    <integer name="animation_duration_medium">200</integer>
+    <integer name="animation_duration_slow">250</integer>
+    <integer name="animation_duration_extra_slow">300</integer>
+    <integer name="animation_duration_very_fast">80</integer>
+    
+    <!-- 侧边栏动画时长 -->
+    <integer name="drawer_open_duration">250</integer>
+    <integer name="drawer_close_duration">200</integer>
+    
+    <!-- 长按阈值（毫秒） -->
+    <integer name="long_press_duration">500</integer>
+    
+    <!-- 双击间隔阈值（毫秒） -->
+    <integer name="double_tap_interval">300</integer>
+    
+    <!-- 播放统计阈值（毫秒） -->
+    <integer name="play_count_threshold">20000</integer>
+    <integer name="play_count_cooldown">5000</integer>
+    <integer name="stats_tick_interval">1000</integer>
+    <integer name="stats_max_gap">1500</integer>
+    
+    <!-- 歌词同步间隔（毫秒） -->
+    <integer name="lyric_sync_interval">100</integer>
+    
+    <!-- 蓝牙编解码检测延迟（毫秒） -->
+    <integer name="bluetooth_codec_detect_delay">500</integer>
+    
+    <!-- 封面呼吸动画时长（毫秒） -->
+    <integer name="cover_breathing_duration">2000</integer>
+    
+    <!-- 滚动到当前歌曲延迟（毫秒） -->
+    <integer name="scroll_to_current_song_delay">100</integer>
+    
+    <!-- 场景切换延迟（毫秒） -->
+    <integer name="scene_switch_delay">50</integer>
+</resources>

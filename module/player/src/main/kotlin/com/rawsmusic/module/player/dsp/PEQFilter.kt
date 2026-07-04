@@ -38,10 +38,10 @@ enum class FilterType(val value: Int) {
  */
 data class PEQFilter(
     val type: FilterType = FilterType.PEAK,
-    val frequency: Float = 1000f,   // 中心频率 (Hz)
-    val gainDB: Float = 0f,         // 增益 (dB)
-    val Q: Float = 1.414f,          // 品质因数 (√2, Butterworth 最平响应)
-    val enabled: Boolean = true     // 是否启用
+    val frequency: Float = 1000f,
+    val gainDB: Float = 0f,
+    val Q: Float = 1.414f,
+    val enabled: Boolean = false
 ) {
     /**
      * 滤波器的显示名称
@@ -63,33 +63,110 @@ data class PEQFilter(
      * 增益显示文本（保留一位小数）
      */
     val gainText: String
-        get() = String.format("%+.1f", gainDB)
+        get() = if (gainDB >= 0) "+${String.format("%.1f", gainDB)} dB"
+        else "${String.format("%.1f", gainDB)} dB"
+
+    /**
+     * Q值显示文本
+     */
+    val qText: String
+        get() = String.format("%.2f", Q)
+
+    /**
+     * 参数安全化：防止异常预设/导入数据导致滤波器不稳定或爆音
+     * 先处理 NaN/Infinity，再 coerceIn 到安全范围
+     * 导入预设时使用更宽范围，UI 显示可继续用更窄的范围
+     */
+    fun sanitized(): PEQFilter {
+        val safeFreq = frequency.safeOr(1000f)
+        val safeGain = gainDB.safeOr(0f)
+        val safeQ = Q.safeOr(1.414f)
+
+        return copy(
+            frequency = safeFreq.coerceIn(20f, 20000f),
+            gainDB = safeGain.coerceIn(-24f, 24f),
+            Q = safeQ.coerceIn(0.05f, 24f)
+        )
+    }
+
+    private fun Float.safeOr(defaultValue: Float): Float {
+        return if (isFinite()) this else defaultValue
+    }
 
     companion object {
+        /** 最小滤波器数量 */
+        const val MIN_FILTERS = 10
+
         /** 最大滤波器数量 */
-        const val MAX_FILTERS = 10
+        const val MAX_FILTERS = 40
 
         /** 频率范围 */
         val FREQUENCY_RANGE = 20f..20000f
 
-        /** 增益范围 */
+        /** 增益范围（UI 显示） */
         val GAIN_RANGE = -12f..12f
 
-        /** Q值范围 */
+        /** Q值范围（UI 显示） */
         val Q_RANGE = 0.1f..10f
 
         /** 默认滤波器 */
         val DEFAULT = PEQFilter()
 
         /** 标准 10 段倍频程频率 (ISO 266) */
-        private val STANDARD_OCTAVE_FREQS = floatArrayOf(
-            31.5f, 63f, 125f, 250f, 500f, 1000f, 2000f, 4000f, 8000f, 16000f
+        private val STANDARD_10_BAND_FREQS = floatArrayOf(
+            31.5f, 63f, 125f, 250f, 500f,
+            1000f, 2000f, 4000f, 8000f, 16000f
         )
 
-        /** 生成默认的 10 段倍频程配置，全部启用，增益为 0 */
-        fun createDefaultBands(): List<PEQFilter> {
-            return STANDARD_OCTAVE_FREQS.map { freq ->
-                PEQFilter(frequency = freq, gainDB = 0f, Q = 1.414f, enabled = true)
+        /**
+         * 根据段数生成对数均匀分布的默认频率
+         * 10 段使用 ISO 266 标准倍频程
+         * 11-40 段在 25Hz-18kHz 间对数均匀插值
+         */
+        fun defaultFreqsForCount(count: Int): FloatArray {
+            val c = count.coerceIn(MIN_FILTERS, MAX_FILTERS)
+
+            if (c == 10) {
+                return STANDARD_10_BAND_FREQS.copyOf()
+            }
+
+            val minHz = 25.0
+            val maxHz = 18000.0
+
+            return FloatArray(c) { i ->
+                val t = i.toDouble() / (c - 1).toDouble()
+                (minHz * Math.pow(maxHz / minHz, t)).toFloat()
+            }
+        }
+
+        /**
+         * 生成默认配置，全部 disabled，增益为 0
+         * disabled 避免 40 段 0dB 也参与 DSP 白跑 biquad
+         */
+        fun createDefaultBands(count: Int = MIN_FILTERS): List<PEQFilter> {
+            return defaultFreqsForCount(count).map { freq ->
+                PEQFilter(
+                    type = FilterType.PEAK,
+                    frequency = freq,
+                    gainDB = 0f,
+                    Q = 1.414f,
+                    enabled = false
+                )
+            }
+        }
+
+        /**
+         * 图形 EQ 转 PEQ 时的推荐 Q 值
+         * 段数越多，Q 值越大，避免相邻频段互相干扰
+         */
+        fun qForGraphicBand(count: Int): Float {
+            val c = count.coerceIn(MIN_FILTERS, MAX_FILTERS)
+
+            return when {
+                c <= 10 -> 1.414f
+                c <= 20 -> 2.0f
+                c <= 31 -> 2.8f
+                else -> 3.2f
             }
         }
     }
@@ -100,7 +177,8 @@ data class PEQFilter(
  */
 data class PEQConfig(
     val filters: List<PEQFilter> = emptyList(),
-    val enabled: Boolean = false
+    val enabled: Boolean = false,
+    val bandCount: Int = PEQFilter.MIN_FILTERS
 ) {
     /**
      * 获取启用的滤波器数量
@@ -113,6 +191,12 @@ data class PEQConfig(
      */
     val hasFilters: Boolean
         get() = filters.isNotEmpty()
+
+    /**
+     * 安全化的段数（防止越界）
+     */
+    val resolvedBandCount: Int
+        get() = bandCount.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
 
     companion object {
         /** 空配置 */

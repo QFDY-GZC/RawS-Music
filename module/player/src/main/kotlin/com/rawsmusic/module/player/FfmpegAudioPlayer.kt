@@ -2,24 +2,25 @@ package com.rawsmusic.module.player
 
 import android.content.Context
 import android.media.AudioAttributes
-import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.SystemClock
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
+import com.rawsmusic.core.common.model.AudioOutputMode
+import com.rawsmusic.module.data.prefs.AppPreferences
 import java.io.File
 import java.io.FileInputStream
-import java.io.RandomAccessFile
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.LockSupport
 import kotlin.concurrent.thread
-import com.rawsmusic.module.player.dsp.StereoWidenModule
-import com.rawsmusic.module.player.dsp.NativeDSPEngine
 import com.rawsmusic.module.player.usb.UsbAudioEngine
+import com.rawsmusic.module.player.usb.UsbSilentKind
+import com.rawsmusic.module.player.usb.buildSupportedUsbDsdModeConfig
 
 /**
  * 基于 FFmpeg + AudioTrack 的音频播放器
@@ -37,6 +38,40 @@ class FfmpegAudioPlayer(private val context: Context) {
     companion object {
         private const val TAG = "FfmpegAudioPlayer"
         private const val PCM_BUFFER_SIZE = 8192
+        private const val RING_BUFFER_READ_TIMEOUT_MS = 2000L
+        private const val USB_NATIVE_PREFILL_TARGET_MS = 180L
+        private const val USB_NATIVE_PREFILL_MIN_MS = 40L
+        private const val USB_NATIVE_PREFILL_TIMEOUT_MS = 420L
+        // Keep more headroom than the original low-latency path, but do not build
+        // multi-second native queues.  Long queues make pause/seek stop tails and
+        // analog transition noise worse; Android background freezes must be handled
+        // by foreground-service/wakelock policy instead.
+        private const val USB_NATIVE_LOW_WATER_MS = 140L
+        private const val USB_NATIVE_TARGET_WATER_MS = 320L
+        private const val USB_NATIVE_HIGH_WATER_MS = 620L
+        private const val USB_NO_FEEDBACK_LOW_WATER_MS = 96L
+        private const val USB_NO_FEEDBACK_TARGET_WATER_MS = 192L
+        private const val USB_NO_FEEDBACK_HIGH_WATER_MS = 360L
+        private const val USB_NO_FEEDBACK_WRITE_CHUNK_MS = 12L
+        // No-feedback queue accounting: libusb has a large in-flight
+        // transfer queue that is not the same as Kotlin's app-side native ring.
+        // On MIUI/HyperOS the USB event thread can complete transfers in bursts,
+        // so a low-rate 44.1k stream may hover just above the old 360 ms high
+        // water mark and get misclassified as a dead DAC. Reserve a shadow
+        // budget for the in-flight ISO queue before declaring producer high-water.
+        private const val USB_NO_FEEDBACK_INFLIGHT_GUARD_TRANSFERS = 160
+        // Fixed-pacer streams should not be destructively reopened just
+        // because the app-side native ring is high. On MIUI/Android 16, libusb
+        // callbacks can be scheduler-limited for several seconds while ISO OUT is
+        // still alive. Keep the modeled stream running and let native pacing/URB
+        // depth absorb it.
+        private const val USB_FIXED_PACER_DRAIN_GRACE_MS = 20_000L
+        private const val USB_FIXED_PACER_ZERO_OUTPUT_GRACE_MS = 5_000L
+        private const val USB_NO_FEEDBACK_FAST_REPREPARE_COOLDOWN_MS = 4_500L
+        private const val USB_NO_FEEDBACK_STABLE_REPREPARE_COOLDOWN_MS = 15_000L
+        private const val USB_NO_FEEDBACK_ZERO_OUTPUT_REPREPARE_MS = 1_800L
+        private const val USB_NO_FEEDBACK_MODERATE_UNDER_OUTPUT_REPREPARE_MS = 12_000L
+        private const val USB_NO_FEEDBACK_TARGET_WATER_FAKE_PLAYBACK_GRACE_MS = 900L
     }
 
     enum class State { IDLE, PREPARING, PLAYING, PAUSED, STOPPED, ERROR, COMPLETED }
@@ -45,10 +80,15 @@ class FfmpegAudioPlayer(private val context: Context) {
         fun onStateChanged(state: State) {}
         fun onPositionChanged(positionMs: Long, durationMs: Long) {}
         fun onError(message: String) {}
+        /** Gapless/Crossfade 切歌回调 — 通知 PlayerController 更新队列索引 */
+        fun onGaplessSongChanged(newPath: String) {}
     }
 
     var listener: Listener? = null
     var onPcmWaveformFrame: ((buffer: ByteArray, read: Int, channels: Int, sampleRate: Int, bitsPerSample: Int) -> Unit)? = null
+    /** Android AudioPolicy has seen a USB audio output route. PlayerController may use this as
+     * a fast fallback trigger when UsbManager attach broadcasts arrive late or are filtered by OEM ROMs. */
+    var onAndroidUsbAudioRouteAdded: (() -> Unit)? = null
 
     private var _state = State.IDLE
     val state: State get() = _state
@@ -56,44 +96,171 @@ class FfmpegAudioPlayer(private val context: Context) {
     private var _durationMs = 0L
     val durationMs: Long get() = _durationMs
 
-    private var _positionMs = 0L
+    /**
+     * 安全地将位置限制在 [0, _durationMs] 范围内。
+     * 当 _durationMs <= 0（未知时长）时，仅保证非负。
+     */
+    private fun Long.coerceToDuration(): Long {
+        return if (_durationMs > 0) this.coerceIn(0L, _durationMs) else this.coerceAtLeast(0L)
+    }
+
+    private fun bytesForMs(bytesPerSec: Long, ms: Long): Int {
+        return (bytesPerSec * ms / 1000L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    private fun usbDeviceBytesPerSecond(engine: UsbAudioEngine, fallbackBytesPerSec: Long): Long {
+        // Native ring buffer stores final USB device-format bytes.
+        // Device B/s = sampleRate * channels * selectedSubslotBytes,
+        // not sampleRate * channels * ceil(validBits/8).
+        val runtime = engine.getRuntimeFormat()
+        val computed = if (runtime.isValid) {
+            runtime.sampleRate.toLong() * runtime.channels.toLong() * runtime.subslotBytes.toLong()
+        } else 0L
+        val native = engine.getOutputBytesPerSecond().toLong()
+        if (computed > 0L) {
+            if (native > 0L && native != computed) {
+                AppLogger.w(
+                    TAG,
+                    "USB deviceBPS corrected from runtime: native=$native computed=$computed " +
+                        "sr=${runtime.sampleRate} ch=${runtime.channels} validBits=${runtime.validBits} " +
+                        "subslot=${runtime.subslotBytes} frame=${runtime.frameBytes}"
+                )
+            }
+            return computed
+        }
+        return if (native > 0L) native else fallbackBytesPerSec
+    }
+
+    @Volatile private var _positionMs = 0L
     val positionMs: Long get() = _positionMs
 
     private var _audioSessionId = AudioManager.AUDIO_SESSION_ID_GENERATE
     val audioSessionId: Int get() = _audioSessionId
 
-    private var executor = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "FfmpegAudioPlayer-Worker").apply { isDaemon = true }
-    }
-    private var currentTask: Future<*>? = null
+    private val playbackWorker = PlaybackWorkerController(TAG)
 
     private var audioTrack: AudioTrack? = null
     val audioTrackRef: AudioTrack? get() = audioTrack
+    private val audioTrackLifecycle = AudioTrackLifecycleController(TAG) {
+        val detached = audioTrack
+        audioTrack = null
+        detached
+    }
+    private var nativeAudioEngine: NativeAudioEngine? = null
+    private val nativeAudioEngineLifecycle = NativeAudioEngineLifecycleController(
+        tag = TAG,
+        currentProvider = { nativeAudioEngine },
+        detachCurrent = {
+            val detached = nativeAudioEngine
+            nativeAudioEngine = null
+            detached
+        }
+    )
+
+    // AudioTrack hardware timestamp state is isolated from the player loop.
+    private val audioTrackPositionTracker = AudioTrackPositionTracker()
+    private val audioTrackPositionUpdater = AudioTrackPositionUpdater(
+        hardwarePositionMs = { sampleRate -> getHardwarePositionMs(sampleRate) },
+        useHardwareTimestamp = { useHardwareTimestamp.get() },
+        isFlushPending = { needsAudioTrackFlush.get() }
+    )
     private var tempWavFile: File? = null
-    private var sourcePath: String? = null
-    private var currentPath: String? = null
+    private val playbackSession = PlaybackSessionState(TAG)
+    private var sourcePath: String?
+        get() = playbackSession.sessionSourcePath
+        set(value) { playbackSession.sessionSourcePath = value }
+    private var currentPath: String?
+        get() = playbackSession.currentTrackPath
+        set(value) {
+            playbackSession.currentTrackPath = value
+        }
     private var resampledPath: String? = null
+    private val ffmpegAudioCache = FfmpegAudioCache(context)
+    private val androidAudioTrackFactory = AndroidAudioTrackFactory(context)
+    private val audioTrackPcmWriter = AudioTrackPcmWriter { probedEncoding }
     private val isPlaying = AtomicBoolean(false)
     private val isPaused = AtomicBoolean(false)
     private val isReleased = AtomicBoolean(false)
     private var seekPositionMs = -1L
+    @Volatile
+    private var queuedStartSeekMs = -1L
 
     private var decoderHandle: Long = 0L
+    private val decoderPathResolver = DecoderPathResolver(context, TAG)
+    private val decoderOpenHelper = FFmpegDecoderOpenHelper(
+        tag = TAG,
+        pathResolver = decoderPathResolver,
+        isSafeMode = { safeMode },
+        isStrictUsbBitPerfectPath = { isStrictUsbBitPerfectPath() }
+    )
     private var ringBuffer: RingBuffer? = null
     @Volatile
     private var decoderThread: Thread? = null
+    /** 解码器是否已到达 EOF（未关闭 ring buffer，streaming loop 继续消费剩余数据） */
+    @Volatile
+    private var decoderDone = false
+    /** Active decoder thread stop token. Each decoder thread captures its own token. */
+    @Volatile
+    private var decoderStopToken = DecoderStopToken("initial")
     @Volatile
     private var pendingSeekMs = -1L
-
-    private val playGeneration = java.util.concurrent.atomic.AtomicInteger(0)
     @Volatile
-    private var activeSourcePath: String? = null
+    private var pendingSeekSerial = 0L
+    private val needsAudioTrackFlush = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val useHardwareTimestamp = java.util.concurrent.atomic.AtomicBoolean(true)
+    /** seekTo() EOF 分支将 handle 所有权转移给新解码线程时设为 true，旧线程 finally 不要关闭 handle */
+    private val decoderHandleTransferred = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private val pauseLock = Object()
 
+    // ==================== Gapless / Crossfade ====================
+    /** 下一首歌路径 — 由 PlayerController 在切歌前设置 */
+    var nextSongPath: String?
+        get() = playbackSession.preparedNextTrackPath
+        set(value) { playbackSession.preparedNextTrackPath = value }
+    /** Crossfade 时长（毫秒），0 = 仅 gapless 无缝播放 */
+    var crossfadeDurationMs: Int
+        get() = playbackSession.crossfadeDurationMs
+        set(value) { playbackSession.crossfadeDurationMs = value }
+    private val crossfadeTransition = CrossfadeTransitionController(TAG)
+    private val decoderHandoff = DecoderHandoffController(TAG)
+    private val decoderLifecycleRetirer = DecoderLifecycleRetirer(TAG, decoderHandoff)
+    private val playbackTrackCommitter = PlaybackTrackCommitter(TAG)
+    private val androidPlaybackTargetResolver = AndroidPlaybackTargetResolver(context, TAG)
+    private val usbPlaybackTargetResolver = UsbPlaybackTargetResolver(TAG)
+    private val gaplessNextDecoder = GaplessNextDecoder(TAG) { path -> decoderPathResolver.resolve(path) }
+
+    private fun detachActiveDecoderForRetire(label: String): DecoderLifecycleRetirer.Target {
+        val target = DecoderLifecycleRetirer.Target(
+            handle = decoderHandle,
+            thread = decoderThread,
+            ringBuffer = ringBuffer,
+            stopToken = decoderStopToken,
+            decoderDone = decoderDone,
+            label = label
+        )
+        decoderHandle = 0L
+        decoderThread = null
+        ringBuffer = null
+        return target
+    }
+
+    private fun retireDetachedDecoder(
+        target: DecoderLifecycleRetirer.Target,
+        reason: String,
+        joinTimeoutMs: Long = 1L
+    ): DecoderHandoffController.RetireResult? {
+        return decoderLifecycleRetirer.retire(
+            target = target,
+            reason = reason,
+            joinTimeoutMs = joinTimeoutMs
+        )
+    }
+
     private fun isStillCurrentPlayback(sourcePath: String, generation: Int): Boolean {
-        val currentGen = playGeneration.get()
-        val currentSource = activeSourcePath
-        val ok = generation == currentGen && currentSource == sourcePath
+        val currentGen = playbackSession.generation
+        val currentSource = playbackSession.sessionSourcePath
+        val ok = playbackSession.isCurrent(sourcePath, generation)
         if (!ok) {
             AppLogger.w(
                 TAG,
@@ -105,12 +272,61 @@ class FfmpegAudioPlayer(private val context: Context) {
         return ok
     }
 
+    private fun abortPlaybackStageIfObsolete(
+        sourcePath: String,
+        generation: Int,
+        stage: String,
+        closeRingBuffer: Boolean = false,
+        closeDecoderHandle: Boolean = false
+    ): Boolean {
+        val currentGen = playbackSession.generation
+        val currentSource = playbackSession.sessionSourcePath
+        val interrupted = Thread.currentThread().isInterrupted
+        val obsolete = !playbackSession.isCurrent(sourcePath, generation)
+        if (!obsolete && !interrupted) return false
+
+        AppLogger.w(
+            TAG,
+            "Abort playback stage=$stage reqGen=$generation currentGen=$currentGen " +
+                "reqSource=$sourcePath currentSource=$currentSource interrupted=$interrupted " +
+                "closeRing=$closeRingBuffer closeDecoder=$closeDecoderHandle"
+        )
+
+        isPlaying.set(false)
+
+        if (closeRingBuffer) {
+            val oldRing = ringBuffer
+            ringBuffer = null
+            runCatching { oldRing?.close() }
+                .onFailure { AppLogger.w(TAG, "Abort playback stage=$stage close ring buffer failed", it) }
+        }
+
+        if (closeDecoderHandle) {
+            val oldHandle = decoderHandle
+            decoderHandle = 0L
+            if (oldHandle != 0L) {
+                runCatching { FFmpegBridge.closeDecoder(oldHandle) }
+                    .onFailure {
+                        AppLogger.w(
+                            TAG,
+                            "Abort playback stage=$stage close decoder failed handle=$oldHandle",
+                            it
+                        )
+                    }
+            }
+        }
+
+        return true
+    }
+
     private var wavDataOffset = 0L
     private var wavDataSize = 0L
     var wavSampleRate = 48000; private set
     var wavChannels = 2; private set
     var wavBitsPerSample = 16; private set
     private var wavFormatTag = 1
+    @Volatile
+    private var usbRawDsdDirectActive = false
 
     @Volatile
     private var probedEncoding: Int = AudioFormat.ENCODING_PCM_16BIT
@@ -119,6 +335,50 @@ class FfmpegAudioPlayer(private val context: Context) {
     private val maxErrorsBeforeSafeMode = 3
     @Volatile
     private var safeMode = false
+    private val usbHardRecoveryAttemptsMs = java.util.ArrayDeque<Long>()
+
+    /** 当前 AudioTrack 的格式快照 — 用于检测格式变化触发主动重建 */
+    private val audioTrackFormatMonitor = AudioTrackFormatMonitor(TAG)
+
+    /**
+     * 检测 AudioTrack 格式是否与解码器输出格式不同
+     * 当切换歌曲导致采样率/通道/编码变化时返回 true，触发主动重建
+     */
+    private fun isTrackFormatChanged(): Boolean =
+        audioTrackFormatMonitor.hasChanged(wavSampleRate, wavChannels, probedEncoding)
+
+    private fun resetUsbHardRecoveryFuse(reason: String) {
+        synchronized(usbHardRecoveryAttemptsMs) {
+            usbHardRecoveryAttemptsMs.clear()
+        }
+        AppLogger.i(TAG, "USB hard recovery fuse reset: reason=$reason")
+    }
+
+    private fun allowUsbHardRecovery(reason: String): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        synchronized(usbHardRecoveryAttemptsMs) {
+            while (usbHardRecoveryAttemptsMs.isNotEmpty() &&
+                now - usbHardRecoveryAttemptsMs.first() > 12_000L
+            ) {
+                usbHardRecoveryAttemptsMs.removeFirst()
+            }
+            if (usbHardRecoveryAttemptsMs.size >= 1) {
+                AppLogger.e(
+                    TAG,
+                    "USB hard recovery fuse open: reason=$reason recentAttempts=${usbHardRecoveryAttemptsMs.size} " +
+                        "windowMs=12000; refusing another destructive reopen to avoid kernel panic / ps_hold loops"
+                )
+                return false
+            }
+            usbHardRecoveryAttemptsMs.addLast(now)
+            return true
+        }
+    }
+
+    /** AudioTrack 创建后记录当前格式快照 */
+    private fun snapshotTrackFormat(sampleRate: Int, channelConfig: Int, encoding: Int) {
+        audioTrackFormatMonitor.snapshot(sampleRate, channelConfig, encoding)
+    }
 
     val bufferSizeInFrames: Int
         get() = try {
@@ -136,67 +396,281 @@ class FfmpegAudioPlayer(private val context: Context) {
             } catch (_: Exception) { 0 }
         }
 
-    private var volume = 1.0f
+    /**
+     * 获取硬件级精确播放位置（毫秒），委托给 AudioTrackPositionTracker
+     * 返回 -1 表示 timestamp 不可用
+     */
+    private fun getHardwarePositionMs(sampleRate: Int): Long =
+        audioTrackPositionTracker.hardwarePositionMs(audioTrack, sampleRate)
 
-    private val audioDeviceCallback = object : AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
-            if (usbExclusiveMode) return
-            if (_state != State.PLAYING && _state != State.PAUSED) return
-            val hasOutput = addedDevices?.any { it.isSink } ?: false
-            if (hasOutput) {
-                AppLogger.i(TAG, "Audio output device added, rebuilding AudioTrack")
-                rebuildAudioTrack()
-            }
-        }
-
-        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
-            if (usbExclusiveMode) return
-            if (_state != State.PLAYING && _state != State.PAUSED) return
-            val hasOutput = removedDevices?.any { it.isSink } ?: false
-            if (hasOutput) {
-                AppLogger.i(TAG, "Audio output device removed, rebuilding AudioTrack")
-                rebuildAudioTrack()
-            }
-        }
+    private fun resetAudioTrackPositionTracker() {
+        audioTrackPositionTracker.reset()
     }
 
-    private var audioDeviceCallbackRegistered = false
+    private fun enableHardwarePositionTracking() {
+        resetAudioTrackPositionTracker()
+        useHardwareTimestamp.set(true)
+    }
+
+    private fun disableHardwarePositionTracking() {
+        useHardwareTimestamp.set(false)
+        resetAudioTrackPositionTracker()
+    }
+
+    private var volume = 1.0f
+
+    private val androidAudioRouteController = AndroidAudioRouteController(
+        context = context,
+        isUsbExclusiveMode = { usbExclusiveMode },
+        isRouteMutable = { _state == State.PLAYING || _state == State.PAUSED },
+        stateDescription = { _state.name },
+        isReleased = { isReleased.get() },
+        nativeAudioEngineProvider = { nativeAudioEngine },
+        audioTrackProvider = { audioTrack },
+        recreateAudioTrackInline = { forceSco, forcedDevice -> recreateAudioTrackInline(forceSco, forcedDevice) },
+        runOnPlaybackExecutor = { block -> playbackWorker.execute("android_audio_route", block) },
+        wakePlaybackLoop = { /* consumePendingAndroidAudioTrackRouteRebuild is polled in the write loop */ },
+        onAndroidUsbAudioRouteAdded = { onAndroidUsbAudioRouteAdded?.invoke() }
+    )
+
+    private val playbackDspProcessor = PlaybackDspProcessor(
+        isBitPerfectBypassActive = { isStrictUsbBitPerfectPath() },
+        reportBitPerfectBypass = { bit, reason -> logUsbBitPerfectBypassOnce(bit, reason) },
+        isFloatOutputActive = { useFloatOutput }
+    )
 
     @Volatile
     var stereoWidenFactor: Float = 0f
         set(value) {
             field = value
-            stereoWidenModule.factor = value
-            nativeDspEngine?.setStereoWiden(value)
+            playbackDspProcessor.stereoWidenFactor = value
         }
 
-    private val stereoWidenModule = StereoWidenModule()
-    private var nativeDspEngine: NativeDSPEngine? = null
-    private var useNativeDsp = false
-    private var dspShortArray: ShortArray? = null
-    private var dspByteBuffer: java.nio.ByteBuffer? = null
     private var decoderFloatBuf: ByteArray? = null
+    private var decoderPacked24Buf: ByteArray? = null
 
     /** 暴露 DSP 引擎给 PEQ 控制器使用 */
-    val dspEngine: NativeDSPEngine? get() = nativeDspEngine
+    val dspEngine: com.rawsmusic.module.player.dsp.NativeDSPEngine? get() = playbackDspProcessor.engine
+
+    /** 当前是否使用浮点输出（非 USB 且位深 > 16） */
+    private val useFloatOutput: Boolean
+        get() = !usbExclusiveMode && probedEncoding == AudioFormat.ENCODING_PCM_FLOAT
+
+    /** Android packed 24-bit 输出。FFmpegBridge 对 24/32bit 统一解码为 S32LE，写入前需要转为 3-byte packed。 */
+    private val usePacked24Output: Boolean
+        get() = !usbExclusiveMode && AudioOutputManager.pcm24PackedEncodingOrNull()?.let { probedEncoding == it } == true
+
+    private fun playbackBytesPerSample(): Int = when {
+        usbExclusiveMode -> usbDecoderBytesPerSample(wavBitsPerSample)
+        useFloatOutput -> 4
+        usePacked24Output -> 3
+        probedEncoding == AudioFormat.ENCODING_PCM_16BIT -> 2
+        else -> 4
+    }
+
+    private val useNativePcmOutput: Boolean
+        get() = !usbExclusiveMode &&
+            !AudioOutputManager.shouldUseScoMode(context) &&
+            NativeAudioEngine.isSupported(AudioOutputManager.getCurrentOutputMode(context))
+
+    private fun preferredNativeOutputDeviceId(): Int =
+        androidAudioRouteController.preferredNativeOutputDeviceId()
+
+    private fun retargetNativeOutputDevice(reason: String, forcedDeviceId: Int = 0): Boolean =
+        androidAudioRouteController.retargetNativeOutputDevice(reason, forcedDeviceId)
+
+    fun repairAndroidOutputRouteAfterDeviceChange(reason: String, forceRebuild: Boolean = true) {
+        androidAudioRouteController.repairAndroidOutputRoute(reason, forceRebuild)
+    }
+
+    private fun consumePendingAndroidAudioTrackRouteRebuild(): AudioTrack? =
+        androidAudioRouteController.consumePendingAudioTrackRouteRebuild()
+
+    private val outputBytesPerSample: Int
+        get() = usbDecoderBytesPerSample(wavBitsPerSample)
+
+    /** 公开播放状态 — 供 PlayerController 查询 */
+    val isPlayingNow: Boolean get() = isPlaying.get()
 
     var usbExclusiveMode = false
     var usbBitPerfectMode = false
+    // Per-track strict bit-perfect gate. USB PCM transport is capped at S32LE.
+    // 64-bit source files must be decoded/down-converted to 32-bit before USB output.
+    private var usbStrictBitPerfectForCurrentTrack = false
+    /** Controller may set this for same-format manual next: keep native USB engine and skip prepare/reinit once. */
+    @Volatile
+    var usbReuseEngineForNextStart: Boolean = false
     var usbActualOutputSampleRate = 0
     var usbPrepareForPlayback: ((sampleRate: Int, bitDepth: Int, channels: Int, srcFilePath: String?) -> Boolean)? = null
     var onUsbTransportLost: (() -> Unit)? = null
     var onUsbPlaybackStarted: (() -> Unit)? = null
     var onUsbPlaybackStopped: (() -> Unit)? = null
+    var onUsbPlaybackDataFlowing: (() -> Unit)? = null
+    /** Called when the stream health model identifies a generic recoverable USB profile failure. */
+    var onUsbStreamHealthFailure: ((kind: UsbSilentKind, reason: String) -> Unit)? = null
+    /** Controller-side guard for situations where hard reopen is more dangerous than waiting. */
+    var shouldDeferUsbHardRecovery: ((reason: String) -> Boolean)? = null
+    /** nativeStart 前回调，让 Kotlin 层先恢复硬件音量 */
+    var onBeforeUsbNativeStart: (() -> Unit)? = null
+    private val usbPostStartVolumeRestoreGate = UsbPostStartVolumeRestoreGate(TAG) {
+        onUsbPlaybackDataFlowing?.invoke()
+    }
+
+    private fun armUsbPostStartVolumeRestore(reason: String) {
+        usbPostStartVolumeRestoreGate.arm(reason)
+    }
+
+    private fun maybeRestoreUsbVolumeRoute(reason: String, nativeBuffered: Int) {
+        usbPostStartVolumeRestoreGate.maybeRestore(reason, nativeBuffered)
+    }
+
+    fun setSuppressAndroidExternalRouteForUsbCutover(enabled: Boolean, reason: String) {
+        androidAudioRouteController.setSuppressExternalRouteForUsbCutover(enabled, reason)
+    }
+
+    private fun shouldDeferHardUsbRecovery(reason: String): Boolean {
+        return runCatching { shouldDeferUsbHardRecovery?.invoke(reason) == true }.getOrDefault(false)
+    }
+
+    private fun usbAudibleTokenValue(state: String, key: String): String? {
+        if (state.isBlank()) return null
+        return state.split(' ').firstOrNull { it.startsWith("$key=") }?.substringAfter('=')
+    }
+
+    private fun usbAudibleAccepted(state: String): Boolean =
+        usbAudibleTokenValue(state, "audible") == "1"
+
+    private fun usbAudibleNeedsVolumeRepair(state: String): Boolean {
+        if (state.isBlank()) return false
+        val completed = usbAudibleTokenValue(state, "completed")?.toLongOrNull() ?: 0L
+        val volumeReady = usbAudibleTokenValue(state, "volumeReady")
+            ?: usbAudibleTokenValue(state, "audibleVolReady")
+        val hwSafeActive = usbAudibleTokenValue(state, "hwSafeActive")
+        return completed > 0L && (volumeReady == "0" || hwSafeActive == "1")
+    }
+
+    private fun armUsbAudibleColdStartWatchdog(reason: String) {
+        if (!usbExclusiveMode) return
+        val serial = usbPlaybackSerial.get()
+        val checksMs = longArrayOf(180L, 420L, 900L, 1500L)
+        thread(name = "UsbAudibleColdStartWatchdog", isDaemon = true) {
+            var elapsed = 0L
+            for (delayMs in checksMs) {
+                val sleepMs = (delayMs - elapsed).coerceAtLeast(0L)
+                if (sleepMs > 0L) Thread.sleep(sleepMs)
+                elapsed = delayMs
+                if (!usbExclusiveMode || isReleased.get() || !isPlaying.get() || !isUsbPlaybackSerialCurrent(serial)) {
+                    AppLogger.i(TAG, "USB audible watchdog exit: stale reason=$reason elapsed=${elapsed}ms serial=$serial")
+                    return@thread
+                }
+                val handle = UsbAudioEngine.currentHandle
+                if (handle == 0L || !UsbAudioEngine.isRunning()) {
+                    AppLogger.w(TAG, "USB audible watchdog skip: no running handle reason=$reason elapsed=${elapsed}ms")
+                    continue
+                }
+                val state = runCatching { UsbAudioEngine.nativeGetAudibleStateString(handle) }.getOrDefault("")
+                AppLogger.i(TAG, "USB audible watchdog: reason=$reason elapsed=${elapsed}ms state=$state")
+                if (usbAudibleAccepted(state)) return@thread
+
+                // If native reports ISO payload but the audible gate is blocked by
+                // volume readiness, ask the Kotlin route controller to re-apply the
+                // user-selected hardware volume. This covers background cold starts
+                // where the native transient safe level was set but its internal
+                // restore flag did not fire.
+                if (elapsed >= 420L || usbAudibleNeedsVolumeRepair(state)) {
+                    try {
+                        AppLogger.w(TAG, "USB audible watchdog repairing volume route: reason=$reason elapsed=${elapsed}ms state=$state")
+                        onUsbPlaybackDataFlowing?.invoke()
+                        Thread.sleep(80L)
+                        val after = runCatching { UsbAudioEngine.nativeGetAudibleStateString(handle) }.getOrDefault("")
+                        AppLogger.i(TAG, "USB audible watchdog after repair: reason=$reason state=$after")
+                        if (usbAudibleAccepted(after)) return@thread
+                    } catch (t: Throwable) {
+                        AppLogger.w(TAG, "USB audible watchdog repair failed", t)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun startUsbEngineWithSafety(reason: String): Boolean {
+        AppLogger.i(TAG, "startUsbEngineWithSafety: reason=$reason")
+        onBeforeUsbNativeStart?.invoke()
+        return try {
+            val ok = UsbAudioEngine.start()
+            if (ok) armUsbAudibleColdStartWatchdog(reason)
+            ok
+        } catch (t: Throwable) {
+            AppLogger.e(TAG, "startUsbEngineWithSafety failed: reason=$reason", t)
+            false
+        }
+    }
+
+    // USB 播放序列号：切歌/stop/release 前递增，旧线程 token 不一致则禁止 nativeStart
+    private val usbPlaybackSerial = java.util.concurrent.atomic.AtomicLong(0)
+
+    fun nextUsbPlaybackSerial(): Long = usbPlaybackSerial.incrementAndGet()
+
+    fun isUsbPlaybackSerialCurrent(serial: Long): Boolean = usbPlaybackSerial.get() == serial
+
+    fun invalidateUsbPlaybackSerial(reason: String) {
+        val v = usbPlaybackSerial.incrementAndGet()
+        android.util.Log.i("FfmpegPlayer", "USB playback serial invalidated: serial=$v reason=$reason")
+    }
+
+    @Volatile
+    private var usbBitPerfectPolicyBypassMask = 0L
+
+    private fun isStrictUsbBitPerfectPath(): Boolean =
+        usbExclusiveMode && usbBitPerfectMode && usbStrictBitPerfectForCurrentTrack
+
+    private fun logUsbBitPerfectBypassOnce(bit: Long, reason: String) {
+        val old = usbBitPerfectPolicyBypassMask
+        if ((old and bit) != 0L) return
+        usbBitPerfectPolicyBypassMask = old or bit
+        AppLogger.i(TAG, "USB bit-perfect policy: bypass PCM mutator '$reason'")
+    }
+
+    private fun resetUsbBitPerfectPolicyLog() {
+        usbBitPerfectPolicyBypassMask = 0L
+    }
+
+    private fun flushUsbNativeBufferForSeek(reason: String) {
+        if (!usbExclusiveMode) return
+        try {
+            val h = UsbAudioEngine.currentHandle
+            if (h != 0L) {
+                AppLogger.w(TAG, "USB seek: nativePrepareForSeek warm seek, reason=$reason")
+                UsbAudioEngine.nativePrepareForSeek(h, 80, reason)
+            }
+        } catch (t: Throwable) {
+            AppLogger.w(TAG, "USB seek flush failed", t)
+        }
+    }
+
+    private fun flushNativePcmBufferForSeek(reason: String) {
+        if (usbExclusiveMode) return
+        try {
+            AppLogger.w(TAG, "Native PCM seek flush: clearing native backend buffer, reason=$reason")
+            nativeAudioEngineLifecycle.flushCurrent("seek_$reason")
+        } catch (t: Throwable) {
+            AppLogger.w(TAG, "Native PCM seek flush failed", t)
+        }
+    }
 
     /** DSP 引擎重新初始化后的回调，用于重新连接 PEQ 控制器 */
     var onDspEngineReinit: (() -> Unit)? = null
+        set(value) {
+            field = value
+            playbackDspProcessor.onEngineReinit = value
+        }
 
     fun startUsbStreamingIfNeeded() {
         if (usbExclusiveMode && _state == State.PLAYING) {
             AppLogger.i(TAG, "startUsbStreamingIfNeeded: triggering native start")
-            try {
-                UsbAudioEngine.start()
-            } catch (_: Exception) {}
+            if (startUsbEngineWithSafety("startUsbStreamingIfNeeded")) {
+                armUsbPostStartVolumeRestore("startUsbStreamingIfNeeded")
+            }
         }
     }
 
@@ -212,6 +686,7 @@ class FfmpegAudioPlayer(private val context: Context) {
     private var lastWaveformDispatchTime = 0L
 
     private fun dispatchWaveformFrame(buffer: ByteArray, read: Int, channels: Int, sampleRate: Int, bitsPerSample: Int) {
+        if (bitsPerSample <= 1) return
         val callback = onPcmWaveformFrame ?: return
         val now = System.currentTimeMillis()
         if (now - lastWaveformDispatchTime < 33L) return
@@ -221,54 +696,99 @@ class FfmpegAudioPlayer(private val context: Context) {
     }
 
     fun releaseAudioTrackForUsb() {
-        val oldTrack = audioTrack
-        if (oldTrack != null) {
-            audioTrack = null
-            try { oldTrack.stop() } catch (_: Exception) {}
-            try { oldTrack.release() } catch (_: Exception) {}
-            AppLogger.i(TAG, "AudioTrack released for USB exclusive mode")
+        audioTrackLifecycle.detachAndRelease(
+            reason = "usb_exclusive_mode",
+            stop = true,
+            flush = false
+        )
+    }
+
+    fun stopForUsbExclusiveCutover(timeoutMs: Long = 520L) {
+        val oldDecoderThread = decoderThread
+        val oldTask = playbackWorker.currentTaskSnapshot()
+        stop()
+        playbackWorker.cancelCurrent("usb_exclusive_cutover", interrupt = false)
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs.coerceAtLeast(80L)
+        while (SystemClock.elapsedRealtime() < deadline) {
+            val taskDone = oldTask?.isDone != false
+            val threadDone = oldDecoderThread?.isAlive != true
+            if (taskDone && threadDone) {
+                break
+            }
+            try {
+                Thread.sleep(12L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
         }
+        if (oldDecoderThread?.isAlive == true) {
+            val remaining = (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
+            runCatching { oldDecoderThread.join(remaining) }
+        }
+        AppLogger.i(
+            TAG,
+            "stopForUsbExclusiveCutover drained: timeoutMs=$timeoutMs taskDone=${oldTask?.isDone != false} " +
+                "threadAlive=${oldDecoderThread?.isAlive == true}"
+        )
     }
 
     fun play(path: String) {
         AppLogger.w(TAG, "=== play() called, path=$path")
+        resetUsbBitPerfectPolicyLog()
+        resetUsbHardRecoveryFuse("new_play_request")
         if (isReleased.get()) return
+
+        // 关闭上一首的 SAF PFD
+        decoderPathResolver.close("play_new_request")
+        usbPostStartVolumeRestoreGate.clear("new_play_request")
+
+        // 清除上一首的 gapless/crossfade 状态
+        closeNextDecoder()
+        playbackSession.clearNextRequest("play_new_request")
 
         registerAudioDeviceCallback()
 
-        val generation = playGeneration.incrementAndGet()
-        activeSourcePath = path
+        // Stop the old worker first so it cannot publish a fresh decoder handle
+        // while the new request is detaching the current one.
+        playbackWorker.cancelCurrent("play_new_request", interrupt = true)
 
+        // Retire any previous decoder before changing the playback session token.
+        // This covers both the active-thread case and the EOF case where a decoder
+        // handle is kept alive for seek; dropping decoderHandle to 0 without this
+        // step would leak the native handle.
         isPlaying.set(false)
         isPaused.set(false)
+        val oldDecoderTarget = detachActiveDecoderForRetire("play_new_request")
+        retireDetachedDecoder(oldDecoderTarget, "play_new_request", joinTimeoutMs = 1L)
+
+        val generation = playbackSession.beginNewSession(path)
+
+        decoderDone = false
+        decoderStopToken = DecoderStopToken("play-$generation")
+        decoderHandleTransferred.set(false)
         pendingSeekMs = -1L
-        _positionMs = 0L
+        usbRawDsdDirectActive = false
+        seekPositionMs = queuedStartSeekMs
+        queuedStartSeekMs = -1L
+        _positionMs = if (seekPositionMs > 0L) seekPositionMs else 0L
         _durationMs = 0L
 
-        // Don't block waiting for old decoder thread — it will close its own handle in finally
-        decoderThread = null
+        audioTrackLifecycle.detachAndRelease(
+            reason = "play_new_request",
+            stop = true,
+            flush = true
+        )
 
-        // Close ring buffer to signal old decoder thread to stop writing
-        ringBuffer?.close()
-        ringBuffer = null
-
-        val oldTrack = audioTrack
-        audioTrack = null
-        oldTrack?.let {
-            try { it.stop() } catch (_: Exception) {}
-            try { it.flush() } catch (_: Exception) {}
-            try { it.release() } catch (_: Exception) {}
-        }
-
-        currentTask?.cancel(false)
-        currentTask = null
+        // 检测 executor 是否卡死：如果上一个任务还在运行（未完成），重建 executor
+        playbackWorker.ensureActive("play_new_request")
 
         sourcePath = path
         currentPath = path
         setState(State.PREPARING)
 
         val sourcePath = path
-        currentTask = executor.submit {
+        playbackWorker.submit("play_prepare") {
             try {
                 prepareAndStartPlayback(sourcePath = sourcePath, generation = generation)
             } catch (e: InterruptedException) {
@@ -283,45 +803,71 @@ class FfmpegAudioPlayer(private val context: Context) {
         }
     }
 
+    fun queueStartSeekPosition(positionMs: Long, reason: String) {
+        queuedStartSeekMs = positionMs.coerceAtLeast(-1L)
+        AppLogger.i(TAG, "queueStartSeekPosition: pos=$queuedStartSeekMs reason=$reason")
+    }
+
     private fun prepareAndStartPlayback(sourcePath: String, generation: Int) {
         AppLogger.d(TAG, "prepareAndStartPlayback: source=$sourcePath gen=$generation")
-        _durationMs = probeDuration(sourcePath)
+        usbStrictBitPerfectForCurrentTrack = false
+        usbRawDsdDirectActive = false
+        _durationMs = decoderOpenHelper.probeDuration(sourcePath)
         AppLogger.d(TAG, "probeDuration: ${_durationMs}ms")
         if (!isStillCurrentPlayback(sourcePath, generation)) return
 
         var usbTargetSr = 0; var usbTargetBits = 0; var usbTargetCh = 0
-        var atTargetRate = 0; var atTargetBits = 0
+        var usbPcmToDsdActive = false
+        var atTargetRate = 0; var atTargetBits = 0; var atTargetCh = 0
+        var sourceDsdMode: com.rawsmusic.module.player.usb.UsbDsdModeConfig? = null
 
         if (usbExclusiveMode) {
-            val srcSr = FFmpegBridge.probeSampleRate(sourcePath)
-            usbTargetSr = if (usbBitPerfectMode) srcSr else selectUsbTargetSampleRate(srcSr)
-            val srcBits = FFmpegBridge.probeBitsPerSample(sourcePath)
-            val srcCh = FFmpegBridge.probeChannelCount(sourcePath)
-            AppLogger.i(TAG, "USB probe: srcSr=$srcSr srcBits=$srcBits srcCh=$srcCh bitPerfect=$usbBitPerfectMode")
-            val safeSrcBits = if (srcBits > 0) srcBits else 16
-            val safeSrcCh = if (srcCh > 0) srcCh else 2
-            usbTargetBits = if (usbBitPerfectMode) safeSrcBits else when {
-                safeSrcBits <= 16 -> 16
-                safeSrcBits <= 24 -> 24
-                else -> 32
-            }
-            usbTargetCh = if (usbBitPerfectMode) safeSrcCh else safeSrcCh.coerceAtLeast(2)
-            AppLogger.i(TAG, "USB target: sr=$usbTargetSr bits=$usbTargetBits ch=$usbTargetCh (safeSrcBits=$safeSrcBits safeSrcCh=$safeSrcCh)")
+            if (abortPlaybackStageIfObsolete(sourcePath, generation, "prepare_usb_probe")) return
+            val target = usbPlaybackTargetResolver.resolve(
+                sourcePath = sourcePath,
+                usbBitPerfectMode = usbBitPerfectMode
+            )
+            usbStrictBitPerfectForCurrentTrack = target.strictBitPerfect
+            sourceDsdMode = target.sourceDsdMode
+            usbPcmToDsdActive = target.pcmToDsdMode != null
+            usbTargetSr = target.sampleRate
+            usbTargetBits = target.bitsPerSample
+            usbTargetCh = target.channels
         } else {
-            val userTargetRate = AudioOutputManager.getTargetSampleRate()
-            val channelConfig = AudioFormat.CHANNEL_OUT_STEREO
-            val (probedRate, probedEnc) = AudioOutputManager.probeRateAndEncoding(userTargetRate, channelConfig, context)
-            atTargetRate = probedRate
-            atTargetBits = AudioOutputManager.encodingToFFmpegBits(probedEnc)
-            probedEncoding = probedEnc
-            AppLogger.i(TAG, "Device capability: rate=$atTargetRate, encoding=$probedEnc -> bits=$atTargetBits")
+            val target = androidPlaybackTargetResolver.resolve(sourcePath)
+            atTargetRate = target.sampleRate
+            atTargetBits = target.bitsPerSample
+            atTargetCh = target.channels
+            probedEncoding = target.encoding
         }
 
         if (usbExclusiveMode) {
-            AppLogger.i(TAG, "USB streaming decoder: opening $sourcePath, targetSr=$usbTargetSr, targetBits=$usbTargetBits, targetCh=$usbTargetCh")
-            val handle = openDecoderWithFallback(sourcePath, usbTargetSr, usbTargetBits, usbTargetCh)
+            if (abortPlaybackStageIfObsolete(sourcePath, generation, "prepare_before_usb_decoder_open")) return
+            val useRawDsdDirectDecoder = sourceDsdMode != null
+            AppLogger.i(
+                TAG,
+                if (useRawDsdDirectDecoder) {
+                    "USB raw DSD decoder: opening $sourcePath, targetCh=$usbTargetCh dsdMode=$sourceDsdMode"
+                } else if (usbPcmToDsdActive) {
+                    "USB PCM->DSD decoder: opening $sourcePath, sourceRate=$usbTargetSr, sourceBits=$usbTargetBits, targetCh=$usbTargetCh"
+                } else {
+                    "USB streaming decoder: opening $sourcePath, targetSr=$usbTargetSr, targetBits=$usbTargetBits, targetCh=$usbTargetCh"
+                }
+            )
+            val handle = if (useRawDsdDirectDecoder) {
+                FFmpegBridge.openDecoder(decoderPathResolver.resolve(sourcePath), 0, 1, usbTargetCh)
+            } else {
+                decoderOpenHelper.openWithFallback(sourcePath, usbTargetSr, usbTargetBits, usbTargetCh)
+            }
             if (handle == 0L) {
-                AppLogger.e(TAG, "USB streaming decoder: openDecoder failed (all fallbacks)")
+                AppLogger.e(
+                    TAG,
+                    if (useRawDsdDirectDecoder) {
+                        "USB raw DSD decoder: openDecoder failed"
+                    } else {
+                        "USB streaming decoder: openDecoder failed (all fallbacks)"
+                    }
+                )
                 if (isStillCurrentPlayback(sourcePath, generation)) {
                     setState(State.ERROR)
                     onPlaybackError("FFmpeg 流式解码器打开失败")
@@ -339,24 +885,44 @@ class FfmpegAudioPlayer(private val context: Context) {
             wavSampleRate = FFmpegBridge.getDecoderSampleRate(handle)
             wavChannels = FFmpegBridge.getDecoderChannels(handle)
             wavBitsPerSample = FFmpegBridge.getDecoderBitsPerSample(handle)
-            _durationMs = FFmpegBridge.getDecoderDuration(handle)
+            _durationMs = FFmpegBridge.getDecoderDuration(handle).let { if (it <= 0) 0L else it }
             wavDataOffset = 0
             wavFormatTag = 1
             usbActualOutputSampleRate = wavSampleRate
-            AppLogger.i(TAG, "USB streaming decoder: ${wavSampleRate}Hz/${wavChannels}ch/${wavBitsPerSample}bit, duration=${_durationMs}ms")
+            usbRawDsdDirectActive = useRawDsdDirectDecoder && wavBitsPerSample == 1
+            if (!usbRawDsdDirectActive &&
+                !verifyUsbBitPerfectDecoderFormat(wavSampleRate, wavBitsPerSample, wavChannels, usbTargetSr, usbTargetBits, usbTargetCh)
+            ) {
+                FFmpegBridge.closeDecoder(handle)
+                decoderHandle = 0L
+                isPlaying.set(false)
+                if (isStillCurrentPlayback(sourcePath, generation)) {
+                    setState(State.ERROR)
+                    onPlaybackError("USB 完美比特模式无法保持源格式")
+                }
+                return
+            }
+            AppLogger.i(
+                TAG,
+                if (usbRawDsdDirectActive) {
+                    "USB raw DSD decoder: rawByteRate=${wavSampleRate}Hz/${wavChannels}ch/${wavBitsPerSample}bit, duration=${_durationMs}ms"
+                } else {
+                    "USB streaming decoder: ${wavSampleRate}Hz/${wavChannels}ch/${wavBitsPerSample}bit, duration=${_durationMs}ms"
+                }
+            )
 
-            val bytesPerSample = if (wavBitsPerSample <= 16) 2 else 4
+            val bytesPerSample = usbDecoderBytesPerSample(wavBitsPerSample)
             val bytesPerSec = wavSampleRate * wavChannels * bytesPerSample
             val ringCapacity = (bytesPerSec * 3).toInt().coerceAtLeast(65536)
             val rb = RingBuffer(ringCapacity)
             ringBuffer = rb
-            AppLogger.i(TAG, "USB RingBuffer created: ${ringCapacity} bytes (${ringCapacity * 1000 / bytesPerSec}ms)")
+            AppLogger.i(TAG, "USB RingBuffer created: ${ringCapacity} bytes (${PlaybackBufferMath.durationMsForBytes(ringCapacity, bytesPerSec.toLong())}ms)")
 
             isPlaying.set(true)
 
-            val frameSize = wavChannels * if (wavBitsPerSample <= 16) 2 else 4
+            val frameSize = wavChannels * usbDecoderBytesPerSample(wavBitsPerSample)
             val usbChunkSize = ((16384 / frameSize) * frameSize).coerceAtLeast(frameSize * 256)
-            AppLogger.i(TAG, "USB decoder chunk: $usbChunkSize bytes (frameSize=$frameSize)")
+            AppLogger.i(TAG, "USB decoder chunk: $usbChunkSize bytes (decoderFrameSize=$frameSize)")
             if (seekPositionMs > 0) {
                 val seekMs = seekPositionMs
                 seekPositionMs = -1L
@@ -365,13 +931,23 @@ class FfmpegAudioPlayer(private val context: Context) {
                 _positionMs = seekMs
             }
 
-            startDecoderThread(sourcePath, generation, usbChunkSize)
+            if (
+                abortPlaybackStageIfObsolete(
+                    sourcePath,
+                    generation,
+                    stage = "prepare_before_usb_stream_start",
+                    closeRingBuffer = true,
+                    closeDecoderHandle = true
+                )
+            ) {
+                return
+            }
 
             initDspEngine()
-            startUsbStreamingPlayback(sourcePath, generation)
+            startUsbStreamingPlayback(sourcePath, generation, usbChunkSize)
         } else {
-            AppLogger.i(TAG, "Streaming decoder: opening $sourcePath, targetRate=$atTargetRate, targetBits=$atTargetBits")
-            val handle = openDecoderWithFallback(sourcePath, atTargetRate, atTargetBits, 2)
+            AppLogger.i(TAG, "Streaming decoder: opening $sourcePath, targetRate=$atTargetRate, targetBits=$atTargetBits, targetCh=$atTargetCh")
+            val handle = decoderOpenHelper.openWithFallback(sourcePath, atTargetRate, atTargetBits, atTargetCh)
             if (handle == 0L) {
                 AppLogger.e(TAG, "Streaming decoder: openDecoder failed (all fallbacks)")
                 if (isStillCurrentPlayback(sourcePath, generation)) {
@@ -391,7 +967,7 @@ class FfmpegAudioPlayer(private val context: Context) {
             wavSampleRate = FFmpegBridge.getDecoderSampleRate(handle)
             wavChannels = FFmpegBridge.getDecoderChannels(handle)
             wavBitsPerSample = FFmpegBridge.getDecoderBitsPerSample(handle)
-            _durationMs = FFmpegBridge.getDecoderDuration(handle)
+            _durationMs = FFmpegBridge.getDecoderDuration(handle).let { if (it <= 0) 0L else it }
             wavDataOffset = 0
             wavFormatTag = 1
             AppLogger.i(TAG, "Streaming decoder: ${wavSampleRate}Hz/${wavChannels}ch/${wavBitsPerSample}bit, duration=${_durationMs}ms")
@@ -401,7 +977,7 @@ class FfmpegAudioPlayer(private val context: Context) {
             val ringCapacity = (bytesPerSec * 2).toInt().coerceAtLeast(65536)
             val rb = RingBuffer(ringCapacity)
             ringBuffer = rb
-            AppLogger.i(TAG, "RingBuffer created: ${ringCapacity} bytes (${ringCapacity * 1000 / bytesPerSec}ms)")
+            AppLogger.i(TAG, "RingBuffer created: ${ringCapacity} bytes (${PlaybackBufferMath.durationMsForBytes(ringCapacity, bytesPerSec.toLong())}ms)")
 
             isPlaying.set(true)
 
@@ -413,6 +989,9 @@ class FfmpegAudioPlayer(private val context: Context) {
                 _positionMs = seekMs
             }
 
+            decoderDone = false  // 重置解码完成标志
+            decoderHandleTransferred.set(false)
+
             startDecoderThread(sourcePath, generation)
 
             initDspEngine()
@@ -421,38 +1000,143 @@ class FfmpegAudioPlayer(private val context: Context) {
     }
 
     fun pause() {
-        if (_state != State.PLAYING) return
-        isPaused.set(true)
-        try { audioTrack?.pause() } catch (_: Exception) {}
-        if (usbExclusiveMode) {
-            AppLogger.i(TAG, "pause(): pausing USB streaming (keeping handle)")
-            try { UsbAudioEngine.pause() } catch (_: Exception) {}
+        if (_state != State.PLAYING) {
+            AppLogger.w(TAG, "=== pause(): state=$_state, NOT PLAYING, skipping ===")
+            return
         }
+        AppLogger.w(TAG, "=== pause(): PAUSING, isPlaying=${isPlaying.get()}, audioTrack=${audioTrack != null}, trackState=${audioTrack?.playState} ===")
+        if (usbExclusiveMode) {
+            // Phase 22: direct FfmpegAudioPlayer.pause() is often triggered by
+            // external/background focus or service callbacks.  In USB exclusive
+            // mode, stopping ISO here causes pop/current noise and unwanted
+            // forced pauses when launching other apps.  User-visible pause goes
+            // through PlayerController.pause(), which performs the explicit
+            // transition.
+            AppLogger.w(TAG, "pause(): USB exclusive direct pause ignored; use PlayerController.pause for user pause")
+            return
+        }
+        isPaused.set(true)
+        nativeAudioEngineLifecycle.pauseCurrent("pause")
+        try { audioTrack?.pause() } catch (_: Exception) {}
         setState(State.PAUSED)
     }
 
-    fun resume() {
-        if (_state != State.PAUSED) return
-
-        // 非 USB 模式：直接恢复 AudioTrack
+    /**
+     * 只暂停 decoder/playback thread，不调用 UsbAudioEngine.pause()。
+     * USB 独占模式下，由 PlayerController 控制先 fade-out 再 enterStandby。
+     */
+    fun pauseDecoderOnly(reason: String) {
+        AppLogger.w(TAG, "=== pauseDecoderOnly(): reason=$reason state=$_state ===")
+        if (_state != State.PLAYING) return
+        isPaused.set(true)
         if (!usbExclusiveMode) {
+            nativeAudioEngineLifecycle.pauseCurrent("pauseDecoderOnly_$reason")
+            try { audioTrack?.pause() } catch (_: Exception) {}
+        }
+        // 不调用 UsbAudioEngine.pause()，由调用方控制 USB standby
+        setState(State.PAUSED)
+    }
+
+    fun keepPausedAfterUsbSeek(reason: String) {
+        AppLogger.w(TAG, "=== keepPausedAfterUsbSeek(): reason=$reason state=$_state ===")
+        isPaused.set(true)
+        setState(State.PAUSED)
+    }
+
+    /**
+     * 手动切歌时停止 decoder，不调用 UsbAudioEngine.pause()。
+     * 由 PlayerController 控制先 fade-out 再 stop/flush USB。
+     */
+    fun stopForManualTrackSwitch(reason: String) {
+        AppLogger.w(TAG, "=== stopForManualTrackSwitch(): reason=$reason state=$_state ===")
+        isPaused.set(true)
+        nativeAudioEngineLifecycle.stopCurrent("manualTrackSwitch_$reason")
+        try { audioTrack?.pause() } catch (_: Exception) {}
+        try { audioTrack?.flush() } catch (_: Exception) {}
+        setState(State.IDLE)
+    }
+
+    fun resume(): Boolean {
+        AppLogger.w(TAG, "=== resume(): state=$_state, isPlaying=${isPlaying.get()}, audioTrack=${audioTrack != null}, trackState=${audioTrack?.playState} ===")
+        if (_state != State.PAUSED) {
+            AppLogger.w(TAG, "=== resume(): state=$_state, NOT PAUSED, returning false ===")
+            return false
+        }
+
+        if (!usbExclusiveMode) {
+            val nativeEngine = nativeAudioEngineLifecycle.currentOrNull()
+            if (nativeEngine != null && isPlaying.get()) {
+                isPaused.set(false)
+                synchronized(pauseLock) { pauseLock.notifyAll() }
+                nativeAudioEngineLifecycle.startCurrent("resume")
+                setState(State.PLAYING)
+                return true
+            }
+            val track = audioTrack
+            // resume 前主动检测 track 有效性
+            // 无论什么触发 resume（UI、通知栏、蓝牙、音频焦点），都保证 track 可用
+            if (track == null || !isPlaying.get()) {
+                AppLogger.w(TAG, "resume(SOS): audioTrack=$track, isPlaying=${isPlaying.get()}, rebuilding")
+                rebuildAudioTrack()
+                return true
+            }
+            if (track.playState == AudioTrack.PLAYSTATE_STOPPED) {
+                AppLogger.w(TAG, "resume(SOS): audioTrack STOPPED, rebuilding")
+                rebuildAudioTrack()
+                return true
+            }
+            if (track.state == AudioTrack.STATE_UNINITIALIZED) {
+                AppLogger.w(TAG, "resume(SOS): audioTrack UNINITIALIZED, rebuilding")
+                rebuildAudioTrack()
+                return true
+            }
+            // 格式变化检测 — 比较当前 AudioTrack 格式与解码器输出格式
+            if (isTrackFormatChanged()) {
+                AppLogger.w(TAG, "resume(SOS): format changed (${audioTrackFormatMonitor.snapshotDescription()} -> ${audioTrackFormatMonitor.currentDescription(wavSampleRate, wavChannels, probedEncoding)}), rebuilding")
+                rebuildAudioTrack()
+                return true
+            }
             isPaused.set(false)
             synchronized(pauseLock) { pauseLock.notifyAll() }
-            try { audioTrack?.play() } catch (_: Exception) {}
+            try { track.play() } catch (_: Exception) {}
             setState(State.PLAYING)
-            return
+            return true
         }
 
         // USB 独占模式：必须先确保引擎就绪，再解除暂停
         AppLogger.i(TAG, "resume(): resuming USB streaming, engine init=${UsbAudioEngine.isInitialized()} running=${UsbAudioEngine.isRunning()}")
 
-        // 1. 先停掉旧的 USB 流（释放内核 USB 引用），避免 reinit 时 claim interface 失败
-        try { UsbAudioEngine.stop() } catch (_: Exception) {}
-
-        // 2. 检查是否需要重新初始化（策略变更 / 设备断重连）
+        // 0. 快速路径：引擎正在运行且无需重建 → 直接解除暂停，不要 stop 引擎
+        //    USB 独占设备不需要像 AudioTrack 那样走 pause/resume 生命周期
+        val engineRunning = UsbAudioEngine.isRunning()
         val needsReinit = UsbAudioEngine.isPolicyChangedSinceInit() == true || !UsbAudioEngine.isInitialized()
 
-        if (needsReinit) {
+        if (engineRunning && !needsReinit) {
+            AppLogger.i(TAG, "resume(): USB engine running fine, skipping stop/reinit, just unpause")
+            isPaused.set(false)
+            synchronized(pauseLock) { pauseLock.notifyAll() }
+            setState(State.PLAYING)
+            return true
+        }
+
+        // 1. 先尝试软恢复：不要 stopAndFlush，因为它会清空 ring buffer，
+        //    后续 nativeStart 只能先发静音，后台冷启动/恢复会短暂无声。
+        if (!needsReinit && UsbAudioEngine.isInitialized() && UsbAudioEngine.currentHandle != 0L) {
+            val softStarted = startUsbEngineWithSafety("resume_soft")
+            if (softStarted) {
+                armUsbPostStartVolumeRestore("resume_soft")
+                AppLogger.i(TAG, "resume(): soft recovery succeeded (stop + start, buffer preserved)")
+                isPaused.set(false)
+                synchronized(pauseLock) { pauseLock.notifyAll() }
+                setState(State.PLAYING)
+                return true
+            }
+            AppLogger.w(TAG, "resume(): soft start failed, falling through to hard recovery")
+            // 软恢复失败 → 说明引擎内部坏了，需要硬恢复
+        }
+
+        // 2. 硬恢复：完整 teardown + reinit
+        if (needsReinit || !UsbAudioEngine.isInitialized()) {
             AppLogger.w(TAG, "resume(): policy changed or engine not init, attempting reinit via prepareForPlayback")
             // 确保内核完全释放 USB 资源
             try { UsbAudioEngine.release() } catch (_: Exception) {}
@@ -476,25 +1160,22 @@ class FfmpegAudioPlayer(private val context: Context) {
                 setState(State.ERROR)
                 listener?.onError("USB 设备恢复失败，请重新插拔设备")
                 onUsbTransportLost?.invoke()
-                return
+                return false
             }
         }
 
         // 3. 启动 USB 流
-        var started = try { UsbAudioEngine.start() } catch (e: Exception) {
-            AppLogger.e(TAG, "resume(): UsbAudioEngine.start() threw", e)
-            false
-        }
-        // start 失败且是 reinit 场景，再做一次完整 reinit 循环
-        if (!started && needsReinit) {
-            AppLogger.w(TAG, "resume(): start failed after reinit, doing full reinit cycle")
+        var started = startUsbEngineWithSafety("resume_start")
+        // start 失败 → 做一次完整 reinit 循环
+        if (!started) {
+            AppLogger.w(TAG, "resume(): start failed, doing full reinit cycle")
             try { UsbAudioEngine.release() } catch (_: Exception) {}
             Thread.sleep(200)
             val ok = usbPrepareForPlayback?.invoke(
                 wavSampleRate, wavBitsPerSample, wavChannels, currentPath
             ) ?: false
             if (ok) {
-                started = try { UsbAudioEngine.start() } catch (_: Exception) { false }
+                started = startUsbEngineWithSafety("resume_reinit_start")
             }
         }
         if (!started) {
@@ -502,8 +1183,9 @@ class FfmpegAudioPlayer(private val context: Context) {
             isPlaying.set(false)
             setState(State.ERROR)
             listener?.onError("USB 音频流启动失败")
-            return
+            return false
         }
+        armUsbPostStartVolumeRestore("resume_start")
 
         // 4. USB 引擎就绪，解除暂停状态（解码器线程 + pump loop 恢复运行）
         isPaused.set(false)
@@ -511,19 +1193,88 @@ class FfmpegAudioPlayer(private val context: Context) {
         try { audioTrack?.play() } catch (_: Exception) {}
         setState(State.PLAYING)
         AppLogger.i(TAG, "resume(): USB streaming resumed successfully")
+        return true
     }
 
     /**
-     * 播放中遇到 ERR_NOT_INITIALIZED 时尝试单次 recovery：
-     * release → sleep → reinit → start，成功返回 true。
+     * 播放中遇到 USB 错误时尝试 recovery。
+     * 策略：先软恢复（stopAndFlush + start，不清 ring buffer），失败才走完整 teardown。
+     * USB 独占设备尽量不释放，避免 4 秒 buffer 重填。
      */
     private fun attemptUsbRecovery(
         sampleRate: Int, bits: Int, channels: Int,
-        sourcePath: String, generation: Int
+        sourcePath: String, generation: Int,
+        forceProfileReinit: Boolean = false,
+        profileReprepareOnly: Boolean = false
     ): Boolean {
         if (!isStillCurrentPlayback(sourcePath, generation)) return false
+
+        val feedbackUnsafe = UsbAudioEngine.feedbackLooksUnsafeForPacer()
+        val forceHardProfileReinit = forceProfileReinit || feedbackUnsafe
+        if (feedbackUnsafe) {
+            AppLogger.w(TAG, "attemptUsbRecovery: feedback state is unsafe (${UsbAudioEngine.getFeedbackState()}), but native should normally degrade to fixed no-feedback pacing before hard recovery")
+            // Skip soft restart: it would reuse the same handle/profile and keep the broken feedback path alive.
+        }
+
+        if (profileReprepareOnly) {
+            // StreamConfig retry: a policy change such as
+            // RetryWithoutFeedback must actually re-run prepareForPlayback so
+            // PlayerController can apply the pending profile flags.  Do not send
+            // it through the destructive hard-recovery fuse; that fuse exists to
+            // protect MIUI from repeated release/reclaim loops, and it was
+            // preventing the modeled noFeedback=true retry from being applied.
+            AppLogger.w(
+                TAG,
+                "attemptUsbRecovery: profile reprepare only; keep USB device model, " +
+                    "apply pending recovery profile without hard-recovery fuse"
+            )
+            if (!isStillCurrentPlayback(sourcePath, generation) || !isPlaying.get()) return false
+            val ok = usbPrepareForPlayback?.invoke(sampleRate, bits, channels, sourcePath) ?: false
+            if (!ok) {
+                AppLogger.e(TAG, "attemptUsbRecovery: profile reprepare prepareForPlayback failed")
+                return false
+            }
+            if (!isStillCurrentPlayback(sourcePath, generation) || !isPlaying.get()) return false
+            val started = startUsbEngineWithSafety("recovery_profile_reprepare")
+            if (!started) {
+                AppLogger.e(TAG, "attemptUsbRecovery: profile reprepare nativeStart failed")
+                return false
+            }
+            armUsbPostStartVolumeRestore("recovery_profile_reprepare")
+            AppLogger.i(TAG, "attemptUsbRecovery: profile reprepare succeeded")
+            return true
+        }
+
+        // ── 第 1 步：软恢复──────
+        // 不要 stopAndFlush；它会清空 ring buffer，导致 nativeStart 先输出静音。
+        AppLogger.w(TAG, "attemptUsbRecovery: trying soft restart without flushing ring buffer forceProfileReinit=$forceProfileReinit")
+        if (!isStillCurrentPlayback(sourcePath, generation) || !isPlaying.get()) return false
+
+        // 检查引擎是否仍然有效（handle != 0, initialized）
+        if (!forceHardProfileReinit && UsbAudioEngine.isInitialized() && UsbAudioEngine.currentHandle != 0L) {
+            val softStarted = startUsbEngineWithSafety("recovery_soft")
+            if (softStarted) {
+                armUsbPostStartVolumeRestore("recovery_soft")
+                AppLogger.i(TAG, "attemptUsbRecovery: soft recovery succeeded (buffer preserved)")
+                return true
+            }
+            AppLogger.w(TAG, "attemptUsbRecovery: soft start failed, falling through to hard recovery")
+        } else {
+            AppLogger.w(TAG, "attemptUsbRecovery: engine not initialized, falling through to hard recovery")
+        }
+
+        // ── 第 2 步：硬恢复（完整 teardown + reinit）──────
+        // 只在软恢复失败时执行，会清空 ring buffer，需要几秒重填
+        if (!isStillCurrentPlayback(sourcePath, generation)) return false
+        if (!allowUsbHardRecovery("attemptUsbRecovery(forceProfileReinit=$forceProfileReinit, feedbackUnsafe=$feedbackUnsafe)")) {
+            onUsbStreamHealthFailure?.invoke(
+                UsbSilentKind.TransportError,
+                "hard_recovery_fuse_open"
+            )
+            return false
+        }
         try {
-            AppLogger.w(TAG, "attemptUsbRecovery: releasing native engine")
+            AppLogger.w(TAG, "attemptUsbRecovery: hard recovery - releasing native engine")
             UsbAudioEngine.release()
         } catch (_: Exception) {}
         Thread.sleep(100)
@@ -534,43 +1285,63 @@ class FfmpegAudioPlayer(private val context: Context) {
             return false
         }
         if (!isStillCurrentPlayback(sourcePath, generation) || !isPlaying.get()) return false
-        val started = try { UsbAudioEngine.start() } catch (_: Exception) { false }
+        val started = startUsbEngineWithSafety("recovery_hard")
         if (!started) {
-            AppLogger.e(TAG, "attemptUsbRecovery: start failed")
+            AppLogger.e(TAG, "attemptUsbRecovery: hard start failed")
             return false
         }
-        AppLogger.i(TAG, "attemptUsbRecovery: success")
+        armUsbPostStartVolumeRestore("recovery_hard")
+        AppLogger.i(TAG, "attemptUsbRecovery: hard recovery succeeded")
         return true
     }
 
     fun stop() {
         AppLogger.w(TAG, "=== stop() called")
+        invalidateUsbPlaybackSerial("stop")
+        resetUsbHardRecoveryFuse("stop")
 
         isPlaying.set(false)
         isPaused.set(false)
+        decoderDone = false
+        decoderHandleTransferred.set(false)
         pendingSeekMs = -1L
+        queuedStartSeekMs = -1L
         seekPositionMs = -1L
+        usbRawDsdDirectActive = false
 
-        // Don't block waiting for decoder thread — it will close its own handle in finally
-        decoderThread = null
+        playbackWorker.cancelCurrent("stop", interrupt = false)
 
-        // Close ring buffer to signal decoder thread to stop
-        ringBuffer?.close()
-        ringBuffer = null
+        // Request the old decoder to retire before invalidating the session.
+        // If the decoder thread is already gone but kept an EOF handle for seek,
+        // the retire helper closes that handle instead of leaking it.
+        val oldDecoderTarget = detachActiveDecoderForRetire("stop")
+        retireDetachedDecoder(oldDecoderTarget, "stop", joinTimeoutMs = 1L)
+        closeNextDecoder()
+        decoderPathResolver.close("stop")
+        usbPostStartVolumeRestoreGate.clear("stop")
+        playbackSession.invalidate("stop")
 
-        currentTask?.cancel(false)
-        currentTask = null
-
-        val oldTrack = audioTrack
-        audioTrack = null
-        oldTrack?.let {
-            try { it.stop() } catch (_: Exception) {}
-            try { it.release() } catch (_: Exception) {}
-        }
+        audioTrackLifecycle.detachAndRelease(
+            reason = "stop",
+            stop = true,
+            flush = false
+        )
+        nativeAudioEngineLifecycle.detachAndClose(
+            reason = "stop",
+            stop = true,
+            flush = false
+        )
 
         if (usbExclusiveMode) {
-            AppLogger.i(TAG, "stop(): stopping USB engine (after isPlaying=false)")
-            try { UsbAudioEngine.stop() } catch (_: Exception) {}
+            // USB engine lifecycle is owned by PlayerController, not by stop().
+            // Calling UsbAudioEngine.stop() here causes "legacy hard stop" which
+            // tears down the native engine during normal pause/seek/settings-change,
+            // leading to "engine not initialized" errors on the next write.
+            // Real USB teardown happens via:
+            //   - usbExclusiveManager.stopStreaming()
+            //   - sharedUsbAudioEngine.release()
+            //   - handleUsbDeviceDetached()
+            AppLogger.i(TAG, "stop(): USB exclusive active, decoder stopped; USB engine lifecycle owned by PlayerController")
         }
 
         releaseDspEngine()
@@ -578,10 +1349,9 @@ class FfmpegAudioPlayer(private val context: Context) {
         setState(State.STOPPED)
     }
 
-    fun seekTo(positionMs: Long) {
-        AppLogger.w(TAG, "=== seekTo($positionMs)")
+    fun seekTo(positionMs: Long, usbPrepareAlreadyDone: Boolean = false) {
+        AppLogger.w(TAG, "=== seekTo($positionMs), decoderHandle=$decoderHandle, decoderDone=$decoderDone, usbPrepareAlreadyDone=$usbPrepareAlreadyDone")
 
-        _positionMs = positionMs
         seekPositionMs = -1L
 
         if (_state == State.PLAYING || _state == State.PAUSED) {
@@ -589,18 +1359,84 @@ class FfmpegAudioPlayer(private val context: Context) {
                 val handle = decoderHandle
                 val rb = ringBuffer
                 if (handle != 0L && rb != null) {
-                    // Non-blocking seek: decoder thread will handle the actual seek
-                    pendingSeekMs = positionMs
-                    _positionMs = positionMs
-
-                    if (_state == State.PAUSED) {
-                        isPaused.set(false)
-                        if (usbExclusiveMode) {
-                            try { UsbAudioEngine.start() } catch (_: Exception) {}
-                        } else {
-                            try { audioTrack?.play() } catch (_: Exception) {}
+                    if (decoderDone) {
+                        // 解码器已 EOF 但 handle 仍存活：直接 seek + 清 rb + 重启解码线程
+                        AppLogger.w(TAG, "=== seekTo after EOF: seeking decoder handle=$handle to $positionMs")
+                        // 关键：先标记 handle 所有权已转移，防止旧线程 finally 关闭 handle
+                        decoderHandleTransferred.set(true)
+                        rb.clear()
+                        if (!usbPrepareAlreadyDone) {
+                            flushUsbNativeBufferForSeek("seek_after_eof")
                         }
-                        setState(State.PLAYING)
+                        flushNativePcmBufferForSeek("seek_after_eof")
+                        _positionMs = positionMs
+                        disableHardwarePositionTracking()
+                        needsAudioTrackFlush.set(true)
+                        // 重启解码线程，从 seek 位置继续解码
+                        val gen = playbackSession.generation
+                        val src = playbackSession.sessionSourcePath ?: sourcePath ?: return
+                        val serial = ++pendingSeekSerial
+                        thread(start = true, isDaemon = true, name = "FfmpegDecoder-SeekResume") {
+                            try {
+                                FFmpegBridge.seekDecoder(handle, positionMs)
+                                if (serial != pendingSeekSerial || !isStillCurrentPlayback(src, gen)) return@thread
+                                decoderDone = false
+                                decoderThread = Thread.currentThread()
+                                decoderLoop(handle, gen, src, decoderStopToken)
+                            } catch (t: Throwable) {
+                                if (isStillCurrentPlayback(src, gen) && !isReleased.get()) {
+                                    AppLogger.e(TAG, "seek resume after EOF failed", t)
+                                    setState(State.ERROR)
+                                }
+                            }
+                        }
+                        return
+                    }
+                    // 解码线程仍在运行：Non-blocking seek，decoder 线程会处理实际 seek
+                    // 先禁用硬件时间戳并设置 flush 标志，再设置 _positionMs，确保 streaming 线程
+                    // 在这之后的迭代中不会用旧硬件位置覆盖 seekTarget
+                    disableHardwarePositionTracking()
+                    pendingSeekMs = positionMs
+                    pendingSeekSerial++
+                    rb.clear()
+                    _positionMs = positionMs
+                    needsAudioTrackFlush.set(true)
+                    if (!usbPrepareAlreadyDone) {
+                        flushUsbNativeBufferForSeek("seek_pending")
+                    }
+                    flushNativePcmBufferForSeek("seek_pending")
+
+                    // 二次检查：防止竞态 — 解码线程可能在我们设置 pendingSeekMs 之前
+                    // 就已设置 decoderDone=true 并退出，导致 pendingSeekMs 永远不会被处理，
+                    // streaming loop 随后看到 EOF → COMPLETED → 重新播放
+                    if (decoderDone) {
+                        pendingSeekMs = -1L
+                        AppLogger.w(TAG, "=== seekTo RACE: decoderDone became true after initial check, handling as EOF seek to $positionMs")
+                        decoderHandleTransferred.set(true)
+                        rb.clear()
+                        if (!usbPrepareAlreadyDone) {
+                            flushUsbNativeBufferForSeek("seek_race_after_eof")
+                        }
+                        flushNativePcmBufferForSeek("seek_race_after_eof")
+                        _positionMs = positionMs
+                        needsAudioTrackFlush.set(true)
+                        val gen = playbackSession.generation
+                        val src = playbackSession.sessionSourcePath ?: sourcePath ?: return
+                        val serial = ++pendingSeekSerial
+                        thread(start = true, isDaemon = true, name = "FfmpegDecoder-SeekResume") {
+                            try {
+                                FFmpegBridge.seekDecoder(handle, positionMs)
+                                if (serial != pendingSeekSerial || !isStillCurrentPlayback(src, gen)) return@thread
+                                decoderDone = false
+                                decoderThread = Thread.currentThread()
+                                decoderLoop(handle, gen, src, decoderStopToken)
+                            } catch (t: Throwable) {
+                                if (isStillCurrentPlayback(src, gen) && !isReleased.get()) {
+                                    AppLogger.e(TAG, "seek resume after EOF race failed", t)
+                                    setState(State.ERROR)
+                                }
+                            }
+                        }
                     }
                     return
                 }
@@ -611,7 +1447,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                 return
             }
 
-            val frameSize = wavChannels * if (wavBitsPerSample <= 16) 2 else 4
+            val frameSize = wavChannels * playbackBytesPerSample()
             val bytesPerMs = (wavSampleRate * frameSize).toDouble() / 1000.0
             val targetByteOffset = (positionMs.toDouble() * bytesPerMs).toLong().coerceIn(0, (wavDataSize - 1).coerceAtLeast(0))
             val alignedOffset = (targetByteOffset / frameSize) * frameSize
@@ -619,22 +1455,20 @@ class FfmpegAudioPlayer(private val context: Context) {
             isPlaying.set(false)
             isPaused.set(false)
 
-            val oldTrack = audioTrack
-            audioTrack = null
-            oldTrack?.let {
-                try { it.stop() } catch (_: Exception) {}
-                try { it.flush() } catch (_: Exception) {}
-                try { it.release() } catch (_: Exception) {}
-            }
+            audioTrackLifecycle.detachAndRelease(
+                reason = "seek_restart",
+                stop = true,
+                flush = true
+            )
 
             setState(State.STOPPED)
 
             val seekPath = if (usbExclusiveMode) resampledPath ?: currentPath else currentPath
             val originalSourcePath = this.sourcePath ?: currentPath ?: return
-            currentTask = executor.submit {
+            playbackWorker.submit("seek_restart") {
                 try {
                     if (isReleased.get()) return@submit
-                    val gen = playGeneration.get()
+                    val gen = playbackSession.generation
                     startPlaybackFromOffset(alignedOffset, seekPath ?: return@submit, gen, isSeek = true, sourcePath = originalSourcePath)
                 } catch (e: Exception) {
                     if (!isReleased.get()) {
@@ -650,6 +1484,13 @@ class FfmpegAudioPlayer(private val context: Context) {
 
     fun setVolume(vol: Float) {
         volume = vol.coerceIn(0f, 1f)
+        nativeAudioEngineLifecycle.setVolumeCurrent(volume, "setVolume")
+        // USB 独占音量由 PlayerController 的 UsbVolumePlan 统一下发。
+        // 这里不能再把 FfmpegAudioPlayer.volume 直接写到 UsbAudioEngine，
+        // 否则切歌/恢复时会出现 legacy 1.0 -> 真实音量的短暂脉冲。
+        if (usbExclusiveMode) {
+            AppLogger.d(TAG, "USB exclusive: store ffmpeg volume=$volume only; native volume is controlled by UsbVolumePlan")
+        }
         try {
             if (android.os.Build.VERSION.SDK_INT >= 28) {
                 audioTrack?.setVolume(volume)
@@ -660,33 +1501,181 @@ class FfmpegAudioPlayer(private val context: Context) {
         } catch (_: Exception) {}
     }
 
+    // ==================== Gapless / Crossfade API ====================
+
+    /** 清除下一首歌设置（切歌完成后调用） */
+    fun clearNextSong() {
+        playbackSession.clearNextRequest("clearNextSong")
+        closeNextDecoder()
+    }
+
+    private fun closeNextDecoder() {
+        crossfadeTransition.reset("closeNextDecoder")
+        gaplessNextDecoder.clear("closeNextDecoder")
+    }
+
+    /**
+     * 预打开下一首歌的解码器，用于 gapless/crossfade
+     * 返回 true 表示预打开成功
+     */
+    private fun prepareNextDecoder(path: String): Boolean {
+        if (isStrictUsbBitPerfectPath()) {
+            logUsbBitPerfectBypassOnce(1L shl 1, "gapless/crossfade decoder preopen")
+            return false
+        }
+        return gaplessNextDecoder.prepare(path, wavSampleRate, wavBitsPerSample, wavChannels)
+    }
+
+    /**
+     * 切换到下一首歌（gapless 无缝切换）
+     * 在当前歌曲 EOF 时调用，返回 true 表示切换成功
+     */
+    private fun switchToNextSong(): Boolean {
+        if (isStrictUsbBitPerfectPath()) {
+            logUsbBitPerfectBypassOnce(1L shl 2, "gapless/crossfade song switch")
+            return false
+        }
+        val path = nextSongPath ?: return false
+        val switchStart = System.nanoTime()
+        fun lap(name: String) {
+            val ms = (System.nanoTime() - switchStart) / 1_000_000.0
+            AppLogger.d(TAG, "Gapless switch lap[$name] = ${"%.1f".format(ms)}ms")
+        }
+        AppLogger.d(TAG, "Gapless: switchToNextSong START path=$path prefillState: nextPrepared=${gaplessNextDecoder.isPrepared} audioTrack=${audioTrack != null} curDecoderHandle=${decoderHandle != 0L}")
+        val prepared = gaplessNextDecoder.consumeIfPathMatches(path)
+        if (prepared == null && !prepareNextDecoder(path)) return false
+        val prep = prepared ?: gaplessNextDecoder.consumeIfPathMatches(path) ?: return false
+        lap("after-prepareNextDecoder")
+        AppLogger.d(TAG, "Gapless: switching to next song: $path")
+
+        // 关闭旧解码器 — 统一走 handoff helper，先唤醒旧 ring buffer，再等待旧线程退出，
+        // 避免 gapless/crossfade 两处各自处理 decoder ownership。
+        val oldHandle = decoderHandle
+        val oldRingBuffer = ringBuffer
+        val oldStopToken = decoderStopToken
+        decoderHandle = 0L
+        decoderDone = false  // 重置，让新解码线程正常运行
+        val retireResult = decoderHandoff.retireOldDecoder(
+            oldHandle = oldHandle,
+            oldThread = decoderThread,
+            oldRingBuffer = oldRingBuffer,
+            joinTimeoutMs = 500L,
+            stopToken = oldStopToken,
+            reason = "gapless_handoff"
+        )
+        if (!retireResult.oldThreadAliveAfterJoin) decoderThread = null
+        lap("after-close-old-decoder")
+
+        // 切换解码器
+        decoderHandle = prep.handle
+        wavSampleRate = prep.sampleRate
+        wavChannels = prep.channels
+        wavBitsPerSample = prep.bitsPerSample
+        currentPath = prep.path
+
+        // 检查格式是否变化，如果变化需要重建 AudioTrack
+        val formatChanged = audioTrack != null && (
+            wavSampleRate != audioTrack?.sampleRate ||
+            outputBytesPerSample != (audioTrack?.audioFormat?.let {
+                if (it == AudioFormat.ENCODING_PCM_16BIT) 2 else 4
+            } ?: 0)
+        )
+        AppLogger.d(TAG, "Gapless: format check: wavSampleRate=$wavSampleRate(wavBitsPerSample=$wavBitsPerSample, wavChannels=$wavChannels) vs audioTrack.sampleRate=${audioTrack?.sampleRate} audioFormat=${audioTrack?.audioFormat} formatChanged=$formatChanged")
+        if (formatChanged) {
+            AppLogger.d(TAG, "Gapless: format changed, rebuilding AudioTrack")
+            audioTrackLifecycle.detachAndRelease(
+                reason = "gapless_format_changed",
+                stop = true,
+                flush = true
+            )
+            rebuildAudioTrack()
+            lap("after-rebuildAudioTrack")
+        }
+
+        // 关闭 prefill 资源（之前 v2 改的接管 prefill 线程逻辑已回退 — 它有副作用：
+        // prefill 线程不响应 seek、不响应 generation 变化，可能导致音调/位置错乱）
+        closeNextDecoder()
+        lap("after-closeNextDecoder")
+
+        // 重建 RingBuffer 并启动新的解码器线程
+        val bufferSize = decoderHandoff.ringBufferCapacity(
+            sampleRate = wavSampleRate,
+            channels = wavChannels,
+            bytesPerSample = outputBytesPerSample,
+            minCapacity = PCM_BUFFER_SIZE * 8
+        )
+        ringBuffer = RingBuffer(bufferSize)
+        lap("after-new-ringbuffer")
+
+        val handle = decoderHandle
+        val gen = playbackSession.generation
+        val src = playbackSession.sessionSourcePath ?: path
+        decoderStopToken = DecoderStopToken("gapless-$gen-${System.nanoTime()}")
+        val newStopToken = decoderStopToken
+        decoderThread = decoderHandoff.startDecoderThread(
+            name = "FFmpegDecoder-Gapless",
+            handle = handle,
+            generation = gen,
+            sourcePath = src,
+            stopToken = newStopToken
+        ) { h, g, s, token -> decoderLoop(h, g, s, token) }
+        lap("after-start-decoder-thread")
+
+        playbackTrackCommitter.commit(
+            reason = "gapless",
+            path = path,
+            decoderHandle = decoderHandle,
+            startPositionMs = 0L,
+            durationProvider = { h -> decoderHandoff.decoderDurationMs(h) },
+            setCurrentPath = { currentPath = it },
+            setPositionMs = { _positionMs = it },
+            setDurationMs = { _durationMs = it },
+            resetHardwarePosition = { disableHardwarePositionTracking() },
+            clearNextRequest = { playbackSession.clearNextRequest("gapless_commit") },
+            listener = listener
+        )
+        lap("after-track-commit")
+
+        val totalMs = (System.nanoTime() - switchStart) / 1_000_000.0
+        AppLogger.d(TAG, "Gapless: switch complete, formatChanged=$formatChanged, TOTAL=${"%.1f".format(totalMs)}ms")
+        return true
+    }
+
     fun release() {
         AppLogger.w(TAG, "=== release() called")
         if (isReleased.getAndSet(true)) return
 
+        // 关闭 SAF 文件描述符
+        decoderPathResolver.close("release")
+        usbPostStartVolumeRestoreGate.clear("release")
+
         unregisterAudioDeviceCallback()
+
+        playbackWorker.cancelCurrent("release", interrupt = false)
 
         isPlaying.set(false)
         isPaused.set(false)
+        val oldDecoderTarget = detachActiveDecoderForRetire("release")
+        retireDetachedDecoder(oldDecoderTarget, "release", joinTimeoutMs = 1L)
+        closeNextDecoder()
+        decoderDone = false
+        decoderStopToken = DecoderStopToken("release-idle")
+        decoderHandleTransferred.set(false)
         pendingSeekMs = -1L
+        playbackSession.invalidate("release", clearCurrentTrack = true)
 
-        // Don't block waiting for decoder thread — it will close its own handle in finally
-        decoderThread = null
+        playbackWorker.shutdown("release")
 
-        // Close ring buffer to signal decoder thread to stop
-        ringBuffer?.close()
-        ringBuffer = null
-
-        currentTask?.cancel(false)
-        currentTask = null
-        executor.shutdown()
-
-        val oldTrack = audioTrack
-        audioTrack = null
-        oldTrack?.let {
-            try { it.stop() } catch (_: Exception) {}
-            try { it.release() } catch (_: Exception) {}
-        }
+        audioTrackLifecycle.detachAndRelease(
+            reason = "release",
+            stop = true,
+            flush = false
+        )
+        nativeAudioEngineLifecycle.detachAndClose(
+            reason = "release",
+            stop = true,
+            flush = false
+        )
 
         if (usbExclusiveMode) {
             try { UsbAudioEngine.release() } catch (_: Exception) {}
@@ -702,148 +1691,338 @@ class FfmpegAudioPlayer(private val context: Context) {
     }
 
     private fun registerAudioDeviceCallback() {
-        if (audioDeviceCallbackRegistered) return
-        if (android.os.Build.VERSION.SDK_INT >= 23) {
-            try {
-                val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                am.registerAudioDeviceCallback(audioDeviceCallback, null)
-                audioDeviceCallbackRegistered = true
-                AppLogger.d(TAG, "AudioDeviceCallback registered")
-            } catch (e: Exception) {
-                AppLogger.w(TAG, "Failed to register AudioDeviceCallback: ${e.message}")
-            }
-        }
+        androidAudioRouteController.registerAudioDeviceCallback()
     }
 
     private fun unregisterAudioDeviceCallback() {
-        if (!audioDeviceCallbackRegistered) return
-        try {
-            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.unregisterAudioDeviceCallback(audioDeviceCallback)
-            audioDeviceCallbackRegistered = false
-            AppLogger.d(TAG, "AudioDeviceCallback unregistered")
-        } catch (_: Exception) {}
+        androidAudioRouteController.unregisterAudioDeviceCallback()
     }
 
     private fun rebuildAudioTrack() {
+        val rebuildStart = System.nanoTime()
+        fun lap(name: String) {
+            val ms = (System.nanoTime() - rebuildStart) / 1_000_000.0
+            AppLogger.w(TAG, "rebuildAudioTrack lap[$name] = ${"%.1f".format(ms)}ms")
+        }
+        AppLogger.w(TAG, "=== rebuildAudioTrack called: state=$_state, isPlaying=${isPlaying.get()}, pos=${_positionMs}ms, audioTrack=${audioTrack != null} ===")
         val pos = _positionMs
         val wasPlaying = _state == State.PLAYING
         val wasPaused = _state == State.PAUSED
         val path = currentPath ?: return
+        lap("init")
 
-        executor.submit {
+        if (tempWavFile != null) {
+            playbackWorker.submit("rebuild_temp_wav") {
+                try {
+                    if (isReleased.get()) return@submit
+
+                    audioTrackLifecycle.detachAndRelease(
+                        reason = "rebuild_temp_wav",
+                        stop = true,
+                        flush = true
+                    )
+                    lap("tempWav-released-oldtrack")
+
+                    if (pos > 0) {
+                        val frameSize = wavChannels * if (wavBitsPerSample <= 16) 2 else 4
+                        val bytesPerMs = (wavSampleRate * frameSize).toDouble() / 1000.0
+                        val targetByteOffset = (pos.toDouble() * bytesPerMs).toLong().coerceIn(0, (wavDataSize - 1).coerceAtLeast(0))
+                        val alignedOffset = (targetByteOffset / frameSize) * frameSize
+                        val seekPath = if (usbExclusiveMode) resampledPath ?: path else path
+                        val originalSourcePath = sourcePath ?: path
+                        val gen = playbackSession.generation
+                        startPlaybackFromOffset(alignedOffset, seekPath, gen, isSeek = true, sourcePath = originalSourcePath)
+                    } else {
+                        val gen = playbackSession.generation
+                        startPlaybackFromOffset(0, path, gen, isSeek = false, sourcePath = sourcePath ?: path)
+                    }
+                    lap("tempWav-startPlayback")
+                } catch (e: Exception) {
+                    if (!isReleased.get()) {
+                        AppLogger.e(TAG, "rebuildAudioTrack failed", e)
+                    }
+                }
+            }
+            return
+        }
+
+        AppLogger.i(TAG, "rebuildAudioTrack: streaming mode, restarting decoder from ${pos}ms")
+        isPlaying.set(false)
+        isPaused.set(false)
+
+        ringBuffer?.close()
+        val oldTrack = audioTrackLifecycle.detach(reason = "audio_track_rebuild_streaming")
+        audioTrackLifecycle.stopDetached(oldTrack, reason = "audio_track_rebuild_streaming")
+        lap("after-stop-oldtrack")
+
+        val savedPos = pos
+        val savedPath = path
+
+        playbackWorker.cancelCurrent("audio_track_rebuild", interrupt = false)
+
+        val generation = playbackSession.beginInternalRestart(
+            reason = "audio_track_rebuild",
+            currentTrackPath = savedPath
+        )
+        setState(State.PREPARING)
+        lap("after-preparing")
+
+        playbackWorker.submit("audio_track_rebuild") {
+            val executorStart = System.nanoTime()
             try {
                 if (isReleased.get()) return@submit
 
-                val oldTrack = audioTrack
-                audioTrack = null
-                oldTrack?.let {
-                    try { it.stop() } catch (_: Exception) {}
-                    try { it.flush() } catch (_: Exception) {}
-                    try { it.release() } catch (_: Exception) {}
+                // Pre-arm old decoder lifecycle objects before new session starts.
+                val oldDecoderThread = decoderThread
+                val oldDecoderHandle = decoderHandle
+                val oldRingBuffer = ringBuffer
+                val oldStopToken = decoderStopToken
+                if (oldDecoderThread != null && oldDecoderThread.isAlive) {
+                    oldStopToken.request(
+                        reason = "audio_track_rebuild_prepare",
+                        closeRetiredHandleInOwnerThread = true
+                    )
                 }
 
-                if (pos > 0) {
-                    val frameSize = wavChannels * if (wavBitsPerSample <= 16) 2 else 4
-                    val bytesPerMs = (wavSampleRate * frameSize).toDouble() / 1000.0
-                    val targetByteOffset = (pos.toDouble() * bytesPerMs).toLong().coerceIn(0, (wavDataSize - 1).coerceAtLeast(0))
-                    val alignedOffset = (targetByteOffset / frameSize) * frameSize
-                    val seekPath = if (usbExclusiveMode) resampledPath ?: path else path
-                    val originalSourcePath = sourcePath ?: path
-                    val gen = playGeneration.get()
-                    startPlaybackFromOffset(alignedOffset, seekPath, gen, isSeek = true, sourcePath = originalSourcePath)
-                } else {
-                    val gen = playGeneration.get()
-                    startPlaybackFromOffset(0, path, gen, isSeek = false, sourcePath = sourcePath ?: path)
+                AppLogger.w(TAG, "rebuildAudioTrack executor lap[after-pre-arm] = ${"%.1f".format((System.nanoTime() - executorStart) / 1_000_000.0)}ms")
+
+                audioTrackLifecycle.releaseDetached(
+                    track = oldTrack,
+                    reason = "audio_track_rebuild_streaming",
+                    stop = false,
+                    flush = true
+                )
+                AppLogger.w(TAG, "rebuildAudioTrack executor lap[after-release-oldtrack] = ${"%.1f".format((System.nanoTime() - executorStart) / 1_000_000.0)}ms")
+
+                // Retire old decoder via the handoff helper — same rules as gapless/crossfade.
+                decoderHandle = 0L
+                val retireResult = decoderHandoff.retireOldDecoder(
+                    oldHandle = oldDecoderHandle,
+                    oldThread = oldDecoderThread,
+                    oldRingBuffer = oldRingBuffer,
+                    joinTimeoutMs = 3000L,
+                    stopToken = oldStopToken,
+                    reason = "audio_track_rebuild"
+                )
+                if (!retireResult.oldThreadAliveAfterJoin) decoderThread = null
+                ringBuffer = null
+                AppLogger.w(TAG, "rebuildAudioTrack executor lap[after-retire-decoder] = ${"%.1f".format((System.nanoTime() - executorStart) / 1_000_000.0)}ms closeOwner=${retireResult.closeOwner}")
+
+                if (savedPos > 0) {
+                    seekPositionMs = savedPos
                 }
+
+                if (!isStillCurrentPlayback(savedPath, generation)) return@submit
+                AppLogger.w(TAG, "rebuildAudioTrack executor lap[before-prepareAndStart] = ${"%.1f".format((System.nanoTime() - executorStart) / 1_000_000.0)}ms")
+
+                prepareAndStartPlayback(sourcePath = savedPath, generation = generation)
+                AppLogger.w(TAG, "rebuildAudioTrack executor lap[after-prepareAndStart] = ${"%.1f".format((System.nanoTime() - executorStart) / 1_000_000.0)}ms")
+                AppLogger.w(TAG, "rebuildAudioTrack TOTAL = ${"%.1f".format((System.nanoTime() - rebuildStart) / 1_000_000.0)}ms")
             } catch (e: Exception) {
                 if (!isReleased.get()) {
-                    AppLogger.e(TAG, "rebuildAudioTrack failed", e)
+                    AppLogger.e(TAG, "rebuildAudioTrack (streaming) failed", e)
+                    setState(State.ERROR)
                 }
             }
+        }
+    }
+
+    /**
+     * 后台恢复时检查并重建 AudioTrack
+     * 主动检测 + 立即重建
+     * @return true 如果触发了重建
+     */
+    fun ensureTrackValidAfterBackground(): Boolean {
+        AppLogger.i(TAG, "ensureTrackValidAfterBackground: state=$_state, usbExclusive=$usbExclusiveMode")
+
+        if (usbExclusiveMode) {
+            // USB 独占模式：检查 USB 引擎状态
+            if (!UsbAudioEngine.isRunning()) {
+                AppLogger.w(TAG, "USB engine not running after background, attempting recovery")
+                val path = sourcePath ?: currentPath ?: return false
+                return attemptUsbRecovery(wavSampleRate, wavBitsPerSample, wavChannels, path, 0)
+            }
+            return false
+        }
+
+        // AudioTrack 模式：检查 track 状态
+        val track = audioTrack
+        when {
+            track == null -> {
+                AppLogger.w(TAG, "AudioTrack is null after background, rebuilding")
+                rebuildAudioTrack()
+                return true
+            }
+            track.playState == AudioTrack.PLAYSTATE_STOPPED -> {
+                AppLogger.w(TAG, "AudioTrack STOPPED after background, rebuilding")
+                rebuildAudioTrack()
+                return true
+            }
+            track.state == AudioTrack.STATE_UNINITIALIZED -> {
+                AppLogger.w(TAG, "AudioTrack UNINITIALIZED after background, rebuilding")
+                rebuildAudioTrack()
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * 写循环内热重建 AudioTrack
+     *
+     * 当写循环中检测到 AudioTrack 无效（null/STOPPED/UNINITIALIZED/write失败）时，
+     * 不退出循环，而是就地重建 AudioTrack 并继续播放。
+     * 仅替换输出 track，不重启解码器和 ring buffer，实现无缝恢复。
+     *
+     * @return 新的 AudioTrack 实例，失败返回 null
+     */
+    private fun recreateAudioTrackInline(forceSco: Boolean = false, forcedDevice: AudioDeviceInfo? = null): AudioTrack? {
+        val useSco = AudioOutputManager.shouldUseScoMode(context)
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+        val scoActive = forceSco || (am?.isBluetoothScoOn == true)
+        val spec = androidAudioTrackFactory.buildSpec(
+            wavSampleRate = wavSampleRate,
+            wavChannels = wavChannels,
+            probedEncoding = probedEncoding,
+            useSco = useSco,
+            scoActive = scoActive,
+            applyScoDownsample = false
+        )
+        val useScoAttributes = spec.useScoAttributes
+        val channelConfig = spec.channelConfig
+        val actualSampleRate = spec.sampleRate
+        val actualEncoding = spec.encoding
+        val bufSize = spec.bufferSizeInBytes
+
+        val shouldResumePlayback = _state == State.PLAYING
+        AppLogger.w(TAG, "=== recreateAudioTrackInline: sr=$actualSampleRate, ch=$channelConfig, enc=$actualEncoding, sco=$useSco, scoActive=$scoActive, useScoAttrs=$useScoAttributes forcedDevice=${forcedDevice?.shortRouteName() ?: "none"} shouldResume=$shouldResumePlayback ===")
+
+        // 释放旧 track
+        audioTrackLifecycle.detachAndRelease(
+            reason = "recreate_audio_track_inline",
+            stop = true,
+            flush = true
+        )
+
+        return try {
+            // SCO 已连接：用 VOICE_COMMUNICATION 路由到 SCO；SCO 未连接：用纯 MEDIA（不自动切回 SCO）
+            val attributes = spec.audioAttributes
+            AppLogger.i(TAG, "recreateAudioTrackInline: audioAttributes usage=${attributes.usage}, contentType=${attributes.contentType}")
+            val newTrack = createAudioTrackWithFallback(actualSampleRate, channelConfig, actualEncoding, bufSize, attributes)
+            if (newTrack != null) {
+                androidAudioRouteController.applyPreferredDeviceToAudioTrack(
+                    reason = "recreateAudioTrackInline",
+                    useScoAttributes = useScoAttributes,
+                    allowDirectPreferredDevice = !useSco,
+                    forcedDevice = forcedDevice,
+                    trackOverride = newTrack
+                )
+
+                audioTrack = newTrack
+                _audioSessionId = newTrack.audioSessionId
+                snapshotTrackFormat(actualSampleRate, channelConfig, actualEncoding)
+                setVolume(volume)
+                if (shouldResumePlayback) {
+                    newTrack.play()
+                } else {
+                    try { newTrack.pause() } catch (_: Exception) {}
+                }
+                disableHardwarePositionTracking() // 重建后暂不信任硬件时间戳
+                AppLogger.w(TAG, "recreateAudioTrackInline SUCCESS, sessionId=$_audioSessionId resumed=$shouldResumePlayback")
+                newTrack
+            } else {
+                AppLogger.e(TAG, "recreateAudioTrackInline: createAudioTrackWithFallback returned null")
+                null
+            }
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "recreateAudioTrackInline EXCEPTION", e)
+            null
+        }
+    }
+
+    /**
+     * SCO 连接成功后重建 AudioTrack
+     * 确保新的 AudioTrack 使用正确的 SCO AudioAttributes，音频路由到 SCO 通道
+     */
+    fun rebuildAudioTrackForSco() {
+        if (_state != State.PLAYING) {
+            AppLogger.w(TAG, "rebuildAudioTrackForSco: not playing, skip")
+            return
+        }
+        AppLogger.i(TAG, "rebuildAudioTrackForSco: rebuilding AudioTrack for SCO routing")
+        val newTrack = recreateAudioTrackInline(forceSco = true)
+        if (newTrack != null) {
+            AppLogger.i(TAG, "rebuildAudioTrackForSco: success, new sessionId=${newTrack.audioSessionId}")
+        } else {
+            AppLogger.e(TAG, "rebuildAudioTrackForSco: failed to create new AudioTrack")
+        }
+    }
+
+    /**
+     * SCO 断开后重建 AudioTrack，切回 USAGE_MEDIA 属性
+     * SCO 断开后 AudioTrack 仍使用 VOICE_COMMUNICATION + SCO preferredDevice 会导致无声
+     */
+    fun rebuildAudioTrackForScoDisconnected() {
+        if (_state != State.PLAYING && _state != State.PAUSED) {
+            AppLogger.w(TAG, "rebuildAudioTrackForScoDisconnected: state=$_state, skip")
+            return
+        }
+        AppLogger.i(TAG, "rebuildAudioTrackForScoDisconnected: rebuilding AudioTrack with MEDIA attributes")
+        // forceSco=false + SCO 已断开(isBluetoothScoOn=false) → 一定用 MEDIA 属性
+        val newTrack = recreateAudioTrackInline(forceSco = false)
+        if (newTrack != null) {
+            AppLogger.i(TAG, "rebuildAudioTrackForScoDisconnected: success, new sessionId=${newTrack.audioSessionId}")
+        } else {
+            AppLogger.e(TAG, "rebuildAudioTrackForScoDisconnected: failed to create new AudioTrack")
         }
     }
 
     private fun initDspEngine() {
-        if (nativeDspEngine == null) {
-            try {
-                val engine = NativeDSPEngine()
-                engine.init(wavSampleRate, wavChannels)
-                engine.setStereoWiden(stereoWidenFactor)
-                nativeDspEngine = engine
-                useNativeDsp = true
-                AppLogger.d(TAG, "DSP: NativeDSPEngine initialized, sr=$wavSampleRate, ch=$wavChannels")
-                onDspEngineReinit?.invoke()
-            } catch (e: Exception) {
-                AppLogger.w(TAG, "DSP: NativeDSPEngine init failed, fallback to StereoWidenModule", e)
-                nativeDspEngine = null
-                useNativeDsp = false
-            }
-        } else {
-            nativeDspEngine?.let {
-                try {
-                    it.release()
-                    it.init(wavSampleRate, wavChannels)
-                    it.setStereoWiden(stereoWidenFactor)
-                    useNativeDsp = true
-                    AppLogger.d(TAG, "DSP: NativeDSPEngine reinitialized, sr=$wavSampleRate, ch=$wavChannels")
-                    onDspEngineReinit?.invoke()
-                } catch (e: Exception) {
-                    AppLogger.w(TAG, "DSP: NativeDSPEngine reinit failed, fallback to StereoWidenModule", e)
-                    nativeDspEngine = null
-                    useNativeDsp = false
-                }
-            }
-        }
+        playbackDspProcessor.init(wavSampleRate, wavChannels)
     }
 
     private fun releaseDspEngine() {
-        nativeDspEngine?.release()
-        nativeDspEngine = null
-        useNativeDsp = false
+        playbackDspProcessor.release()
     }
 
-    @Volatile
-    private var dspLogTick = 0L
+    private fun usbDecoderBytesPerSample(bits: Int): Int = when {
+        bits <= 1 -> 1
+        bits <= 16 -> 2
+        else -> 4
+    }
+
+    private fun usbNeedsS32ToPacked24(runtime: UsbAudioEngine.UsbRuntimeFormat): Boolean {
+        // StreamConfig ownership rule:
+        // Kotlin always feeds the decoder container format to native. Native owns
+        // the final USB device-container conversion (for example S32LE decoder
+        // PCM -> packed S24LE USB alt). Older Kotlin-side packed-24 conversion
+        // became unsafe once native gained a proper PCM adapter: Kotlin would
+        // first shrink 8-byte stereo S32 frames to 6-byte packed frames, then
+        // native would still interpret the bytes as S32LE source frames and
+        // truncate again. That produces noise and apparent accelerated playback
+        // on high-rate PCM paths such as 96k/192k/384k while 44.1k/16-bit remains
+        // unaffected. Keep this helper as a diagnostic hook, but never activate
+        // Kotlin-side packing.
+        if (usbExclusiveMode &&
+            wavBitsPerSample in 17..32 &&
+            wavChannels > 0 &&
+            runtime.isValid &&
+            runtime.channels == wavChannels &&
+            runtime.subslotBytes == 3
+        ) {
+            AppLogger.i(
+                TAG,
+                "USB PCM container conversion delegated to native: " +
+                    "decoder=${wavBitsPerSample}bit/${wavChannels}ch -> " +
+                    "device=${runtime.validBits}bit/subslot${runtime.subslotBytes}; " +
+                    "Kotlin writes decoder frames unchanged"
+            )
+        }
+        return false
+    }
 
     private fun processDsp(buffer: ByteArray, read: Int, channels: Int, sampleRate: Int, bitsPerSample: Int) {
-        if (usbExclusiveMode && usbBitPerfectMode) return
-        if (dspLogTick % 200L == 0L) {
-            AppLogger.w(TAG, "DSP: active, factor=$stereoWidenFactor, native=$useNativeDsp, engine=${nativeDspEngine != null}, ch=$channels, bits=$bitsPerSample")
-        }
-        dspLogTick++
-        // Native DSP 包含 PEQ + Crossfeed + StereoWiden，即使 stereoWidenFactor=0 也可能有 PEQ/Crossfeed 需要处理
-        if (useNativeDsp && nativeDspEngine != null && bitsPerSample == 16) {
-            val shortCount = read / 2
-            var shortArr = dspShortArray
-            if (shortArr == null || shortArr.size < shortCount) {
-                shortArr = ShortArray(shortCount)
-                dspShortArray = shortArr
-            }
-            var bb = dspByteBuffer
-            if (bb == null || bb.capacity() < read) {
-                bb = java.nio.ByteBuffer.allocate(read).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                dspByteBuffer = bb
-            }
-            (bb as java.nio.Buffer).clear()
-            bb.order(java.nio.ByteOrder.LITTLE_ENDIAN)
-            bb.put(buffer, 0, read)
-            bb.position(0)
-            bb.asShortBuffer().get(shortArr, 0, shortCount)
-            val result = nativeDspEngine!!.process(shortArr, shortCount, channels)
-            if (result == 0) {
-                bb.position(0)
-                bb.asShortBuffer().put(shortArr, 0, shortCount)
-                bb.position(0)
-                bb.get(buffer, 0, read)
-                return
-            }
-            AppLogger.w(TAG, "DSP: Native process failed (result=$result), fallback to Kotlin")
-        }
-        // Kotlin fallback: 仅当 stereoWidenFactor 足够大时才执行
-        if (stereoWidenFactor > 0.01f) {
-            stereoWidenModule.process(buffer, read, channels, sampleRate, bitsPerSample)
-        }
+        playbackDspProcessor.process(buffer, read, channels, sampleRate, bitsPerSample)
     }
 
     private fun getTargetSampleRate(): Int {
@@ -851,35 +2030,8 @@ class FfmpegAudioPlayer(private val context: Context) {
         return if (userRate > 0) userRate else wavSampleRate.coerceAtLeast(44100)
     }
 
-    private val USB_SUPPORTED_SAMPLE_RATES = intArrayOf(
-        44100, 48000, 88200, 96000, 176400, 192000
-    )
-
-    fun selectUsbTargetSampleRatePublic(srcSr: Int): Int = selectUsbTargetSampleRate(srcSr)
-
-    private fun selectUsbTargetSampleRate(srcSr: Int): Int {
-        if (srcSr <= 0) return 48000
-        var best = USB_SUPPORTED_SAMPLE_RATES[0]
-        for (r in USB_SUPPORTED_SAMPLE_RATES) {
-            if (r >= srcSr) {
-                best = r
-                break
-            }
-            best = r
-        }
-        AppLogger.i(TAG, "selectUsbTargetSampleRate: srcSr=$srcSr -> $best")
-        return best
-    }
-
-    private fun getEncodingForWavData(): Int {
-        return when {
-            wavBitsPerSample > 16 && android.os.Build.VERSION.SDK_INT in 26..28 ->
-                AudioFormat.ENCODING_PCM_16BIT
-            wavBitsPerSample > 16 && android.os.Build.VERSION.SDK_INT >= 26 ->
-                AudioFormat.ENCODING_PCM_FLOAT
-            else -> AudioFormat.ENCODING_PCM_16BIT
-        }
-    }
+    fun selectUsbTargetSampleRatePublic(srcSr: Int): Int =
+        usbPlaybackTargetResolver.selectTargetSampleRate(srcSr)
 
     private fun createAudioTrackWithFallback(
         sampleRate: Int,
@@ -888,61 +2040,34 @@ class FfmpegAudioPlayer(private val context: Context) {
         bufferSize: Int,
         audioAttributes: AudioAttributes
     ): AudioTrack? {
-        val safeSampleRate = if (safeMode) 44100 else sampleRate
-        val safeEncoding = if (safeMode) AudioFormat.ENCODING_PCM_16BIT else encoding
-
-        val fallbackRates = listOf(safeSampleRate, 48000, 44100, 32000, 24000, 16000).distinct()
-        val fallbackEncodings = listOf(safeEncoding, AudioFormat.ENCODING_PCM_16BIT, AudioFormat.ENCODING_PCM_8BIT).distinct()
-
-        for (rate in fallbackRates) {
-            for (enc in fallbackEncodings) {
-                try {
-                    val minBuf = AudioTrack.getMinBufferSize(rate, channelConfig, enc)
-                    val buf = if (minBuf <= 0) bufferSize else maxOf(minBuf, bufferSize)
-                    val format = AudioFormat.Builder()
-                        .setSampleRate(rate)
-                        .setEncoding(enc)
-                        .setChannelMask(channelConfig)
-                        .build()
-                    val track = AudioTrack.Builder()
-                        .setAudioAttributes(audioAttributes)
-                        .setAudioFormat(format)
-                        .setBufferSizeInBytes(buf)
-                        .setTransferMode(AudioTrack.MODE_STREAM)
-                        .build()
-                    track.play()
-                    track.pause()
-                    AppLogger.i(TAG, "AudioTrack created: rate=$rate encoding=$enc (requested: rate=$sampleRate enc=$encoding)")
-                    return track
-                } catch (e: Exception) {
-                    AppLogger.w(TAG, "AudioTrack fallback failed: rate=$rate enc=$enc", e)
-                }
-            }
-        }
-        AppLogger.e(TAG, "AudioTrack creation failed for all fallback combinations")
-        return null
+        return androidAudioTrackFactory.createWithFallback(
+            sampleRate = sampleRate,
+            channelConfig = channelConfig,
+            encoding = encoding,
+            bufferSize = bufferSize,
+            audioAttributes = audioAttributes,
+            safeMode = safeMode
+        )
     }
 
-    private fun openDecoderWithFallback(path: String, targetSr: Int, targetBits: Int, targetCh: Int): Long {
-        val safeTargetBits = if (safeMode) 16 else targetBits
-        val safeTargetSr = if (safeMode) 44100 else targetSr
-
-        val fallbackBits = listOf(safeTargetBits, 16, 24).distinct()
-        val fallbackRates = listOf(safeTargetSr, 48000, 44100).distinct()
-
-        for (bits in fallbackBits) {
-            for (rate in fallbackRates) {
-                val handle = FFmpegBridge.openDecoder(path, rate, bits, targetCh)
-                if (handle != 0L) {
-                    if (bits != targetBits || rate != targetSr) {
-                        AppLogger.w(TAG, "Decoder opened with degraded params: ${rate}Hz/${bits}bit (requested: ${targetSr}Hz/${targetBits}bit)")
-                    }
-                    return handle
-                }
-            }
+    private fun verifyUsbBitPerfectDecoderFormat(
+        actualRate: Int,
+        actualBits: Int,
+        actualChannels: Int,
+        targetRate: Int,
+        targetBits: Int,
+        targetChannels: Int
+    ): Boolean {
+        if (!isStrictUsbBitPerfectPath()) return true
+        val ok = actualRate == targetRate && actualBits == targetBits && actualChannels == targetChannels
+        if (!ok) {
+            AppLogger.e(
+                TAG,
+                "USB bit-perfect decoder format mismatch: actual=${actualRate}Hz/${actualBits}bit/${actualChannels}ch " +
+                    "target=${targetRate}Hz/${targetBits}bit/${targetChannels}ch"
+            )
         }
-        AppLogger.e(TAG, "Decoder failed for all fallback combinations")
-        return 0L
+        return ok
     }
 
     private fun onPlaybackError(msg: String) {
@@ -967,155 +2092,37 @@ class FfmpegAudioPlayer(private val context: Context) {
     }
 
     private fun setState(state: State) {
+        val oldState = _state
+        if (oldState != state) {
+            AppLogger.w(TAG, "=== setState: $oldState -> $state, isPlaying=${isPlaying.get()}, audioTrack=${audioTrack != null} ===")
+        }
         _state = state
         listener?.onStateChanged(state)
     }
 
-    private fun probeDuration(path: String): Long {
-        return try {
-            FFmpegBridge.probeDuration(path)
-        } catch (e: Exception) {
-            AppLogger.e(TAG, "FFprobe failed", e)
-            0L
-        }
-    }
-
-    private fun convertToWav(inputPath: String, outputPath: File): Boolean {
-        val targetRate = AudioOutputManager.getTargetSampleRate()
-        val targetBits = AudioOutputManager.getTargetBitDepth().let { depth ->
-            when {
-                depth >= 32 && android.os.Build.VERSION.SDK_INT >= 26 -> 32
-                depth >= 24 && android.os.Build.VERSION.SDK_INT >= 26 -> 24
-                else -> 16
-            }
-        }
-        AppLogger.i(TAG, "convertToWav: targetRate=$targetRate, targetBits=$targetBits")
-        val ret = FFmpegBridge.convertToWav(inputPath, outputPath.absolutePath, targetRate, targetBits, 2)
-        return ret == 0 && outputPath.exists() && outputPath.length() > 44
-    }
-
-    private fun convertToWavWithRate(inputPath: String, outputPath: File, targetRate: Int, targetBits: Int): Boolean {
-        AppLogger.i(TAG, "convertToWavWithRate: targetRate=$targetRate, targetBits=$targetBits, usbExclusive=$usbExclusiveMode")
-        val ret = FFmpegBridge.convertToWav(inputPath, outputPath.absolutePath, targetRate, targetBits, 2)
-        return ret == 0 && outputPath.exists() && outputPath.length() > 44
-    }
-
-    private fun convertToRawPcm(inputPath: String, outputPath: File, targetSampleRate: Int, bitsPerSample: Int = 16, channels: Int = 2): Boolean {
-        AppLogger.i(TAG, "convertToRawPcm: ${targetSampleRate}Hz/${channels}ch/${bitsPerSample}bit, no WAV header")
-        val ret = FFmpegBridge.convertToRawPcm(inputPath, outputPath.absolutePath, targetSampleRate, bitsPerSample, channels)
-        if (ret != 0 || !outputPath.exists() || outputPath.length() <= 0) {
-            AppLogger.e(TAG, "convertToRawPcm failed: ret=$ret exists=${outputPath.exists()} size=${outputPath.length()}")
-            return false
-        }
-        val bytesPerSample = when {
-            bitsPerSample <= 16 -> 2
-            bitsPerSample <= 24 -> 3
-            else -> 4
-        }
-        val bytesPerSec = targetSampleRate * channels * bytesPerSample
-        val durationSecApprox = outputPath.length().toDouble() / bytesPerSec.toDouble()
-        AppLogger.i(TAG, "convertToRawPcm done: size=${outputPath.length()} bytes, approx ${"%.1f".format(durationSecApprox)}s")
-        return true
-    }
-
-    private fun getCacheFile(path: String, atTargetRate: Int = 0, atTargetBits: Int = 0,
-                             usbTargetSr: Int = 0, usbTargetBits: Int = 0, usbTargetCh: Int = 0): File {
-        val cacheDir = File(context.cacheDir, "ffmpeg_audio")
-        cacheDir.mkdirs()
-        trimCacheDir(cacheDir, 500L * 1024 * 1024)
-        if (usbExclusiveMode) {
-            val bpTag = if (usbBitPerfectMode) "_bp" else ""
-            val hash = (path + "_usb_raw_pcm" + "_r$usbTargetSr" + "_b$usbTargetBits" + "_c$usbTargetCh" + bpTag).hashCode().toString(16)
-            return File(cacheDir, "$hash.pcm")
-        } else {
-            val rateTag = if (atTargetRate > 0) "_r$atTargetRate" else "_orig"
-            val bitsTag = "_b$atTargetBits"
-            val hash = (path + rateTag + bitsTag).hashCode().toString(16)
-            return File(cacheDir, "$hash.wav")
-        }
-    }
-
-    private fun trimCacheDir(dir: File, maxSize: Long) {
-        try {
-            val files = dir.listFiles()?.filter { it.isFile }?.sortedBy { it.lastModified() } ?: return
-            var totalSize = files.sumOf { it.length() }
-            for (file in files) {
-                if (totalSize <= maxSize) break
-                AppLogger.i(TAG, "Trimming cache: deleting ${file.name} (${file.length()} bytes)")
-                totalSize -= file.length()
-                file.delete()
-            }
-        } catch (_: Exception) {}
-    }
-
-    private fun parseWavHeader(file: File) {
-        try {
-            val raf = RandomAccessFile(file, "r")
-            try {
-                val riff = ByteArray(4)
-                raf.read(riff)
-                if (String(riff) != "RIFF") return
-                raf.skipBytes(4)
-                val wave = ByteArray(4)
-                raf.read(wave)
-                var chunkId = ByteArray(4)
-                var chunkSize: Int
-                while (raf.filePointer < raf.length() - 8) {
-                    raf.read(chunkId)
-                    chunkSize = readLittleEndianInt(raf).toInt()
-                    val chunkName = String(chunkId)
-                    if (chunkName == "fmt ") {
-                        wavFormatTag = readLittleEndianShort(raf)
-                        wavChannels = readLittleEndianShort(raf)
-                        wavSampleRate = readLittleEndianInt(raf).toInt()
-                        raf.skipBytes(6)
-                        wavBitsPerSample = readLittleEndianShort(raf)
-                        if (chunkSize > 16) raf.skipBytes(chunkSize - 16)
-                    } else if (chunkName == "data") {
-                        wavDataSize = chunkSize.toLong()
-                        wavDataOffset = raf.filePointer
-                        break
-                    } else {
-                        raf.skipBytes(chunkSize)
-                        if (chunkSize % 2 != 0) raf.skipBytes(1)
-                    }
-                }
-                val actualBytesPerSample = if (wavBitsPerSample <= 16) 2 else 4
-                val blockAlign = wavChannels * actualBytesPerSample
-                val byteRate = wavSampleRate * blockAlign
-                val formatName = if (wavFormatTag == 3) "IEEE_FLOAT" else "PCM"
-                AppLogger.i(TAG, "WAV parse result: sampleRate=$wavSampleRate channels=$wavChannels " +
-                        "bits=$wavBitsPerSample formatTag=$wavFormatTag($formatName) " +
-                        "dataOffset=$wavDataOffset dataSize=$wavDataSize " +
-                        "byteRate=$byteRate blockAlign=$blockAlign bytesPerSample=$actualBytesPerSample")
-            } finally {
-                raf.close()
-            }
-        } catch (e: Exception) {
-            AppLogger.e(TAG, "parseWavHeader failed", e)
-        }
-    }
-
-    private fun readLittleEndianInt(raf: RandomAccessFile): Long {
-        val b = ByteArray(4)
-        raf.read(b)
-        return (b[0].toLong() and 0xFF) or
-            ((b[1].toLong() and 0xFF) shl 8) or
-            ((b[2].toLong() and 0xFF) shl 16) or
-            ((b[3].toLong() and 0xFF) shl 24)
-    }
-
-    private fun readLittleEndianShort(raf: RandomAccessFile): Int {
-        val b = ByteArray(2)
-        raf.read(b)
-        return (b[0].toInt() and 0xFF) or ((b[1].toInt() and 0xFF) shl 8)
-    }
+    private fun getCacheFile(
+        path: String,
+        atTargetRate: Int = 0,
+        atTargetBits: Int = 0,
+        usbTargetSr: Int = 0,
+        usbTargetBits: Int = 0,
+        usbTargetCh: Int = 0,
+    ): File = ffmpegAudioCache.getCacheFile(
+        path = path,
+        usbExclusiveMode = usbExclusiveMode,
+        usbBitPerfectMode = usbBitPerfectMode,
+        atTargetRate = atTargetRate,
+        atTargetBits = atTargetBits,
+        usbTargetSr = usbTargetSr,
+        usbTargetBits = usbTargetBits,
+        usbTargetCh = usbTargetCh,
+    )
 
     private fun startAudioTrackPlayback(sourcePath: String, generation: Int) {
         val file = tempWavFile ?: return
         var startOffset = 0L
         if (seekPositionMs > 0 && wavDataSize > 0L) {
-            val frameSize = wavChannels * if (wavBitsPerSample <= 16) 2 else 4
+            val frameSize = wavChannels * playbackBytesPerSample()
             val bytesPerMs = (wavSampleRate * frameSize).toDouble() / 1000.0
             val targetOffset = (seekPositionMs.toDouble() * bytesPerMs).toLong().coerceIn(0, (wavDataSize - 1).coerceAtLeast(0))
             startOffset = (targetOffset / frameSize) * frameSize
@@ -1130,115 +2137,237 @@ class FfmpegAudioPlayer(private val context: Context) {
         val rb = ringBuffer
         if (handle == 0L || rb == null) return
 
+        val stopToken = decoderStopToken
+
         decoderThread = thread(name = "FfmpegDecoder", isDaemon = true) {
-            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
-            val decodeBuffer = ByteArray(decodeChunkSize)
+            decoderLoop(handle, generation, sourcePath, stopToken, decodeChunkSize)
+        }
+    }
 
-            AppLogger.i(TAG, "Decoder thread started, handle=$handle")
-            try {
-                while (isPlaying.get() && !isReleased.get()) {
-                    if (!isStillCurrentPlayback(sourcePath, generation)) {
-                        AppLogger.w(TAG, "Decoder thread: song changed, exiting")
-                        break
-                    }
+    private fun decoderLoop(
+        handle: Long,
+        generation: Int,
+        sourcePath: String,
+        stopToken: DecoderStopToken = decoderStopToken,
+        decodeChunkSize: Int = 16384
+    ) {
+        val rb = ringBuffer ?: return
+        val rbStartup = System.nanoTime()
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+        val decodeBuffer = ByteArray(decodeChunkSize)
 
-                    // Handle pending seek (non-blocking seek from main thread)
-                    val seekTarget = pendingSeekMs
-                    if (seekTarget >= 0) {
-                        pendingSeekMs = -1L
-                        FFmpegBridge.seekDecoder(handle, seekTarget)
-                        rb.clear()
-                        _positionMs = seekTarget
+        AppLogger.i(TAG, "Decoder thread started, handle=$handle, decodeChunkSize=$decodeChunkSize, isPlaying=${isPlaying.get()}")
+        var decodeCallCount = 0
+        var totalDecodedBytes = 0L
+        var totalWrittenToRb = 0L
+        try {
+            while (isPlaying.get() && !isReleased.get() && !stopToken.isStopRequested) {
+                if (!isStillCurrentPlayback(sourcePath, generation)) {
+                    AppLogger.w(TAG, "Decoder thread: song changed, exiting")
+                    break
+                }
+
+                val seekTarget = pendingSeekMs
+                if (seekTarget >= 0) {
+                    val seekSerial = pendingSeekSerial
+                    pendingSeekMs = -1L
+                    FFmpegBridge.seekDecoder(handle, seekTarget)
+                    if (seekSerial != pendingSeekSerial) {
+                        AppLogger.w(TAG, ">>> DECODER seek superseded: seekTarget=$seekTarget serial=$seekSerial latest=$pendingSeekSerial")
                         continue
                     }
+                    rb.clear()
+                    _positionMs = seekTarget
+                    needsAudioTrackFlush.set(true)
+                    flushNativePcmBufferForSeek("decoder_pending_seek")
+                    AppLogger.w(TAG, ">>> DECODER seek done: seekTarget=$seekTarget, _positionMs=$_positionMs, rb cleared, flush flag set")
+                    continue
+                }
 
-                    val rbAvailable = rb.available()
-                    val rbCapacity = decodeBuffer.size
-                    if (rb.isClosed()) break
+                // 外部请求退出（gapless 切歌），在 FFmpeg 调用前安全退出
+                if (stopToken.isStopRequested) {
+                    AppLogger.w(TAG, "Decoder thread: stop requested before decodeChunk, exiting safely token=${stopToken.label}")
+                    break
+                }
 
-                    val decoded = FFmpegBridge.decodeChunk(handle, decodeBuffer, 0, decodeBuffer.size)
-                    when {
-                        decoded > 0 -> {
-                            var writeData = decodeBuffer
-                            var writeLen = decoded
-                            if (!usbExclusiveMode && wavBitsPerSample > 16) {
-                                val sampleCount = decoded / 4
-                                val needed = sampleCount * 4
-                                var floatBuf = decoderFloatBuf
-                                if (floatBuf == null || floatBuf.size < needed) {
-                                    floatBuf = ByteArray(needed)
-                                    decoderFloatBuf = floatBuf
-                                }
-                                val sb = java.nio.ByteBuffer.wrap(decodeBuffer, 0, decoded).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                                val fb = java.nio.ByteBuffer.wrap(floatBuf, 0, needed).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                                for (i in 0 until sampleCount) {
-                                    val s32 = sb.getInt(i * 4)
-                                    fb.putFloat(i * 4, s32.toFloat() / 2147483648.0f)
-                                }
-                                writeData = floatBuf
-                                writeLen = needed
+                val rbAvailable = rb.available()
+                if (rb.isClosed()) {
+                    AppLogger.w(TAG, "Decoder thread: RingBuffer already closed, exiting (decodeCalls=$decodeCallCount, totalDecoded=$totalDecodedBytes, totalWrittenToRb=$totalWrittenToRb)")
+                    break
+                }
+
+                val decoded = FFmpegBridge.decodeChunk(handle, decodeBuffer, 0, decodeBuffer.size)
+                decodeCallCount++
+                if (decodeCallCount == 1) {
+                    val firstMs = (System.nanoTime() - rbStartup) / 1_000_000.0
+                    AppLogger.w(TAG, "Decoder thread: FIRST decodeChunk returned $decoded bytes (started ${"%.1f".format(firstMs)}ms ago, rbAvail=$rbAvailable)")
+                }
+                if (decodeCallCount == 1 || decodeCallCount % 5000 == 0) {
+                    AppLogger.d(TAG, "Decoder thread: decodeChunk #$decodeCallCount returned $decoded, rb.available=$rbAvailable, rb.isClosed=${rb.isClosed()}")
+                }
+                when {
+                    decoded > 0 -> {
+                        var writeData = decodeBuffer
+                        var writeLen = decoded
+                        // 仅当 AudioTrack 使用 FLOAT 编码时才将 int32 转换为 float32
+                        // 如果 probedEncoding 是 PCM_32BIT，AudioTrack 期望 int32 数据，不能转换
+                        if (useFloatOutput && wavBitsPerSample > 16) {
+                            val sampleCount = decoded / 4
+                            val needed = sampleCount * 4
+                            var floatBuf = decoderFloatBuf
+                            if (floatBuf == null || floatBuf.size < needed) {
+                                floatBuf = ByteArray(needed)
+                                decoderFloatBuf = floatBuf
                             }
-                            val written = rb.write(writeData, 0, writeLen)
-                            if (written < 0) {
-                                AppLogger.w(TAG, "Decoder thread: ring buffer closed")
-                                break
+                            writeLen = PcmSampleConverter.s32ToFloatPcm(decodeBuffer, decoded, floatBuf)
+                            writeData = floatBuf
+                        } else if (usePacked24Output && wavBitsPerSample > 16) {
+                            val sampleCount = decoded / 4
+                            val needed = sampleCount * 3
+                            var packedBuf = decoderPacked24Buf
+                            if (packedBuf == null || packedBuf.size < needed) {
+                                packedBuf = ByteArray(needed)
+                                decoderPacked24Buf = packedBuf
                             }
+                            writeLen = PcmSampleConverter.s32ToS24PackedPcm(decodeBuffer, decoded, packedBuf)
+                            writeData = packedBuf
                         }
-                        decoded == -1 -> {
-                            AppLogger.i(TAG, "Decoder thread: EOF reached")
-                            rb.close()
-                            break
+                        val written = rb.write(writeData, 0, writeLen)
+                        totalDecodedBytes += decoded
+                        totalWrittenToRb += (if (written > 0) written else 0)
+                        if (decodeCallCount == 1 || decodeCallCount % 5000 == 0) {
+                            AppLogger.d(TAG, "Decoder thread: rb.write #$decodeCallCount decoded=$decoded writeLen=$writeLen written=$written rb.available=${rb.available()}")
                         }
-                        else -> {
-                            AppLogger.e(TAG, "Decoder thread: decode error: $decoded")
-                            rb.close()
+                        if (written < 0) {
+                            AppLogger.w(TAG, "Decoder thread: ring buffer closed (decodeCalls=$decodeCallCount, totalDecoded=$totalDecodedBytes, totalWritten=$totalWrittenToRb)")
                             break
                         }
                     }
-                }
-            } catch (e: InterruptedException) {
-                AppLogger.w(TAG, "Decoder thread interrupted")
-            } catch (e: Exception) {
-                AppLogger.e(TAG, "Decoder thread fatal error", e)
-                try {
-                    isPlaying.set(false)
-                    rb.close()
-                    if (isStillCurrentPlayback(sourcePath, generation)) {
-                        setState(State.ERROR)
-                        onPlaybackError("解码线程异常: ${e.message}")
+                    decoded == -1 -> {
+                        AppLogger.i(TAG, "Decoder thread: EOF reached (decodeCalls=$decodeCallCount, totalDecoded=$totalDecodedBytes, totalWrittenToRb=$totalWrittenToRb, rb.available=${rb.available()})")
+                        decoderDone = true
+                        // 关键修复：标记 EOF 并唤醒读线程
+                        // 让 readWithTimeout 在 buffer 空时立即返回 0，不再等 2 秒超时
+                        rb.markEOF()
+                        break
                     }
-                } catch (notifyErr: Exception) {
-                    AppLogger.e(TAG, "Error notifying decoder failure", notifyErr)
+                    else -> {
+                        AppLogger.e(TAG, "Decoder thread: decode error: $decoded (decodeCalls=$decodeCallCount, totalDecoded=$totalDecodedBytes, totalWrittenToRb=$totalWrittenToRb)")
+                        rb.close()
+                        break
+                    }
                 }
-            } finally {
-                AppLogger.i(TAG, "Decoder thread ended, closing handle=$handle")
+            }
+        } catch (e: InterruptedException) {
+            AppLogger.w(TAG, "Decoder thread interrupted")
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Decoder thread fatal error", e)
+            try {
+                isPlaying.set(false)
+                rb.close()
+                if (isStillCurrentPlayback(sourcePath, generation)) {
+                    setState(State.ERROR)
+                    onPlaybackError("解码线程异常: ${e.message}")
+                }
+            } catch (notifyErr: Exception) {
+                AppLogger.e(TAG, "Error notifying decoder failure", notifyErr)
+            }
+        } finally {
+            if (stopToken.isStopRequested) {
+                if (stopToken.shouldCloseRetiredHandleInOwnerThread) {
+                    // Gapless/crossfade handoff asked this exact decoder thread to retire.
+                    // Close the retired handle from the owner thread instead of the new
+                    // playback thread, avoiding use-after-close if the old thread was still
+                    // inside FFmpeg when handoff started.
+                    AppLogger.w(
+                        TAG,
+                        "Decoder thread ended (stop requested token=${stopToken.label} reason=${stopToken.reason}), closing retired handle=$handle in owner thread"
+                    )
+                    try {
+                        FFmpegBridge.closeDecoder(handle)
+                    } catch (e: Exception) {
+                        AppLogger.e(TAG, "Error closing retired decoder in owner thread", e)
+                    }
+                    if (decoderHandle == handle) {
+                        decoderHandle = 0L
+                    }
+                } else {
+                    // Stop was requested, but the caller owns closing the handle because no
+                    // decoder thread was alive at handoff time or another path explicitly
+                    // took ownership.
+                    AppLogger.w(
+                        TAG,
+                        "Decoder thread ended (stop requested token=${stopToken.label} reason=${stopToken.reason}), NOT closing handle=$handle"
+                    )
+                }
+            } else if (decoderDone) {
+                // 正常 EOF：保留 decoderHandle，seek 时需要它来重新定位和重启解码
+                AppLogger.i(TAG, "Decoder thread ended (EOF), keeping handle=$handle for potential seek")
+            } else if (decoderHandleTransferred.getAndSet(false)) {
+                // seekTo() EOF 分支已将 handle 所有权转移给新解码线程，不要关闭
+                AppLogger.w(TAG, "Decoder thread ended but handle transferred to new thread, NOT closing handle=$handle")
+            } else {
+                // 异常退出：关闭 handle
+                AppLogger.i(TAG, "Decoder thread ended (error/interrupt), closing handle=$handle")
                 try {
                     FFmpegBridge.closeDecoder(handle)
                 } catch (e: Exception) {
                     AppLogger.e(TAG, "Error closing decoder in thread finally", e)
                 }
-                // Reset shared handle only if it's still the one we were using
                 if (decoderHandle == handle) {
                     decoderHandle = 0L
                 }
-                AppLogger.i(TAG, "Decoder thread cleanup done")
             }
+            AppLogger.i(TAG, "Decoder thread cleanup done")
         }
     }
 
     private fun startStreamingPlayback(sourcePath: String, generation: Int) {
-        val rb = ringBuffer ?: return
+        if (useNativePcmOutput && startNativeStreamingPlayback(sourcePath, generation)) {
+            return
+        }
 
-        val channelConfig = if (wavChannels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
-        val actualSampleRate = wavSampleRate.coerceAtLeast(44100)
-        val actualEncoding = probedEncoding
-        AppLogger.i(TAG, "Streaming playback: rate=$actualSampleRate, encoding=$actualEncoding, bits=$wavBitsPerSample")
+        // Native streaming 失败回退时，finally 块会将 isPlaying 设为 false，
+        // 需要恢复为 true 以保证 AudioTrack 路径正常运行
+        if (!isPlaying.get() && isStillCurrentPlayback(sourcePath, generation) && !isReleased.get()) {
+            isPlaying.set(true)
+        }
 
-        val bufSize = AudioTrack.getMinBufferSize(actualSampleRate, channelConfig, actualEncoding)
-            .coerceAtLeast(PCM_BUFFER_SIZE)
+        var rb = ringBuffer ?: return
+        enableHardwarePositionTracking()  // 新歌开始时启用硬件时间戳
+        needsAudioTrackFlush.set(false)  // 重置 flush 标志
+
+        // 蓝牙 SCO 模式处理
+        val useSco = AudioOutputManager.shouldUseScoMode(context)
+        // SCO 尚未连接时，先用 MEDIA 属性创建 AudioTrack，避免等待 SCO 连接期间的静默期
+        // SCO 连接后 rebuildAudioTrackForSco() 会自动切换到 VOICE_COMMUNICATION + SCO 路由
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+        val scoActive = am?.isBluetoothScoOn == true
+        val spec = androidAudioTrackFactory.buildSpec(
+            wavSampleRate = wavSampleRate,
+            wavChannels = wavChannels,
+            probedEncoding = probedEncoding,
+            useSco = useSco,
+            scoActive = scoActive,
+            applyScoDownsample = true,
+            scoDownsampleEnabled = AppPreferences.Player.bluetoothScoDownsample
+        )
+        val useScoAttributes = spec.useScoAttributes
+        val channelConfig = spec.channelConfig
+        val actualSampleRate = spec.sampleRate
+        val actualEncoding = spec.encoding
+        val bufSize = spec.bufferSizeInBytes
+
+        AppLogger.i(TAG, "SCO check: useSco=$useSco, scoActive=$scoActive, useScoAttributes=$useScoAttributes, bluetoothScoMode=${AppPreferences.Player.bluetoothScoMode}, wavSampleRate=$wavSampleRate, isHfpOnly=${AudioOutputManager.isBluetoothHfpOnlyDevice(context)}, isAnyBt=${AudioOutputManager.isAnyBluetoothDeviceConnected(context)}")
+
+        if (useScoAttributes && AppPreferences.Player.bluetoothScoDownsample) {
+            AppLogger.i(TAG, "SCO downsample: 16kHz")
+        }
+
+        AppLogger.i(TAG, "Streaming playback: rate=$actualSampleRate, encoding=$actualEncoding, bits=$wavBitsPerSample, sco=$useSco, scoActive=$scoActive, channel=$channelConfig")
 
         try {
-            val attributes = AudioOutputManager.buildAudioAttributes(context)
+            val attributes = spec.audioAttributes
 
             val track = createAudioTrackWithFallback(actualSampleRate, channelConfig, actualEncoding, bufSize, attributes)
             if (track == null) {
@@ -1249,24 +2378,83 @@ class FfmpegAudioPlayer(private val context: Context) {
                 return
             }
 
-            if (AudioOutputManager.getCurrentOutputMode(context) == com.rawsmusic.core.common.model.AudioOutputMode.DIRECT) {
-                if (android.os.Build.VERSION.SDK_INT >= 23) {
-                    try {
-                        AudioOutputManager.getPreferredDeviceForDirect(context)?.let { device ->
-                            track.preferredDevice = device
-                            AppLogger.d(TAG, "Direct mode: preferred device set to ${device.productName}")
-                        }
-                    } catch (e: Exception) {
-                        AppLogger.w(TAG, "Setting preferred device failed, using default", e)
-                    }
-                }
-            }
+            androidAudioRouteController.applyPreferredDeviceToAudioTrack(
+                reason = "streaming_playback_start",
+                useScoAttributes = useScoAttributes,
+                allowDirectPreferredDevice = !useSco,
+                trackOverride = track
+            )
 
             audioTrack = track
             _audioSessionId = track.audioSessionId
 
+            // 记录格式快照
+            snapshotTrackFormat(actualSampleRate, channelConfig, actualEncoding)
+
             setVolume(volume)
-            track.play()
+
+            val buffer = ByteArray(PCM_BUFFER_SIZE)
+            val frameSize = wavChannels * playbackBytesPerSample()
+            val bytesPerMs = (wavSampleRate * frameSize).toDouble() / 1000.0
+            val readLimit = PcmFrameAligner.readLimit(buffer.size, frameSize)
+
+            // 预填充 AudioTrack 内部缓冲区，然后启动播放。
+            // 关键：必须在写入第一个 chunk 后立即调用 track.play()，
+            // 否则 AudioTrack 内部缓冲区写满后 write() 返回 0，导致 prefill 阻塞数秒。
+            val prefillTargetBytes = PcmFrameAligner.alignUp((bytesPerMs * 200).toInt(), frameSize)  // 200ms
+            var prefillBytesWritten = 0
+            var trackStarted = false
+            val prefillStart = System.currentTimeMillis()
+            AppLogger.i(TAG, "Prefill: target=${prefillTargetBytes}B (${prefillTargetBytes.toLong() * 1000L / (actualSampleRate.toLong() * frameSize)}ms) frameSize=$frameSize readLimit=$readLimit")
+            while (prefillBytesWritten < prefillTargetBytes && isPlaying.get() && !isReleased.get()) {
+                val remaining = prefillTargetBytes - prefillBytesWritten
+                val maxRead = PcmFrameAligner.readLimit(minOf(readLimit, remaining), frameSize)
+                if (maxRead <= 0) break
+                val read = rb.readWithTimeout(buffer, 0, maxRead, 500)
+                if (read == -1) {
+                    if (decoderDone && rb.available() == 0) break
+                    continue
+                }
+                if (read <= 0) break
+                val alignedRead = PcmFrameAligner.alignDown(read, frameSize)
+                if (alignedRead <= 0) continue
+                val writeMode = if (trackStarted) AudioTrack.WRITE_BLOCKING else AudioTrack.WRITE_NON_BLOCKING
+                val written = audioTrackPcmWriter.write(track, buffer, 0, alignedRead, writeMode)
+                if (written > 0) {
+                    prefillBytesWritten += PcmFrameAligner.alignDown(written, frameSize)
+                    // 第一次成功写入后立即启动播放，让 AudioTrack 开始消费缓冲区。
+                    if (!trackStarted) {
+                        if (!isPlaying.get() || isReleased.get() || !isStillCurrentPlayback(sourcePath, generation)) break
+                        track.play()
+                        trackStarted = true
+                        AppLogger.i(TAG, "AudioTrack.play() invoked (after first write): playState=${audioTrack?.playState}, bufferSizeInFrames=${audioTrack?.bufferSizeInFrames}, audioSessionId=${audioTrack?.audioSessionId}")
+                    }
+                } else if (written == 0) {
+                    if (!trackStarted && System.currentTimeMillis() - prefillStart > 200L) {
+                        if (!isPlaying.get() || isReleased.get() || !isStillCurrentPlayback(sourcePath, generation)) break
+                        track.play()
+                        trackStarted = true
+                        AppLogger.w(TAG, "AudioTrack.play() invoked to unblock prefill after non-blocking write=0")
+                    } else {
+                        Thread.sleep(2)
+                    }
+                } else {
+                    AppLogger.w(TAG, "Prefill write failed=$written, starting loop recovery")
+                    break
+                }
+            }
+            if (!isPlaying.get() || isReleased.get() || !isStillCurrentPlayback(sourcePath, generation)) {
+                AppLogger.w(TAG, "Prefill aborted before play: isPlaying=${isPlaying.get()} released=${isReleased.get()} current=${isStillCurrentPlayback(sourcePath, generation)}")
+                return
+            }
+            // 如果循环中没有成功写入任何数据（例如 rb 立即 EOF），仍然启动播放。
+            if (!trackStarted) {
+                track.play()
+                trackStarted = true
+                AppLogger.i(TAG, "AudioTrack.play() invoked (no prefill data): audioSessionId=${audioTrack?.audioSessionId}")
+            }
+            val prefillElapsed = System.currentTimeMillis() - prefillStart
+            AppLogger.i(TAG, "Prefill done: ${prefillBytesWritten}B in ${prefillElapsed}ms")
 
             if (isStillCurrentPlayback(sourcePath, generation)) {
                 setState(State.PLAYING)
@@ -1274,9 +2462,16 @@ class FfmpegAudioPlayer(private val context: Context) {
 
             AppLogger.i(TAG, "Streaming AudioTrack created, sessionId=$_audioSessionId")
 
-            val buffer = ByteArray(PCM_BUFFER_SIZE)
-            val frameSize = wavChannels * if (wavBitsPerSample <= 16) 2 else 4
-            val bytesPerMs = (wavSampleRate * frameSize).toDouble() / 1000.0
+            // 内联恢复计数器：防止无限重建循环
+            var inlineRecoveryCount = 0
+            val maxInlineRecoveryAttempts = 3
+
+            // 跟踪写入 AudioTrack 的总字节数（含 prefill），用于 EOF 后 drain 和低频状态日志。
+            val streamMetrics = AudioTrackStreamMetrics(TAG).apply {
+                seedWrittenBytes(prefillBytesWritten.toLong())
+            }
+
+            AppLogger.i(TAG, "Streaming loop init: crossfadeDurationMs=$crossfadeDurationMs, nextSongPath=$nextSongPath, _durationMs=$_durationMs, prefillBytes=$prefillBytesWritten")
 
             while (isPlaying.get() && !isReleased.get()) {
                 if (!isStillCurrentPlayback(sourcePath, generation)) {
@@ -1289,9 +2484,202 @@ class FfmpegAudioPlayer(private val context: Context) {
                     continue
                 }
 
-                val read = rb.read(buffer, 0, buffer.size)
+                // Crossfade 启动检测：当前歌曲剩余时间 <= crossfade 时长时开始
+                if (!crossfadeTransition.active && crossfadeDurationMs > 0 && nextSongPath != null && _durationMs > 0) {
+                    val remainingMs = _durationMs - _positionMs
+                    if (remainingMs % 5000 < 50) {
+                        AppLogger.d(TAG, "Crossfade check: pos=$_positionMs dur=$_durationMs rem=$remainingMs xfadeDur=$crossfadeDurationMs next=$nextSongPath")
+                    }
+                    if (remainingMs in 1L..crossfadeDurationMs.toLong()) {
+                        if (prepareNextDecoder(nextSongPath!!)) {
+                            crossfadeTransition.start(
+                                durationMs = crossfadeDurationMs,
+                                sampleRate = wavSampleRate,
+                                bufferSize = buffer.size,
+                                remainingMs = remainingMs
+                            )
+                        }
+                    }
+                }
+
+                val preparedCrossfade = if (crossfadeTransition.active) gaplessNextDecoder.snapshot else null
+                if (crossfadeTransition.active && preparedCrossfade == null) {
+                    AppLogger.w(TAG, "Crossfade: active without prepared next decoder; resetting transition")
+                    crossfadeTransition.reset("missing_prepared_next")
+                }
+                val nextCrossfade = if (crossfadeTransition.active) preparedCrossfade else null
+                var read: Int
+                if (crossfadeTransition.active && nextCrossfade != null) {
+                    // Crossfade 模式：从当前和下一个解码器分别读取，混合
+                    val xfReadStart = System.nanoTime()
+                    val currentRead = rb.readWithTimeout(buffer, 0, readLimit, RING_BUFFER_READ_TIMEOUT_MS)
+                    val xfReadMs = (System.nanoTime() - xfReadStart) / 1_000_000.0
+                    if (xfReadMs > 100) {
+                        AppLogger.w(TAG, "Crossfade: rb.readWithTimeout took ${"%.1f".format(xfReadMs)}ms, rbAvail=${rb.available()}B decoderDone=$decoderDone")
+                    }
+                    if (currentRead == -1) {
+                        // 超时，检查是否仍在播放
+                        if (!isPlaying.get()) break
+                        // 解码器已完成 → 当前歌曲解码完毕
+                        // 关键修复：不等 ring buffer 完全消费，立刻强制切换
+                        // 否则需要等旧 ring buffer 中剩余的 ~760KB 数据消费完（3-4 秒）才能 switch
+                        if (decoderDone) {
+                            val xfadeElapsedMs = crossfadeTransition.elapsedMs(bytesPerMs)
+                            AppLogger.d(TAG, "Crossfade: current song decoder EOF, force switch (xfadeElapsed=${xfadeElapsedMs}ms, rbAvail=${rb.available()}B) — 关闭旧 rb 跳过 760KB 残数据")
+                            crossfadeTransition.reset("current_decoder_eof")
+                            // 关闭旧 ring buffer（丢弃剩余 ~760KB 旧数据），让 readWithTimeout 下次返回 0
+                            // 旧歌已经淡出到几乎无声（crossfade 进度 ~99%），丢弃 760KB 听感无感
+                            // 但能省下 3-4 秒卡顿
+                            try { rb.close() } catch (_: Exception) {}
+                            if (switchToNextSong()) {
+                                _positionMs = xfadeElapsedMs
+                                disableHardwarePositionTracking()
+                                rb = ringBuffer!!
+                                continue
+                            }
+                            isPlaying.set(false)
+                            if (isStillCurrentPlayback(sourcePath, generation)) {
+                                onPlaybackSuccess(); setState(State.COMPLETED)
+                            }
+                            break
+                        }
+                        continue
+                    }
+                    if (currentRead <= 0) {
+                        // 当前歌曲在 crossfade 期间结束，提前切换
+                        val xfadeElapsedMs = crossfadeTransition.elapsedMs(bytesPerMs)
+                        AppLogger.d(TAG, "Crossfade: current song ended during crossfade, xfadeElapsed=${xfadeElapsedMs}ms")
+                        crossfadeTransition.reset("current_read_eof")
+                        if (switchToNextSong()) {
+                            _positionMs = xfadeElapsedMs
+                            disableHardwarePositionTracking()
+                            rb = ringBuffer!!
+                            continue
+                        }
+                        isPlaying.set(false)
+                        if (isStillCurrentPlayback(sourcePath, generation)) {
+                            onPlaybackSuccess(); setState(State.COMPLETED)
+                        }
+                        break
+                    }
+                    val mixResult = crossfadeTransition.mixNextIntoCurrent(
+                        currentBuf = buffer,
+                        currentRead = currentRead,
+                        next = nextCrossfade,
+                        frameSize = frameSize,
+                        outputIsFloat = useFloatOutput,
+                        outputIsPacked24 = usePacked24Output,
+                        bitsPerSample = wavBitsPerSample
+                    )
+                    if (mixResult.completed) {
+                            val xfadeStart = System.nanoTime()
+                            fun xlap(name: String) {
+                                val ms = (System.nanoTime() - xfadeStart) / 1_000_000.0
+                                AppLogger.d(TAG, "Crossfade complete lap[$name] = ${"%.1f".format(ms)}ms")
+                            }
+                            val prep = gaplessNextDecoder.consumeIfPathMatches(nextSongPath ?: "") 
+                            AppLogger.d(TAG, "Crossfade: COMPLETE start: prevFormat(sr=$wavSampleRate,ch=$wavChannels,bits=$wavBitsPerSample) nextFormat(sr=${prep?.sampleRate ?: 0},ch=${prep?.channels ?: 0},bits=${prep?.bitsPerSample ?: 0}) decoderHandle=$decoderHandle nextHandle=${prep?.handle ?: 0L} audioTrack=${audioTrack != null} (sampleRate=${audioTrack?.sampleRate})")
+                            crossfadeTransition.reset("complete")
+                            xlap("start")
+                            // 关闭旧解码器，切换到新解码器
+                            val oldHandle = decoderHandle
+                            decoderHandle = prep?.handle ?: 0L
+                            wavSampleRate = prep?.sampleRate ?: wavSampleRate
+                            wavChannels = prep?.channels ?: wavChannels
+                            wavBitsPerSample = prep?.bitsPerSample ?: wavBitsPerSample
+                            currentPath = prep?.path ?: currentPath
+                            xlap("after-switch-handles")
+                            val oldRingBuffer = ringBuffer
+                            val oldStopToken = decoderStopToken
+                            val retireResult = decoderHandoff.retireOldDecoder(
+                                oldHandle = oldHandle,
+                                oldThread = decoderThread,
+                                oldRingBuffer = oldRingBuffer,
+                                joinTimeoutMs = 200L,
+                                stopToken = oldStopToken,
+                                reason = "crossfade_handoff"
+                            )
+                            if (!retireResult.oldThreadAliveAfterJoin) decoderThread = null
+
+                            // 重建 RingBuffer 并启动新解码器线程
+                            val newBufSize = decoderHandoff.ringBufferCapacity(
+                                sampleRate = wavSampleRate,
+                                channels = wavChannels,
+                                bytesPerSample = outputBytesPerSample,
+                                minCapacity = PCM_BUFFER_SIZE * 8
+                            )
+                            ringBuffer = RingBuffer(newBufSize)
+                            rb = ringBuffer!!
+                            xlap("after-new-ringbuffer")
+                            val h = decoderHandle; val g = playbackSession.generation; val s = playbackSession.sessionSourcePath ?: sourcePath
+                            decoderStopToken = DecoderStopToken("crossfade-$g-${System.nanoTime()}")
+                            val newStopToken = decoderStopToken
+                            decoderThread = decoderHandoff.startDecoderThread(
+                                name = "FFmpegDecoder-XFade",
+                                handle = h,
+                                generation = g,
+                                sourcePath = s,
+                                stopToken = newStopToken
+                            ) { handle, gen, src, token -> decoderLoop(handle, gen, src, token) }
+                            xlap("after-start-decoder-thread")
+                            val commit = playbackTrackCommitter.commit(
+                                reason = "crossfade",
+                                path = prep?.path ?: nextSongPath ?: playbackSession.sessionSourcePath ?: sourcePath,
+                                decoderHandle = decoderHandle,
+                                startPositionMs = crossfadeDurationMs.toLong(),
+                                durationProvider = { h -> decoderHandoff.decoderDurationMs(h) },
+                                setCurrentPath = { currentPath = it },
+                                setPositionMs = { _positionMs = it },
+                                setDurationMs = { _durationMs = it },
+                                resetHardwarePosition = { disableHardwarePositionTracking() },
+                                clearNextRequest = { playbackSession.clearNextRequest("crossfade_commit") },
+                                listener = listener
+                            )
+                            AppLogger.d(TAG, "Crossfade: COMPLETE committed position=${commit.positionMs} duration=${commit.durationMs}")
+                            AppLogger.d(TAG, "Crossfade: COMPLETE done, total = ${"%.1f".format((System.nanoTime() - xfadeStart) / 1_000_000.0)}ms")
+                        }
+                    read = currentRead
+                } else {
+                    // 正常模式：从 RingBuffer 读取（带超时防止永久阻塞）
+                    val readStart = System.nanoTime()
+                    read = rb.readWithTimeout(buffer, 0, readLimit, RING_BUFFER_READ_TIMEOUT_MS)
+                    val readMs = (System.nanoTime() - readStart) / 1_000_000.0
+                    if (readMs > 100) {
+                        AppLogger.w(TAG, "Streaming: rb.readWithTimeout took ${"%.1f".format(readMs)}ms, rbAvail=${rb.available()}B decoderDone=$decoderDone")
+                    }
+                    if (read == -1) {
+                        // 超时，检查是否仍在播放
+                        if (!isPlaying.get()) break
+                        // 解码器已完成且 buffer 为空 → 真正的 EOF
+                        if (decoderDone && rb.available() == 0) {
+                            AppLogger.i(TAG, "Streaming: decoderDone + buffer empty → EOF")
+                            read = 0  // 落入下方 read <= 0 EOF 处理
+                        } else {
+                            continue
+                        }
+                    }
+                }
+
                 if (read <= 0) {
-                    AppLogger.w(TAG, "Streaming: EOF from ring buffer")
+                    // Gapless: EOF 时尝试无缝切换到下一首歌
+                    if (switchToNextSong()) {
+                        rb = ringBuffer!!
+                        AppLogger.d(TAG, "Gapless: switched to next song, continuing write loop")
+                        continue
+                    }
+                    AppLogger.w(TAG, "Streaming: EOF from ring buffer, draining AudioTrack...")
+
+                    // Drain: 等待 AudioTrack 播放完内部缓冲区中的剩余数据
+                    // 防止短音频文件在解码器快速完成时被截断
+                    AudioTrackDrainHelper.drain(
+                        track = audioTrack,
+                        totalBytesWritten = streamMetrics.totalBytesWrittenToTrack,
+                        frameSize = frameSize,
+                        label = "Streaming",
+                        isPlaying = { isPlaying.get() },
+                        isReleased = { isReleased.get() }
+                    )
+
                     isPlaying.set(false)
                     if (isStillCurrentPlayback(sourcePath, generation)) {
                         onPlaybackSuccess()
@@ -1300,26 +2688,116 @@ class FfmpegAudioPlayer(private val context: Context) {
                     break
                 }
 
-                processDsp(buffer, read, wavChannels, wavSampleRate, wavBitsPerSample)
-                dispatchWaveformFrame(buffer, read, wavChannels, wavSampleRate, wavBitsPerSample)
+                if (!usePacked24Output) {
+                    processDsp(buffer, read, wavChannels, wavSampleRate, wavBitsPerSample)
+                    dispatchWaveformFrame(buffer, read, wavChannels, wavSampleRate, wavBitsPerSample)
+                }
 
-                val track2 = audioTrack
+                consumePendingAndroidAudioTrackRouteRebuild()
+
+                var track2 = audioTrack
                 if (track2 == null) {
-                    AppLogger.w(TAG, "Streaming: audioTrack is null, breaking")
-                    break
+                    // 内联热重建：track 被系统回收时就地重建，不退出循环
+                    if (inlineRecoveryCount < maxInlineRecoveryAttempts) {
+                        inlineRecoveryCount++
+                        AppLogger.w(TAG, "Streaming: audioTrack is null, inline recovery #$inlineRecoveryCount")
+                        val newTrack = recreateAudioTrackInline()
+                        if (newTrack != null) {
+                            track2 = newTrack
+                            // 不 continue，让新 track 接下来走 write 路径
+                        } else {
+                            AppLogger.e(TAG, "Streaming: inline recovery failed, breaking")
+                            break
+                        }
+                    } else {
+                        AppLogger.e(TAG, "Streaming: audioTrack null after $maxInlineRecoveryAttempts recovery attempts, breaking")
+                        break
+                    }
                 }
                 if (track2.playState == AudioTrack.PLAYSTATE_STOPPED) {
-                    AppLogger.w(TAG, "Streaming: Track STOPPED, breaking")
-                    break
+                    AppLogger.w(TAG, "Streaming: Track STOPPED externally, attempting restart")
+                    try {
+                        track2.play()
+                        disableHardwarePositionTracking()
+                    } catch (e: Exception) {
+                        // play() 失败说明 track 已死，尝试内联热重建
+                        if (inlineRecoveryCount < maxInlineRecoveryAttempts) {
+                            inlineRecoveryCount++
+                            AppLogger.w(TAG, "Streaming: Track restart failed: ${e.message}, inline recovery #$inlineRecoveryCount")
+                            val newTrack = recreateAudioTrackInline()
+                            if (newTrack != null) {
+                                track2 = newTrack
+                            } else {
+                                AppLogger.e(TAG, "Streaming: inline recovery after STOPPED failed, breaking")
+                                break
+                            }
+                        } else {
+                            AppLogger.e(TAG, "Streaming: Track restart failed after $maxInlineRecoveryAttempts recovery attempts, breaking")
+                            break
+                        }
+                    }
+                }
+                if (track2.playState == AudioTrack.PLAYSTATE_PAUSED && !isPaused.get()) {
+                    AppLogger.w(TAG, "Streaming: Track PAUSED externally (not by user), resuming")
+                    try { track2.play() } catch (_: Exception) {}
                 }
 
-                val result = track2.write(buffer, 0, read)
-                if (result < 0) {
-                    AppLogger.w(TAG, "Streaming: write failed=$result, breaking")
-                    break
+                // seek 后 flush AudioTrack，清除旧音频数据，让硬件位置从正确起点开始
+                if (needsAudioTrackFlush.compareAndSet(true, false)) {
+                    try { track2.flush() } catch (_: Exception) {}
+                    // flush 后硬件位置从 0 开始，暂时不信任硬件位置，用增量方式
+                    disableHardwarePositionTracking()
+                    AppLogger.w(TAG, ">>> FLUSH AudioTrack done, _positionMs=$_positionMs, switched to incremental mode")
                 }
 
-                _positionMs = ((_positionMs + (read.toDouble() / bytesPerMs))).toLong().coerceIn(0L, _durationMs)
+                var writeResult = audioTrackPcmWriter.write(track2, buffer, 0, PcmFrameAligner.alignDown(read, frameSize))
+                if (writeResult < 0) {
+                    // write 失败：track 可能已被系统回收，尝试内联热重建后重试
+                    if (inlineRecoveryCount < maxInlineRecoveryAttempts) {
+                        inlineRecoveryCount++
+                        AppLogger.w(TAG, "Streaming: write failed=$writeResult, inline recovery #$inlineRecoveryCount")
+                        val newTrack = recreateAudioTrackInline()
+                        if (newTrack != null) {
+                            // 重试写入同一个 buffer（数据已从 ring buffer 读出，丢失会中断播放）
+                            val retryResult = audioTrackPcmWriter.write(newTrack, buffer, 0, PcmFrameAligner.alignDown(read, frameSize))
+                            if (retryResult >= 0) {
+                                AppLogger.w(TAG, "Streaming: write retry succeeded after inline recovery")
+                                track2 = newTrack
+                                writeResult = retryResult
+                            } else {
+                                AppLogger.e(TAG, "Streaming: write retry also failed=$retryResult, breaking")
+                                break
+                            }
+                        } else {
+                            AppLogger.e(TAG, "Streaming: inline recovery after write failure failed, breaking")
+                            break
+                        }
+                    } else {
+                        AppLogger.e(TAG, "Streaming: write failed=$writeResult after $maxInlineRecoveryAttempts recovery attempts, breaking")
+                        break
+                    }
+                }
+
+                // 成功写入后重置恢复计数器，允许未来再次恢复
+                if (inlineRecoveryCount > 0) {
+                    AppLogger.i(TAG, "Streaming: write succeeded after recovery, resetting counter (was $inlineRecoveryCount)")
+                    inlineRecoveryCount = 0
+                }
+
+                streamMetrics.recordWriteResult(writeResult)
+                streamMetrics.maybeLog(track2, rb.available(), _positionMs)
+
+                val posUpdate = audioTrackPositionUpdater.updateStreaming(
+                    currentPositionMs = _positionMs,
+                    bytesAdvanced = writeResult.coerceAtLeast(0),
+                    bytesPerMs = bytesPerMs,
+                    sampleRate = actualSampleRate,
+                    durationMs = _durationMs
+                )
+                _positionMs = posUpdate.positionMs
+                if (kotlin.math.abs(posUpdate.positionMs - posUpdate.previousPositionMs) > 2000) {
+                    AppLogger.w(TAG, ">>> STREAMING pos JUMP: ${posUpdate.previousPositionMs} -> ${posUpdate.positionMs} (hwPos=${posUpdate.hardwarePositionMs}, useHw=${posUpdate.usedHardware}, write=$writeResult)")
+                }
                 if (isStillCurrentPlayback(sourcePath, generation)) {
                     listener?.onPositionChanged(_positionMs, _durationMs)
                 }
@@ -1330,29 +2808,260 @@ class FfmpegAudioPlayer(private val context: Context) {
                 AppLogger.e(TAG, "Streaming playback EXCEPTION", e)
             }
         } finally {
-            AppLogger.w(TAG, "Streaming playback END")
+            if (isPlaying.get() && isStillCurrentPlayback(sourcePath, generation) && !isReleased.get()) {
+                isPlaying.set(false)
+                if (_state == State.PLAYING) {
+                    setState(State.PAUSED)
+                }
+            }
+            AppLogger.w(TAG, "Streaming playback END, isPlaying=${isPlaying.get()}, state=$_state")
         }
     }
 
-    private fun startUsbStreamingPlayback(sourcePath: String, generation: Int) {
+    private fun startNativeStreamingPlayback(sourcePath: String, generation: Int): Boolean {
+        var rb = ringBuffer ?: return false
+        val mode = AudioOutputManager.getCurrentOutputMode(context)
+        if (!NativeAudioEngine.isSupported(mode)) return false
+
+        disableHardwarePositionTracking()
+        needsAudioTrackFlush.set(false)
+
+        val actualSampleRate = wavSampleRate.coerceAtLeast(44100)
+        val actualChannels = wavChannels.coerceIn(1, 2)
+        if (usePacked24Output) {
+            // NativeAudioEngine currently supports I16/FLOAT/I32.  Packed 24-bit is
+            // handled by AudioTrack with S32LE -> S24LE conversion in the decoder
+            // pump, matching Android's ENCODING_PCM_24BIT_PACKED contract.
+            return false
+        }
+        val requestedEncoding = if (mode == AudioOutputMode.OPENSL_ES) {
+            AudioFormat.ENCODING_PCM_16BIT
+        } else {
+            probedEncoding
+        }
+        val nativeBitsPerSample = if (requestedEncoding == AudioFormat.ENCODING_PCM_16BIT) 16 else wavBitsPerSample
+        val frameSize = actualChannels * if (requestedEncoding == AudioFormat.ENCODING_PCM_16BIT) 2 else 4
+        val bytesPerMs = (actualSampleRate * frameSize).toDouble() / 1000.0
+        val bufferFrames = ((actualSampleRate * 120L) / 1000L).toInt().coerceAtLeast(512)
+
+        val engine = NativeAudioEngine.create(
+            requestedMode = mode,
+            sampleRate = actualSampleRate,
+            channels = actualChannels,
+            encoding = requestedEncoding,
+            bufferFrames = bufferFrames,
+            preferredDeviceId = preferredNativeOutputDeviceId()
+        ) ?: return false
+
+        nativeAudioEngineLifecycle.detachAndClose(
+            reason = "native_pcm_output_replace_existing",
+            stop = true,
+            flush = true
+        )
+        nativeAudioEngine = engine
+        audioTrackLifecycle.detachAndRelease(
+            reason = "native_pcm_output_start",
+            stop = true,
+            flush = true
+        )
+        _audioSessionId = AudioManager.AUDIO_SESSION_ID_GENERATE
+        engine.setVolume(volume)
+
+        val buffer = ByteArray(PCM_BUFFER_SIZE)
+        val writeBuffer = ByteArray(PCM_BUFFER_SIZE)
+        val readLimit = PcmFrameAligner.readLimit(buffer.size, frameSize)
+        var totalBytesWritten = 0L
+        var started = false
+
+        fun writeToEngine(src: ByteArray, read: Int): Int {
+            val data: ByteArray
+            val len: Int
+            if (engine.encoding == AudioFormat.ENCODING_PCM_16BIT && wavBitsPerSample > 16) {
+                len = PcmSampleConverter.s32ToS16Pcm(src, read, writeBuffer)
+                data = writeBuffer
+            } else {
+                data = src
+                len = read
+            }
+            if (!started) {
+                if (!engine.start()) {
+                    AppLogger.e(TAG, "Native streaming: start failed for ${engine.actualMode}")
+                    return -1
+                }
+                started = true
+            }
+            return engine.write(data, 0, len)
+        }
+
+        try {
+            AppLogger.i(TAG, "Native streaming playback: requested=$mode actual=${engine.actualMode} rate=$actualSampleRate ch=$actualChannels encoding=${engine.encoding} sourceBits=$wavBitsPerSample")
+
+            val prefillTargetBytes = (bytesPerMs * 80).toInt().coerceAtLeast(frameSize * 16)
+            var prefillBytesWritten = 0
+            val prefillStart = System.currentTimeMillis()
+            while (prefillBytesWritten < prefillTargetBytes && isPlaying.get() && !isReleased.get()) {
+                val read = rb.readWithTimeout(buffer, 0, minOf(buffer.size, prefillTargetBytes - prefillBytesWritten), 500)
+                if (read == -1) {
+                    if (decoderDone && rb.available() == 0) break
+                    continue
+                }
+                if (read <= 0) break
+                processDsp(buffer, read, actualChannels, actualSampleRate, nativeBitsPerSample)
+                dispatchWaveformFrame(buffer, read, actualChannels, actualSampleRate, nativeBitsPerSample)
+                val written = writeToEngine(buffer, read)
+                if (written < 0) return false
+                prefillBytesWritten += written
+                totalBytesWritten += written
+            }
+            if (!started && !engine.start()) return false
+
+            AppLogger.i(TAG, "Native prefill done: ${prefillBytesWritten}B in ${System.currentTimeMillis() - prefillStart}ms")
+            if (isStillCurrentPlayback(sourcePath, generation)) {
+                setState(State.PLAYING)
+            }
+
+            var lastStreamLogMs = System.currentTimeMillis()
+            var writeCyclesSinceLog = 0
+            while (isPlaying.get() && !isReleased.get()) {
+                if (!isStillCurrentPlayback(sourcePath, generation)) {
+                    AppLogger.w(TAG, "Native streaming: song changed, breaking")
+                    break
+                }
+
+                if (isPaused.get()) {
+                    synchronized(pauseLock) { pauseLock.wait(100) }
+                    continue
+                }
+
+                var read = rb.readWithTimeout(buffer, 0, readLimit, RING_BUFFER_READ_TIMEOUT_MS)
+                if (read == -1) {
+                    if (!isPlaying.get()) break
+                    if (decoderDone && rb.available() == 0) {
+                        read = 0
+                    } else {
+                        continue
+                    }
+                }
+
+                if (read <= 0) {
+                    if (switchToNextSong()) {
+                        rb = ringBuffer!!
+                        AppLogger.d(TAG, "Native gapless: switched to next song, continuing write loop")
+                        continue
+                    }
+
+                    val framesWritten = engine.getFramesWritten()
+                    val drainStart = System.currentTimeMillis()
+                    val maxDrainMs = 3000L
+                    while (isPlaying.get() && !isReleased.get()) {
+                        val expectedMs = if (actualSampleRate > 0) (framesWritten * 1000L / actualSampleRate) else 0L
+                        if (_positionMs >= expectedMs.coerceAtMost(_durationMs)) break
+                        if (System.currentTimeMillis() - drainStart > maxDrainMs) break
+                        Thread.sleep(20)
+                    }
+
+                    isPlaying.set(false)
+                    if (isStillCurrentPlayback(sourcePath, generation)) {
+                        onPlaybackSuccess()
+                        setState(State.COMPLETED)
+                    }
+                    break
+                }
+
+                processDsp(buffer, read, actualChannels, actualSampleRate, nativeBitsPerSample)
+                dispatchWaveformFrame(buffer, read, actualChannels, actualSampleRate, nativeBitsPerSample)
+
+                if (needsAudioTrackFlush.compareAndSet(true, false)) {
+                    engine.flush()
+                    disableHardwarePositionTracking()
+                    totalBytesWritten = 0L
+                    AppLogger.w(TAG, ">>> FLUSH Native PCM done, _positionMs=$_positionMs")
+                }
+
+                val written = writeToEngine(buffer, read)
+                if (written < 0) {
+                    if (retargetNativeOutputDevice("native_write_failed_$written")) {
+                        AppLogger.w(TAG, "Native streaming: write failed=$written, output retargeted in-place; retry next buffer")
+                        continue
+                    }
+                    AppLogger.e(TAG, "Native streaming: write failed=$written, falling back is not safe mid-buffer")
+                    break
+                }
+
+                totalBytesWritten += written
+                writeCyclesSinceLog++
+
+                val prevPosMs = _positionMs
+                val flushPending = needsAudioTrackFlush.get()
+                if (!flushPending) {
+                    _positionMs = ((_positionMs + (written.toDouble() / bytesPerMs))).toLong().coerceToDuration()
+                }
+                if (kotlin.math.abs(_positionMs - prevPosMs) > 2000) {
+                    AppLogger.w(TAG, ">>> NATIVE pos JUMP: $prevPosMs -> $_positionMs (written=$written)")
+                }
+                if (isStillCurrentPlayback(sourcePath, generation)) {
+                    listener?.onPositionChanged(_positionMs, _durationMs)
+                }
+
+                val nowMs = System.currentTimeMillis()
+                if (nowMs - lastStreamLogMs >= 5000) {
+                    AppLogger.d(TAG, "Native streaming status: mode=${engine.actualMode}, writeCycles=$writeCyclesSinceLog, totalWritten=${totalBytesWritten}B, frames=${engine.getFramesWritten()}, rb.avail=${rb.available()}, _posMs=$_positionMs")
+                    lastStreamLogMs = nowMs
+                    writeCyclesSinceLog = 0
+                }
+            }
+        } catch (e: Exception) {
+            if (isStillCurrentPlayback(sourcePath, generation) && !isReleased.get()) {
+                AppLogger.e(TAG, "Native streaming playback EXCEPTION", e)
+            }
+        } finally {
+            if (isPlaying.get() && isStillCurrentPlayback(sourcePath, generation) && !isReleased.get()) {
+                isPlaying.set(false)
+                if (_state == State.PLAYING) {
+                    setState(State.PAUSED)
+                }
+            }
+            nativeAudioEngineLifecycle.detachAndClose(
+                reason = "native_streaming_finally",
+                stop = true,
+                flush = false
+            )
+            AppLogger.w(TAG, "Native streaming playback END, isPlaying=${isPlaying.get()}, state=$_state")
+        }
+        return true
+    }
+
+    private fun startUsbStreamingPlayback(sourcePath: String, generation: Int, decodeChunkSize: Int = 16384) {
+        if (
+            abortPlaybackStageIfObsolete(
+                sourcePath,
+                generation,
+                stage = "usb_streaming_before_prepare",
+                closeRingBuffer = true,
+                closeDecoderHandle = true
+            )
+        ) {
+            return
+        }
+
         val rb = ringBuffer ?: return
         val engine = UsbAudioEngine
 
         val actualSampleRate = wavSampleRate.coerceAtLeast(44100)
-        val pcmFrameSize = wavChannels * if (wavBitsPerSample <= 16) 2 else 4
-        val expectedBytesPerSec = actualSampleRate * pcmFrameSize
-        val packetSize = engine.getPacketSize().let { if (it > 0) it else pcmFrameSize }
-        val readBufFrames = 2048
-        val readBufSize = (pcmFrameSize * readBufFrames).let { size ->
-            ((size + packetSize - 1) / packetSize) * packetSize
-        }
+        val sourcePcmFrameSize = wavChannels * usbDecoderBytesPerSample(wavBitsPerSample)
+        var usbRuntimeFormat = engine.getRuntimeFormat()
+        var usbDeviceFrameSize = usbRuntimeFormat.frameBytes.takeIf { it > 0 } ?: sourcePcmFrameSize
+        var convertUsbS32ToPacked24 = false
+        val expectedBytesPerSec = actualSampleRate.toLong() * sourcePcmFrameSize.toLong()
 
-        AppLogger.i(TAG, "========== USB Streaming Parameters ==========")
+        AppLogger.i(TAG, "========== USB Streaming PRE-Prepare ==========")
         AppLogger.i(TAG, "  sampleRate=$actualSampleRate channels=$wavChannels bits=$wavBitsPerSample")
-        AppLogger.i(TAG, "  frameSize=$pcmFrameSize packetSize=$packetSize readBufSize=$readBufSize")
-        AppLogger.i(TAG, "  expectedBytesPerSec=$expectedBytesPerSec")
+        AppLogger.i(TAG, "  sourceFrameSize=$sourcePcmFrameSize expectedSourceBytesPerSec=$expectedBytesPerSec")
         AppLogger.i(TAG, "  engine init=${engine.isInitialized()}, running=${engine.isRunning()}")
-        AppLogger.i(TAG, "===============================================")
+        AppLogger.i(TAG, "  engine.currentHandle=0x${java.lang.Long.toUnsignedString(engine.currentHandle, 16)}")
+        AppLogger.i(TAG, "  engine transferCapacity(BEFORE prepare)=${engine.getTransferCapacityBytes()}")
+        AppLogger.i(TAG, "  engine outputBytesPerSec(BEFORE prepare)=${engine.getOutputBytesPerSecond()}")
+        AppLogger.i(TAG, "================================================")
 
         bytesReadTotal = 0L
         bytesWrittenTotal = 0L
@@ -1386,73 +3095,200 @@ class FfmpegAudioPlayer(private val context: Context) {
             return
         }
 
-        val prefillTargetMs = 500L
-        val prefillTargetBytes = (expectedBytesPerSec * prefillTargetMs / 1000).toInt()
-        val prefillTimeoutMs = 5000L
-        val minAcceptableBytes = (expectedBytesPerSec * 200 / 1000).toInt()
+        val finalDeviceSampleRate = engine.getOutputSampleRate()
+        if (finalDeviceSampleRate > 0) {
+            usbActualOutputSampleRate = finalDeviceSampleRate
+            AppLogger.i(TAG, "USB streaming: final device sampleRate=$finalDeviceSampleRate, sourceDecoderRate=$actualSampleRate")
+        }
+        usbRuntimeFormat = engine.getRuntimeFormat()
+        usbDeviceFrameSize = usbRuntimeFormat.frameBytes.takeIf { it > 0 } ?: sourcePcmFrameSize
+        convertUsbS32ToPacked24 = usbNeedsS32ToPacked24(usbRuntimeFormat)
+        if (convertUsbS32ToPacked24) {
+            AppLogger.w(
+                TAG,
+                "USB PCM container conversion active: decoder=S32LE/${sourcePcmFrameSize}B-frame " +
+                    "-> device=S24LE-packed/${usbDeviceFrameSize}B-frame " +
+                    "runtime=${usbRuntimeFormat.sampleRate}Hz/${usbRuntimeFormat.channels}ch " +
+                    "validBits=${usbRuntimeFormat.validBits} subslot=${usbRuntimeFormat.subslotBytes}"
+            )
+        }
 
-        AppLogger.i(TAG, "=== USB PREFILL START === target=${prefillTargetBytes}B (${prefillTargetMs}ms)")
+        decoderDone = false
+        decoderHandleTransferred.set(false)
+        if (decoderThread?.isAlive != true) {
+            startDecoderThread(sourcePath, generation, decodeChunkSize)
+        }
+
+        val prefillTargetMs = 120L
+        val prefillTargetBytes = (expectedBytesPerSec * prefillTargetMs / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val prefillTimeoutMs = 320L
+        val minAcceptableBytes = (expectedBytesPerSec * 24 / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+        AppLogger.i(TAG, "=== USB PREFILL START === target=${prefillTargetBytes}B (${prefillTargetMs}ms) minAcceptable=${minAcceptableBytes}B timeout=${prefillTimeoutMs}ms")
+        AppLogger.i(TAG, "=== USB PREFILL rb state: available=${rb.available()} isEof=${rb.isEof()} isClosed=${rb.isClosed()}")
         val prefillStart = System.currentTimeMillis()
+        var prefillWaitCount = 0
         while (isPlaying.get() && !isReleased.get()) {
             if (System.currentTimeMillis() - prefillStart > prefillTimeoutMs) {
-                AppLogger.w(TAG, "USB prefill timeout")
+                AppLogger.w(TAG, "USB prefill TIMEOUT after ${prefillTimeoutMs}ms: rb.available=${rb.available()} rb.isEof=${rb.isEof()} rb.isClosed=${rb.isClosed()} waitCount=$prefillWaitCount")
                 break
             }
             val buffered = rb.available()
-            if (buffered >= prefillTargetBytes) break
-            if (rb.isEof()) break
-            Thread.sleep(10)
+            if (buffered >= prefillTargetBytes) {
+                AppLogger.i(TAG, "=== USB PREFILL TARGET REACHED: ${buffered}B >= ${prefillTargetBytes}B after ${System.currentTimeMillis() - prefillStart}ms, waitCount=$prefillWaitCount")
+                break
+            }
+            if (rb.isEof()) {
+                AppLogger.w(TAG, "USB prefill: RingBuffer EOF detected (rb.available=${rb.available()}) after ${System.currentTimeMillis() - prefillStart}ms")
+                break
+            }
+            prefillWaitCount++
+            if (prefillWaitCount % 100 == 0) {
+                AppLogger.d(TAG, "USB prefill waiting: #$prefillWaitCount rb.available=${rb.available()} elapsed=${System.currentTimeMillis() - prefillStart}ms")
+            }
+            LockSupport.parkNanos(2_000_000L)
         }
 
         if (!isStillCurrentPlayback(sourcePath, generation)) return
 
         val bufferedBytes = rb.available()
-        AppLogger.i(TAG, "=== USB PREFILL END === buffered=${bufferedBytes}B (${bufferedBytes * 1000 / expectedBytesPerSec}ms)")
+        AppLogger.i(TAG, "=== USB PREFILL END === buffered=${bufferedBytes}B (${bufferedBytes.toLong() * 1000L / expectedBytesPerSec}ms) rb.isEof=${rb.isEof()} rb.isClosed=${rb.isClosed()} isPlaying=${isPlaying.get()}")
 
         if (bufferedBytes < minAcceptableBytes && !rb.isEof()) {
-            AppLogger.e(TAG, "USB prefill insufficient: ${bufferedBytes}B < ${minAcceptableBytes}B")
+            // 不把"Java 侧预填不足"作为硬错误，继续启动 USB 流
+            AppLogger.w(TAG, "USB prefill insufficient, continue with native silence startup: ${bufferedBytes}B < ${minAcceptableBytes}B")
+        }
+
+        val preStartDeviceBytesPerSec = usbDeviceBytesPerSecond(engine, expectedBytesPerSec)
+        val nativePrefillTargetBytes = bytesForMs(preStartDeviceBytesPerSec, USB_NATIVE_PREFILL_TARGET_MS)
+        val nativePrefillMinBytes = bytesForMs(preStartDeviceBytesPerSec, USB_NATIVE_PREFILL_MIN_MS)
+        val nativePrefillTimeoutMs = USB_NATIVE_PREFILL_TIMEOUT_MS
+        val nativePrefillBuffer = ByteArray((sourcePcmFrameSize * 4096).coerceAtLeast(sourcePcmFrameSize * 256))
+        var usbPacked24WriteBuffer: ByteArray? = null
+        val nativePrefillStart = System.currentTimeMillis()
+        var nativePrefillFailed = false
+
+        // 重置 session 状态，让 native 写入检查通过（streamState -> PREPARED）
+        engine.resetSessionForPlayback("before_usb_native_prefill")
+
+        AppLogger.i(TAG, "=== USB NATIVE PREFILL START === target=${nativePrefillTargetBytes}B min=${nativePrefillMinBytes}B deviceBps=$preStartDeviceBytesPerSec rb.available=${rb.available()}")
+        while (isPlaying.get() && !isReleased.get() && engine.getBufferUsedBytes() < nativePrefillTargetBytes) {
+            if (System.currentTimeMillis() - nativePrefillStart > nativePrefillTimeoutMs) {
+                AppLogger.w(TAG, "USB native prefill TIMEOUT: native=${engine.getBufferUsedBytes()}/${nativePrefillTargetBytes} rb.available=${rb.available()}")
+                break
+            }
+            val read = rb.readWithTimeout(nativePrefillBuffer, 0, nativePrefillBuffer.size, 20)
+            if (read == -1) {
+                if (decoderDone && rb.available() == 0) break
+                continue
+            }
+            if (read <= 0) break
+
+            val alignedBytes = read - (read % sourcePcmFrameSize)
+            if (alignedBytes <= 0) continue
+
+            processDsp(nativePrefillBuffer, alignedBytes, wavChannels, wavSampleRate, wavBitsPerSample)
+            dispatchWaveformFrame(nativePrefillBuffer, alignedBytes, wavChannels, wavSampleRate, wavBitsPerSample)
+
+            val writeData: ByteArray
+            val writeLength: Int
+            val writeFrameSize: Int
+            if (convertUsbS32ToPacked24) {
+                val needed = (alignedBytes / sourcePcmFrameSize) * usbDeviceFrameSize
+                var packed = usbPacked24WriteBuffer
+                if (packed == null || packed.size < needed) {
+                    packed = ByteArray(needed)
+                    usbPacked24WriteBuffer = packed
+                }
+                val packedBuf = packed!!
+                writeLength = PcmSampleConverter.s32ToS24PackedPcm(nativePrefillBuffer, alignedBytes, packedBuf)
+                writeData = packedBuf
+                writeFrameSize = usbDeviceFrameSize
+            } else {
+                writeData = nativePrefillBuffer
+                writeLength = alignedBytes
+                writeFrameSize = sourcePcmFrameSize
+            }
+
+            var writeOffset = 0
+            var consecutiveZeroWrites = 0
+            while (writeOffset < writeLength && isPlaying.get() && !isReleased.get()) {
+                if (engine.getBufferUsedBytes() >= nativePrefillTargetBytes) break
+                val written = engine.write(writeData, writeOffset, writeLength - writeOffset)
+                when {
+                    written > 0 -> {
+                        consecutiveZeroWrites = 0
+                        val alignedWritten = written - (written % writeFrameSize)
+                        if (alignedWritten <= 0) break
+                        writeOffset += alignedWritten
+                        bytesWrittenTotal += written.toLong()
+                        bytesNativeAcceptedTotal += written.toLong()
+                    }
+                    written == 0 -> {
+                        if (++consecutiveZeroWrites >= 100) break
+                        LockSupport.parkNanos(1_000_000L)
+                    }
+                    else -> {
+                        AppLogger.e(TAG, "USB native prefill write error: $written")
+                        nativePrefillFailed = true
+                        break
+                    }
+                }
+            }
+            if (nativePrefillFailed) break
+        }
+
+        val nativePrefillAfter = engine.getBufferUsedBytes()
+        AppLogger.i(TAG, "=== USB NATIVE PREFILL END === native=${nativePrefillAfter}B (${nativePrefillAfter.toLong() * 1000L / preStartDeviceBytesPerSec}ms) rb.available=${rb.available()} failed=$nativePrefillFailed")
+        if (nativePrefillFailed) {
             isPlaying.set(false)
             if (isStillCurrentPlayback(sourcePath, generation)) {
                 setState(State.ERROR)
-                listener?.onError("USB 预填 buffer 不足")
+                listener?.onError("USB native 预填写入失败")
             }
             return
         }
+        if (nativePrefillAfter < nativePrefillMinBytes && !rb.isEof()) {
+            AppLogger.w(TAG, "USB native prefill below min, starting anyway: native=${nativePrefillAfter}B < ${nativePrefillMinBytes}B")
+        }
 
-        if (!engine.start()) {
-            if (engine.isPolicyChangedSinceInit()) {
-                AppLogger.w(TAG, "USB streaming: policy changed, reinit...")
-                engine.release()
-                val reinitOk = usbPrepareForPlayback?.invoke(actualSampleRate, wavBitsPerSample, wavChannels, sourcePath) ?: false
-                if (reinitOk && engine.isInitialized()) {
-                    if (!engine.start()) {
-                        isPlaying.set(false)
-                        AppLogger.e(TAG, "USB streaming: start failed after reinit")
-                        if (isStillCurrentPlayback(sourcePath, generation)) {
-                            setState(State.ERROR)
-                            listener?.onError("USB 音频流启动失败")
-                        }
-                        return
-                    }
-                } else {
+        if (
+            abortPlaybackStageIfObsolete(
+                sourcePath,
+                generation,
+                stage = "usb_streaming_before_native_start",
+                closeRingBuffer = true
+            )
+        ) {
+            return
+        }
+
+        if (!startUsbEngineWithSafety("usb_streaming_start")) {
+            val policyChanged = engine.isPolicyChangedSinceInit()
+            AppLogger.w(TAG, "USB streaming: start failed, reinit retry (policyChanged=$policyChanged)")
+            engine.release()
+            val reinitOk = usbPrepareForPlayback?.invoke(actualSampleRate, wavBitsPerSample, wavChannels, sourcePath) ?: false
+            if (reinitOk && engine.isInitialized()) {
+                if (!startUsbEngineWithSafety("usb_streaming_reinit_start")) {
                     isPlaying.set(false)
-                    AppLogger.e(TAG, "USB streaming: reinit failed")
+                    AppLogger.e(TAG, "USB streaming: start failed after reinit")
                     if (isStillCurrentPlayback(sourcePath, generation)) {
                         setState(State.ERROR)
-                        listener?.onError("USB 引擎重新初始化失败")
+                        listener?.onError("USB 音频流启动失败")
                     }
                     return
                 }
             } else {
                 isPlaying.set(false)
-                AppLogger.e(TAG, "USB streaming: start failed")
+                AppLogger.e(TAG, "USB streaming: reinit failed")
                 if (isStillCurrentPlayback(sourcePath, generation)) {
                     setState(State.ERROR)
-                    listener?.onError("USB 音频流启动失败")
+                    listener?.onError("USB 引擎重新初始化失败")
                 }
                 return
             }
         }
+        armUsbPostStartVolumeRestore("usb_streaming_native_start")
         onUsbPlaybackStarted?.invoke()
         AppLogger.i(TAG, "USB streaming: nativeStart OK")
 
@@ -1460,15 +3296,109 @@ class FfmpegAudioPlayer(private val context: Context) {
             setState(State.PLAYING)
         }
 
-        val buffer = ByteArray(readBufSize)
-        val lowWater = expectedBytesPerSec * 300 / 1000
-        val targetWater = expectedBytesPerSec * 500 / 1000
-        val highWater = expectedBytesPerSec * 1200 / 1000
+        // Model: native owns ISO packet/transfer scheduling; Kotlin only feeds
+        // device-format PCM in time-sized chunks. Transfer capacity is diagnostic, not pacing.
+        val deviceBytesPerSec = usbDeviceBytesPerSecond(engine, expectedBytesPerSec)
+        val transferCapacityBytes = engine.getTransferCapacityBytes().let { if (it > 0) it else usbDeviceFrameSize }
+        val maxPacketBytes = engine.getMaxPacketBytes()
+        val serviceIntervalsPerSecond = engine.getServiceIntervalsPerSecond()
+        val nominalBytesPerInterval = engine.getNominalBytesPerInterval()
+        val nominalBytesPerTransfer = engine.getNominalBytesPerTransfer()
+        val runtime = engine.getRuntimeFormat()
+        usbRuntimeFormat = runtime
+        usbDeviceFrameSize = runtime.frameBytes.takeIf { it > 0 } ?: usbDeviceFrameSize
+        convertUsbS32ToPacked24 = usbNeedsS32ToPacked24(runtime)
+        val feedbackState = engine.getFeedbackState()
+        val pacingMode = engine.getPacingMode()
+        val feedbackDegradedFixedPath =
+            runtime.feedbackEndpoint != 0 &&
+                (pacingMode == UsbAudioEngine.PacingMode.FeedbackDegradedFixed ||
+                    feedbackState == UsbAudioEngine.FeedbackState.SUSPECT ||
+                    feedbackState == UsbAudioEngine.FeedbackState.DEGRADED ||
+                    feedbackState == UsbAudioEngine.FeedbackState.FAILED)
+        val fixedPacingPath =
+            pacingMode.isFixedPacer ||
+                runtime.feedbackEndpoint == 0 ||
+                feedbackDegradedFixedPath
+        val conservativeNoFeedbackPath =
+            fixedPacingPath &&
+                serviceIntervalsPerSecond > 1000
+        val pureNoFeedbackBackpressurePath =
+            runtime.feedbackEndpoint == 0 &&
+                conservativeNoFeedbackPath
+        val writeChunkTargetMs = if (conservativeNoFeedbackPath) {
+            USB_NO_FEEDBACK_WRITE_CHUNK_MS
+        } else {
+            32L
+        }
+        val lowWaterMs = if (conservativeNoFeedbackPath) USB_NO_FEEDBACK_LOW_WATER_MS else USB_NATIVE_LOW_WATER_MS
+        val targetWaterMs = if (conservativeNoFeedbackPath) USB_NO_FEEDBACK_TARGET_WATER_MS else USB_NATIVE_TARGET_WATER_MS
+        val highWaterMs = if (conservativeNoFeedbackPath) USB_NO_FEEDBACK_HIGH_WATER_MS else USB_NATIVE_HIGH_WATER_MS
+        val sourceBytesPerSec = actualSampleRate.toLong() * sourcePcmFrameSize.toLong()
+        val maxRead = engine.computeRecommendedWriteChunkBytes(
+            sourceBytesPerSec,
+            sourcePcmFrameSize,
+            targetMs = writeChunkTargetMs
+        )
+        val buffer = ByteArray(maxRead)
+
+        // Water mark thresholds must use the DEVICE output byte rate (not source PCM rate),
+        // because nativeGetBufferUsedBytes() returns the ring buffer usage in device output bytes.
+        // For DoP, the device rate is much higher than the source rate (e.g. 2.1MB/s vs 176KB/s).
+        val baseLowWater = bytesForMs(deviceBytesPerSec, lowWaterMs)
+        val baseTargetWater = bytesForMs(deviceBytesPerSec, targetWaterMs)
+        val baseHighWater = bytesForMs(deviceBytesPerSec, highWaterMs)
+        val noFeedbackInflightGuard = if (pureNoFeedbackBackpressurePath) {
+            (nominalBytesPerTransfer.coerceAtLeast(usbDeviceFrameSize) * USB_NO_FEEDBACK_INFLIGHT_GUARD_TRANSFERS)
+                .coerceAtLeast(0)
+        } else {
+            0
+        }
+        val lowWater = if (pureNoFeedbackBackpressurePath) {
+            maxOf(baseLowWater, noFeedbackInflightGuard / 2)
+        } else {
+            baseLowWater
+        }
+        val targetWater = if (pureNoFeedbackBackpressurePath) {
+            maxOf(baseTargetWater, noFeedbackInflightGuard)
+        } else {
+            baseTargetWater
+        }
+        val highWater = if (pureNoFeedbackBackpressurePath) {
+            maxOf(baseHighWater, targetWater + baseHighWater)
+        } else {
+            baseHighWater
+        }
+        val targetWaterParkNs = if (pureNoFeedbackBackpressurePath) 2_000_000L else 1_000_000L
+        val highWaterParkNs = if (pureNoFeedbackBackpressurePath) 3_000_000L else 2_000_000L
+        val backpressureParkNs = if (pureNoFeedbackBackpressurePath) 6_000_000L else 4_000_000L
         var consecutiveWriteZeros = 0
         val maxConsecutiveWriteZeros = 200
+        var targetWaterSinceMs = 0L
+        var lastTargetWaterDiagMs = 0L
+        var highWaterSinceMs = 0L
+        var lastHighWaterDiagMs = 0L
+        var lastFeedbackDegradedProfileReprepareMs = 0L
+        var lastNoFeedbackProfileReprepareMs = 0L
+        var noFeedbackFullReopenRequested = false
 
+        AppLogger.i(TAG, "========== USB Streaming POST-Start Parameters ==========")
+        AppLogger.i(TAG, "  transferCapacity=$transferCapacityBytes maxPacket=$maxPacketBytes intervalsPerSec=$serviceIntervalsPerSecond")
+        AppLogger.i(TAG, "  nominalInterval=$nominalBytesPerInterval nominalTransfer=$nominalBytesPerTransfer readChunk=$maxRead chunkMs=$writeChunkTargetMs conservativeNoFb=$conservativeNoFeedbackPath pureNoFbBackpressure=$pureNoFeedbackBackpressurePath feedbackDegradedFixed=$feedbackDegradedFixedPath fixedPacing=$fixedPacingPath feedback=$feedbackState pacing=$pacingMode")
+        AppLogger.i(TAG, "  deviceBytesPerSec=$deviceBytesPerSec sourceBytesPerSec=$sourceBytesPerSec expectedSourceBytesPerSec=$expectedBytesPerSec")
+        AppLogger.i(TAG, "  sourceFrame=$sourcePcmFrameSize deviceFrame=$usbDeviceFrameSize convertS32ToPacked24=$convertUsbS32ToPacked24")
+        AppLogger.i(TAG, "  lowWater=$lowWater targetWater=$targetWater highWater=$highWater waterMs=$lowWaterMs/$targetWaterMs/$highWaterMs noFbInflightGuard=$noFeedbackInflightGuard")
+        AppLogger.i(TAG, "  engine init=${engine.isInitialized()}, running=${engine.isRunning()} session=${engine.getStreamSessionId()}")
+        AppLogger.i(TAG, "  nativeBuffered=${engine.nativeGetBufferUsedBytes()}")
+        AppLogger.i(TAG, "  engine.getOutputBytesPerSecond()=${engine.getOutputBytesPerSecond()}")
+        AppLogger.i(TAG, "  runtimeFormat=${runtime.sampleRate}Hz/${runtime.channels}ch validBits=${runtime.validBits} subslot=${runtime.subslotBytes} frame=${runtime.frameBytes} bps=${runtime.bytesPerSecond} iface=${runtime.iface} alt=${runtime.alt} outEp=0x${runtime.outEndpoint.toString(16)} fbEp=0x${runtime.feedbackEndpoint.toString(16)}")
+        AppLogger.i(TAG, "==========================================================")
+        AppLogger.i(TAG, "=== USB WRITE LOOP ENTERING === rb.available=${rb.available()} rb.isEof=${rb.isEof()} rb.isClosed=${rb.isClosed()} isPlaying=${isPlaying.get()}")
+        var loopIteration = 0
+        var restartNativeAfterSeekFlush = false
         try {
             while (isPlaying.get() && !isReleased.get()) {
+                loopIteration++
                 if (!isStillCurrentPlayback(sourcePath, generation)) {
                     AppLogger.w(TAG, "USB streaming: song changed, breaking")
                     break
@@ -1480,15 +3410,483 @@ class FfmpegAudioPlayer(private val context: Context) {
                 }
 
                 val bufferedBeforeRead = engine.nativeGetBufferUsedBytes()
+                if (pureNoFeedbackBackpressurePath && bufferedBeforeRead >= targetWater && bufferedBeforeRead <= highWater) {
+                    // In no-feedback mode, target-water is a diagnostic line, not
+                    // a hard producer stop. Xiaomi/TP55 can hit the target depth quickly and
+                    // then starve if we stop feeding too early. Keep topping up toward
+                    // high-water; only use the target-water hold as a fake-playback detector.
+                    val nowMs = System.currentTimeMillis()
+                    if (targetWaterSinceMs == 0L) targetWaterSinceMs = nowMs
+                    val targetWaterHoldMs = nowMs - targetWaterSinceMs
+                    highWaterSinceMs = 0L
+                    val completedUsbBps = engine.getCompletedUsbBytesPerSecond()
+                    val scheduledUsbBps = engine.getScheduledUsbBytesPerSecond()
+                    val targetZeroOutput =
+                        completedUsbBps <= 0L &&
+                            scheduledUsbBps < deviceBytesPerSec * 25L / 100L
+                    val targetSevereUnderOutput =
+                        completedUsbBps in 1 until (deviceBytesPerSec * 15L / 100L) &&
+                            scheduledUsbBps < deviceBytesPerSec * 40L / 100L
+                    val targetModerateUnderOutput =
+                        completedUsbBps in 0 until (deviceBytesPerSec * 35L / 100L) &&
+                            scheduledUsbBps < deviceBytesPerSec * 60L / 100L
+                    val canTargetWaterReprepare =
+                        rb.available() > 0 &&
+                            targetModerateUnderOutput &&
+                            targetWaterHoldMs >= USB_NO_FEEDBACK_TARGET_WATER_FAKE_PLAYBACK_GRACE_MS &&
+                            nowMs - lastNoFeedbackProfileReprepareMs >= USB_NO_FEEDBACK_FAST_REPREPARE_COOLDOWN_MS
+                    if (canTargetWaterReprepare) {
+                        lastNoFeedbackProfileReprepareMs = nowMs
+                        AppLogger.w(
+                            TAG,
+                            "USB no-feedback target-water fake playback: profile reprepare " +
+                                "hold=${targetWaterHoldMs}ms nativeBuf=$bufferedBeforeRead target=$targetWater " +
+                                "completed=$completedUsbBps scheduled=$scheduledUsbBps expected=$deviceBytesPerSec " +
+                                "rb.available=${rb.available()} zero=$targetZeroOutput severe=$targetSevereUnderOutput"
+                        )
+                        onUsbStreamHealthFailure?.invoke(
+                            UsbSilentKind.UsbNotOutputting,
+                            "no_feedback_target_fake_playback_profile_reprepare"
+                        )
+                        val recovered = attemptUsbRecovery(
+                            actualSampleRate,
+                            wavBitsPerSample,
+                            wavChannels,
+                            sourcePath,
+                            generation,
+                            forceProfileReinit = true,
+                            profileReprepareOnly = true
+                        )
+                        if (recovered) {
+                            targetWaterSinceMs = 0L
+                            lastTargetWaterDiagMs = 0L
+                            lastHighWaterDiagMs = 0L
+                            consecutiveWriteZeros = 0
+                            java.util.concurrent.locks.LockSupport.parkNanos(backpressureParkNs)
+                            continue
+                        }
+                        AppLogger.w(
+                            TAG,
+                            "USB no-feedback target-water fake playback reprepare failed; keep current stream alive " +
+                                "hold=${targetWaterHoldMs}ms completed=$completedUsbBps scheduled=$scheduledUsbBps " +
+                                "expected=$deviceBytesPerSec"
+                        )
+                    }
+                    if (loopIteration <= 5 || nowMs - lastTargetWaterDiagMs >= 1000L) {
+                        lastTargetWaterDiagMs = nowMs
+                        AppLogger.d(
+                            TAG,
+                            "USB no-feedback target-water observe: nativeBuf=$bufferedBeforeRead " +
+                                "target=$targetWater high=$highWater hold=${targetWaterHoldMs}ms " +
+                                "completed=$completedUsbBps scheduled=$scheduledUsbBps expected=$deviceBytesPerSec " +
+                                "rb.available=${rb.available()}"
+                        )
+                    }
+                }
                 if (bufferedBeforeRead > highWater) {
-                    java.util.concurrent.locks.LockSupport.parkNanos(10_000_000L)
+                    targetWaterSinceMs = 0L
+                    lastTargetWaterDiagMs = 0L
+                    val nowMs = System.currentTimeMillis()
+                    if (highWaterSinceMs == 0L) highWaterSinceMs = nowMs
+                    val stallMs = nowMs - highWaterSinceMs
+                    val completedUsbBps = engine.getCompletedUsbBytesPerSecond()
+                    val scheduledUsbBps = engine.getScheduledUsbBytesPerSecond()
+                    if (loopIteration <= 3 || nowMs - lastHighWaterDiagMs >= 1000L) {
+                        lastHighWaterDiagMs = nowMs
+                        AppLogger.w(TAG, "USB HIGH-WATER: loop=$loopIteration stall=${stallMs}ms nativeBuf=$bufferedBeforeRead highWater=$highWater " +
+                            "completedUsbBps=$completedUsbBps scheduledUsbBps=$scheduledUsbBps deviceBPS=$deviceBytesPerSec " +
+                            "rb.available=${rb.available()} bytesReadTotal=$bytesReadTotal bytesWrittenTotal=$bytesWrittenTotal")
+                    }
+                    val underOutput = completedUsbBps in 1 until (deviceBytesPerSec * 70L / 100L)
+                    val noCompletedYet = completedUsbBps <= 0L && stallMs >= 1800L
+                    val currentFeedbackState = engine.getFeedbackState()
+                    val currentPacingMode = engine.getPacingMode()
+                    val dynamicRuntime = engine.getRuntimeFormat()
+                    val dynamicNoFeedbackFixedPath =
+                        dynamicRuntime.feedbackEndpoint == 0 ||
+                            (currentPacingMode == UsbAudioEngine.PacingMode.NoFeedbackFixed &&
+                                currentFeedbackState == UsbAudioEngine.FeedbackState.NONE)
+                    val currentFixedPacingPath = fixedPacingPath ||
+                        currentPacingMode.isFixedPacer ||
+                        dynamicNoFeedbackFixedPath ||
+                        currentFeedbackState == UsbAudioEngine.FeedbackState.SUSPECT ||
+                        currentFeedbackState == UsbAudioEngine.FeedbackState.DEGRADED ||
+                        currentFeedbackState == UsbAudioEngine.FeedbackState.FAILED
+                    val fixedPacerAlive = currentFixedPacingPath && (scheduledUsbBps > 0L || completedUsbBps > 0L)
+                    val fixedPacerNoOutput = currentFixedPacingPath && scheduledUsbBps <= 0L && completedUsbBps <= 0L
+                    val severeNoFeedbackUnderOutput =
+                        dynamicNoFeedbackFixedPath &&
+                            completedUsbBps > 0L &&
+                            scheduledUsbBps > 0L &&
+                            completedUsbBps < deviceBytesPerSec * 20L / 100L &&
+                            scheduledUsbBps < deviceBytesPerSec * 35L / 100L
+                    val pacingRepairEligible =
+                        currentFixedPacingPath &&
+                            serviceIntervalsPerSecond > 1000 &&
+                            fixedPacerAlive
+                    val recoveryStallMs = when {
+                        feedbackDegradedFixedPath -> 1500L
+                        severeNoFeedbackUnderOutput -> 1400L
+                        fixedPacerAlive -> USB_FIXED_PACER_DRAIN_GRACE_MS
+                        fixedPacerNoOutput -> USB_FIXED_PACER_ZERO_OUTPUT_GRACE_MS
+                        pacingRepairEligible -> 2600L
+                        else -> 1200L
+                    }
+                    if (stallMs >= recoveryStallMs && rb.available() > 0 && (underOutput || noCompletedYet)) {
+                        val noFeedbackTransportAlive =
+                            dynamicNoFeedbackFixedPath &&
+                                (completedUsbBps > 0L || scheduledUsbBps > 0L)
+                        if (noFeedbackTransportAlive) {
+                            // No-feedback model: the StreamConfig is still valid,
+                            // but an alive OUT path can be stuck with its native ring above
+                            // high-water while completed/scheduled throughput stays far below
+                            // the target.  Do not hard-reopen or change alt/clock. Restart
+                            // only the current ISO transfer queue so Xiaomi/TP55 can recover
+                            // from the red/blue relock loop without an audible destructive
+                            // device reset.
+                            val noFeedbackZeroOutput = completedUsbBps <= 0L &&
+                                scheduledUsbBps < deviceBytesPerSec * 25L / 100L
+                            val noFeedbackSevereUnderOutput =
+                                completedUsbBps in 1 until (deviceBytesPerSec * 8L / 100L) &&
+                                    scheduledUsbBps < deviceBytesPerSec * 25L / 100L
+                            val noFeedbackReprepareGraceMs = if (noFeedbackZeroOutput || noFeedbackSevereUnderOutput) {
+                                USB_NO_FEEDBACK_ZERO_OUTPUT_REPREPARE_MS
+                            } else {
+                                USB_NO_FEEDBACK_MODERATE_UNDER_OUTPUT_REPREPARE_MS
+                            }
+                            val noFeedbackReprepareCooldownMs = if (noFeedbackZeroOutput || noFeedbackSevereUnderOutput) {
+                                USB_NO_FEEDBACK_FAST_REPREPARE_COOLDOWN_MS
+                            } else {
+                                USB_NO_FEEDBACK_STABLE_REPREPARE_COOLDOWN_MS
+                            }
+                            val canProfileReprepare =
+                                stallMs >= noFeedbackReprepareGraceMs &&
+                                    completedUsbBps < deviceBytesPerSec * 55L / 100L &&
+                                    scheduledUsbBps < deviceBytesPerSec * 95L / 100L &&
+                                    nowMs - lastNoFeedbackProfileReprepareMs >= noFeedbackReprepareCooldownMs
+                            if (canProfileReprepare) {
+                                lastNoFeedbackProfileReprepareMs = nowMs
+                                AppLogger.w(
+                                    TAG,
+                                    "USB no-feedback high-water under-output: profile reprepare " +
+                                        "stall=${stallMs}ms completed=$completedUsbBps scheduled=$scheduledUsbBps " +
+                                        "expected=$deviceBytesPerSec nativeBuf=$bufferedBeforeRead high=$highWater " +
+                                        "runtimeFb=0x${dynamicRuntime.feedbackEndpoint.toString(16)} pacing=$currentPacingMode"
+                                )
+                                onUsbStreamHealthFailure?.invoke(UsbSilentKind.UsbNotOutputting, "no_feedback_high_water_under_output_profile_reprepare")
+                                val recovered = attemptUsbRecovery(
+                                    actualSampleRate,
+                                    wavBitsPerSample,
+                                    wavChannels,
+                                    sourcePath,
+                                    generation,
+                                    forceProfileReinit = true,
+                                    profileReprepareOnly = true
+                                )
+                                if (recovered) {
+                                    highWaterSinceMs = 0L
+                                    lastHighWaterDiagMs = 0L
+                                    consecutiveWriteZeros = 0
+                                    java.util.concurrent.locks.LockSupport.parkNanos(backpressureParkNs)
+                                    continue
+                                }
+                                AppLogger.w(
+                                    TAG,
+                                    "USB no-feedback high-water profile reprepare failed; same-profile ISO restart disabled " +
+                                        "completed=$completedUsbBps scheduled=$scheduledUsbBps expected=$deviceBytesPerSec"
+                                )
+                            }
+                            if (severeNoFeedbackUnderOutput) {
+                                val recentlyReprepared =
+                                    nowMs - lastNoFeedbackProfileReprepareMs < USB_NO_FEEDBACK_FAST_REPREPARE_COOLDOWN_MS
+                                if (!noFeedbackFullReopenRequested &&
+                                    (recentlyReprepared || stallMs >= noFeedbackReprepareGraceMs + 1_200L)
+                                ) {
+                                    noFeedbackFullReopenRequested = true
+                                    AppLogger.e(
+                                        TAG,
+                                        "USB no-feedback high-water severe under-output: request full reopen " +
+                                            "stall=${stallMs}ms completed=$completedUsbBps scheduled=$scheduledUsbBps " +
+                                            "expected=$deviceBytesPerSec nativeBuf=$bufferedBeforeRead high=$highWater " +
+                                            "recentlyReprepared=$recentlyReprepared runtimeFb=0x${dynamicRuntime.feedbackEndpoint.toString(16)} " +
+                                            "pacing=$currentPacingMode"
+                                    )
+                                    onUsbStreamHealthFailure?.invoke(
+                                        UsbSilentKind.UsbNotOutputting,
+                                        "no_feedback_high_water_severe_under_output_full_reopen"
+                                    )
+                                    java.util.concurrent.locks.LockSupport.parkNanos(12_000_000L)
+                                    continue
+                                }
+                                AppLogger.w(
+                                    TAG,
+                                    "USB no-feedback high-water severe under-output: waiting for same-profile restart window " +
+                                        "stall=${stallMs}ms completed=$completedUsbBps scheduled=$scheduledUsbBps " +
+                                        "expected=$deviceBytesPerSec nativeBuf=$bufferedBeforeRead high=$highWater " +
+                                        "runtimeFb=0x${dynamicRuntime.feedbackEndpoint.toString(16)} pacing=$currentPacingMode"
+                                )
+                                java.util.concurrent.locks.LockSupport.parkNanos(8_000_000L)
+                                continue
+                            }
+                            AppLogger.w(
+                                TAG,
+                                "USB no-feedback high-water backpressure: keep stream alive " +
+                                    "stall=${stallMs}ms completed=$completedUsbBps scheduled=$scheduledUsbBps " +
+                                    "expected=$deviceBytesPerSec nativeBuf=$bufferedBeforeRead high=$highWater"
+                            )
+                            highWaterSinceMs = 0L
+                            java.util.concurrent.locks.LockSupport.parkNanos(12_000_000L)
+                            continue
+                        }
+                        if (pureNoFeedbackBackpressurePath &&
+                            currentFixedPacingPath &&
+                            bufferedBeforeRead >= targetWater &&
+                            completedUsbBps < deviceBytesPerSec * 30L / 100L &&
+                            stallMs >= 1500L
+                        ) {
+                            val targetZeroOutput = completedUsbBps <= 0L && scheduledUsbBps <= 0L
+                            val targetSevereUnderOutput =
+                                completedUsbBps in 1 until (deviceBytesPerSec * 8L / 100L) &&
+                                    scheduledUsbBps < deviceBytesPerSec * 25L / 100L
+                            val targetReprepareGraceMs = if (targetZeroOutput || targetSevereUnderOutput) {
+                                USB_NO_FEEDBACK_ZERO_OUTPUT_REPREPARE_MS
+                            } else {
+                                USB_NO_FEEDBACK_MODERATE_UNDER_OUTPUT_REPREPARE_MS
+                            }
+                            val targetReprepareCooldownMs = if (targetZeroOutput || targetSevereUnderOutput) {
+                                USB_NO_FEEDBACK_FAST_REPREPARE_COOLDOWN_MS
+                            } else {
+                                USB_NO_FEEDBACK_STABLE_REPREPARE_COOLDOWN_MS
+                            }
+                            if (stallMs >= targetReprepareGraceMs &&
+                                nowMs - lastNoFeedbackProfileReprepareMs >= targetReprepareCooldownMs
+                            ) {
+                                lastNoFeedbackProfileReprepareMs = nowMs
+                                AppLogger.w(
+                                    TAG,
+                                    "USB no-feedback target-water under-output: profile reprepare " +
+                                        "stall=${stallMs}ms grace=$targetReprepareGraceMs cooldown=$targetReprepareCooldownMs " +
+                                        "nativeBuf=$bufferedBeforeRead target=$targetWater " +
+                                        "completed=$completedUsbBps scheduled=$scheduledUsbBps expected=$deviceBytesPerSec " +
+                                        "rb.available=${rb.available()}"
+                                )
+                                onUsbStreamHealthFailure?.invoke(UsbSilentKind.UsbNotOutputting, "no_feedback_target_under_output_profile_reprepare")
+                                val recovered = attemptUsbRecovery(
+                                    actualSampleRate,
+                                    wavBitsPerSample,
+                                    wavChannels,
+                                    sourcePath,
+                                    generation,
+                                    forceProfileReinit = true,
+                                    profileReprepareOnly = true
+                                )
+                                if (recovered) {
+                                    highWaterSinceMs = 0L
+                                    lastHighWaterDiagMs = 0L
+                                    consecutiveWriteZeros = 0
+                                    java.util.concurrent.locks.LockSupport.parkNanos(backpressureParkNs)
+                                    continue
+                                }
+                                AppLogger.w(
+                                    TAG,
+                                    "USB no-feedback target-water profile reprepare failed; keep current stream alive " +
+                                        "without same-profile ISO restart nativeBuf=$bufferedBeforeRead completed=$completedUsbBps " +
+                                        "scheduled=$scheduledUsbBps expected=$deviceBytesPerSec"
+                                )
+                            }
+                        }
+                        val schedulerLimited =
+                            currentFixedPacingPath &&
+                                (completedUsbBps > 0L || scheduledUsbBps > 0L) &&
+                                scheduledUsbBps < (deviceBytesPerSec * 85L / 100L)
+
+                        if (feedbackDegradedFixedPath &&
+                            currentFixedPacingPath &&
+                            (currentFeedbackState == UsbAudioEngine.FeedbackState.DEGRADED ||
+                                currentPacingMode == UsbAudioEngine.PacingMode.FeedbackDegradedFixed) &&
+                            completedUsbBps < deviceBytesPerSec * 70L / 100L &&
+                            scheduledUsbBps < deviceBytesPerSec * 70L / 100L &&
+                            stallMs >= 1500L
+                        ) {
+                            AppLogger.w(
+                                TAG,
+                                "USB feedback-degraded fixed pacer under-output: retry without feedback " +
+                                    "stall=${stallMs}ms completed=$completedUsbBps scheduled=$scheduledUsbBps " +
+                                    "expected=$deviceBytesPerSec fbState=$currentFeedbackState pacing=$currentPacingMode"
+                            )
+                            val zeroCompletionFeedbackDeadlock = completedUsbBps <= 0L &&
+                                scheduledUsbBps < deviceBytesPerSec * 25L / 100L
+                            val feedbackRetryCooldownMs = if (zeroCompletionFeedbackDeadlock) 1_800L else 3_500L
+                            val retryAllowed = nowMs - lastFeedbackDegradedProfileReprepareMs >= feedbackRetryCooldownMs
+                            if (!retryAllowed) {
+                                AppLogger.w(
+                                    TAG,
+                                    "USB feedback-degraded profile retry suppressed to avoid storm: " +
+                                        "since=${nowMs - lastFeedbackDegradedProfileReprepareMs}ms " +
+                                        "cooldown=$feedbackRetryCooldownMs zeroCompletion=$zeroCompletionFeedbackDeadlock"
+                                )
+                                java.util.concurrent.locks.LockSupport.parkNanos(10_000_000L)
+                                continue
+                            }
+                            lastFeedbackDegradedProfileReprepareMs = nowMs
+                            onUsbStreamHealthFailure?.invoke(UsbSilentKind.FeedbackInvalid, "feedback_degraded_under_output")
+                            val recovered = attemptUsbRecovery(
+                                actualSampleRate,
+                                wavBitsPerSample,
+                                wavChannels,
+                                sourcePath,
+                                generation,
+                                forceProfileReinit = true,
+                                profileReprepareOnly = true
+                            )
+                            if (recovered) {
+                                highWaterSinceMs = 0L
+                                lastHighWaterDiagMs = 0L
+                                consecutiveWriteZeros = 0
+                                continue
+                            }
+                            AppLogger.w(
+                                TAG,
+                                "USB feedback-degraded profile reprepare failed; keep current stream alive " +
+                                    "without falling into hard-recovery fuse storm"
+                            )
+                            java.util.concurrent.locks.LockSupport.parkNanos(12_000_000L)
+                            continue
+                        }
+
+                        if (schedulerLimited && stallMs < USB_FIXED_PACER_DRAIN_GRACE_MS) {
+                            // Fixed/no-feedback path: feedback health and app-side
+                            // high-water are diagnostics, not a reason to rebuild the USB device.
+                            // Some no-feedback fixed-pacer streams show completed/scheduled
+                            // throughput for several seconds while the native ring stays high; reopening here makes the DAC relock
+                            // and stops playback.  Keep throttling the producer and allow native
+                            // queue depth / measured interval repair to stabilize.
+                            if (nowMs - lastHighWaterDiagMs >= 1000L || loopIteration <= 5) {
+                                AppLogger.w(TAG, "USB fixed-pacer drain is slow: defer hard recovery stall=${stallMs}ms completed=$completedUsbBps scheduled=$scheduledUsbBps expected=$deviceBytesPerSec feedbackState=$currentFeedbackState pacing=$currentPacingMode")
+                            }
+                            java.util.concurrent.locks.LockSupport.parkNanos(8_000_000L)
+                            continue
+                        }
+
+                        if (fixedPacerAlive) {
+                            val severeNoFeedbackFixedUnderOutput =
+                                severeNoFeedbackUnderOutput && stallMs >= USB_NO_FEEDBACK_ZERO_OUTPUT_REPREPARE_MS
+                            if (severeNoFeedbackFixedUnderOutput &&
+                                nowMs - lastNoFeedbackProfileReprepareMs >= USB_NO_FEEDBACK_STABLE_REPREPARE_COOLDOWN_MS
+                            ) {
+                                lastNoFeedbackProfileReprepareMs = nowMs
+                                AppLogger.w(
+                                    TAG,
+                                    "USB no-feedback fixed-pacer severe under-output: profile reprepare " +
+                                        "stall=${stallMs}ms cooldown=${USB_NO_FEEDBACK_STABLE_REPREPARE_COOLDOWN_MS}ms " +
+                                        "completed=$completedUsbBps scheduled=$scheduledUsbBps " +
+                                        "expected=$deviceBytesPerSec nativeBuf=$bufferedBeforeRead high=$highWater " +
+                                        "runtimeFb=0x${dynamicRuntime.feedbackEndpoint.toString(16)} feedbackState=$currentFeedbackState pacing=$currentPacingMode"
+                                )
+                                onUsbStreamHealthFailure?.invoke(UsbSilentKind.UsbNotOutputting, "no_feedback_fixed_pacer_severe_under_output_profile_reprepare")
+                                val recovered = attemptUsbRecovery(
+                                    actualSampleRate,
+                                    wavBitsPerSample,
+                                    wavChannels,
+                                    sourcePath,
+                                    generation,
+                                    forceProfileReinit = true,
+                                    profileReprepareOnly = true
+                                )
+                                if (recovered) {
+                                    highWaterSinceMs = 0L
+                                    lastHighWaterDiagMs = 0L
+                                    consecutiveWriteZeros = 0
+                                    java.util.concurrent.locks.LockSupport.parkNanos(backpressureParkNs)
+                                    continue
+                                }
+                                AppLogger.w(
+                                    TAG,
+                                    "USB no-feedback severe under-output profile reprepare failed; " +
+                                        "same-profile ISO restart disabled completed=$completedUsbBps " +
+                                        "scheduled=$scheduledUsbBps expected=$deviceBytesPerSec"
+                                )
+                            }
+                            // Even after the grace window, an alive fixed-pacer stream should not
+                            // trigger destructive reopen from the Kotlin feeder.  But an alive
+                            // no-feedback stream that is completing only ~1% of expected is not
+                            // healthy backpressure; it must hit the same-profile transfer restart
+                            // path above instead of being logged forever as keep-alive.
+                            AppLogger.w(TAG, "USB fixed-pacer still draining below target; keep stream alive stall=${stallMs}ms completed=$completedUsbBps scheduled=$scheduledUsbBps expected=$deviceBytesPerSec feedbackState=$currentFeedbackState pacing=$currentPacingMode runtimeFb=0x${dynamicRuntime.feedbackEndpoint.toString(16)}")
+                            java.util.concurrent.locks.LockSupport.parkNanos(10_000_000L)
+                            continue
+                        }
+
+                        if (shouldDeferHardUsbRecovery("high_water_stall")) {
+                            AppLogger.w(
+                                TAG,
+                                "USB high-water stall recovery deferred by controller: " +
+                                    "stall=${stallMs}ms completedUsbBps=$completedUsbBps " +
+                                    "scheduledUsbBps=$scheduledUsbBps expected=$deviceBytesPerSec"
+                            )
+                            java.util.concurrent.locks.LockSupport.parkNanos(8_000_000L)
+                            continue
+                        }
+
+                        val feedbackUnsafe = engine.feedbackLooksUnsafeForPacer()
+                        val kind = if (feedbackUnsafe) UsbSilentKind.FeedbackInvalid else UsbSilentKind.UsbNotOutputting
+                        AppLogger.w(TAG, "USB high-water stall detected: stall=${stallMs}ms threshold=${recoveryStallMs}ms completedUsbBps=$completedUsbBps scheduledUsbBps=$scheduledUsbBps expected=$deviceBytesPerSec feedbackState=$currentFeedbackState pacing=$currentPacingMode fixedPacer=$currentFixedPacingPath pacingRepairEligible=$pacingRepairEligible; attempting generic recovery kind=$kind")
+                        onUsbStreamHealthFailure?.invoke(kind, "high_water_stall")
+                        val recovered = attemptUsbRecovery(actualSampleRate, wavBitsPerSample, wavChannels, sourcePath, generation, forceProfileReinit = true)
+                        if (recovered) {
+                            highWaterSinceMs = 0L
+                            lastHighWaterDiagMs = 0L
+                            consecutiveWriteZeros = 0
+                            continue
+                        }
+                        AppLogger.e(TAG, "USB high-water stall recovery failed")
+                        isPlaying.set(false)
+                        break
+                    }
+                    java.util.concurrent.locks.LockSupport.parkNanos(highWaterParkNs)
                     continue
+                } else {
+                    targetWaterSinceMs = 0L
+                    lastTargetWaterDiagMs = 0L
+                    highWaterSinceMs = 0L
                 }
 
-                val maxRead = minOf(buffer.size, packetSize * 16)
-                val read = rb.read(buffer, 0, maxRead)
+                if (needsAudioTrackFlush.compareAndSet(true, false)) {
+                    val seekPosMs = _positionMs
+                    bytesReadTotal = (seekPosMs.toDouble() * expectedBytesPerSec.toDouble() / 1000.0).toLong()
+                    restartNativeAfterSeekFlush = usbExclusiveMode && !engine.isRunning()
+                    AppLogger.w(TAG, ">>> USB seek flush: reset bytesReadTotal to $bytesReadTotal (seekPos=${seekPosMs}ms, restartNative=$restartNativeAfterSeekFlush)")
+                }
+
+                if (loopIteration <= 3 || loopIteration % 1000 == 0) {
+                    AppLogger.d(TAG, "USB write loop #$loopIteration: BEFORE rb.read rb.available=${rb.available()} rb.isEof=${rb.isEof()} rb.isClosed=${rb.isClosed()} nativeBuf=$bufferedBeforeRead maxRead=$maxRead")
+                }
+
+                val readLimit = if (pureNoFeedbackBackpressurePath) {
+                    val roomToHighWater = (highWater - bufferedBeforeRead).coerceAtLeast(sourcePcmFrameSize)
+                    val rawLimit = minOf(maxRead, roomToHighWater)
+                    (rawLimit - (rawLimit % sourcePcmFrameSize)).coerceAtLeast(sourcePcmFrameSize)
+                } else {
+                    maxRead
+                }
+                val read = rb.readWithTimeout(buffer, 0, readLimit, RING_BUFFER_READ_TIMEOUT_MS)
+                if (read == -1) {
+                    // 超时，检查是否仍在播放
+                    if (!isPlaying.get()) break
+                    // 解码器已完成且 buffer 为空 → 真正的 EOF
+                    if (decoderDone && rb.available() == 0) {
+                        AppLogger.i(TAG, "USB streaming: decoderDone + buffer empty → EOF")
+                        isPlaying.set(false)
+                        if (isStillCurrentPlayback(sourcePath, generation)) {
+                            onPlaybackSuccess()
+                            setState(State.COMPLETED)
+                        }
+                        break
+                    }
+                    continue
+                }
                 if (read <= 0) {
-                    AppLogger.w(TAG, "USB streaming: EOF from ring buffer")
+                    AppLogger.w(TAG, "USB streaming: EOF from ring buffer (read=$read, rb.available=${rb.available()}, rb.isEof=${rb.isEof()}, rb.isClosed=${rb.isClosed()}, loopIteration=$loopIteration)")
                     isPlaying.set(false)
                     if (isStillCurrentPlayback(sourcePath, generation)) {
                         onPlaybackSuccess()
@@ -1497,23 +3895,44 @@ class FfmpegAudioPlayer(private val context: Context) {
                     break
                 }
 
-                val alignedBytes = read - (read % pcmFrameSize)
+                val alignedBytes = read - (read % sourcePcmFrameSize)
                 if (alignedBytes <= 0) continue
 
                 bytesReadTotal += alignedBytes
 
                 processDsp(buffer, alignedBytes, wavChannels, wavSampleRate, wavBitsPerSample)
+                dispatchWaveformFrame(buffer, alignedBytes, wavChannels, wavSampleRate, wavBitsPerSample)
+
+                val writeData: ByteArray
+                val writeLength: Int
+                val writeFrameSize: Int
+                if (convertUsbS32ToPacked24) {
+                    val needed = (alignedBytes / sourcePcmFrameSize) * usbDeviceFrameSize
+                    var packed = usbPacked24WriteBuffer
+                    if (packed == null || packed.size < needed) {
+                        packed = ByteArray(needed)
+                        usbPacked24WriteBuffer = packed
+                    }
+                    val packedBuf = packed!!
+                    writeLength = PcmSampleConverter.s32ToS24PackedPcm(buffer, alignedBytes, packedBuf)
+                    writeData = packedBuf
+                    writeFrameSize = usbDeviceFrameSize
+                } else {
+                    writeData = buffer
+                    writeLength = alignedBytes
+                    writeFrameSize = sourcePcmFrameSize
+                }
 
                 var writeOffset = 0
-                while (writeOffset < alignedBytes && isPlaying.get() && !isReleased.get()) {
-                    val remaining = alignedBytes - writeOffset
-                    val written = engine.write(buffer, writeOffset, remaining)
+                while (writeOffset < writeLength && isPlaying.get() && !isReleased.get()) {
+                    val remaining = writeLength - writeOffset
+                    val written = engine.write(writeData, writeOffset, remaining)
                     when {
                         written > 0 -> {
                             consecutiveWriteZeros = 0
-                            val alignedWritten = written - (written % pcmFrameSize)
+                            val alignedWritten = written - (written % writeFrameSize)
                             if (alignedWritten <= 0) {
-                                AppLogger.w(TAG, "USB streaming: non-frame write: $written frameSize=$pcmFrameSize")
+                                AppLogger.w(TAG, "USB streaming: non-frame write: $written frameSize=$writeFrameSize")
                                 break
                             }
                             writeOffset += alignedWritten
@@ -1521,15 +3940,47 @@ class FfmpegAudioPlayer(private val context: Context) {
                             bytesNativeAcceptedTotal += written
 
                             val nowBuffered = engine.nativeGetBufferUsedBytes()
-                            if (nowBuffered >= targetWater) {
-                                val durationNs = written * 1_000_000_000L / expectedBytesPerSec
-                                java.util.concurrent.locks.LockSupport.parkNanos(durationNs)
+                            if (engine.isRunning()) {
+                                maybeRestoreUsbVolumeRoute("usb_streaming_write_loop", nowBuffered)
+                            }
+                            if (nowBuffered >= highWater) {
+                                java.util.concurrent.locks.LockSupport.parkNanos(highWaterParkNs)
+                            }
+                            // Diagnostic: first few writes in each outer iteration
+                            if (loopIteration <= 5 && writeOffset == alignedWritten) {
+                                AppLogger.d(TAG, "  USB inner write: written=$written nowBuffered=$nowBuffered highWater=$highWater writeOffset=$writeOffset/$writeLength")
                             }
                         }
                         written == 0 -> {
+                            val nativeBuffered = runCatching { engine.nativeGetBufferUsedBytes() }.getOrDefault(0)
+                            val running = runCatching { engine.isRunning() }.getOrDefault(false)
+                            val backpressure = running && nativeBuffered >= lowWater
+                            if (backpressure) {
+                                // nativeWriteHandle returns 0 for a full-enough native ring as
+                                // flow-control, not only for a dead engine. Low-rate/no-feedback
+                                // DACs such as 44.1k/16bit can sit above the native soft limit for
+                                // long stretches; treating that as failure causes hard recovery loops,
+                                // stutter, LED jumping and silence. Keep the pump alive and wait for
+                                // native drain instead.
+                                if (consecutiveWriteZeros > 0 || loopIteration <= 5 || loopIteration % 1000 == 0) {
+                                    AppLogger.d(TAG, "USB streaming: write backpressure nativeBuffered=$nativeBuffered low=$lowWater target=$targetWater running=$running")
+                                }
+                                consecutiveWriteZeros = 0
+                                java.util.concurrent.locks.LockSupport.parkNanos(backpressureParkNs)
+                                continue
+                            }
+
                             consecutiveWriteZeros++
                             if (consecutiveWriteZeros >= maxConsecutiveWriteZeros) {
-                                AppLogger.e(TAG, "USB streaming: write returned 0 too many times")
+                                // 连续返回0且 native buffer 不足，才认为引擎可能已死并尝试恢复。
+                                AppLogger.w(TAG, "USB streaming: write returned 0 ${consecutiveWriteZeros} times, attempting recovery... nativeBuffered=$nativeBuffered low=$lowWater running=$running")
+                                val recovered = attemptUsbRecovery(actualSampleRate, wavBitsPerSample, wavChannels, sourcePath, generation)
+                                if (recovered) {
+                                    AppLogger.i(TAG, "USB streaming: recovery after write-0 succeeded")
+                                    consecutiveWriteZeros = 0
+                                    continue
+                                }
+                                AppLogger.e(TAG, "USB streaming: recovery after write-0 failed, stopping")
                                 isPlaying.set(false)
                                 break
                             }
@@ -1537,7 +3988,15 @@ class FfmpegAudioPlayer(private val context: Context) {
                         }
                         written == UsbAudioEngine.ERR_TRANSPORT_LOST ||
                         written == UsbAudioEngine.ERR_USB_IO -> {
-                            AppLogger.e(TAG, "USB streaming: transport lost: $written")
+                            // USB 传输丢失/IO 错误：尝试恢复（可能是后台被抢占后的暂时中断）
+                            AppLogger.w(TAG, "USB streaming: transport/IO error: $written, attempting recovery...")
+                            val recovered = attemptUsbRecovery(actualSampleRate, wavBitsPerSample, wavChannels, sourcePath, generation)
+                            if (recovered) {
+                                AppLogger.i(TAG, "USB streaming: recovery after transport/IO error succeeded")
+                                consecutiveWriteZeros = 0
+                                continue
+                            }
+                            AppLogger.e(TAG, "USB streaming: recovery after transport/IO error failed, stopping")
                             isPlaying.set(false)
                             onUsbTransportLost?.invoke()
                             break
@@ -1548,6 +4007,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                             val recovered = attemptUsbRecovery(actualSampleRate, wavBitsPerSample, wavChannels, sourcePath, generation)
                             if (recovered) {
                                 AppLogger.i(TAG, "USB streaming: recovery succeeded, resuming write")
+                                consecutiveWriteZeros = 0
                                 continue
                             }
                             AppLogger.e(TAG, "USB streaming: recovery failed, stopping")
@@ -1556,7 +4016,15 @@ class FfmpegAudioPlayer(private val context: Context) {
                             break
                         }
                         written == UsbAudioEngine.ERR_NOT_RUNNING -> {
-                            AppLogger.e(TAG, "USB streaming: engine stopped")
+                            // 引擎停止（后台被抢占）：尝试恢复而非直接退出
+                            AppLogger.w(TAG, "USB streaming: engine stopped (ERR_NOT_RUNNING), attempting recovery...")
+                            val recovered = attemptUsbRecovery(actualSampleRate, wavBitsPerSample, wavChannels, sourcePath, generation)
+                            if (recovered) {
+                                AppLogger.i(TAG, "USB streaming: recovery after ERR_NOT_RUNNING succeeded")
+                                consecutiveWriteZeros = 0
+                                continue
+                            }
+                            AppLogger.e(TAG, "USB streaming: recovery after ERR_NOT_RUNNING failed, stopping")
                             isPlaying.set(false)
                             break
                         }
@@ -1573,21 +4041,48 @@ class FfmpegAudioPlayer(private val context: Context) {
                     }
                 }
 
-                _positionMs = (bytesReadTotal.toDouble() / (expectedBytesPerSec.toDouble() / 1000.0)).toLong().coerceIn(0L, _durationMs)
-                if (isStillCurrentPlayback(sourcePath, generation)) {
-                    listener?.onPositionChanged(_positionMs, _durationMs)
+                if (restartNativeAfterSeekFlush && writeOffset > 0 && !engine.isRunning()) {
+                    AppLogger.w(TAG, "USB seek flush: restarting native stream after first new chunk, nativeBuffered=${engine.nativeGetBufferUsedBytes()}")
+                    val restarted = startUsbEngineWithSafety("usb_seek_restart")
+                    if (restarted) {
+                        restartNativeAfterSeekFlush = false
+                        armUsbPostStartVolumeRestore("usb_seek_restart")
+                        onUsbPlaybackStarted?.invoke()
+                        AppLogger.w(TAG, "USB seek flush: native stream restarted")
+                    } else {
+                        AppLogger.e(TAG, "USB seek flush: native restart failed")
+                        val recovered = attemptUsbRecovery(actualSampleRate, wavBitsPerSample, wavChannels, sourcePath, generation)
+                        if (recovered) {
+                            restartNativeAfterSeekFlush = false
+                            armUsbPostStartVolumeRestore("usb_seek_recovery_restart")
+                            onUsbPlaybackStarted?.invoke()
+                            AppLogger.i(TAG, "USB seek flush: recovery restart succeeded")
+                        } else {
+                            isPlaying.set(false)
+                            break
+                        }
+                    }
+                }
+
+                // Skip position update if a seek flush is pending — prevents overwriting seekTarget
+                // with stale bytesReadTotal (same pattern as AudioTrack path line 1448)
+                if (!needsAudioTrackFlush.get()) {
+                    _positionMs = (bytesReadTotal.toDouble() / (expectedBytesPerSec.toDouble() / 1000.0)).toLong().coerceToDuration()
+                    if (isStillCurrentPlayback(sourcePath, generation)) {
+                        listener?.onPositionChanged(_positionMs, _durationMs)
+                    }
                 }
 
                 val now = System.currentTimeMillis()
-                if (now - lastThroughputTime >= 1000) {
+                if (now - lastThroughputTime >= 5000) {
                     val elapsed = (now - lastThroughputTime).toDouble() / 1000.0
                     val readRate = ((bytesReadTotal - lastBytesRead) / elapsed).toInt()
                     val writeRate = ((bytesWrittenTotal - lastBytesWritten) / elapsed).toInt()
                     val bufferUsed = engine.getBufferUsedBytes()
                     AppLogger.i(TAG, """USB Streaming Stats:
-  sourceRate=$wavSampleRate targetRate=$actualSampleRate pcmFrameSize=$pcmFrameSize
-  expectedBytesPerSec=$expectedBytesPerSec packetSize=$packetSize
-  decoded=${readRate}B/s submitted=${writeRate}B/s
+  sourceRate=$wavSampleRate targetRate=$actualSampleRate pcmFrameSize=$sourcePcmFrameSize
+  expectedBytesPerSec=$expectedBytesPerSec readChunk=$maxRead transferCapacity=$transferCapacityBytes
+  decoded=${readRate}B/s submitted=${writeRate}B/s completedUsb=${engine.getCompletedUsbBytesPerSecond()}B/s
   nativeBuffered=$bufferUsed ringBuffer=${rb.available()}B""".trimIndent())
                     lastThroughputTime = now
                     lastBytesRead = bytesReadTotal
@@ -1600,12 +4095,30 @@ class FfmpegAudioPlayer(private val context: Context) {
                 AppLogger.e(TAG, "USB streaming playback EXCEPTION", e)
             }
         } finally {
-            AppLogger.w(TAG, "USB streaming playback END")
+            if (isPlaying.get() && isStillCurrentPlayback(sourcePath, generation) && !isReleased.get()) {
+                isPlaying.set(false)
+                if (_state == State.PLAYING) {
+                    setState(State.PAUSED)
+                }
+            }
+            AppLogger.w(TAG, "USB streaming playback END, isPlaying=${isPlaying.get()}, state=$_state")
         }
     }
 
     private fun startUsbExclusivePlayback(startByteOffset: Long, playPath: String, sampleRate: Int, generation: Int, isSeek: Boolean = false, sourcePath: String) {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+
+        if (
+            abortPlaybackStageIfObsolete(
+                sourcePath,
+                generation,
+                stage = "usb_exclusive_before_prepare",
+                closeRingBuffer = true,
+                closeDecoderHandle = true
+            )
+        ) {
+            return
+        }
 
         val file = tempWavFile ?: run {
             AppLogger.e(TAG, "startUsbExclusivePlayback: tempWavFile is null, aborting")
@@ -1633,7 +4146,7 @@ class FfmpegAudioPlayer(private val context: Context) {
         AppLogger.i(TAG, "  bytesPerSec=${wavSampleRate * wavChannels * actualBytesPerSample}")
         AppLogger.i(TAG, "USB output target:")
         val usbFrameSize = wavChannels * actualBytesPerSample
-        val usbBytesPerSec = actualSampleRate * usbFrameSize
+        val usbBytesPerSec = actualSampleRate.toLong() * usbFrameSize.toLong()
         AppLogger.i(TAG, "  sampleRate=$actualSampleRate")
         AppLogger.i(TAG, "  channels=$wavChannels")
         AppLogger.i(TAG, "  bits=$wavBitsPerSample")
@@ -1653,12 +4166,22 @@ class FfmpegAudioPlayer(private val context: Context) {
         nativeWriteCallCount = 0L
         pumpReadCount = 0L
 
-        val skipReinit = isSeek && engine.isInitialized() && engine.isRunning()
+        val reuseEngineForNext = usbReuseEngineForNextStart &&
+            engine.isInitialized() && engine.isRunning() && !engine.isPolicyChangedSinceInit()
+        val skipReinit = (isSeek || reuseEngineForNext) && engine.isInitialized() && engine.isRunning()
         if (skipReinit) {
-            AppLogger.i(TAG, "SEEK: USB already initialized and running, skipping reinit")
+            if (reuseEngineForNext) {
+                AppLogger.i(TAG, "NEXT: USB already initialized/running with same runtime, skipping prepare/reinit once")
+            } else {
+                AppLogger.i(TAG, "SEEK: USB already initialized and running, skipping reinit")
+            }
         } else {
+            if (usbReuseEngineForNextStart) {
+                AppLogger.w(TAG, "NEXT: reuse requested but not safe, falling back to prepare/reinit")
+            }
             val prepareOk = usbPrepareForPlayback?.invoke(actualSampleRate, wavBitsPerSample, wavChannels, playPath) ?: true
             if (!prepareOk) {
+                usbReuseEngineForNextStart = false
                 isPlaying.set(false)
                 AppLogger.e(TAG, "USB prepareForPlayback failed")
                 if (isStillCurrentPlayback(sourcePath, generation)) {
@@ -1668,6 +4191,8 @@ class FfmpegAudioPlayer(private val context: Context) {
                 return
             }
         }
+
+        usbReuseEngineForNextStart = false
 
         if (!isStillCurrentPlayback(sourcePath, generation)) {
             AppLogger.w(TAG, "=== Song changed after USB prepare, aborting")
@@ -1685,13 +4210,15 @@ class FfmpegAudioPlayer(private val context: Context) {
         }
 
         val pcmFrameSize = wavChannels * if (wavBitsPerSample <= 16) 2 else 4
-        val expectedBytesPerSec = actualSampleRate * pcmFrameSize
-        val prefillTargetBytes = expectedBytesPerSec / 5
-        val prefillTimeoutMs = 3000L
-        val minAcceptableBytes = expectedBytesPerSec / 5
+        val sourceBytesPerSec = wavSampleRate.toLong() * pcmFrameSize.toLong()
+        val expectedBytesPerSec = actualSampleRate.toLong() * pcmFrameSize.toLong()
+        val deviceBytesPerSecForPrefill = usbDeviceBytesPerSecond(engine, expectedBytesPerSec)
+        val prefillTargetBytes = bytesForMs(deviceBytesPerSecForPrefill, USB_NATIVE_PREFILL_TARGET_MS)
+        val prefillTimeoutMs = USB_NATIVE_PREFILL_TIMEOUT_MS
+        val minAcceptableBytes = bytesForMs(deviceBytesPerSecForPrefill, USB_NATIVE_PREFILL_MIN_MS)
 
         AppLogger.i(TAG, "=== PREFILL START ===")
-        AppLogger.i(TAG, "  target=${prefillTargetBytes}B (200ms) expectedBytesPerSec=$expectedBytesPerSec")
+        AppLogger.i(TAG, "  target=${prefillTargetBytes}B (${USB_NATIVE_PREFILL_TARGET_MS}ms) min=${minAcceptableBytes}B sourceBytesPerSec=$sourceBytesPerSec deviceBytesPerSec=$deviceBytesPerSecForPrefill timeout=${prefillTimeoutMs}ms")
         val bufferBefore = UsbAudioEngine.getBufferUsedBytes()
         AppLogger.i(TAG, "  buffer before prefill: used=$bufferBefore")
 
@@ -1733,9 +4260,9 @@ class FfmpegAudioPlayer(private val context: Context) {
             var consecutiveWriteZeros = 0
             val maxConsecutiveWriteZeros = 100
 
-            while (isPlaying.get() && !isReleased.get() && prefillBytesWritten < prefillTargetBytes) {
+            while (isPlaying.get() && !isReleased.get() && engine.getBufferUsedBytes() < prefillTargetBytes) {
                 if (System.currentTimeMillis() - prefillStartTime > prefillTimeoutMs) {
-                    AppLogger.w(TAG, "Pre-fill timeout: wrote $prefillBytesWritten/${prefillTargetBytes}B")
+                    AppLogger.w(TAG, "Pre-fill timeout: native=${engine.getBufferUsedBytes()}/${prefillTargetBytes}B sourceConsumed=${prefillBytesWritten}B")
                     break
                 }
 
@@ -1746,8 +4273,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                     AppLogger.i(TAG, "Pre-fill: ${buffered}B/${prefillTargetBytes}B ($progress%)")
                 }
 
-                val remainingTarget = (prefillTargetBytes - prefillBytesWritten).toInt()
-                val toRead = minOf(buffer.size, remainingTarget)
+                val toRead = buffer.size
                 val read = fis.read(buffer, 0, toRead)
                 if (read <= 0) {
                     AppLogger.w(TAG, "Pre-fill EOF during pre-fill")
@@ -1784,7 +4310,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                                 prefillFailed = true
                                 break
                             }
-                            Thread.sleep(2)
+                            LockSupport.parkNanos(1_000_000L)
                         }
                         else -> {
                             AppLogger.e(TAG, "Pre-fill write error: $written")
@@ -1808,20 +4334,14 @@ class FfmpegAudioPlayer(private val context: Context) {
 
             val bufferAfter = engine.getBufferUsedBytes()
             AppLogger.i(TAG, "=== PREFILL END ===")
-            AppLogger.i(TAG, "  prefill wrote=${prefillBytesWritten}B")
+            AppLogger.i(TAG, "  source consumed=${prefillBytesWritten}B")
             AppLogger.i(TAG, "  buffer before=$bufferBefore after=$bufferAfter")
             val bufferGrowth = bufferAfter - bufferBefore
             AppLogger.i(TAG, "  buffer growth=${bufferGrowth}B (net bytes written to native ring)")
 
             if (bufferAfter < minAcceptableBytes) {
-                val ms = bufferAfter * 1000 / expectedBytesPerSec
-                AppLogger.e(TAG, "=== PREFILL INSUFFICIENT: only ${bufferAfter}B (${ms}ms), need >= ${minAcceptableBytes}B (200ms)")
-                isPlaying.set(false)
-                if (isStillCurrentPlayback(sourcePath, generation)) {
-                    setState(State.ERROR)
-                    listener?.onError("USB 预填 buffer 不足: ${bufferAfter}B (${ms}ms)")
-                }
-                return
+                val ms = bufferAfter.toLong() * 1000L / deviceBytesPerSecForPrefill
+                AppLogger.w(TAG, "=== PREFILL BELOW MIN, starting anyway: ${bufferAfter}B (${ms}ms) < ${minAcceptableBytes}B (${USB_NATIVE_PREFILL_MIN_MS}ms)")
             }
 
             if (!isStillCurrentPlayback(sourcePath, generation)) {
@@ -1829,47 +4349,79 @@ class FfmpegAudioPlayer(private val context: Context) {
                 return
             }
 
-            AppLogger.i(TAG, "=== CALL nativeStart ===")
-            if (!engine.start()) {
-                if (engine.isPolicyChangedSinceInit()) {
-                    AppLogger.w(TAG, "=== nativeStart failed due to policy change, attempting full reinit via prepareForPlayback ===")
-                    engine.release()
-                    val reinitOk = usbPrepareForPlayback?.invoke(actualSampleRate, wavBitsPerSample, wavChannels, playPath) ?: false
-                    if (reinitOk && engine.isInitialized()) {
-                        AppLogger.i(TAG, "=== Reinit OK after policy change, retrying start ===")
-                        if (!engine.start()) {
-                            isPlaying.set(false)
-                            AppLogger.e(TAG, "=== nativeStart FAILED after reinit ===")
-                            if (isStillCurrentPlayback(sourcePath, generation)) {
-                                setState(State.ERROR)
-                                listener?.onError("USB 音频流启动失败（重试后）")
-                            }
-                            return
-                        }
-                        AppLogger.i(TAG, "=== nativeStart OK after reinit ===")
-                    } else {
+            // Serial check: reject if stop/reconfigure happened during prefill
+            val serial = nextUsbPlaybackSerial()
+            if (!isUsbPlaybackSerialCurrent(serial)) {
+                AppLogger.w(TAG, "=== nativeStart aborted: stale serial=$serial ===")
+                isPlaying.set(false)
+                return
+            }
+
+            AppLogger.i(TAG, "=== CALL nativeStart serial=$serial ===")
+
+            // 等待 native ring 中有足够真实 PCM 数据再 start，防止 DAC FIFO 饿空
+            val prefillMinMs = if (com.rawsmusic.module.player.PlayerController.getInstanceOrNull()?.isUsbCriticalStartup() == true) 220 else 120
+            val deviceBps = UsbAudioEngine.getOutputBytesPerSecond().takeIf { it > 0 } ?: 576000
+            val needBytes = deviceBps * prefillMinMs / 1000
+            val prefillDeadline = SystemClock.elapsedRealtime() + 1500
+            while (SystemClock.elapsedRealtime() < prefillDeadline) {
+                val buffered = UsbAudioEngine.getBufferUsedBytes()
+                if (buffered >= needBytes) {
+                    AppLogger.i(TAG, "USB prefill ready: buffered=$buffered need=$needBytes minMs=$prefillMinMs")
+                    break
+                }
+                Thread.sleep(8)
+            }
+            val finalBuffered = UsbAudioEngine.getBufferUsedBytes()
+            if (finalBuffered < needBytes) {
+                AppLogger.w(TAG, "USB prefill timeout: buffered=$finalBuffered need=$needBytes — starting anyway")
+            }
+
+            // nativeStart 前先恢复硬件音量，防止 DAC 保持在 0dB
+            if (
+                abortPlaybackStageIfObsolete(
+                    sourcePath,
+                    generation,
+                    stage = "usb_exclusive_before_native_start",
+                    closeRingBuffer = true
+                )
+            ) {
+                return
+            }
+
+            if (!startUsbEngineWithSafety("usb_exclusive_initial_start")) {
+                val policyChanged = engine.isPolicyChangedSinceInit()
+                AppLogger.w(
+                    TAG,
+                    "=== nativeStart failed, attempting full reinit via prepareForPlayback (policyChanged=$policyChanged) ==="
+                )
+                engine.release()
+                val reinitOk = usbPrepareForPlayback?.invoke(actualSampleRate, wavBitsPerSample, wavChannels, playPath) ?: false
+                if (reinitOk && engine.isInitialized()) {
+                    AppLogger.i(TAG, "=== Reinit OK, retrying start ===")
+                    if (!startUsbEngineWithSafety("usb_exclusive_reinit_start")) {
                         isPlaying.set(false)
-                        AppLogger.e(TAG, "=== Reinit FAILED via prepareForPlayback ===")
+                        AppLogger.e(TAG, "=== nativeStart FAILED after reinit ===")
                         if (isStillCurrentPlayback(sourcePath, generation)) {
                             setState(State.ERROR)
-                            listener?.onError("USB 音频引擎重新初始化失败")
+                            listener?.onError("USB 音频流启动失败（重试后）")
                         }
                         return
                     }
+                    AppLogger.i(TAG, "=== nativeStart OK after reinit ===")
                 } else {
                     isPlaying.set(false)
-                    AppLogger.e(TAG, "=== nativeStart FAILED ===")
+                    AppLogger.e(TAG, "=== Reinit FAILED via prepareForPlayback ===")
                     if (isStillCurrentPlayback(sourcePath, generation)) {
                         setState(State.ERROR)
-                        listener?.onError("USB 音频流启动失败")
+                        listener?.onError("USB 音频引擎重新初始化失败")
                     }
                     return
                 }
             }
+            armUsbPostStartVolumeRestore("usb_exclusive_native_start")
             onUsbPlaybackStarted?.invoke()
             AppLogger.i(TAG, "=== nativeStart OK ===")
-            Thread.sleep(50)
-
             if (isStillCurrentPlayback(sourcePath, generation)) {
                 setState(State.PLAYING)
             }
@@ -1883,9 +4435,13 @@ class FfmpegAudioPlayer(private val context: Context) {
             var pumpConsecutiveWriteZeros = 0
             val pumpMaxConsecutiveWriteZeros = 200
 
-            val lowWater = expectedBytesPerSec * 300 / 1000
-            val targetWater = expectedBytesPerSec * 500 / 1000
-            val highWater = expectedBytesPerSec * 1200 / 1000
+            // Water mark thresholds must use the DEVICE output byte rate (not source PCM rate),
+            // because nativeGetBufferUsedBytes() returns ring buffer usage in device output bytes.
+            val deviceBytesPerSec = usbDeviceBytesPerSecond(engine, expectedBytesPerSec)
+            val lowWater = bytesForMs(deviceBytesPerSec, USB_NATIVE_LOW_WATER_MS)
+            val targetWater = bytesForMs(deviceBytesPerSec, USB_NATIVE_TARGET_WATER_MS)
+            val highWater = bytesForMs(deviceBytesPerSec, USB_NATIVE_HIGH_WATER_MS)
+            AppLogger.i(TAG, "USB legacy watermarks: deviceBytesPerSec=$deviceBytesPerSec sourceBytesPerSec=$sourceBytesPerSec low=$lowWater target=$targetWater high=$highWater")
 
             while (isPlaying.get() && !isReleased.get()) {
                 if (!isStillCurrentPlayback(sourcePath, generation)) {
@@ -1900,7 +4456,7 @@ class FfmpegAudioPlayer(private val context: Context) {
 
                 val bufferedBeforeRead = engine.nativeGetBufferUsedBytes()
                 if (bufferedBeforeRead > highWater) {
-                    LockSupport.parkNanos(10_000_000L)
+                    LockSupport.parkNanos(2_000_000L)
                     continue
                 }
 
@@ -1926,6 +4482,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                 bytesReadTotal += alignedBytes
 
                 processDsp(buf, alignedBytes, wavChannels, wavSampleRate, wavBitsPerSample)
+                dispatchWaveformFrame(buf, alignedBytes, wavChannels, wavSampleRate, wavBitsPerSample)
 
                 var writeOffset = 0
                 while (writeOffset < alignedBytes && isPlaying.get() && !isReleased.get()) {
@@ -1945,9 +4502,11 @@ class FfmpegAudioPlayer(private val context: Context) {
                             bytesNativeAcceptedTotal += written
 
                             val nowBuffered = engine.nativeGetBufferUsedBytes()
+                            if (engine.isRunning()) {
+                                maybeRestoreUsbVolumeRoute("usb_exclusive_write_loop", nowBuffered)
+                            }
                             if (nowBuffered >= targetWater) {
-                                val durationNs = written * 1_000_000_000L / expectedBytesPerSec
-                                LockSupport.parkNanos(durationNs)
+                                LockSupport.parkNanos(1_000_000L)
                             }
                         }
                         written == 0 -> {
@@ -1991,7 +4550,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                     val writeRate = ((bytesWrittenTotal - lastBytesWritten) / elapsed).toInt()
                     val nativeAcceptedRate = ((bytesNativeAcceptedTotal - lastBytesNativeAccepted) / elapsed).toInt()
                     val bufferUsed = engine.getBufferUsedBytes()
-                    val expectedRate = actualSampleRate * pcmFrameSize
+                    val expectedRate = actualSampleRate.toLong() * pcmFrameSize.toLong()
 
                     AppLogger.i(TAG, """PCM Pump Stats:
   sourceRate=$wavSampleRate targetRate=$actualSampleRate pcmFrameSize=$pcmFrameSize
@@ -2017,7 +4576,9 @@ class FfmpegAudioPlayer(private val context: Context) {
             }
         } finally {
             try { fis?.close() } catch (_: Exception) {}
-            try { engine.stop() } catch (_: Exception) {}
+            // 不在 playback loop finally 里 hard stop USB。
+            // USB 生命周期由 PlayerController / UsbExclusiveManager 控制。
+            AppLogger.i(TAG, "USB playback loop finally: keep USB engine alive")
             onUsbPlaybackStopped?.invoke()
             AppLogger.i(TAG, "=== USB playback END")
         }
@@ -2027,17 +4588,34 @@ class FfmpegAudioPlayer(private val context: Context) {
         val file = tempWavFile ?: return
 
         if (!isStillCurrentPlayback(sourcePath, generation)) {
-            AppLogger.w(TAG, "=== Song changed before playback start, aborting: reqGen=$generation currentGen=${playGeneration.get()} currentSource=$activeSourcePath")
+            AppLogger.w(TAG, "=== Song changed before playback start, aborting: reqGen=$generation currentGen=${playbackSession.generation} currentSource=${playbackSession.sessionSourcePath}")
             return
         }
 
         isPlaying.set(true)
         AppLogger.w(TAG, "=== startPlaybackFromOffset($startByteOffset), path=$playPath, usbExclusive=$usbExclusiveMode, isSeek=$isSeek")
 
-        val channelConfig = if (wavChannels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
-        var actualSampleRate = if (usbExclusiveMode) wavSampleRate.coerceAtLeast(44100) else wavSampleRate.coerceAtLeast(44100)
-        val actualEncoding = if (usbExclusiveMode) getEncodingForWavData() else probedEncoding
-        AppLogger.i(TAG, "AudioTrack encoding: actualEncoding=$actualEncoding, wavBits=$wavBitsPerSample, wavFormatTag=$wavFormatTag")
+        // SCO 模式处理：强制单声道 + 16BIT + 合适采样率
+        val useSco = AudioOutputManager.shouldUseScoMode(context)
+        val am2 = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+        val scoActive2 = am2?.isBluetoothScoOn == true
+        val spec = androidAudioTrackFactory.buildSpec(
+            wavSampleRate = wavSampleRate,
+            wavChannels = wavChannels,
+            probedEncoding = probedEncoding,
+            useSco = useSco,
+            scoActive = scoActive2,
+            usbExclusiveMode = usbExclusiveMode,
+            wavBitsPerSample = wavBitsPerSample,
+            applyScoDownsample = true,
+            scoDownsampleEnabled = AppPreferences.Player.bluetoothScoDownsample
+        )
+        val useScoAttributes = spec.useScoAttributes
+        val channelConfig = spec.channelConfig
+        val actualSampleRate = spec.sampleRate
+        val actualEncoding = spec.encoding
+        val bufSize = spec.bufferSizeInBytes
+        AppLogger.i(TAG, "AudioTrack encoding: actualEncoding=$actualEncoding, wavBits=$wavBitsPerSample, wavFormatTag=$wavFormatTag, sco=$useSco, scoActive=$scoActive2, useScoAttrs=$useScoAttributes")
 
         if (usbExclusiveMode) {
             try {
@@ -2063,11 +4641,8 @@ class FfmpegAudioPlayer(private val context: Context) {
             return
         }
 
-        val bufSize = AudioTrack.getMinBufferSize(actualSampleRate, channelConfig, actualEncoding)
-            .coerceAtLeast(PCM_BUFFER_SIZE)
-
         try {
-            val attributes = AudioOutputManager.buildAudioAttributes(context)
+            val attributes = spec.audioAttributes
 
             val track = createAudioTrackWithFallback(actualSampleRate, channelConfig, actualEncoding, bufSize, attributes)
             if (track == null) {
@@ -2078,21 +4653,18 @@ class FfmpegAudioPlayer(private val context: Context) {
                 return
             }
 
-            if (AudioOutputManager.getCurrentOutputMode(context) == com.rawsmusic.core.common.model.AudioOutputMode.DIRECT) {
-                if (android.os.Build.VERSION.SDK_INT >= 23) {
-                    try {
-                        AudioOutputManager.getPreferredDeviceForDirect(context)?.let { device ->
-                            track.preferredDevice = device
-                            AppLogger.d(TAG, "Direct mode: preferred device set to ${device.productName}")
-                        }
-                    } catch (e: Exception) {
-                        AppLogger.w(TAG, "Setting preferred device failed, using default", e)
-                    }
-                }
-            }
+            androidAudioRouteController.applyPreferredDeviceToAudioTrack(
+                reason = "file_playback_start",
+                useScoAttributes = useScoAttributes,
+                allowDirectPreferredDevice = !useSco,
+                trackOverride = track
+            )
 
             audioTrack = track
             _audioSessionId = track.audioSessionId
+
+            // 记录格式快照
+            snapshotTrackFormat(actualSampleRate, channelConfig, actualEncoding)
 
             setVolume(volume)
             track.play()
@@ -2147,8 +4719,10 @@ class FfmpegAudioPlayer(private val context: Context) {
 
             val buffer = ByteArray(PCM_BUFFER_SIZE)
             var totalBytesRead = startByteOffset
-            val frameSize = wavChannels * if (wavBitsPerSample <= 16) 2 else 4
+            var totalBytesWrittenToTrack = 0L
+            val frameSize = wavChannels * playbackBytesPerSample()
             val bytesPerMs = (wavSampleRate * frameSize).toDouble() / 1000.0
+            val readLimit = PcmFrameAligner.readLimit(buffer.size, frameSize)
 
             while (isPlaying.get() && !isReleased.get()) {
                 if (!isStillCurrentPlayback(sourcePath, generation)) {
@@ -2161,9 +4735,20 @@ class FfmpegAudioPlayer(private val context: Context) {
                     continue
                 }
 
-                val read = fis.read(buffer)
+                val read = fis.read(buffer, 0, readLimit)
                 if (read <= 0) {
-                    AppLogger.w(TAG, "=== play EOF")
+                    AppLogger.w(TAG, "=== play EOF, draining AudioTrack...")
+
+                    // Drain: 等待 AudioTrack 播放完内部缓冲区中的剩余数据
+                    AudioTrackDrainHelper.drain(
+                        track = audioTrack,
+                        totalBytesWritten = totalBytesWrittenToTrack,
+                        frameSize = frameSize,
+                        label = "File playback",
+                        isPlaying = { isPlaying.get() },
+                        isReleased = { isReleased.get() }
+                    )
+
                     isPlaying.set(false)
                     if (isStillCurrentPlayback(sourcePath, generation)) {
                         onPlaybackSuccess()
@@ -2174,8 +4759,10 @@ class FfmpegAudioPlayer(private val context: Context) {
 
                 totalBytesRead += read
 
-                processDsp(buffer, read, wavChannels, wavSampleRate, wavBitsPerSample)
-                dispatchWaveformFrame(buffer, read, wavChannels, wavSampleRate, wavBitsPerSample)
+                if (!usePacked24Output) {
+                    processDsp(buffer, read, wavChannels, wavSampleRate, wavBitsPerSample)
+                    dispatchWaveformFrame(buffer, read, wavChannels, wavSampleRate, wavBitsPerSample)
+                }
 
                 val track = audioTrack
                 if (track == null) {
@@ -2186,14 +4773,26 @@ class FfmpegAudioPlayer(private val context: Context) {
                     AppLogger.w(TAG, "=== play: Track STOPPED, breaking")
                     break
                 }
+                if (track.playState == AudioTrack.PLAYSTATE_PAUSED && !isPaused.get()) {
+                    AppLogger.w(TAG, "=== play: Track PAUSED externally (not by user), resuming")
+                    try { track.play() } catch (_: Exception) {}
+                }
 
-                val result = track.write(buffer, 0, read)
+                val result = audioTrackPcmWriter.write(track, buffer, 0, PcmFrameAligner.alignDown(read, frameSize))
                 if (result < 0) {
                     AppLogger.w(TAG, "=== play: write failed=$result, breaking")
                     break
                 }
+                if (result > 0) totalBytesWrittenToTrack += result
 
-                _positionMs = (totalBytesRead.toDouble() / bytesPerMs).toLong().coerceAtLeast(0L)
+                val posUpdate = audioTrackPositionUpdater.updateAbsolute(
+                    currentPositionMs = _positionMs,
+                    bytesReadTotal = totalBytesRead,
+                    bytesPerMs = bytesPerMs,
+                    sampleRate = actualSampleRate,
+                    durationMs = _durationMs
+                )
+                _positionMs = posUpdate.positionMs
                 if (isStillCurrentPlayback(sourcePath, generation)) {
                     listener?.onPositionChanged(_positionMs, _durationMs)
                 }

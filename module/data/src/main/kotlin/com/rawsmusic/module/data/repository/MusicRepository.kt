@@ -1,7 +1,6 @@
 package com.rawsmusic.module.data.repository
 
-import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
+import android.content.Context
 import com.rawsmusic.core.common.model.Album
 import com.rawsmusic.core.common.model.Artist
 import com.rawsmusic.core.common.model.AudioFile
@@ -9,26 +8,35 @@ import com.rawsmusic.core.common.model.Folder
 import com.rawsmusic.core.common.model.Genre
 import com.rawsmusic.core.common.model.PlayStats
 import com.rawsmusic.core.common.model.SortOrder
+import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.utils.CjkSortUtils
-import com.tencent.mmkv.MMKV
+import com.rawsmusic.module.data.db.MusicDatabase
+import com.rawsmusic.module.data.db.converter.EntityConverter
+import com.rawsmusic.module.data.db.entity.FolderFileEntity
+import com.rawsmusic.module.data.prefs.AppPreferences
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 
+/**
+ * 音乐仓库 — 数据库层。
+ *
+ * 同步 API 继续保留给旧 UI 调用；新增 suspend API 给扫描/批量写入使用，避免在 IO 协程里再套 runBlocking。
+ */
 object MusicRepository {
 
-    private val kv by lazy { MMKV.defaultMMKV() }
-    private val gson = Gson()
+    private const val TAG = "MusicRepo"
 
-    private const val KEY_SONGS = "music_songs"
-    private const val KEY_FAVORITES = "music_favorites"
+    @Volatile
+    private var db: MusicDatabase? = null
 
-    // 内存缓存：避免每次调用 getAllSongs() 都从 MMKV 读取并反序列化 JSON
     @Volatile
     private var cachedSongs: List<AudioFile>? = null
-    // 索引缓存：加速按 id/path 查询
     private var cachedById: Map<Long, AudioFile> = emptyMap()
-    private var cachedByPath: Map<String, AudioFile> = emptyMap()
+    private var cachedByLibraryKey: Map<String, AudioFile> = emptyMap()
 
     private val _songs = MutableStateFlow<List<AudioFile>>(emptyList())
     val songs: StateFlow<List<AudioFile>> = _songs.asStateFlow()
@@ -45,142 +53,261 @@ object MusicRepository {
     private val _folders = MutableStateFlow<List<Folder>>(emptyList())
     val folders: StateFlow<List<Folder>> = _folders.asStateFlow()
 
-    private var favorites: MutableSet<Long> = mutableSetOf()
-
-    init {
-        loadFavorites()
+    fun init(context: Context) {
+        db = MusicDatabase.getInstance(context)
+        AppLogger.d(TAG, "init: Room database initialized")
     }
 
-    private fun loadFavorites() {
-        val json = kv.decodeString(KEY_FAVORITES, "") ?: ""
-        if (json.isNotBlank()) {
-            try {
-                val type = object : TypeToken<Set<Long>>() {}.type
-                favorites = (gson.fromJson<Set<Long>>(json, type) ?: emptySet()).toMutableSet()
-            } catch (_: Exception) {}
-        }
+    private fun getDb(): MusicDatabase {
+        return db ?: throw IllegalStateException("MusicRepository not initialized. Call init(context) first.")
     }
 
-    private fun saveFavorites() {
-        kv.encode(KEY_FAVORITES, gson.toJson(favorites))
-    }
+    // ────────────────────── 缓存管理 ──────────────────────
 
-    /**
-     * 从 MMKV 加载歌曲列表并更新缓存。
-     * 仅在缓存为空时才读取 MMKV，否则直接返回缓存。
-     */
-    private fun loadSongsFromStorage(): List<AudioFile> {
-        cachedSongs?.let { return it }
-        val json = kv.decodeString(KEY_SONGS, "") ?: return emptyList()
-        if (json.isBlank()) return emptyList()
-        return try {
-            val type = object : TypeToken<List<AudioFile>>() {}.type
-            val songs: List<AudioFile> = gson.fromJson(json, type) ?: emptyList()
-            updateCache(songs)
-            songs
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    /** 更新内存缓存和索引 */
     private fun updateCache(songs: List<AudioFile>) {
         cachedSongs = songs
         cachedById = songs.associateBy { it.id }
-        cachedByPath = songs.associateBy { it.path }
+        cachedByLibraryKey = songs.associateBy { it.libraryKey() }
     }
 
-    /** 清除缓存，下次访问时重新从 MMKV 加载 */
     private fun invalidateCache() {
         cachedSongs = null
         cachedById = emptyMap()
-        cachedByPath = emptyMap()
+        cachedByLibraryKey = emptyMap()
     }
+
+    private fun AudioFile.libraryKey(): String = buildLibraryKey(path, cueOffsetMs, cueTrackIndex)
+    private fun FolderFileEntity.libraryKey(): String = buildLibraryKey(filePath, cueOffsetMs, cueTrackIndex)
+
+    private fun buildLibraryKey(path: String, cueOffsetMs: Long, cueTrackIndex: Int): String {
+        return if (cueTrackIndex > 0 || cueOffsetMs > 0L) {
+            "cue|$path|$cueTrackIndex|$cueOffsetMs"
+        } else {
+            "file|$path"
+        }
+    }
+
+    private fun mergePreservedFields(newEntity: FolderFileEntity, existing: FolderFileEntity?): FolderFileEntity {
+        if (existing == null) return newEntity
+        return newEntity.copy(
+            id = existing.id,
+            playedTimes = existing.playedTimes,
+            lastPos = existing.lastPos,
+            playedAt = existing.playedAt,
+            playedFullyAt = existing.playedFullyAt,
+            rating = existing.rating.takeIf { it > 0 } ?: newEntity.rating,
+            createdAt = existing.createdAt.takeIf { it > 0L } ?: newEntity.createdAt,
+            fileCreatedAt = newEntity.fileCreatedAt.takeIf { it > 0L } ?: existing.fileCreatedAt,
+            fileModifiedAt = newEntity.fileModifiedAt.takeIf { it > 0L } ?: existing.fileModifiedAt
+        )
+    }
+
+    // ────────────────────── 加载 ──────────────────────
+
+    private suspend fun loadSongsFromStorageSuspend(invalidate: Boolean = false): List<AudioFile> = withContext(Dispatchers.IO) {
+        if (invalidate) invalidateCache()
+        cachedSongs?.let { return@withContext it }
+
+        val t0 = System.currentTimeMillis()
+        val songs = try {
+            getDb().folderFileDao().getAll().map { EntityConverter.folderFileToAudioFile(it) }
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "loadSongsFromStorageSuspend: error", e)
+            emptyList()
+        }
+        updateCache(songs)
+        AppLogger.d(TAG, "loadSongsFromStorageSuspend: loaded ${songs.size} songs in ${System.currentTimeMillis() - t0}ms")
+        songs
+    }
+
+    private fun loadSongsFromStorage(): List<AudioFile> {
+        cachedSongs?.let { return it }
+        return runBlocking { loadSongsFromStorageSuspend() }
+    }
+
+    // ────────────────────── 刷新 ──────────────────────
 
     fun refreshAll() {
-        // 刷新时强制重新加载
-        invalidateCache()
-        val allSongs = loadSongsFromStorage()
-        _songs.value = allSongs
-        _artists.value = buildArtists(allSongs)
-        _albums.value = buildAlbums(allSongs)
-        _genres.value = buildGenres(allSongs)
-        _folders.value = buildFolders(allSongs)
+        runBlocking { refreshAllSuspend() }
     }
 
+    suspend fun refreshAllSuspend() {
+        val t0 = System.currentTimeMillis()
+        val allSongs = refreshSongsOnlySuspend(invalidate = true)
+        val tLoad = System.currentTimeMillis()
+        refreshLibraryIndexes(allSongs)
+        AppLogger.d(TAG, "refreshAll: ${allSongs.size} songs, songs=${tLoad - t0}ms, indexes=${System.currentTimeMillis() - tLoad}ms, total=${System.currentTimeMillis() - t0}ms")
+    }
+
+    fun refreshSongsOnly(invalidate: Boolean = false): List<AudioFile> {
+        return runBlocking { refreshSongsOnlySuspend(invalidate) }
+    }
+
+    suspend fun refreshSongsOnlySuspend(invalidate: Boolean = false): List<AudioFile> {
+        val t0 = System.currentTimeMillis()
+        val allSongs = loadSongsFromStorageSuspend(invalidate)
+        val tLoad = System.currentTimeMillis()
+        val sortedSongs = sortSongs(allSongs, AppPreferences.Sort.songSortOrder)
+        _songs.value = sortedSongs
+        AppLogger.d(TAG, "refreshSongsOnly: ${sortedSongs.size} songs, load=${tLoad - t0}ms, sort=${System.currentTimeMillis() - tLoad}ms, total=${System.currentTimeMillis() - t0}ms")
+        return sortedSongs
+    }
+
+    fun refreshLibraryIndexes(sourceSongs: List<AudioFile> = _songs.value.ifEmpty { loadSongsFromStorage() }) {
+        val t0 = System.currentTimeMillis()
+        val sortedSongs = if (sourceSongs === _songs.value) sourceSongs else sortSongs(sourceSongs, AppPreferences.Sort.songSortOrder)
+        _artists.value = buildArtists(sortedSongs)
+        _albums.value = buildAlbums(sortedSongs)
+        _genres.value = buildGenres(sortedSongs)
+        _folders.value = buildFolders(sortedSongs)
+        AppLogger.d(TAG, "refreshLibraryIndexes: ${sortedSongs.size} songs, total=${System.currentTimeMillis() - t0}ms")
+    }
+
+    // ────────────────────── 查询 ──────────────────────
+
     fun getAllSongs(sortOrder: SortOrder = SortOrder.TITLE_ASC): List<AudioFile> {
-        val songs = loadSongsFromStorage()
-        return sortSongs(songs, sortOrder)
+        return sortSongs(loadSongsFromStorage(), sortOrder)
+    }
+
+    suspend fun getAllSongsSuspend(sortOrder: SortOrder = SortOrder.TITLE_ASC): List<AudioFile> {
+        return sortSongs(loadSongsFromStorageSuspend(), sortOrder)
     }
 
     fun getSongById(songId: Long): AudioFile? {
-        // 优先使用索引缓存 O(1) 查询
         cachedById[songId]?.let { return it }
-        // 索引未命中时从列表查找（首次加载场景）
         return loadSongsFromStorage().find { it.id == songId }
     }
 
-    fun getSongsByArtist(artist: String): List<AudioFile> {
-        return loadSongsFromStorage().filter { it.artist == artist }
+    fun getSongByPath(path: String): AudioFile? {
+        cachedByLibraryKey[buildLibraryKey(path, 0L, 0)]?.let { return it }
+        return loadSongsFromStorage().firstOrNull { it.path == path && it.cueOffsetMs == 0L && it.cueTrackIndex == 0 }
+            ?: loadSongsFromStorage().firstOrNull { it.path == path }
     }
 
-    fun getSongsByAlbum(album: String): List<AudioFile> {
-        return loadSongsFromStorage().filter { it.album == album }
-    }
-
-    fun getSongsByGenre(genre: String): List<AudioFile> {
-        return loadSongsFromStorage().filter { it.genre == genre }
-    }
-
-    fun getSongsByFolder(folderPath: String): List<AudioFile> {
-        return loadSongsFromStorage().filter { it.path.startsWith(folderPath) }
-    }
-
-    fun getFavorites(): List<AudioFile> {
-        return loadSongsFromStorage().filter { favorites.contains(it.id) }
-    }
+    fun getSongsByArtist(artist: String): List<AudioFile> = loadSongsFromStorage().filter { it.artist == artist }
+    fun getSongsByAlbum(album: String): List<AudioFile> = loadSongsFromStorage().filter { it.album == album }
+    fun getSongsByGenre(genre: String): List<AudioFile> = loadSongsFromStorage().filter { it.genre == genre }
+    fun getSongsByFolder(folderPath: String): List<AudioFile> = loadSongsFromStorage().filter { it.path.startsWith(folderPath) }
+    fun getFavorites(): List<AudioFile> = loadSongsFromStorage().filter { it.isFavorite }
 
     fun searchSongs(query: String): List<AudioFile> {
         if (query.isBlank()) return emptyList()
         val lowerQuery = query.lowercase()
         return loadSongsFromStorage().filter {
             it.title.lowercase().contains(lowerQuery) ||
-            it.artist.lowercase().contains(lowerQuery) ||
-            it.album.lowercase().contains(lowerQuery)
+                it.artist.lowercase().contains(lowerQuery) ||
+                it.album.lowercase().contains(lowerQuery)
         }
     }
 
-    fun insertSongs(songs: List<AudioFile>): Int {
-        val existing = loadSongsFromStorage().associateBy { it.path }.toMutableMap()
-        var count = 0
-        songs.forEach { song ->
-            if (!existing.containsKey(song.path)) {
-                existing[song.path] = song
-                count++
+    // ────────────────────── 写入 ──────────────────────
+
+    fun insertSongs(songs: List<AudioFile>): Int = runBlocking { insertSongsSuspend(songs) }
+
+    suspend fun insertSongsSuspend(songs: List<AudioFile>): Int = withContext(Dispatchers.IO) {
+        AppLogger.d(TAG, "insertSongsSuspend: inserting ${songs.size} songs")
+        val t0 = System.currentTimeMillis()
+        val result = try {
+            val database = getDb()
+            val folderDao = database.folderDao()
+            val fileDao = database.folderFileDao()
+            val existingKeys = fileDao.getAll().mapTo(HashSet()) { it.libraryKey() }
+            val newSongs = songs.distinctBy { it.libraryKey() }.filter { it.libraryKey() !in existingKeys }
+            var insertedCount = 0
+
+            for ((folderPath, folderSongs) in newSongs.groupBy { it.path.substringBeforeLast("/") }) {
+                var folder = folderDao.getByPath(folderPath)
+                if (folder == null) {
+                    folderDao.insert(EntityConverter.pathToFolderEntity(folderPath))
+                    folder = folderDao.getByPath(folderPath)
+                }
+                if (folder != null) {
+                    fileDao.insertBatch(folderSongs.map { EntityConverter.audioFileToFolderFile(it, folder.id) })
+                    insertedCount += folderSongs.size
+                }
             }
+            insertedCount
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "insertSongsSuspend: error", e)
+            0
         }
-        val newList = existing.values.toList()
-        kv.encode(KEY_SONGS, gson.toJson(newList))
-        updateCache(newList)
-        refreshAll()
-        return count
+
+        invalidateCache()
+        refreshAllSuspend()
+        AppLogger.d(TAG, "insertSongsSuspend: new=$result, total=${songs.size}, time=${System.currentTimeMillis() - t0}ms")
+        result
+    }
+
+    /** 增量扫描用：按 path + CUE 信息做稳定 upsert，并保留播放统计/收藏/数据库创建时间。 */
+    suspend fun upsertSongsSuspend(songs: List<AudioFile>): Int = withContext(Dispatchers.IO) {
+        val distinctSongs = songs.distinctBy { it.libraryKey() }
+        if (distinctSongs.isEmpty()) return@withContext 0
+
+        val database = getDb()
+        val folderDao = database.folderDao()
+        val fileDao = database.folderFileDao()
+        var changed = 0
+
+        try {
+            for ((folderPath, folderSongs) in distinctSongs.groupBy { it.path.substringBeforeLast("/") }) {
+                var folder = folderDao.getByPath(folderPath)
+                if (folder == null) {
+                    folderDao.insert(EntityConverter.pathToFolderEntity(folderPath))
+                    folder = folderDao.getByPath(folderPath)
+                }
+                val folderId = folder?.id ?: continue
+                for (song in folderSongs) {
+                    val existing = fileDao.getByPathAndCue(song.path, song.cueOffsetMs, song.cueTrackIndex)
+                        ?: if (song.cueOffsetMs == 0L && song.cueTrackIndex == 0) fileDao.getByPath(song.path) else null
+                    val entity = mergePreservedFields(EntityConverter.audioFileToFolderFile(song, folderId), existing)
+                    if (existing == null) fileDao.insert(entity) else fileDao.update(entity)
+                    changed++
+                }
+            }
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "upsertSongsSuspend: error", e)
+        }
+
+        invalidateCache()
+        refreshAllSuspend()
+        changed
     }
 
     fun toggleFavorite(songId: Long, isFavorite: Boolean): Boolean {
-        if (isFavorite) {
-            favorites.add(songId)
-        } else {
-            favorites.remove(songId)
+        runBlocking {
+            try {
+                getDb().folderFileDao().updateRating(songId, if (isFavorite) 1 else 0)
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "toggleFavorite: error", e)
+            }
         }
-        saveFavorites()
+        cachedSongs?.let { songs ->
+            val updated = songs.map { if (it.id == songId) it.copy(isFavorite = isFavorite) else it }
+            updateCache(updated)
+            _songs.value = sortSongs(updated, AppPreferences.Sort.songSortOrder)
+        }
         return true
     }
 
     fun removeSong(path: String) {
-        val songs = loadSongsFromStorage().filter { it.path != path }
-        kv.encode(KEY_SONGS, gson.toJson(songs))
-        updateCache(songs)
-        refreshAll()
+        runBlocking { deleteSongsSuspend(listOf(AudioFile(path = path))) }
+    }
+
+    suspend fun deleteSongsSuspend(songs: List<AudioFile>) = withContext(Dispatchers.IO) {
+        try {
+            val dao = getDb().folderFileDao()
+            songs.forEach { song ->
+                if (song.cueOffsetMs > 0L || song.cueTrackIndex > 0) {
+                    dao.deleteByPathAndCue(song.path, song.cueOffsetMs, song.cueTrackIndex)
+                } else {
+                    dao.deleteByPath(song.path)
+                }
+            }
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "deleteSongsSuspend: error", e)
+        }
+        invalidateCache()
+        refreshAllSuspend()
     }
 
     fun deleteSongFromDevice(context: android.content.Context, song: AudioFile): Boolean {
@@ -190,8 +317,7 @@ object MusicRepository {
                 val uri = android.content.ContentUris.withAppendedId(
                     android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, song.id
                 )
-                val rows = context.contentResolver.delete(uri, null, null)
-                if (rows > 0) deleted = true
+                if (context.contentResolver.delete(uri, null, null) > 0) deleted = true
             } catch (_: Exception) {}
         }
         if (!deleted) {
@@ -210,27 +336,46 @@ object MusicRepository {
     }
 
     fun updateSong(updated: AudioFile) {
-        val songs = loadSongsFromStorage().toMutableList()
-        val index = songs.indexOfFirst { it.path == updated.path }
-        if (index >= 0) {
-            songs[index] = updated
-            kv.encode(KEY_SONGS, gson.toJson(songs))
-            updateCache(songs)
-            _songs.value = songs
+        runBlocking {
+            try {
+                val dao = getDb().folderFileDao()
+                val existing = dao.getByPathAndCue(updated.path, updated.cueOffsetMs, updated.cueTrackIndex)
+                    ?: if (updated.cueOffsetMs == 0L && updated.cueTrackIndex == 0) dao.getByPath(updated.path) else null
+                if (existing != null) {
+                    val newEntity = mergePreservedFields(EntityConverter.audioFileToFolderFile(updated, existing.folderId), existing)
+                    dao.update(newEntity)
+                }
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "updateSong: error", e)
+            }
+        }
+        invalidateCache()
+    }
+
+    /** 完全替换所有歌曲（用户触发重新扫描后使用）。保留歌单表；播放统计会随 folder_files 重建。 */
+    fun replaceAllSongs(songs: List<AudioFile>) {
+        runBlocking {
+            try {
+                val database = getDb()
+                database.folderFileDao().deleteAll()
+                database.folderDao().deleteAll()
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "replaceAllSongs: error clearing", e)
+            }
+            insertSongsSuspend(songs)
         }
     }
 
-    /** 完全替换所有歌曲（用户触发重新扫描后使用） */
-    fun replaceAllSongs(songs: List<AudioFile>) {
-        kv.encode(KEY_SONGS, gson.toJson(songs))
-        updateCache(songs)
-        refreshAll()
-    }
-
     fun clearAll() {
-        kv.remove(KEY_SONGS)
-        favorites.clear()
-        saveFavorites()
+        runBlocking {
+            try {
+                val database = getDb()
+                database.folderFileDao().deleteAll()
+                database.folderDao().deleteAll()
+            } catch (e: Exception) {
+                AppLogger.e(TAG, "clearAll: error", e)
+            }
+        }
         invalidateCache()
         refreshAll()
     }
@@ -242,12 +387,30 @@ object MusicRepository {
             totalDuration = allSongs.sumOf { it.duration },
             totalSize = allSongs.sumOf { it.fileSize },
             formatDistribution = allSongs.groupingBy { it.format }.eachCount(),
-            artistDistribution = allSongs.filter { it.artist.isNotBlank() }
-                .groupingBy { it.artist }.eachCount(),
-            albumDistribution = allSongs.filter { it.album.isNotBlank() }
-                .groupingBy { it.album }.eachCount()
+            artistDistribution = allSongs.filter { it.artist.isNotBlank() }.groupingBy { it.artist }.eachCount(),
+            albumDistribution = allSongs.filter { it.album.isNotBlank() }.groupingBy { it.album }.eachCount()
         )
     }
+
+    // ────────────────────── 播放信息更新 ──────────────────────
+
+    fun updatePlayedInfo(songId: Long, lastPos: Long) {
+        runBlocking {
+            try {
+                getDb().folderFileDao().updatePlayedInfo(songId, System.currentTimeMillis(), lastPos)
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun updatePlayedFully(songId: Long) {
+        runBlocking {
+            try {
+                getDb().folderFileDao().updatePlayedFully(songId, System.currentTimeMillis())
+            } catch (_: Exception) {}
+        }
+    }
+
+    // ────────────────────── 分类聚合 ──────────────────────
 
     private fun buildArtists(songs: List<AudioFile>): List<Artist> {
         return songs.filter { it.artist.isNotBlank() }
@@ -266,8 +429,7 @@ object MusicRepository {
         return songs.filter { it.album.isNotBlank() }
             .groupBy { it.album }
             .map { (albumName, list) ->
-                val mostCommonArtist = list.groupBy { it.artist }
-                    .maxByOrNull { it.value.size }?.key ?: list.first().artist
+                val mostCommonArtist = list.groupBy { it.artist }.maxByOrNull { it.value.size }?.key ?: list.first().artist
                 Album(
                     name = albumName,
                     artist = mostCommonArtist,
@@ -289,19 +451,34 @@ object MusicRepository {
     private fun buildFolders(songs: List<AudioFile>): List<Folder> {
         return songs.map { it.path.substringBeforeLast("/") }
             .groupBy { it }
-            .map { (path, list) ->
-                Folder(
-                    path = path,
-                    name = path.substringAfterLast("/"),
-                    songCount = list.size
-                )
-            }.sortedBy { CjkSortUtils.sortKey(it.name) }
+            .map { (path, list) -> Folder(path = path, name = path.substringAfterLast("/"), songCount = list.size) }
+            .sortedBy { CjkSortUtils.sortKey(it.name) }
     }
 
+    // ────────────────────── 排序 ──────────────────────
+
     private fun sortSongs(songs: List<AudioFile>, order: SortOrder): List<AudioFile> {
+        fun fileName(song: AudioFile): String {
+            return song.path.substringAfterLast('/').substringBeforeLast('.', song.title.ifBlank { song.displayName })
+        }
+
+        fun playCountMap(): Map<Long, Int> = runBlocking {
+            try {
+                getDb().folderFileDao().getAll()
+                    .filter { it.playedTimes > 0 }
+                    .associate { it.id to it.playedTimes }
+            } catch (_: Exception) {
+                emptyMap()
+            }
+        }
+
         return when (order) {
-            SortOrder.TITLE_ASC -> songs.sortedBy { CjkSortUtils.sortKey(it.title) }
-            SortOrder.TITLE_DESC -> songs.sortedByDescending { CjkSortUtils.sortKey(it.title) }
+            SortOrder.TITLE_ASC -> songs.sortedBy { CjkSortUtils.sortKey(it.displayName) }
+            SortOrder.TITLE_DESC -> songs.sortedByDescending { CjkSortUtils.sortKey(it.displayName) }
+            SortOrder.FILE_NAME_ASC -> songs.sortedBy { CjkSortUtils.sortKey(fileName(it)) }
+            SortOrder.FILE_NAME_DESC -> songs.sortedByDescending { CjkSortUtils.sortKey(fileName(it)) }
+            SortOrder.PATH_ASC -> songs.sortedBy { CjkSortUtils.sortKey(it.path) }
+            SortOrder.PATH_DESC -> songs.sortedByDescending { CjkSortUtils.sortKey(it.path) }
             SortOrder.ARTIST_ASC -> songs.sortedBy { CjkSortUtils.sortKey(it.artist) }
             SortOrder.ARTIST_DESC -> songs.sortedByDescending { CjkSortUtils.sortKey(it.artist) }
             SortOrder.ALBUM_ASC -> songs.sortedBy { CjkSortUtils.sortKey(it.album) }
@@ -310,8 +487,18 @@ object MusicRepository {
             SortOrder.DATE_ADDED_DESC -> songs.sortedByDescending { it.dateAdded }
             SortOrder.DURATION_ASC -> songs.sortedBy { it.duration }
             SortOrder.DURATION_DESC -> songs.sortedByDescending { it.duration }
-            SortOrder.YEAR_ASC -> songs.sortedBy { it.year }
-            SortOrder.YEAR_DESC -> songs.sortedByDescending { it.year }
+            SortOrder.YEAR_ASC -> songs.sortedWith(compareBy<AudioFile> { if (it.year <= 0) Int.MAX_VALUE else it.year }.thenBy { CjkSortUtils.sortKey(it.displayName) })
+            SortOrder.YEAR_DESC -> songs.sortedWith(compareByDescending<AudioFile> { it.year }.thenBy { CjkSortUtils.sortKey(it.displayName) })
+            SortOrder.PLAYBACK_INFO -> {
+                val playCounts = playCountMap()
+                if (playCounts.isEmpty()) songs.sortedByDescending { it.dateAdded }
+                else songs.sortedByDescending { playCounts[it.id] ?: 0 }
+            }
+            SortOrder.PLAYBACK_INFO_DESC -> {
+                val playCounts = playCountMap()
+                if (playCounts.isEmpty()) songs.sortedBy { it.dateAdded }
+                else songs.sortedBy { playCounts[it.id] ?: 0 }
+            }
         }
     }
 }

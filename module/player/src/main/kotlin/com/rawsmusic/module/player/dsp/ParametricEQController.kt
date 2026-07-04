@@ -1,5 +1,7 @@
 package com.rawsmusic.module.player.dsp
 
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -8,6 +10,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.log10
 import kotlin.math.pow
@@ -24,8 +27,12 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         private const val TAG = "PEQController"
         private const val CURVE_POINTS = 200 // 频率响应曲线采样点数
         private const val DEFAULT_SAMPLE_RATE = 48000
+        private const val PERSIST_DEBOUNCE_MS = 350L
         private val gson = Gson()
     }
+
+    private val persistHandler = Handler(Looper.getMainLooper())
+    private val persistRunnable = Runnable { persistState() }
 
     // 采样率（用于 Kotlin 端曲线计算）
     private var sampleRate: Int = if (nativeEngine.isInitialized()) nativeEngine.sampleRate else DEFAULT_SAMPLE_RATE
@@ -33,6 +40,10 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
     // 滤波器列表
     private val _filters = MutableStateFlow<List<PEQFilter>>(emptyList())
     val filters: StateFlow<List<PEQFilter>> = _filters.asStateFlow()
+
+    // 当前 PEQ 段数：10-40
+    private val _bandCount = MutableStateFlow(PEQFilter.MIN_FILTERS)
+    val bandCount: StateFlow<Int> = _bandCount.asStateFlow()
 
     // 启用状态
     private val _isEnabled = MutableStateFlow(false)
@@ -53,34 +64,34 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         // 初始化频率点 (对数分布: 20Hz - 20kHz)
         for (i in 0 until CURVE_POINTS) {
             val t = i.toFloat() / (CURVE_POINTS - 1)
-            frequencyPoints[i] = 20f * Math.pow((20000.0 / 20.0).toDouble(), t.toDouble()).toFloat()
+            frequencyPoints[i] = 20f * Math.pow((20000.0 / 20.0), t.toDouble()).toFloat()
         }
 
-        // 从持久化存储恢复状态
+        // 从持久化存储恢复状态；如果构造时已经拿到真实 native 引擎，立即同步一次
         loadPersistedState()
+        if (nativeEngine.isInitialized()) {
+            sampleRate = nativeEngine.sampleRate
+            syncAllToNative()
+            nativeEngine.setPEQEnabled(_isEnabled.value)
+            updateFrequencyResponse()
+            Log.d(TAG, "Initial sync to DSP engine, sampleRate=$sampleRate, bandCount=${_bandCount.value}, enabled=${_isEnabled.value}, preamp=${_preamp.value}dB")
+        }
     }
 
     /**
      * 重新连接到新的 DSP 引擎实例
-     * 当播放器重新初始化 DSP 引擎后调用
-     * 注意：initDspEngine() 会对同一个 Kotlin 对象 release+init，
-     *       导致底层 native handle 变化但 Kotlin 引用不变，
-     *       因此不能用 === 判断是否需要重新同步，必须始终同步。
      */
     fun connectEngine(engine: NativeDSPEngine) {
         this.nativeEngine = engine
         if (engine.isInitialized()) {
             this.sampleRate = engine.sampleRate
         }
-        // 将当前所有滤波器同步到新引擎（native handle 可能已变化）
         syncAllToNative()
-        // 同步启用状态
         if (engine.isInitialized()) {
             engine.setPEQEnabled(_isEnabled.value)
         }
-        // 重新计算频率响应
         updateFrequencyResponse()
-        Log.d(TAG, "Reconnected to DSP engine, sampleRate=$sampleRate, enabled=${_isEnabled.value}, preamp=${_preamp.value}dB")
+        Log.d(TAG, "Reconnected to DSP engine, sampleRate=$sampleRate, bandCount=${_bandCount.value}, enabled=${_isEnabled.value}, preamp=${_preamp.value}dB")
     }
 
     /**
@@ -91,7 +102,7 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         if (nativeEngine.isInitialized()) {
             nativeEngine.setPEQEnabled(enabled)
         }
-        persistState()
+        persistImmediately()
         Log.d(TAG, "PEQ ${if (enabled) "enabled" else "disabled"}")
     }
 
@@ -106,23 +117,63 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
             nativeEngine.setPreamp(clamped)
         }
         updateFrequencyResponse()
-        persistState()
+        persistDebounced()
         Log.d(TAG, "Preamp set to ${clamped}dB")
     }
 
     /**
+     * 切换 PEQ 段数（10-40）
+     * 智能重采样当前滤波器到新段数
+     */
+    fun setBandCount(newCount: Int) {
+        val target = newCount.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
+        if (target == _bandCount.value) return
+
+        val converted = convertParametricFilters(
+            source = _filters.value,
+            targetCount = target,
+            preferOriginalOrder = false
+        )
+
+        _bandCount.value = target
+        _filters.value = converted
+
+        syncAllToNative()
+        updateFrequencyResponse()
+        persistImmediately()
+
+        Log.d(TAG, "PEQ band count changed to $target")
+    }
+
+    /**
      * 更新指定索引的滤波器
+     * 自动启用：调 gain 或特殊滤波器类型时自动 enabled = true
      */
     fun updateFilter(index: Int, filter: PEQFilter) {
         if (index < 0 || index >= _filters.value.size) return
 
+        val safeFilter = filter.sanitized()
+        val autoEnabled = if (
+            safeFilter.type == FilterType.LOW_PASS ||
+            safeFilter.type == FilterType.HIGH_PASS ||
+            safeFilter.type == FilterType.BAND_PASS ||
+            safeFilter.type == FilterType.NOTCH ||
+            abs(safeFilter.gainDB) > 0.0001f
+        ) {
+            safeFilter.copy(enabled = true)
+        } else {
+            safeFilter
+        }
+
         val currentFilters = _filters.value.toMutableList()
-        currentFilters[index] = filter
+        currentFilters[index] = autoEnabled
         _filters.value = currentFilters
-        syncToNative(index, filter)
+
+        syncToNative(index, autoEnabled)
         updateFrequencyResponse()
-        persistState()
-        Log.d(TAG, "Updated filter[$index]: ${filter.displayType} @ ${filter.frequencyText}Hz")
+        persistDebounced()
+
+        Log.d(TAG, "Updated filter[$index]: ${autoEnabled.displayType} @ ${autoEnabled.frequencyText}Hz")
     }
 
     /**
@@ -138,18 +189,28 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         _filters.value = currentFilters
         syncToNative(index, updated)
         updateFrequencyResponse()
-        persistState()
+        persistImmediately()
     }
 
     /**
-     * 重置为默认 10 段倍频程配置
+     * 重置为默认配置（使用当前 bandCount）
      */
     fun resetToDefault() {
-        _filters.value = PEQFilter.createDefaultBands()
+        val count = _bandCount.value.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
+
+        _filters.value = PEQFilter.createDefaultBands(count)
+        _preamp.value = 0f
+
+        if (nativeEngine.isInitialized()) {
+            nativeEngine.clearPEQFilters()
+            nativeEngine.setPreamp(0f)
+        }
+
         syncAllToNative()
         updateFrequencyResponse()
-        persistState()
-        Log.d(TAG, "Reset to default 10-band octave config")
+        persistImmediately()
+
+        Log.d(TAG, "PEQ reset to default, bandCount=$count")
     }
 
     /**
@@ -160,33 +221,63 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         return Pair(frequencyPoints, _frequencyResponse.value)
     }
 
+    // ==========================================
+    // Native 同步
+    // ==========================================
+
     /**
-     * 同步单个滤波器到native
+     * 同步单个滤波器到native（带参数安全化）
      */
     private fun syncToNative(index: Int, filter: PEQFilter) {
         if (!nativeEngine.isInitialized()) return
+        if (index < 0 || index >= PEQFilter.MAX_FILTERS) return
+
+        val safe = filter.sanitized()
+
         nativeEngine.setPEQFilter(
             index = index,
-            type = filter.type.value,
-            frequency = filter.frequency,
-            gainDB = filter.gainDB,
-            Q = filter.Q,
-            enabled = filter.enabled
+            type = safe.type.value,
+            frequency = safe.frequency,
+            gainDB = safe.gainDB,
+            Q = safe.Q,
+            enabled = safe.enabled
         )
     }
 
     /**
      * 同步所有滤波器到native
+     * 先清空 40 个 slot，写入当前 bandCount 个 filter，剩余写 disabled
      */
     private fun syncAllToNative() {
         if (!nativeEngine.isInitialized()) return
+
         nativeEngine.clearPEQFilters()
-        _filters.value.forEachIndexed { index, filter ->
-            syncToNative(index, filter)
+        nativeEngine.setPreamp(_preamp.value.coerceIn(-12f, 12f))
+
+        val target = _bandCount.value.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
+        val current = normalizeToBandCount(_filters.value, target)
+
+        for (i in 0 until PEQFilter.MAX_FILTERS) {
+            val filter = current.getOrNull(i)
+
+            if (filter != null && i < target) {
+                syncToNative(i, filter)
+            } else {
+                nativeEngine.setPEQFilter(
+                    index = i,
+                    type = FilterType.PEAK.value,
+                    frequency = 1000f,
+                    gainDB = 0f,
+                    Q = 1.414f,
+                    enabled = false
+                )
+            }
         }
-        // 同步前置放大器
-        nativeEngine.setPreamp(_preamp.value)
     }
+
+    // ==========================================
+    // 频率响应计算
+    // ==========================================
 
     /**
      * 更新频率响应曲线（使用 Kotlin 端 RBJ biquad 计算，不依赖 native 引擎）
@@ -196,34 +287,34 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         _frequencyResponse.value = magnitudes
     }
 
-    // ==========================================
-    // Kotlin 端 BiQuad 频率响应计算（RBJ Cookbook）
-    // ==========================================
-
     /**
      * 纯 Kotlin 计算所有滤波器的总频率响应
-     * 用于曲线可视化，不依赖 native 引擎
      */
     private fun calcFrequencyResponseKotlin(): FloatArray {
         val magnitudes = FloatArray(CURVE_POINTS)
         val sr = sampleRate.toFloat()
-        val preampGain = _preamp.value
+        val preampGain = _preamp.value.coerceIn(-12f, 12f)
+        val activeFilters = _filters.value.take(
+            _bandCount.value.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
+        )
 
         for (i in 0 until CURVE_POINTS) {
-            var totalMag = preampGain // 添加前置放大器增益
-            for (filter in _filters.value) {
+            var totalMag = preampGain
+
+            for (filter in activeFilters) {
                 if (filter.enabled) {
-                    totalMag += calcFilterMagnitude(filter, frequencyPoints[i], sr)
+                    totalMag += calcFilterMagnitude(filter.sanitized(), frequencyPoints[i], sr)
                 }
             }
+
             magnitudes[i] = totalMag
         }
+
         return magnitudes
     }
 
     /**
      * 计算单个滤波器在指定频率的增益 (dB)
-     * 使用复数向量模长法: |H(e^jw)| = |num| / |den|
      */
     private fun calcFilterMagnitude(filter: PEQFilter, freq: Float, sampleRate: Float): Float {
         val coeffs = calcCoeffs(filter, sampleRate)
@@ -234,11 +325,9 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         val cos2W = cos(2.0 * w)
         val sin2W = sin(2.0 * w)
 
-        // 分子: b0 + b1*e^-jw + b2*e^-2jw
         val numRe = coeffs[0] + coeffs[1] * cosW + coeffs[2] * cos2W
         val numIm = -(coeffs[1] * sinW + coeffs[2] * sin2W)
 
-        // 分母: 1 + a1*e^-jw + a2*e^-2jw
         val denRe = 1.0 + coeffs[3] * cosW + coeffs[4] * cos2W
         val denIm = -(coeffs[3] * sinW + coeffs[4] * sin2W)
 
@@ -251,7 +340,6 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
 
     /**
      * 计算 RBJ 标准 BiQuad 滤波器系数
-     * @return [b0, b1, b2, a1, a2] (a0 已归一化为 1)
      */
     private fun calcCoeffs(filter: PEQFilter, sampleRate: Float): DoubleArray {
         val A = 10.0.pow(filter.gainDB / 40.0)
@@ -310,7 +398,6 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
                 doubleArrayOf(b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)
             }
             FilterType.BAND_PASS -> {
-                // 与 C++ 端 setBP 对齐：分子系数乘以增益 A = 10^(gainDB/40)
                 val A_bp = 10.0.pow(filter.gainDB / 40.0)
                 val b0 = alpha * A_bp
                 val b1 = 0.0
@@ -321,7 +408,6 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
                 doubleArrayOf(b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)
             }
             FilterType.NOTCH -> {
-                // 与 C++ 端 setNotch 对齐：分子系数乘以增益 A = 10^(gainDB/40)
                 val A_notch = 10.0.pow(filter.gainDB / 40.0)
                 val b0 = A_notch
                 val b1 = -2.0 * cosW0 * A_notch
@@ -334,56 +420,146 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         }
     }
 
+    // ==========================================
+    // 智能重采样 / 转换工具
+    // ==========================================
+
+    /**
+     * 将滤波器列表归一化到目标段数
+     * 不足时用默认 disabled 段填充
+     */
+    private fun normalizeToBandCount(
+        filters: List<PEQFilter>,
+        targetCount: Int
+    ): List<PEQFilter> {
+        val target = targetCount.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
+
+        val sanitized = filters
+            .map { it.sanitized() }
+            .take(target)
+
+        if (sanitized.size == target) return sanitized
+
+        val defaults = PEQFilter.createDefaultBands(target).toMutableList()
+
+        sanitized.forEachIndexed { index, filter ->
+            defaults[index] = filter
+        }
+
+        return defaults.sortedBy { it.frequency }
+    }
+
+    /**
+     * 智能转换滤波器列表到目标段数
+     * 源 < 目标：保留所有源滤波器，用默认 disabled 填充
+     * 源 > 目标：按重要度排序，保留最重要的 N 个
+     */
+    private fun convertParametricFilters(
+        source: List<PEQFilter>,
+        targetCount: Int,
+        preferOriginalOrder: Boolean
+    ): List<PEQFilter> {
+        val target = targetCount.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
+
+        val cleaned = source
+            .map { it.sanitized() }
+            .filter { it.frequency in 20f..20000f }
+
+        val selected = if (cleaned.size <= target) {
+            cleaned
+        } else {
+            if (preferOriginalOrder) {
+                cleaned.take(target)
+            } else {
+                cleaned
+                    .sortedByDescending { filterImportance(it) }
+                    .take(target)
+                    .sortedBy { it.frequency }
+            }
+        }
+
+        if (selected.size == target) return selected
+
+        // 不足时用默认 disabled 段填充
+        val result = PEQFilter.createDefaultBands(target).toMutableList()
+
+        selected.forEachIndexed { index, filter ->
+            result[index] = filter
+        }
+
+        return result.sortedBy { it.frequency }
+    }
+
+    /**
+     * 滤波器重要度评分
+     * 用于从多段预设中选出最重要的 N 个
+     */
+    private fun filterImportance(filter: PEQFilter): Float {
+        if (!filter.enabled) return 0f
+
+        val gainScore = abs(filter.gainDB)
+        val qScore = log10(filter.Q.coerceAtLeast(0.1f)) * 1.5f
+
+        val typeBonus = when (filter.type) {
+            FilterType.NOTCH -> 4f
+            FilterType.LOW_SHELF,
+            FilterType.HIGH_SHELF -> 2f
+            else -> 0f
+        }
+
+        return gainScore + qScore + typeBonus
+    }
+
+    // ==========================================
+    // 持久化
+    // ==========================================
+
     /**
      * 从持久化存储加载PEQ状态
-     * 如果没有保存的状态，初始化为默认 10 段倍频程配置
      */
     private fun loadPersistedState() {
         try {
-            // 恢复滤波器列表
+            val savedBandCount = AppPreferences.PEQ.bandCount
+                .coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
+
+            _bandCount.value = savedBandCount
+
             val json = AppPreferences.PEQ.filtersJson
-            if (json.isNotBlank()) {
+
+            val loadedFilters = if (json.isNotBlank()) {
                 val type = object : TypeToken<List<PEQFilter>>() {}.type
-                val savedFilters: List<PEQFilter> = gson.fromJson(json, type)
-                if (savedFilters.isNotEmpty()) {
-                    _filters.value = savedFilters
-                    syncAllToNative()
-                    Log.d(TAG, "Restored ${savedFilters.size} filters from preferences")
-                } else {
-                    // 保存的数据为空，加载默认配置
-                    _filters.value = PEQFilter.createDefaultBands()
-                    syncAllToNative()
-                    Log.d(TAG, "Loaded default 10-band config (saved list was empty)")
-                }
+                gson.fromJson<List<PEQFilter>>(json, type).orEmpty()
             } else {
-                // 首次使用，加载默认 10 段配置
-                _filters.value = PEQFilter.createDefaultBands()
-                syncAllToNative()
-                Log.d(TAG, "First run: loaded default 10-band octave config")
+                emptyList()
             }
 
-            // 恢复启用状态（必须在滤波器之后设置）
-            val savedEnabled = AppPreferences.PEQ.isEnabled
-            _isEnabled.value = savedEnabled
-            if (nativeEngine.isInitialized()) {
-                nativeEngine.setPEQEnabled(savedEnabled)
+            _filters.value = if (loadedFilters.isNotEmpty()) {
+                normalizeToBandCount(loadedFilters, savedBandCount)
+            } else {
+                PEQFilter.createDefaultBands(savedBandCount)
             }
-            Log.d(TAG, "Restored PEQ enabled=$savedEnabled from preferences")
 
-            // 恢复前置放大器增益
-            val savedPreamp = AppPreferences.PEQ.preamp
-            _preamp.value = savedPreamp.coerceIn(-12f, 12f)
+            _isEnabled.value = AppPreferences.PEQ.isEnabled
+            _preamp.value = AppPreferences.PEQ.preamp.coerceIn(-12f, 12f)
+
+            syncAllToNative()
+
             if (nativeEngine.isInitialized()) {
+                nativeEngine.setPEQEnabled(_isEnabled.value)
                 nativeEngine.setPreamp(_preamp.value)
             }
-            Log.d(TAG, "Restored PEQ preamp=${_preamp.value}dB from preferences")
 
-            // 计算频率响应（使用 Kotlin 计算，始终可用）
             updateFrequencyResponse()
+
+            Log.d(TAG, "Loaded PEQ state: bandCount=$savedBandCount, filters=${_filters.value.size}, enabled=${_isEnabled.value}, preamp=${_preamp.value}dB")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load PEQ state, using defaults", e)
-            // 异常时也加载默认配置
-            _filters.value = PEQFilter.createDefaultBands()
+
+            _bandCount.value = PEQFilter.MIN_FILTERS
+            _filters.value = PEQFilter.createDefaultBands(PEQFilter.MIN_FILTERS)
+            _isEnabled.value = false
+            _preamp.value = 0f
+
             syncAllToNative()
             updateFrequencyResponse()
         }
@@ -396,16 +572,26 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         try {
             AppPreferences.PEQ.isEnabled = _isEnabled.value
             AppPreferences.PEQ.preamp = _preamp.value
-            val json = gson.toJson(_filters.value)
-            AppPreferences.PEQ.filtersJson = json
+            AppPreferences.PEQ.bandCount = _bandCount.value
+            AppPreferences.PEQ.filtersJson = gson.toJson(_filters.value)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to persist PEQ state", e)
         }
     }
 
+    private fun persistDebounced() {
+        persistHandler.removeCallbacks(persistRunnable)
+        persistHandler.postDelayed(persistRunnable, PERSIST_DEBOUNCE_MS)
+    }
+
+    private fun persistImmediately() {
+        persistHandler.removeCallbacks(persistRunnable)
+        persistState()
+    }
+
     /**
      * 从 AutoEq 预设导入滤波器配置
-     * @param preset AutoEq 预设
+     * 智能转换到当前 bandCount
      */
     fun importFromAutoEq(preset: AutoEqPreset) {
         val peqFilters = preset.toPEQFilters()
@@ -414,45 +600,54 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
             return
         }
 
-        val maxFilters = PEQFilter.MAX_FILTERS
-        val filtersToImport = if (peqFilters.size > maxFilters) {
-            Log.w(TAG, "AutoEq preset has ${peqFilters.size} filters, truncating to $maxFilters")
-            peqFilters.take(maxFilters)
-        } else {
-            peqFilters
-        }
+        val target = _bandCount.value.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
 
-        _filters.value = filtersToImport
+        val converted = convertParametricFilters(
+            source = peqFilters,
+            targetCount = target,
+            preferOriginalOrder = true
+        )
+
+        _filters.value = converted
+        _preamp.value = preset.safePreamp
+
         syncAllToNative()
         updateFrequencyResponse()
-        AppPreferences.PEQ.presetName = preset.name
-        persistState()
 
-        Log.d(TAG, "Imported AutoEq preset: ${preset.name} (${filtersToImport.size} filters)")
+        AppPreferences.PEQ.presetName = preset.name
+        persistImmediately()
+
+        Log.d(TAG, "Imported AutoEq preset: ${preset.name}, source=${peqFilters.size}, target=$target")
     }
 
+    /**
+     * 导入滤波器列表
+     * 智能转换到当前 bandCount
+     */
     fun importFilters(filters: List<PEQFilter>, presetName: String? = null) {
         if (filters.isEmpty()) {
             Log.w(TAG, "importFilters: empty filter list")
             return
         }
 
-        val maxFilters = PEQFilter.MAX_FILTERS
-        val filtersToImport = if (filters.size > maxFilters) {
-            Log.w(TAG, "importFilters: ${filters.size} filters, truncating to $maxFilters")
-            filters.take(maxFilters)
-        } else {
-            filters
-        }
+        val target = _bandCount.value.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
 
-        _filters.value = filtersToImport
-        syncAllToNative()
-        updateFrequencyResponse()
-        if (presetName != null) {
+        val converted = convertParametricFilters(
+            source = filters,
+            targetCount = target,
+            preferOriginalOrder = false
+        )
+
+        _filters.value = converted
+
+        if (!presetName.isNullOrBlank()) {
             AppPreferences.PEQ.presetName = presetName
         }
-        persistState()
 
-        Log.d(TAG, "Imported ${filtersToImport.size} filters")
+        syncAllToNative()
+        updateFrequencyResponse()
+        persistImmediately()
+
+        Log.d(TAG, "Imported PEQ filters: source=${filters.size}, target=$target")
     }
 }

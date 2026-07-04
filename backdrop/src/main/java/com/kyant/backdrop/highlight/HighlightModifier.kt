@@ -132,14 +132,22 @@ internal class HighlightNode(
     }
 
     override fun onAttach() {
-        val graphicsContext = requireGraphicsContext()
-        highlightLayer = graphicsContext.createGraphicsLayer()
+        try {
+            val graphicsContext = requireGraphicsContext()
+            highlightLayer = graphicsContext.createGraphicsLayer()
+        } catch (_: Exception) {
+            highlightLayer = null
+        }
     }
 
     override fun onDetach() {
-        val graphicsContext = requireGraphicsContext()
-        highlightLayer?.let { layer ->
-            graphicsContext.releaseGraphicsLayer(layer)
+        try {
+            val graphicsContext = requireGraphicsContext()
+            highlightLayer?.let { layer ->
+                graphicsContext.releaseGraphicsLayer(layer)
+                highlightLayer = null
+            }
+        } catch (_: Exception) {
             highlightLayer = null
         }
         clipPath = null

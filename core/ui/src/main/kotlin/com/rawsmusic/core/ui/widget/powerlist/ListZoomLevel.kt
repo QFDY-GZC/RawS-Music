@@ -1,14 +1,12 @@
 package com.rawsmusic.core.ui.widget.powerlist
 
 /**
- * Poweramp-aligned list zoom system for single-column mode.
+ * List zoom system for single-column mode.
  *
- * Three zoom levels matching Poweramp's scene_small / scene_1 / scene_1_zoomed:
+ * Three zoom levels:
  *   SMALL  (zoom 0): 32dp cover, compact row, line2/meta invisible
  *   NORMAL (zoom 3): 80dp cover, standard row, all text visible
  *   ZOOMED (zoom 4): 120dp cover, large row, all text visible
- *
- * All dimension values are 1:1 with Poweramp's styles.xml / dimens.xml.
  */
 
 // ==================== Zoom Level Data ====================
@@ -42,11 +40,11 @@ data class ListZoomParams(
     val titleTopOffsetDp: Float,
     /** Meta inline interpolation: 0.0 = stacked below line2 (NORMAL/ZOOMED), 1.0 = inline right of line2 (SMALL) */
     val metaInlineFraction: Float = if (metaVisible) 0f else 1f,
-    /** Text scale factor (Poweramp: scaleX/scaleY). Applied to base text sizes: title=22sp, line2=18.25sp, meta=13.5sp */
+    /** Text scale factor. Applied to base text sizes: title=22sp, line2=18.25sp, meta=13.5sp */
     val textScale: Float = 0.9f
 )
 
-/** Zoom level enum matching Poweramp's zoom integers */
+/** Zoom level enum */
 enum class ListZoomIndex(val zoomInt: Int) {
     SMALL(0),   // scene_small
     NORMAL(3),  // scene_1
@@ -62,7 +60,7 @@ enum class ListZoomIndex(val zoomInt: Int) {
     }
 }
 
-// ==================== Poweramp-aligned Constants ====================
+// ==================== Constants ====================
 
 object ListZoomLevels {
     val params: Map<ListZoomIndex, ListZoomParams> = mapOf(
@@ -84,7 +82,7 @@ object ListZoomLevels {
             textScale = 0.85f
         ),
         ListZoomIndex.NORMAL to ListZoomParams(
-            coverSizeDp = 80f,  // Frida confirmed: 240x240 / 3 density = 80dp
+            coverSizeDp = 80f,  // 240x240 / 3 density = 80dp
             rowHeightValue = 96f,  // cover(80dp) + topMargin(8dp) + bottomMargin(8dp) = 96dp
             rowHeightIsSp = false,
             coverMarginLeftDp = 12f,
@@ -129,9 +127,6 @@ object ListZoomLevels {
     }
 }
 
-val ZOOM_PARAMS: Map<ListZoomIndex, ListZoomParams> = ListZoomLevels.params
-val ZOOM_ORDER: List<ListZoomIndex> = ListZoomLevels.order
-
 // ==================== Interpolation ====================
 
 /**
@@ -159,55 +154,6 @@ fun lerpZoomParams(from: ListZoomParams, to: ListZoomParams, fraction: Float): L
         metaInlineFraction = lerp(from.metaInlineFraction, to.metaInlineFraction, f),
         textScale = lerp(from.textScale, to.textScale, f)
     )
-}
-
-/**
- * Gets interpolated params for a continuous zoom position.
- * @param position Continuous position: 0.0 = SMALL, 1.0 = NORMAL, 2.0 = ZOOMED
- */
-fun getZoomParamsAtPosition(position: Float): ListZoomParams {
-    val clamped = position.coerceIn(0f, 2f)
-    val index = clamped.toInt().coerceIn(0, 1)
-    val fraction = (clamped - index).coerceIn(0f, 1f)
-    val from = ZOOM_PARAMS[ZOOM_ORDER[index]]!!
-    val to = ZOOM_PARAMS[ZOOM_ORDER[index + 1]]!!
-    return lerpZoomParams(from, to, fraction)
-}
-
-/**
- * Converts a zoom index to continuous position.
- */
-fun zoomIndexToPosition(index: ListZoomIndex): Float = when (index) {
-    ListZoomIndex.SMALL -> 0f
-    ListZoomIndex.NORMAL -> 1f
-    ListZoomIndex.ZOOMED -> 2f
-}
-
-/**
- * Snaps a continuous position to the nearest zoom level.
- * Uses Poweramp's 0.3 threshold for velocity-based decisions.
- */
-fun snapZoomPosition(position: Float, velocityDp: Float): ListZoomIndex {
-    // Velocity-based decision (Poweramp: threshold 500dp/s)
-    if (kotlin.math.abs(velocityDp) >= 500f) {
-        return if (velocityDp > 0f) {
-            // Zooming in: go to next level
-            val next = position.toInt() + 1
-            ZOOM_ORDER[next.coerceIn(0, ZOOM_ORDER.size - 1)]
-        } else {
-            // Zooming out: go to previous level
-            val prev = position.toInt()
-            ZOOM_ORDER[prev.coerceIn(0, ZOOM_ORDER.size - 1)]
-        }
-    }
-
-    // Position-based decision (Poweramp: threshold 0.3)
-    val rounded = when {
-        position % 1f > 0.7f -> (position.toInt() + 1).coerceAtMost(2)
-        position % 1f < 0.3f -> position.toInt().coerceAtLeast(0)
-        else -> if (position % 1f > 0.5f) position.toInt() + 1 else position.toInt()
-    }
-    return ZOOM_ORDER[rounded.coerceIn(0, ZOOM_ORDER.size - 1)]
 }
 
 private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t

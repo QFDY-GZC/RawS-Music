@@ -1,0 +1,11 @@
+RawSMusic
+Copyright 2024-2026 RawSMusic Contributors
+
+This repository is distributed under the Apache License, Version 2.0.
+
+Open-source scope note:
+- The current RawS-Music repository is the Apache-2.0 main repository.
+- The complete USB exclusive playback core is intentionally not included here at this stage.
+- That USB exclusive core is planned to be extracted into a separate repository and released under GPLv3.
+
+Third-party libraries and referenced components remain under their own original licenses.

@@ -2,6 +2,7 @@ package com.rawsmusic.module.scanner
 
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AudioUtils
+import com.rawsmusic.module.scanner.parser.CueParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -79,8 +80,11 @@ object MetadataParser {
         emit(ScanProgress.Started(total))
 
         allFiles.forEachIndexed { index, file ->
-            parseFromFile(file.absolutePath)?.let {
-                audioFiles.add(it)
+            val options = MediaStoreScanner.ScanOptions.fromPreferences()
+            val parsed = parseFromFile(file.absolutePath)
+            if (parsed != null && MediaStoreScanner.shouldInclude(parsed, options)) {
+                val expanded = MediaStoreScanner.expandCueTracks(parsed)
+                audioFiles.addAll(expanded.filter { MediaStoreScanner.shouldInclude(it, options) })
             }
             if (index % 10 == 0) {
                 emit(ScanProgress.Progress(index + 1, total))

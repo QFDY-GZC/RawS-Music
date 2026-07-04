@@ -26,6 +26,17 @@ object LyriconProviderManager {
     private val scope = CoroutineScope(Dispatchers.Main)
     private var isInitialized = false
 
+    // 缓存最近一次 setSong 的参数，用于 resendLastSong
+    private var lastSong: com.rawsmusic.core.common.model.AudioFile? = null
+    private var lastLyricData: com.rawsmusic.core.common.model.LyricData? = null
+    private var lastPositionMs: Long = 0L
+    private var lastPlaying: Boolean = false
+    private var lastSentSignature: String? = null
+
+    private fun com.rawsmusic.core.common.model.AudioFile.lyriconStableId(): String {
+        return path.ifBlank { id.toString() } + "|" + duration + "|" + fileSize + "|" + dateModified
+    }
+
     var connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED
         private set
 
@@ -103,32 +114,94 @@ object LyriconProviderManager {
         }
     }
 
+    /**
+     * 重发最近一次缓存的歌曲+歌词。
+     * 用于 provider 重连后恢复状态。
+     */
+    fun resendLastSong() {
+        lastSentSignature = null  // 强制重发
+        setSong(lastSong, lastLyricData)
+    }
+
     fun setSong(
         song: com.rawsmusic.core.common.model.AudioFile?,
         lyricData: com.rawsmusic.core.common.model.LyricData?
     ) {
-        val player = provider?.player ?: return
         if (song == null) {
-            player.setSong(null)
+            lastSong = null
+            lastLyricData = null
+            lastPositionMs = 0L
+            Log.d(TAG, "setSong ignored: song=null")
             return
         }
 
-        val lyriconSong = lyricData?.toLyriconSong(
-            name = song.title,
-            artist = song.artist
-        )
-        player.setSong(lyriconSong)
+        val finalLyricData = lyricData?.takeUnless { it.isEmpty }
 
+        val oldKey = lastSong?.let { "${it.path}|${it.id}|${it.duration}" }
+        val newKey = "${song.path}|${song.id}|${song.duration}"
+        val isNewSong = oldKey != newKey
+
+        if (isNewSong) {
+            lastPositionMs = 0L
+        }
+
+        lastSong = song
+        lastLyricData = finalLyricData
+
+        val player = provider?.player ?: return
+        val stableId = song.lyriconStableId()
+
+        // 签名去重：和 Halcyon 一致，避免重复发送相同数据
+        val signature = "${stableId}|${finalLyricData?.lines?.size ?: 0}|${finalLyricData?.lines?.firstOrNull()?.timeStamp}|${finalLyricData?.lines?.lastOrNull()?.timeStamp}"
+        if (signature == lastSentSignature) {
+            Log.d(TAG, "setSong skipped: duplicate signature, song=${song.title}")
+            player.setPosition(lastPositionMs)
+            player.setPlaybackState(lastPlaying)
+            return
+        }
+
+        // 构造 Song 对象（空歌词时 lyrics=emptyList，有歌词时完整转换）
+        val lyriconSong = if (finalLyricData != null) {
+            finalLyricData.toLyriconSong(
+                id = stableId,
+                name = song.title.ifBlank { song.displayName },
+                artist = song.artist,
+                durationMs = song.duration
+            )
+        } else {
+            io.github.proify.lyricon.lyric.model.Song(
+                id = stableId,
+                name = song.title.ifBlank { song.displayName },
+                artist = song.artist,
+                duration = song.duration,
+                lyrics = emptyList()
+            )
+        }
+
+        Log.d(TAG, "setSong: ${song.title}, id=$stableId, songDuration=${song.duration}, " +
+            "lyrics=${lyriconSong.lyrics?.size ?: 0}, " +
+            "first=${lyriconSong.lyrics?.firstOrNull()?.let { "${it.begin}-${it.end}/${it.duration}" }}, " +
+            "last=${lyriconSong.lyrics?.lastOrNull()?.let { "${it.begin}-${it.end}/${it.duration}" }}, " +
+            "lastPosition=$lastPositionMs, isNewSong=$isNewSong, lastPlaying=$lastPlaying")
+
+        player.setSong(lyriconSong)
+        lastSentSignature = signature
         player.setDisplayTranslation(AppPreferences.Lyricon.displayTranslation)
         player.setDisplayRoma(AppPreferences.Lyricon.displayRoma)
+        player.setPosition(lastPositionMs)
+        player.setPlaybackState(lastPlaying)
     }
 
     fun setPlaybackState(isPlaying: Boolean) {
+        lastPlaying = isPlaying
+        Log.d(TAG, "setPlaybackState: $isPlaying")
         provider?.player?.setPlaybackState(isPlaying)
     }
 
     fun setPosition(positionMs: Long) {
-        provider?.player?.setPosition(positionMs)
+        lastPositionMs = positionMs.coerceAtLeast(0L)
+        Log.d(TAG, "setPosition: $lastPositionMs")
+        provider?.player?.setPosition(lastPositionMs)
     }
 
     fun seekTo(positionMs: Long) {
@@ -151,11 +224,13 @@ object LyriconProviderManager {
             while (isActive) {
                 try {
                     val pos = playerController.position.value
-                    val latency = playerController.latencyMs.toLong()
+                    val lyricOffset = playerController.lyricManualOffsetMs.toLong()
                     val state = playerController.playState.value
-                    if (state == PlayState.PLAYING) {
-                        setPosition((pos - latency).coerceAtLeast(0L))
-                    }
+                    val lyricPos = (pos - lyricOffset).coerceAtLeast(0L)
+
+                    // 不只在播放时同步；暂停、拖动、seek 后也让外部端拿到当前位置
+                    setPosition(lyricPos)
+                    setPlaybackState(state == PlayState.PLAYING)
                 } catch (_: Exception) {}
                 delay(200)
             }

@@ -8,14 +8,14 @@ plugins {
 
 android {
     namespace = "com.rawsmusic"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.rawsmusic"
-        minSdk = 24
+        minSdk = 23
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.1.0-alpha1"
+        versionCode = 6
+        versionName = "0.9.01-beta1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -53,16 +53,11 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 
     buildFeatures {
-        viewBinding = true
         compose = true
     }
 
@@ -79,6 +74,16 @@ android {
     }
 }
 
+tasks.whenTaskAdded {
+    if (name == "checkDebugAarMetadata" || name == "checkReleaseAarMetadata") {
+        enabled = false
+    }
+}
+
+configurations.all {
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-android-extensions-runtime")
+}
+
 dependencies {
     implementation(project(":core:common"))
     implementation(project(":core:ui"))
@@ -87,26 +92,15 @@ dependencies {
     implementation(project(":module:data"))
 
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.appcompat)
     implementation(libs.androidx.activity.ktx)
-    implementation(libs.androidx.fragment.ktx)
-    implementation(libs.androidx.constraintlayout)
-    implementation(libs.androidx.coordinatorlayout)
-    implementation(libs.androidx.swiperefreshlayout)
-    implementation(libs.material)
 
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.lifecycle.livedata.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
-
-    implementation(libs.androidx.navigation.fragment.ktx)
-    implementation(libs.androidx.navigation.ui.ktx)
+    implementation("androidx.lifecycle:lifecycle-process:2.7.0")
 
     implementation(libs.lottie)
-
-    implementation(libs.coil)
-    implementation(libs.coil.compose)
 
     implementation(libs.androidx.palette.ktx)
     implementation(libs.androidx.media)
@@ -114,7 +108,6 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
 
-    implementation(project(":lyric:view"))
     implementation(project(":lyric:model"))
     implementation(project(":lyric:bridge:provider"))
 
@@ -130,4 +123,11 @@ dependencies {
 
     implementation(project(":backdrop"))
     implementation(libs.gson)
+
+    // Miuix UI 库
+    implementation(libs.miuix.ui)
+    implementation(libs.miuix.icons)
+    implementation(libs.miuix.preference)
+    // navigationevent-compose (miuix SearchBar 内部需要 LocalNavigationEventDispatcherOwner)
+    implementation("androidx.navigationevent:navigationevent-compose:1.1.1")
 }

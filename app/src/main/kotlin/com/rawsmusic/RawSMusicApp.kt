@@ -1,19 +1,30 @@
 package com.rawsmusic
 
+import android.app.Activity
 import android.app.Application
-import coil.ImageLoader
-import coil.ImageLoaderFactory
+import android.os.Bundle
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.rawsmusic.core.common.CoreInit
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.core.ui.theme.ThemeManager
 import com.rawsmusic.module.data.DataModule
 import com.rawsmusic.module.data.prefs.AppPreferences
-import com.rawsmusic.module.data.prefs.FontManager
-import com.rawsmusic.module.data.repository.MusicRepository
+import com.rawsmusic.module.scanner.LibraryScannerDependencies
+import com.rawsmusic.module.scanner.MusicRepositoryAudioLibraryRepository
+import com.rawsmusic.ui.songs.PlayerHolder
 
-class RawSMusicApp : Application(), ImageLoaderFactory {
+class RawSMusicApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+
+        // 进程启动追踪：检测是否被系统杀死后重建
+        val pid = android.os.Process.myPid()
+        val bootElapsed = android.os.SystemClock.elapsedRealtime()
+        AppLogger.w("ProcessBootTracker", "PROCESS_BOOT pid=$pid elapsed=${bootElapsed}ms")
+
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             AppLogger.e("Crash", "${thread.name}: ${throwable.message}", throwable)
@@ -21,19 +32,52 @@ class RawSMusicApp : Application(), ImageLoaderFactory {
         }
         CoreInit.init(this)
         DataModule.init(this)
+        LibraryScannerDependencies.install { MusicRepositoryAudioLibraryRepository() }
         AppLogger.init()
+        ThemeManager.applyStoredTheme()
 
-        // 版本更新检查：覆盖安装后清除旧歌曲数据，强制重新扫描以获取完整元数据
+        // 只启动后台封面线程，保持首屏封面请求可用；重型解码仍在 BitmapProvider worker 中执行。
+        com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider.init(this)
+
+        // 版本号只用于记录覆盖安装，不再按 appVersion 清空曲库。
+        // 数据结构变化交给 Room Migration，避免升级后丢失曲库、收藏和播放统计。
         val currentVersion = try {
             packageManager.getPackageInfo(packageName, 0).versionName ?: ""
         } catch (_: Exception) { "" }
         if (currentVersion.isNotBlank() && AppPreferences.UI.appVersion != currentVersion) {
             AppPreferences.UI.appVersion = currentVersion
-            MusicRepository.clearAll()
         }
 
-        // 启动时清理旧版遗留的缓存文件
-        cleanupLegacyCache()
+        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) {
+                PlayerHolder.controller?.onAppForegroundResumed()
+            }
+
+            override fun onStop(owner: LifecycleOwner) {
+                PlayerHolder.controller?.onAppWentBackground()
+            }
+        })
+
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityPaused(activity: Activity) {
+                PlayerHolder.controller?.onAppMaybeLeavingForeground()
+            }
+
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+            override fun onActivityStarted(activity: Activity) = Unit
+            override fun onActivityResumed(activity: Activity) = Unit
+            override fun onActivityStopped(activity: Activity) = Unit
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+            override fun onActivityDestroyed(activity: Activity) = Unit
+        })
+
+        scheduleDeferredProcessInit()
+    }
+
+    private fun scheduleDeferredProcessInit() {
+        Thread {
+            cleanupLegacyCache()
+        }.start()
     }
 
     /**
@@ -76,12 +120,4 @@ class RawSMusicApp : Application(), ImageLoaderFactory {
         }
     }
 
-    override fun newImageLoader(): ImageLoader {
-        return ImageLoader.Builder(this)
-            .components {
-                add(EmbeddedArtworkFetcher.Factory(this@RawSMusicApp))
-            }
-            .crossfade(true)
-            .build()
-    }
 }

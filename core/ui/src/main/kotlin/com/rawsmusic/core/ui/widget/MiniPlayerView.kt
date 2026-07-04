@@ -1,11 +1,9 @@
 package com.rawsmusic.core.ui.widget
 
 import android.graphics.Bitmap
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import android.graphics.Paint
+import android.graphics.PathMeasure
+import android.graphics.RectF
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -21,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -30,26 +29,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
-import com.kyant.backdrop.drawBackdrop
-import com.kyant.backdrop.effects.blur
-import com.kyant.backdrop.effects.lens
-import com.kyant.backdrop.effects.liquidGlass
-import com.kyant.backdrop.effects.vibrancy
-import com.kyant.backdrop.highlight.Highlight
-import com.kyant.backdrop.shadow.Shadow
+import com.rawsmusic.core.ui.R
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.rawsmusic.core.ui.theme.ThemeManager
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import kotlin.math.abs
 
 /**
@@ -61,6 +59,7 @@ import kotlin.math.abs
  * - 歌曲信息/歌词滚动
  * - 水平滑动手势切歌
  * - 点击打开播放器
+ * - 双击切换普通/黑胶模式
  */
 @Composable
 fun ComposeMiniPlayer(
@@ -75,86 +74,42 @@ fun ComposeMiniPlayer(
     onPlayPause: () -> Unit = {},
     onSkipPrevious: () -> Unit = {},
     onSkipNext: () -> Unit = {},
+    onCoverBoundsChanged: (RectF?) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    val isLight = !ThemeManager.isDarkMode(context)
-    val shape = RoundedCornerShape(24.dp)
+    val cs = MiuixTheme.colorScheme
+    val isLight = cs.background.luminance() > 0.5f
+    val shape = RoundedCornerShape(50)
 
-    val containerColor = if (isLight) {
-        Color.White.copy(alpha = 0.44f)
-    } else {
-        Color.White.copy(alpha = 0.12f)
-    }
+    val textColor = cs.onBackground
+    val secondaryColor = cs.onSurfaceVariantSummary
 
-    val textColor = if (isLight) Color(0xFF1C1B1F) else Color(0xFFE6E1DD)
-    val secondaryColor = if (isLight) Color(0xFF49454F) else Color(0xFF9F8D80)
+    val artworkModeState = rememberMiniPlayerArtworkMode()
+    val artworkMode = artworkModeState.value
 
-    // 封面旋转动画
-    val infiniteTransition = rememberInfiniteTransition(label = "cover_rotate")
-    val rotation by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(20000, easing = LinearEasing)
-        ),
-        label = "rotation"
-    )
-
-    // 液态玻璃背景修饰符
-    val glassModifier = if (backdrop != null) {
-        Modifier.drawBackdrop(
-            backdrop = backdrop,
-            shape = { shape },
-            effects = {
-                vibrancy()
-                blur(20f)
-                lens(
-                    refractionHeight = 8f,
-                    refractionAmount = 16f,
-                    depthEffect = true,
-                    chromaticAberration = true
-                )
-                liquidGlass(
-                    cornerRadius = 24f,
-                    refraction = 0.85f,
-                    curve = 0.7f,
-                    dispersion = 0.4f,
-                    saturation = 1.2f,
-                    contrast = 1.1f,
-                    edge = 0.3f,
-                    tintR = 1f,
-                    tintG = 1f,
-                    tintB = 1f,
-                    tintA = 0.05f
-                )
-            },
-            highlight = {
-                Highlight.Default.copy(
-                    alpha = if (isLight) 0.30f else 0.20f
-                )
-            },
-            shadow = {
-                Shadow.Default.copy(
-                    color = Color.Black.copy(
-                        alpha = if (isLight) 0.15f else 0.35f
-                    )
-                )
-            },
-            onDrawSurface = {
-                drawRect(containerColor)
-            }
-        )
-    } else {
-        Modifier.background(containerColor, shape)
-    }
-
-    Row(
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 4.dp)
+            .height(62.dp)
+            .shadow(
+                elevation = 18.dp,
+                shape = shape,
+                ambientColor = Color.Black.copy(alpha = if (isLight) 0.18f else 0.36f),
+                spotColor = Color.Black.copy(alpha = if (isLight) 0.20f else 0.50f)
+            )
             .clip(shape)
-            .then(glassModifier)
+            .then(
+                if (artworkMode == MiniPlayerArtworkMode.Vinyl) {
+                    Modifier.miniPlayerOuterRemainingProgress(
+                        progress = progress,
+                        radiusDp = 31f,
+                        color = cs.primary
+                    )
+                } else {
+                    Modifier
+                }
+            )
             .pointerInput(Unit) {
                 var dragAmount = 0f
                 detectHorizontalDragGestures(
@@ -178,107 +133,139 @@ fun ComposeMiniPlayer(
                 indication = null,
                 onClick = onClick
             )
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
     ) {
-        // 封面 + 进度环
-        Box(
-            modifier = Modifier.size(50.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            // 环形进度条
-            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                val strokeWidth = 2.dp.toPx()
-                val radius = (size.minDimension - strokeWidth) / 2
-                // 背景环
-                drawCircle(
-                    color = Color.White.copy(alpha = 0.15f),
-                    radius = radius,
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(strokeWidth)
-                )
-                // 进度弧
-                drawArc(
-                    color = if (isLight) Color(0xFFC4956A) else Color(0xFFD4B896),
-                    startAngle = -90f,
-                    sweepAngle = progress * 360f,
-                    useCenter = false,
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(strokeWidth)
-                )
-            }
-
-            // 封面图片
-            if (coverPath != null && coverPath.isNotBlank()) {
-                BitmapImage(
-                    key = coverPath,
-                    contentDescription = title,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .then(
-                            if (isPlaying) Modifier.rotate(rotation)
-                            else Modifier
-                        ),
-                    contentScale = ContentScale.Crop,
-                    targetWidth = 256,
-                    targetHeight = 256
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.1f))
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.width(8.dp))
-
-        // 歌曲信息
-        Box(
+        LiquidGlassMiniPlayerBg(
+            backdrop = backdrop,
+            isLight = isLight
+        )
+        Row(
             modifier = Modifier
-                .weight(1f)
-                .height(44.dp),
-            contentAlignment = Alignment.CenterStart
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            androidx.compose.foundation.layout.Column {
-                Text(
-                    text = title.ifBlank { "暂无音乐播放" },
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = textColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (artist.isNotBlank()) {
+            MiniPlayerArtwork(
+                mode = artworkMode,
+                coverPath = coverPath,
+                coverBitmap = coverBitmap,
+                isPlaying = isPlaying,
+                progress = progress,
+                contentDescription = title,
+                onCoverBoundsChanged = onCoverBoundsChanged,
+                onDoubleTapToggleMode = {
+                    artworkModeState.value = artworkModeState.value.toggle()
+                },
+                onSingleTap = onClick
+            )
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // 歌曲信息
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(44.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                androidx.compose.foundation.layout.Column {
                     Text(
-                        text = artist,
-                        fontSize = 11.sp,
+                        text = title.ifBlank { "暂无音乐播放" },
+                        fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
-                        color = secondaryColor,
+                        color = textColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    if (artist.isNotBlank()) {
+                        Text(
+                            text = artist,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = secondaryColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
+
+            // 播放/暂停按钮
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onPlayPause
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(
+                        id = if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play
+                    ),
+                    contentDescription = if (isPlaying) "暂停" else "播放",
+                    tint = textColor,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 黑胶模式下播放栏外围剩余进度线。
+ * progress = 0 时蓝线完整，progress = 1 时蓝线消失。
+ */
+private fun Modifier.miniPlayerOuterRemainingProgress(
+    progress: Float,
+    radiusDp: Float,
+    color: Color
+): Modifier {
+    return drawWithContent {
+        drawContent()
+
+        val strokeWidth = 2.dp.toPx()
+        val inset = strokeWidth / 2f
+        val radius = radiusDp.dp.toPx()
+
+        val rect = android.graphics.RectF(
+            inset,
+            inset,
+            size.width - inset,
+            size.height - inset
+        )
+
+        val path = android.graphics.Path().apply {
+            addRoundRect(
+                rect,
+                radius,
+                radius,
+                android.graphics.Path.Direction.CW
+            )
         }
 
-        // 播放/暂停按钮
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onPlayPause
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = if (isPlaying) "⏸" else "▶",
-                fontSize = 20.sp,
-                color = textColor
-            )
+        val remaining = 1f - progress.coerceIn(0f, 1f)
+        if (remaining <= 0.001f) return@drawWithContent
+
+        val measure = PathMeasure(path, false)
+        val length = measure.length
+        val segment = android.graphics.Path()
+
+        val start = 0f
+        val end = length * remaining
+        measure.getSegment(start, end, segment, true)
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            this.strokeWidth = 2.dp.toPx()
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+            this.color = color.toArgb()
+        }
+
+        drawIntoCanvas { canvas ->
+            canvas.nativeCanvas.drawPath(segment, paint)
         }
     }
 }

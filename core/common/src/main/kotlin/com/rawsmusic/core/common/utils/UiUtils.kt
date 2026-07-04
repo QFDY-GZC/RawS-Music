@@ -2,8 +2,6 @@ package com.rawsmusic.core.common.utils
 
 import android.content.Context
 import android.util.TypedValue
-import android.view.View
-import android.view.WindowInsetsController
 import androidx.annotation.AttrRes
 import androidx.annotation.ColorInt
 import androidx.core.content.ContextCompat
@@ -27,40 +25,6 @@ object UiUtils {
         return TypedValue.applyDimension(
             TypedValue.COMPLEX_UNIT_SP, sp, context.resources.displayMetrics
         )
-    }
-
-    fun setLightStatusBar(view: View, isLight: Boolean) {
-        val controller = view.windowInsetsController
-        controller?.let {
-            if (isLight) {
-                it.setSystemBarsAppearance(
-                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
-                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                )
-            } else {
-                it.setSystemBarsAppearance(
-                    0,
-                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                )
-            }
-        }
-    }
-
-    fun setLightNavigationBar(view: View, isLight: Boolean) {
-        val controller = view.windowInsetsController
-        controller?.let {
-            if (isLight) {
-                it.setSystemBarsAppearance(
-                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
-                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-                )
-            } else {
-                it.setSystemBarsAppearance(
-                    0,
-                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-                )
-            }
-        }
     }
 
     /**

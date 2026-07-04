@@ -3,7 +3,6 @@ package com.rawsmusic.module.data.prefs
 import android.content.Context
 import android.graphics.Typeface
 import android.os.Build
-import android.widget.TextView
 
 object FontManager {
 
@@ -14,8 +13,6 @@ object FontManager {
 
     private var baseTypeface: Typeface? = null
     private var customTypeface: Typeface? = null
-
-    private val scaledViews = mutableSetOf<Int>()
 
     val typeface: Typeface?
         get() = customTypeface ?: baseTypeface
@@ -35,7 +32,6 @@ object FontManager {
         val italic = AppPreferences.UI.fontItalic
 
         customTypeface = buildVariableTypeface(context, base, weight, italic)
-        scaledViews.clear()
     }
 
     private fun buildVariableTypeface(context: Context, base: Typeface, weight: Int, italic: Boolean): Typeface {
@@ -56,47 +52,5 @@ object FontManager {
         return Typeface.create(base, style)
     }
 
-    fun applyToTextView(textView: TextView) {
-        val tf = customTypeface ?: baseTypeface
-        if (tf != null) {
-            textView.typeface = tf
-        }
-        applyTextSizeScale(textView)
-        applyItalic(textView)
-    }
-
-    private fun applyTextSizeScale(textView: TextView) {
-        val viewId = textView.hashCode()
-        if (viewId in scaledViews) return
-        val scale = AppPreferences.UI.fontSizeScale / 100f
-        if (scale == 1f) return
-        val currentSize = textView.textSize
-        if (currentSize > 0f) {
-            val scaledSize = currentSize * scale
-            textView.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, scaledSize)
-            scaledViews.add(viewId)
-        }
-    }
-
-    private fun applyItalic(textView: TextView) {
-        val italic = AppPreferences.UI.fontItalic
-        if (italic) {
-            textView.paint.textSkewX = -0.2f
-        }
-    }
-
-    fun applyRecursive(view: android.view.View) {
-        if (view is TextView) {
-            applyToTextView(view)
-        }
-        if (view is android.view.ViewGroup) {
-            for (i in 0 until view.childCount) {
-                applyRecursive(view.getChildAt(i))
-            }
-        }
-    }
-
-    fun clearScaledCache() {
-        scaledViews.clear()
-    }
+    fun clearScaledCache() = Unit
 }

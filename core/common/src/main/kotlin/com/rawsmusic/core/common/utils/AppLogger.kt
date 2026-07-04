@@ -14,6 +14,8 @@ object AppLogger {
     private const val MAX_LOG_SIZE = 500 * 1024L
     private const val LOG_DIR = "logs"
     private const val LOG_FILE = "rawsmusic.log"
+    private const val PLAYBACK_REPORT_TAG = "PlaybackReport"
+    private const val PLAYBACK_REPORT_START = "PLAYBACK_REPORT_START"
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
     private val fileDateFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
@@ -78,6 +80,38 @@ object AppLogger {
         }
     }
 
+    fun markPlaybackReportStart(
+        title: String?,
+        artist: String?,
+        album: String?,
+        path: String?,
+        cueOffsetMs: Long = 0L
+    ) {
+        val message = buildString {
+            append(PLAYBACK_REPORT_START)
+            append(" title=")
+            append(safeLogField(title))
+            append(" artist=")
+            append(safeLogField(artist))
+            append(" album=")
+            append(safeLogField(album))
+            append(" cueOffsetMs=")
+            append(cueOffsetMs)
+            append(" path=")
+            append(safeLogField(path))
+        }
+        i(PLAYBACK_REPORT_TAG, message)
+    }
+
+    fun getPlaybackReportContent(): String? {
+        val content = getLogContent() ?: return null
+        val marker = "/$PLAYBACK_REPORT_TAG: $PLAYBACK_REPORT_START"
+        val markerIndex = content.lastIndexOf(marker)
+        if (markerIndex < 0) return content
+        val startIndex = content.lastIndexOf('\n', markerIndex).let { if (it >= 0) it + 1 else 0 }
+        return content.substring(startIndex)
+    }
+
     private fun writeToFile(level: String, tag: String, msg: String, throwable: Throwable? = null) {
         synchronized(lock) {
             try {
@@ -114,5 +148,10 @@ object AppLogger {
 
     fun generateExportFileName(): String {
         return "RawSMusic_${fileDateFormat.format(Date())}.log"
+    }
+
+    private fun safeLogField(value: String?): String {
+        if (value.isNullOrBlank()) return "-"
+        return value.replace('\n', ' ').replace('\r', ' ')
     }
 }

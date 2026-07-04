@@ -23,6 +23,13 @@ object AudioOutputManager {
 
     private const val TAG = "AudioOutputManager"
 
+    const val BIT_DEPTH_AUTO = 0
+    const val BIT_DEPTH_16 = 16
+    const val BIT_DEPTH_24 = 24
+    const val BIT_DEPTH_32 = 32
+    const val BIT_DEPTH_FLOAT32 = 3201
+    const val BIT_DEPTH_32_8_24 = 3224
+
     /** 常用采样率列表 */
     val STANDARD_SAMPLE_RATES = intArrayOf(
         44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000
@@ -43,11 +50,67 @@ object AudioOutputManager {
 
     /** 比特深度的显示名称 */
     val BIT_DEPTH_LABELS = mapOf(
-        0 to "自动",
-        16 to "16 bit",
-        24 to "24 bit",
-        32 to "32 bit"
+        BIT_DEPTH_AUTO to "自动",
+        BIT_DEPTH_16 to "16 bit",
+        BIT_DEPTH_24 to "24 bit",
+        BIT_DEPTH_32 to "32 bit",
+        BIT_DEPTH_FLOAT32 to "Float32",
+        BIT_DEPTH_32_8_24 to "32 (8.24)"
     )
+
+    val STANDARD_BIT_DEPTH_OPTIONS = intArrayOf(
+        BIT_DEPTH_AUTO,
+        BIT_DEPTH_16,
+        BIT_DEPTH_24,
+        BIT_DEPTH_32,
+        BIT_DEPTH_FLOAT32,
+        BIT_DEPTH_32_8_24
+    )
+
+    fun normalizeTargetBitDepth(depth: Int): Int {
+        return when (depth) {
+            BIT_DEPTH_AUTO,
+            BIT_DEPTH_16,
+            BIT_DEPTH_24,
+            BIT_DEPTH_32,
+            BIT_DEPTH_FLOAT32,
+            BIT_DEPTH_32_8_24 -> depth
+            else -> BIT_DEPTH_AUTO
+        }
+    }
+
+    fun ffmpegBitsForTarget(depth: Int): Int {
+        return when (normalizeTargetBitDepth(depth)) {
+            BIT_DEPTH_16 -> 16
+            BIT_DEPTH_24,
+            BIT_DEPTH_32_8_24 -> 24
+            BIT_DEPTH_32,
+            BIT_DEPTH_FLOAT32 -> 32
+            else -> 0
+        }
+    }
+
+    fun usbDeviceBitResolutionForTarget(depth: Int, sourceBits: Int): Int {
+        return when (normalizeTargetBitDepth(depth)) {
+            BIT_DEPTH_16 -> 16
+            BIT_DEPTH_24,
+            BIT_DEPTH_32_8_24 -> 24
+            BIT_DEPTH_32,
+            BIT_DEPTH_FLOAT32 -> 32
+            else -> sourceBits
+        }
+    }
+
+    fun usbDeviceSubslotForTarget(depth: Int, sourceBits: Int): Int {
+        return when (normalizeTargetBitDepth(depth)) {
+            BIT_DEPTH_16 -> 2
+            BIT_DEPTH_24 -> 3
+            BIT_DEPTH_32,
+            BIT_DEPTH_FLOAT32,
+            BIT_DEPTH_32_8_24 -> 4
+            else -> if (sourceBits > 16) 4 else 2
+        }
+    }
 
     /**
      * 获取当前输出模式
@@ -74,8 +137,8 @@ object AudioOutputManager {
      * 条件：Android 8+ 且有输出设备（包括扬声器，方便测试）
      */
     fun isDirectOutputAvailable(context: Context? = null): Boolean {
-        if (Build.VERSION.SDK_INT < 26) {
-            Log.d(TAG, "API ${Build.VERSION.SDK_INT} < 26, Direct not supported")
+        if (Build.VERSION.SDK_INT < 27) {
+            Log.d(TAG, "API ${Build.VERSION.SDK_INT} < 27, Direct not supported")
             return false
         }
         context ?: run {
@@ -91,20 +154,73 @@ object AudioOutputManager {
         val deviceNames = devices.map { getDeviceTypeName(it.type) }
         Log.d(TAG, "Output devices (${"${devices.size}"}): $deviceNames")
 
-        // Android 13 及以下，蓝牙连接时禁用 Direct（避免音频路由混乱）
-        if (Build.VERSION.SDK_INT <= 33) {
-            val hasBluetooth = devices.any {
-                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+        val hasBtOutput = devices.any { isBluetoothOutput(it.type) }
+        val hasPhysicalDirectOutput = devices.any { isPhysicalDirectOutput(it.type) }
+
+        // Android 12/13 上 AudioTrack.isDirectPlaybackSupported() 对 USB preferredDevice 经常返回 false，
+        // 但实际 AudioTrack + preferredDevice 可以创建 96/192k PCM_32BIT 直出。
+        // 因此设置页不能用 isDirectPlaybackSupported 作为唯一硬门槛；只要有 USB/有线输出，允许用户选择 Direct。
+        if (hasPhysicalDirectOutput) {
+            Log.d(TAG, "Direct available by physical output route: $deviceNames")
+            return true
             }
-            if (hasBluetooth) {
-                Log.d(TAG, "API <= 33 and Bluetooth connected, Direct not available")
+
+        // Android 13 及以下，纯蓝牙连接时禁用 Direct（避免音频路由混乱）。
+        if (Build.VERSION.SDK_INT <= 33 && hasBtOutput) {
+            Log.d(TAG, "API <= 33 and only Bluetooth output present, Direct not available")
                 return false
             }
+
+        if (Build.VERSION.SDK_INT >= 29) {
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
+            val preferredRate = getTargetSampleRate()
+            val rates = buildList {
+                if (preferredRate > 0) add(preferredRate)
+                addAll(STANDARD_SAMPLE_RATES.reversedArray().toList())
+            }.distinct()
+            val encodings = targetEncodingCandidates()
+
+            for (rate in rates) {
+                for (encoding in encodings) {
+                    try {
+                        val format = AudioFormat.Builder()
+                            .setSampleRate(rate)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                            .setEncoding(encoding)
+                            .build()
+                        if (AudioTrack.isDirectPlaybackSupported(format, attrs)) {
+                            Log.d(TAG, "Direct available by AudioTrack probe: rate=$rate encoding=${encodingName(encoding)}")
+                            return true
+                        }
+                    } catch (t: Throwable) {
+                        Log.d(TAG, "Direct probe skipped invalid format: rate=$rate encoding=${encodingName(encoding)} error=${t.message}")
+                    }
+                }
+            }
+            Log.d(TAG, "Direct not available: no physical output and AudioTrack direct probe rejected all candidates")
+            return false
         }
-        // Android 14+ 或无蓝牙，允许 Direct
-        Log.d(TAG, "Direct available: true")
-        return true
+
+        return false
+        }
+
+    private fun isBluetoothOutput(type: Int): Boolean {
+        return type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+            type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+            type == AudioDeviceInfo.TYPE_HEARING_AID
+    }
+
+    private fun isPhysicalDirectOutput(type: Int): Boolean {
+        return type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+            type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+            type == AudioDeviceInfo.TYPE_USB_ACCESSORY ||
+            type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+            type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+            type == AudioDeviceInfo.TYPE_LINE_ANALOG ||
+            type == AudioDeviceInfo.TYPE_LINE_DIGITAL
     }
 
     /**
@@ -116,7 +232,12 @@ object AudioOutputManager {
         val encoding = AudioFormat.ENCODING_PCM_16BIT
 
         for (rate in STANDARD_SAMPLE_RATES) {
-            val bufferSize = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_STEREO, encoding)
+            val bufferSize = try {
+                AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_STEREO, encoding)
+            } catch (t: Throwable) {
+                Log.d(TAG, "getAvailableSampleRates: skip invalid rate=$rate error=${t.message}")
+                -1
+            }
             if (bufferSize > 0) {
                 rates.add(rate)
             }
@@ -150,25 +271,19 @@ object AudioOutputManager {
             if (r != preferredRate) tryRates.add(r)
         }
 
-        // 候选编码（从高到低）
-        val encodingCandidates = mutableListOf<Int>()
-        if (Build.VERSION.SDK_INT >= 26) {
-            encodingCandidates.add(AudioFormat.ENCODING_PCM_FLOAT)
-        }
-        if (Build.VERSION.SDK_INT >= 31) {
-            try {
-                val enc24 = AudioFormat::class.java.getField("ENCODING_PCM_24BIT").getInt(null)
-                encodingCandidates.add(enc24)
-            } catch (_: Exception) {}
-        }
-        encodingCandidates.add(AudioFormat.ENCODING_PCM_16BIT)
+        val encodingCandidates = targetEncodingCandidates()
 
         // 先用 getMinBufferSize 快速过滤：框架直接拒绝的采样率不必尝试
         // 对于 getMinBufferSize 返回负值的，仍尝试创建（可能框架不报告但硬件支持）
         val frameworkRates = mutableListOf<Int>()
         val unreportedRates = mutableListOf<Int>()
         for (rate in tryRates) {
-            val minBuf = AudioTrack.getMinBufferSize(rate, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
+            val minBuf = try {
+                AudioTrack.getMinBufferSize(rate, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
+            } catch (t: Throwable) {
+                Log.d(TAG, "probeRateAndEncoding: getMinBufferSize rejected rate=$rate error=${t.message}")
+                -1
+            }
             if (minBuf > 0) {
                 frameworkRates.add(rate)
             } else {
@@ -217,8 +332,10 @@ object AudioOutputManager {
             val bufSize = if (minBufSize > 0) {
                 minBufSize
             } else {
-                // 估算：100ms 的数据量
-                val bytesPerFrame = if (encoding == AudioFormat.ENCODING_PCM_16BIT) 4 else 8
+                // 估算：100ms 的数据量。按编码精确计算 frame size，
+                // 不能把 24-bit packed 当作 32-bit，否则 24/192 的探测会失真。
+                val channelCount = if (channelConfig == AudioFormat.CHANNEL_OUT_MONO) 1 else 2
+                val bytesPerFrame = channelCount * bytesPerSampleForEncoding(encoding)
                 sampleRate / 10 * bytesPerFrame
             }
 
@@ -246,13 +363,8 @@ object AudioOutputManager {
 
             // play + write 验证：仅 STATE_INITIALIZED 不够，某些设备初始化成功但写入失败
             track.play()
-            val frameSize = if (encoding == AudioFormat.ENCODING_PCM_16BIT) {
-                val chCount = if (channelConfig == AudioFormat.CHANNEL_OUT_MONO) 1 else 2
-                chCount * 2
-            } else {
-                val chCount = if (channelConfig == AudioFormat.CHANNEL_OUT_MONO) 1 else 2
-                chCount * 4
-            }
+            val chCount = if (channelConfig == AudioFormat.CHANNEL_OUT_MONO) 1 else 2
+            val frameSize = chCount * bytesPerSampleForEncoding(encoding)
             val testSize = (frameSize * 256).coerceIn(512, 4096)
             val silence = ByteArray(testSize)
             val writeResult = track.write(silence, 0, testSize)
@@ -275,33 +387,43 @@ object AudioOutputManager {
         }
     }
 
-    private fun encodingName(encoding: Int): String = when (encoding) {
-        AudioFormat.ENCODING_PCM_FLOAT -> "FLOAT"
-        AudioFormat.ENCODING_PCM_16BIT -> "16BIT"
-        else -> {
-            try {
-                if (Build.VERSION.SDK_INT >= 31 &&
-                    encoding == AudioFormat::class.java.getField("ENCODING_PCM_24BIT").getInt(null))
-                    "24BIT" else "unknown($encoding)"
-            } catch (_: Exception) { "unknown($encoding)" }
+    private fun encodingName(encoding: Int): String {
+        return when (encoding) {
+            AudioFormat.ENCODING_PCM_FLOAT -> "FLOAT"
+            AudioFormat.ENCODING_PCM_16BIT -> "16BIT"
+            else -> {
+                if (Build.VERSION.SDK_INT >= 31) {
+                    try {
+                        val enc32 = AudioFormat::class.java.getField("ENCODING_PCM_32BIT").getInt(null)
+                        if (encoding == enc32) return "32BIT"
+                    } catch (_: Exception) {}
+                }
+                pcm24PackedEncodingOrNull()?.let { enc24 ->
+                    if (encoding == enc24) return "24BIT_PACKED"
+                }
+                "unknown($encoding)"
+            }
         }
     }
 
     /**
      * 将 AudioFormat 编码映射为 FFmpeg 输出的比特深度
-     * FLOAT → 32 (IEEE float WAV), 24BIT → 24 (packed s24le WAV), 16BIT → 16
+     * FLOAT → 32 (IEEE float WAV), 32BIT → 32 (S32LE), 24BIT → 24 (packed s24le WAV), 16BIT → 16
      */
     fun encodingToFFmpegBits(encoding: Int): Int {
         return when (encoding) {
             AudioFormat.ENCODING_PCM_FLOAT -> 32
             AudioFormat.ENCODING_PCM_16BIT -> 16
             else -> {
-                // 24BIT
-                try {
-                    if (Build.VERSION.SDK_INT >= 31 &&
-                        encoding == AudioFormat::class.java.getField("ENCODING_PCM_24BIT").getInt(null))
-                        return 24
-                } catch (_: Exception) {}
+                if (Build.VERSION.SDK_INT >= 31) {
+                    try {
+                        val enc32 = AudioFormat::class.java.getField("ENCODING_PCM_32BIT").getInt(null)
+                        if (encoding == enc32) return 32
+                    } catch (_: Exception) {}
+                }
+                pcm24PackedEncodingOrNull()?.let { enc24 ->
+                    if (encoding == enc24) return 24
+                }
                 16
             }
         }
@@ -328,7 +450,99 @@ object AudioOutputManager {
      * 设置目标比特深度
      */
     fun setTargetBitDepth(depth: Int) {
-        AppPreferences.Player.targetBitDepth = depth
+        AppPreferences.Player.targetBitDepth = normalizeTargetBitDepth(depth)
+    }
+
+    /**
+     * 获取 USB DAC 独占模式目标采样率
+     */
+    fun getUsbTargetSampleRate(): Int = AppPreferences.Player.usbTargetSampleRate
+
+    /**
+     * 设置 USB DAC 独占模式目标采样率
+     */
+    fun setUsbTargetSampleRate(rate: Int) {
+        AppPreferences.Player.usbTargetSampleRate = rate
+    }
+
+    /**
+     * 获取 USB DAC 独占模式目标比特深度
+     */
+    fun getUsbTargetBitDepth(): Int = AppPreferences.Player.usbTargetBitDepth
+
+    /**
+     * 设置 USB DAC 独占模式目标比特深度
+     */
+    fun setUsbTargetBitDepth(depth: Int) {
+        AppPreferences.Player.usbTargetBitDepth = normalizeTargetBitDepth(depth)
+    }
+
+    fun pcm24PackedEncodingOrNull(): Int? {
+        if (Build.VERSION.SDK_INT < 23) return null
+        return try {
+            AudioFormat::class.java.getField("ENCODING_PCM_24BIT_PACKED").getInt(null)
+        } catch (_: Exception) {
+            try {
+                AudioFormat::class.java.getField("ENCODING_PCM_24BIT").getInt(null)
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    fun bytesPerSampleForEncoding(encoding: Int): Int {
+        if (encoding == AudioFormat.ENCODING_PCM_16BIT) return 2
+        if (encoding == AudioFormat.ENCODING_PCM_FLOAT) return 4
+        pcm24PackedEncodingOrNull()?.let { if (encoding == it) return 3 }
+        pcm32EncodingOrNull()?.let { if (encoding == it) return 4 }
+        return 2
+    }
+
+    private fun pcm32EncodingOrNull(): Int? {
+        if (Build.VERSION.SDK_INT < 31) return null
+        return try {
+            AudioFormat::class.java.getField("ENCODING_PCM_32BIT").getInt(null)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun targetEncodingCandidates(): List<Int> {
+        val depth = normalizeTargetBitDepth(getTargetBitDepth())
+        val candidates = mutableListOf<Int>()
+        fun add(encoding: Int?) {
+            if (encoding != null && !candidates.contains(encoding)) {
+                candidates.add(encoding)
+            }
+        }
+        when (depth) {
+            BIT_DEPTH_16 -> add(AudioFormat.ENCODING_PCM_16BIT)
+            BIT_DEPTH_FLOAT32 -> {
+                if (Build.VERSION.SDK_INT >= 26) add(AudioFormat.ENCODING_PCM_FLOAT)
+                add(pcm32EncodingOrNull())
+                add(AudioFormat.ENCODING_PCM_16BIT)
+            }
+            BIT_DEPTH_24 -> {
+                add(pcm24PackedEncodingOrNull())
+                add(pcm32EncodingOrNull())
+                if (Build.VERSION.SDK_INT >= 26) add(AudioFormat.ENCODING_PCM_FLOAT)
+                add(AudioFormat.ENCODING_PCM_16BIT)
+            }
+            BIT_DEPTH_32,
+            BIT_DEPTH_32_8_24 -> {
+                add(pcm32EncodingOrNull())
+                add(pcm24PackedEncodingOrNull())
+                if (Build.VERSION.SDK_INT >= 26) add(AudioFormat.ENCODING_PCM_FLOAT)
+                add(AudioFormat.ENCODING_PCM_16BIT)
+            }
+            else -> {
+                if (Build.VERSION.SDK_INT >= 26) add(AudioFormat.ENCODING_PCM_FLOAT)
+                add(pcm32EncodingOrNull())
+                add(pcm24PackedEncodingOrNull())
+                add(AudioFormat.ENCODING_PCM_16BIT)
+            }
+        }
+        return candidates
     }
 
     /**
@@ -342,13 +556,30 @@ object AudioOutputManager {
      * 构建 AudioAttributes，根据输出模式选择不同策略
      */
     fun buildAudioAttributes(context: Context): AudioAttributes {
+        // 如果启用 SCO 模式，使用通话信道属性
+        val scoMode = AppPreferences.Player.bluetoothScoMode
+        val shouldUseSco = shouldUseScoMode(context)
+        Log.d(TAG, "buildAudioAttributes: scoMode=$scoMode, shouldUseSco=$shouldUseSco")
+        
+        if (shouldUseSco) {
+            Log.i(TAG, "buildAudioAttributes: using SCO mode (USAGE_VOICE_COMMUNICATION)")
+            return buildScoAudioAttributes()
+        }
+
+        return buildMediaAudioAttributes(context)
+    }
+
+    /**
+     * 构建纯媒体输出 AudioAttributes，不会自动切换到 SCO。
+     * 用于 SCO 已配置但尚未激活时的 AudioTrack 创建，避免外放阶段被降级为通话音频格式。
+     */
+    fun buildMediaAudioAttributes(context: Context): AudioAttributes {
         val builder = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
             .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
 
         when (getCurrentOutputMode(context)) {
             AudioOutputMode.DIRECT -> {
-                // Direct 模式：禁止其他应用截获音频，保持纯净输出
                 if (Build.VERSION.SDK_INT >= 29) {
                     try {
                         builder.setAllowedCapturePolicy(AudioAttributes.ALLOW_CAPTURE_BY_NONE)
@@ -356,10 +587,8 @@ object AudioOutputManager {
                 }
             }
             AudioOutputMode.AAUDIO -> {
-                // AAudio 低延迟模式
             }
             AudioOutputMode.OPENSL_ES -> {
-                // OpenSL ES 传统模式
             }
         }
         return builder.build()
@@ -367,30 +596,10 @@ object AudioOutputManager {
 
     /**
      * 获取目标音频编码格式（根据比特深度设置）
+     * 优先级：Float32 → 32bit → 24bit → 16bit
      */
     fun getTargetEncoding(): Int {
-        val depth = getTargetBitDepth()
-        return when {
-            depth >= 32 && Build.VERSION.SDK_INT >= 26 -> AudioFormat.ENCODING_PCM_FLOAT
-            depth >= 24 && Build.VERSION.SDK_INT >= 31 -> {
-                // Android 12+ 支持 ENCODING_PCM_24BIT
-                try {
-                    AudioFormat::class.java.getField("ENCODING_PCM_24BIT").getInt(null)
-                } catch (_: Exception) {
-                    if (Build.VERSION.SDK_INT >= 26) AudioFormat.ENCODING_PCM_FLOAT
-                    else AudioFormat.ENCODING_PCM_16BIT
-                }
-            }
-            depth == 16 -> AudioFormat.ENCODING_PCM_16BIT
-            else -> {
-                // 自动：优先使用更高精度
-                if (Build.VERSION.SDK_INT >= 26) {
-                    AudioFormat.ENCODING_PCM_FLOAT
-                } else {
-                    AudioFormat.ENCODING_PCM_16BIT
-                }
-            }
-        }
+        return targetEncodingCandidates().firstOrNull() ?: AudioFormat.ENCODING_PCM_16BIT
     }
 
     /**
@@ -500,5 +709,133 @@ object AudioOutputManager {
         AudioDeviceInfo.TYPE_LINE_DIGITAL -> "数字线路"
         AudioDeviceInfo.TYPE_HEARING_AID -> "助听器"
         else -> "设备($type)"
+    }
+
+    // ========== 蓝牙 SCO 通话信道管理 ==========
+
+    /**
+     * 检测当前蓝牙设备是否仅支持 HFP/HSP（无 A2DP）
+     * 用于判断是否需要启用 SCO 通话信道输出
+     */
+    fun isBluetoothHfpOnlyDevice(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < 23) return false
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+        val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val hasA2dp = devices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
+        val hasSco = devices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+        // 仅有 SCO 而无 A2DP，说明是 HFP-only 设备
+        return hasSco && !hasA2dp
+    }
+
+    /**
+     * 检测当前是否有蓝牙 SCO 设备连接
+     */
+    fun isScoDeviceConnected(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < 23) return false
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+        val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        return devices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+    }
+
+    /**
+     * 检测 SCO 是否可用（需要蓝牙设备支持 HFP/HSP）
+     */
+    fun isScoAvailable(context: Context): Boolean {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+        return am.isBluetoothScoAvailableOffCall
+    }
+
+    /**
+     * 启动蓝牙 SCO 连接
+     * 注意：需要在主线程调用，且需要 RECORD_AUDIO 权限
+     * @return true 如果成功启动
+     */
+    fun startBluetoothSco(context: Context): Boolean {
+        return try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+            if (!am.isBluetoothScoAvailableOffCall) {
+                Log.w(TAG, "startBluetoothSco: SCO not available off call")
+                return false
+            }
+            am.startBluetoothSco()
+            am.isBluetoothScoOn = true
+            Log.i(TAG, "startBluetoothSco: SCO started successfully")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "startBluetoothSco failed: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * 停止蓝牙 SCO 连接
+     */
+    fun stopBluetoothSco(context: Context) {
+        try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            am.stopBluetoothSco()
+            am.isBluetoothScoOn = false
+            Log.i(TAG, "stopBluetoothSco: SCO stopped")
+        } catch (e: Exception) {
+            Log.e(TAG, "stopBluetoothSco failed: ${e.message}")
+        }
+    }
+
+    /**
+     * 获取 SCO 模式的 AudioAttributes
+     * SCO 模式必须使用 USAGE_VOICE_COMMUNICATION 才能通过通话信道输出
+     */
+    fun buildScoAudioAttributes(): AudioAttributes {
+        return AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+    }
+
+    /**
+     * 检测当前是否有任何蓝牙音频设备连接（A2DP 或 SCO）
+     */
+    fun isAnyBluetoothDeviceConnected(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < 23) return false
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+        val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        return devices.any {
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+        }
+    }
+
+    /**
+     * 判断当前是否应该启用 SCO 模式
+     * 根据用户设置和设备状态综合判断
+     */
+    fun shouldUseScoMode(context: Context): Boolean {
+        val scoMode = AppPreferences.Player.bluetoothScoMode
+        return when (scoMode) {
+            0 -> false  // 关闭
+            1 -> isBluetoothHfpOnlyDevice(context)  // 自动检测：仅 HFP 设备时启用
+            2 -> isAnyBluetoothDeviceConnected(context)  // 强制开启：有蓝牙设备就启用
+            else -> false
+        }
+    }
+
+    /**
+     * 获取蓝牙 SCO 模式标签
+     */
+    fun getScoModeLabel(mode: Int): String = when (mode) {
+        0 -> "关闭"
+        1 -> "自动检测"
+        2 -> "强制开启"
+        else -> "未知"
+    }
+
+    /**
+     * 获取蓝牙 SCO 模式描述
+     */
+    fun getScoModeDescription(mode: Int): String = when (mode) {
+        0 -> "不使用蓝牙通话信道"
+        1 -> "仅在设备不支持蓝牙音乐时自动切换"
+        2 -> "始终通过蓝牙通话信道输出"
+        else -> ""
     }
 }

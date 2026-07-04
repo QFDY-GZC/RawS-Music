@@ -366,16 +366,23 @@ private class DrawBackdropNode(
     }
 
     override fun onAttach() {
-        val graphicsContext = requireGraphicsContext()
-        graphicsLayer = graphicsContext.createGraphicsLayer()
-
-        observeEffects()
+        try {
+            val graphicsContext = requireGraphicsContext()
+            graphicsLayer = graphicsContext.createGraphicsLayer()
+            observeEffects()
+        } catch (_: Exception) {
+            graphicsLayer = null
+        }
     }
 
     override fun onDetach() {
-        val graphicsContext = requireGraphicsContext()
-        graphicsLayer?.let { layer ->
-            graphicsContext.releaseGraphicsLayer(layer)
+        try {
+            val graphicsContext = requireGraphicsContext()
+            graphicsLayer?.let { layer ->
+                graphicsContext.releaseGraphicsLayer(layer)
+                graphicsLayer = null
+            }
+        } catch (_: Exception) {
             graphicsLayer = null
         }
 
