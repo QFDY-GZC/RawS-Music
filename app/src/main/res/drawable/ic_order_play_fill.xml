@@ -1,0 +1,10 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 顺序播放图标：顶部右箭头 + 底部左箭头（旋转180°） -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M17 4V2.068a.5.5 0 0 1 .82-.385l4.12 3.433a.5.5 0 0 1-.321.884H2V4zM7 20V21.932a.5.5 0 0 1-.82.385l-4.12-3.433a.5.5 0 0 1 .321-.884H22V20z" />
+</vector>

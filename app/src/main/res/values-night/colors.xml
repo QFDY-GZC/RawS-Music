@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="page_bg">#FF2A2624</color>
+    <color name="settings_page_bg">#FF101014</color>
+    <color name="nav_bg">#E8393331</color>
+    <color name="text_primary">#FFFFFFFF</color>
+    <color name="text_secondary">#CCFFFFFF</color>
+    <color name="text_edit_color">#FFFFFFFF</color>
+    <color name="icon_muted">#FF888888</color>
+    <color name="card_bg">#FF353130</color>
+    <color name="mini_player_bg">#FF1D1A19</color>
+    <color name="mini_player_text">#FFFFFFFF</color>
+    <color name="mini_player_subtext">#FF999999</color>
+    <color name="accent">#FFD4B896</color>
+    <color name="accent_light">#FFC4956A</color>
+    <color name="play_page_bg">#FF1A1715</color>
+    <color name="divider">#1AFFFFFF</color>
+    <color name="shadow_light">#30000000</color>
+    <color name="btn_outline">#FF58524F</color>
+    <color name="btn_bg">#1AFFFFFF</color>
+    <color name="indicator">#FFD4B896</color>
+    <color name="empty_icon">#FF58524F</color>
+    <color name="nav_selected_bg">#1AD4B896</color>
+
+    <!-- 歌词背景 Scrim (夜间模式加深) -->
+    <color name="lyrics_bg_layer_black_scrim">#80000000</color>
+    <color name="lyrics_bg_layer_white_scrim">#0DFFFFFF</color>
+
+    <color name="md_theme_primary">#FFD4B896</color>
+    <color name="md_theme_onPrimary">#FF3E2D1A</color>
+    <color name="md_theme_primaryContainer">#FF57432E</color>
+    <color name="md_theme_onPrimaryContainer">#FFFFDCC4</color>
+    <color name="md_theme_secondary">#FFE0C1A4</color>
+    <color name="md_theme_onSecondary">#FF402D18</color>
+    <color name="md_theme_secondaryContainer">#FF58432D</color>
+    <color name="md_theme_onSecondaryContainer">#FFFEDCC4</color>
+    <color name="md_theme_tertiary">#FFC0CC95</color>
+    <color name="md_theme_onTertiary">#FF2C350F</color>
+    <color name="md_theme_tertiaryContainer">#FF424C24</color>
+    <color name="md_theme_onTertiaryContainer">#FFDCE8B4</color>
+    <color name="md_theme_error">#FFFFB4AB</color>
+    <color name="md_theme_onError">#FF690005</color>
+    <color name="md_theme_errorContainer">#FF93000A</color>
+    <color name="md_theme_onErrorContainer">#FFFFDAD6</color>
+    <color name="md_theme_background">#FF1C1B1A</color>
+    <color name="md_theme_onBackground">#FFE6E1DD</color>
+    <color name="md_theme_surface">#FF1C1B1A</color>
+    <color name="md_theme_onSurface">#FFE6E1DD</color>
+    <color name="md_theme_surfaceVariant">#FF534438</color>
+    <color name="md_theme_onSurfaceVariant">#FFF5DED0</color>
+    <color name="md_theme_outline">#FF9F8D80</color>
+</resources>

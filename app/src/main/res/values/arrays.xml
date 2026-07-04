@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="sample_rates">
+        <item>自动</item>
+        <item>44.1 kHz</item>
+        <item>48 kHz</item>
+        <item>88.2 kHz</item>
+        <item>96 kHz</item>
+        <item>176.4 kHz</item>
+        <item>192 kHz</item>
+        <item>352.8 kHz</item>
+        <item>384 kHz</item>
+    </string-array>
+
+    <string-array name="sample_rate_values">
+        <item>0</item>
+        <item>44100</item>
+        <item>48000</item>
+        <item>88200</item>
+        <item>96000</item>
+        <item>176400</item>
+        <item>192000</item>
+        <item>352800</item>
+        <item>384000</item>
+    </string-array>
+
+    <string-array name="bit_depths">
+        <item>自动</item>
+        <item>16 bit</item>
+        <item>24 bit</item>
+        <item>32 bit</item>
+    </string-array>
+
+    <string-array name="bit_depth_values">
+        <item>0</item>
+        <item>16</item>
+        <item>24</item>
+        <item>32</item>
+    </string-array>
+
+    <string-array name="lyricon_module_tags">
+        <item>$syllable</item>
+        <item>$translation</item>
+    </string-array>
+</resources>

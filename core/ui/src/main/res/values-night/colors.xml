@@ -1,0 +1,11 @@
+<resources>
+    <color name="text_primary">#FFFFFFFF</color>
+    <color name="text_secondary">#CCFFFFFF</color>
+    <color name="text_tertiary">#99FFFFFF</color>
+    <color name="accent">#FFD4B896</color>
+    <!--  高亮文本（当前播放歌曲）：深色背景下用高亮白色  -->
+    <color name="now_playing_text">#FFFFFFFF</color>
+    <!--  歌词背景遮罩色（夜间模式加深）  -->
+    <color name="lyrics_bg_layer_black_scrim">#80000000</color>
+    <color name="lyrics_bg_layer_white_scrim">#0DFFFFFF</color>
+</resources>
