@@ -14,8 +14,8 @@ android {
         applicationId = "com.rawsmusic"
         minSdk = 23
         targetSdk = 34
-        versionCode = 6
-        versionName = "0.9.01-beta1"
+        versionCode = 15
+        versionName = "0.9.15-beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
