@@ -87,7 +87,14 @@ class MetadataDetailHelper(
             "年份" to (if (song.year > 0) song.year.toString() else ""),
             "音轨" to (if (song.trackNumber > 0) song.trackNumber.toString() else ""),
             "时长" to AudioUtils.formatDuration(song.duration),
-            "码率" to com.rawsmusic.core.common.utils.BitrateNormalizer.formatKbps(song.bitRate, song.duration, song.fileSize),
+            "码率" to com.rawsmusic.core.common.utils.BitrateNormalizer.formatKbps(
+                rawBitrate = song.bitRate,
+                durationMs = song.duration,
+                fileSizeBytes = song.fileSize,
+                codecName = song.encodingFormat,
+                formatName = song.format,
+                filePath = song.path
+            ),
             "采样率" to srDisplay,
             "位深" to formatBitDepth(song),
             "格式" to song.format.ifBlank { song.extension },

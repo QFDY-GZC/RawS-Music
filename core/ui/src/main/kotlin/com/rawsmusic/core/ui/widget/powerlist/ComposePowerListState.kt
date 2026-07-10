@@ -81,6 +81,23 @@ class ComposePowerListState internal constructor(
     private var boundaryRawOverPull by mutableFloatStateOf(0f)
 
     /** 外部请求滚动到指定索引（字母索引用），-1 表示无请求 */
+    var currentVisibleCenterIndex by mutableIntStateOf(0)
+        private set
+
+    var currentVisibleRange by mutableStateOf(IntRange.EMPTY)
+        private set
+
+    fun isIndexVisible(index: Int): Boolean {
+        return index >= 0 && !currentVisibleRange.isEmpty() && index in currentVisibleRange
+    }
+
+    internal fun updateVisibleRangeForNavigation(range: IntRange) {
+        currentVisibleRange = range
+        if (!range.isEmpty()) {
+            currentVisibleCenterIndex = ((range.first + range.last) / 2).coerceAtLeast(0)
+        }
+    }
+
     var scrollToIndexRequestIndex by mutableIntStateOf(-1)
         private set
 

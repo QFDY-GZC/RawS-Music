@@ -9,6 +9,7 @@ import android.os.Environment
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import com.rawsmusic.R
 import com.rawsmusic.core.ui.scene.pages.ScanSettingsPage
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.scanner.ScanScheduler
@@ -34,7 +35,7 @@ class ScanSettingsActivity : BaseSettingsActivity() {
 
         Toast.makeText(
             this,
-            if (granted) "已启用传统文件访问方式" else "未授予所有文件访问权限",
+            if (granted) getString(R.string.scan_settings_legacy_access_enabled_toast) else getString(R.string.scan_settings_legacy_access_denied_toast),
             Toast.LENGTH_SHORT
         ).show()
     }
@@ -46,7 +47,7 @@ class ScanSettingsActivity : BaseSettingsActivity() {
             ScanSettingsPage(
                 onBack = { finish() },
                 onRescan = {
-                    ScanScheduler.requestDirScan(this, "手动重新扫描")
+                    ScanScheduler.requestDirScan(this, getString(R.string.scan_settings_rescan_reason_manual))
                 },
                 onRequestLegacyAudioAccess = {
                     requestLegacyAudioAccess()

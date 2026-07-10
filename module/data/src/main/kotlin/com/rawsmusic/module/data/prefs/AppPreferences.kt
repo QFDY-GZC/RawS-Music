@@ -206,6 +206,11 @@ object AppPreferences {
             get() = kv.decodeInt("player_usb_hw_volume_step", 48)
             set(value) { kv.encode("player_usb_hw_volume_step", value.coerceIn(0, 60)) }
 
+        /** USB DAC 音量模式：0=软件音量, 1=硬件音量, 2=数字固定 0dB */
+        var usbVolumeMode: Int
+            get() = kv.decodeInt("player_usb_volume_mode", 0).coerceIn(0, 2)
+            set(value) { kv.encode("player_usb_volume_mode", value.coerceIn(0, 2)) }
+
         // ========== USB DAC 高级设置 ==========
 
         /** 跳过 AudioControl interface（不操作 Feature Unit） */
@@ -232,6 +237,26 @@ object AppPreferences {
         var usbForce1MsPacket: Boolean
             get() = kv.decodeBool("usb_force_1ms", false)
             set(value) { kv.encode("usb_force_1ms", value) }
+
+        /** 禁用 DAC 时钟信息/时钟设置：仅故障排查使用 */
+        var usbDisableDacClockInfo: Boolean
+            get() = kv.decodeBool("usb_disable_dac_clock_info", false)
+            set(value) { kv.encode("usb_disable_dac_clock_info", value) }
+
+        /** 回放后释放 USB 带宽：暂停时把音频流接口降回 Alt 0 */
+        var usbReleaseBandwidthAfterPlayback: Boolean
+            get() = kv.decodeBool("usb_release_bandwidth_after_playback", false)
+            set(value) { kv.encode("usb_release_bandwidth_after_playback", value) }
+
+        /** DAC 预热事件：native init 后、开始写入音频前等待的毫秒数 */
+        var usbDacPreheatMs: Int
+            get() = kv.decodeInt("usb_dac_preheat_ms", 0).let { value ->
+                if (value in listOf(0, 100, 200, 300, 400, 500, 800, 1000, 1500, 2000, 2500)) value else 0
+            }
+            set(value) {
+                val normalized = if (value in listOf(0, 100, 200, 300, 400, 500, 800, 1000, 1500, 2000, 2500)) value else 0
+                kv.encode("usb_dac_preheat_ms", normalized)
+            }
 
         /** USB 独占兼容模式：优先选择更稳定的 44.1/48kHz、16/24bit 输出 */
         var usbSafeExclusiveMode: Boolean
@@ -280,15 +305,15 @@ object AppPreferences {
             get() = kv.decodeBool("dsd_dither_enabled", false)
             set(value) { kv.encode("dsd_dither_enabled", value) }
 
-        /** USB DSD 传输方式：0=DoP, 1=Native DSD */
+        /** USB DSD 源输出方式：0=DoP, 1=Native DSD, 2=PCM 解码输出 */
         var usbDsdTransportMode: Int
             get() {
                 val persisted = kv.decodeInt("usb_dsd_transport_mode", -1)
-                if (persisted in 0..1) return persisted
+                if (persisted in 0..2) return persisted
                 return if (kv.decodeBool("dsd_dop_enabled", false)) 0 else 1
             }
             set(value) {
-                val normalized = value.coerceIn(0, 1)
+                val normalized = value.coerceIn(0, 2)
                 kv.encode("usb_dsd_transport_mode", normalized)
                 kv.encode("dsd_dop_enabled", normalized == 0)
             }
@@ -425,6 +450,36 @@ object AppPreferences {
             get() = kv.decodeBool("ui_audio_visualizer_enabled", false)
             set(value) { kv.encode("ui_audio_visualizer_enabled", value) }
 
+        /** 沉浸播放页进度条样式：0=普通，1=可视化波形，2=秒级柱状 */
+        var immersiveProgressStyle: Int
+            get() = kv.decodeInt("ui_immersive_progress_style", 0)
+            set(value) { kv.encode("ui_immersive_progress_style", value.coerceIn(0, 2)) }
+
+        /** 沉浸播放页可视化波形是否显示高潮段 */
+        var immersiveClimaxEnabled: Boolean
+            get() = kv.decodeBool("ui_immersive_climax_enabled", true)
+            set(value) { kv.encode("ui_immersive_climax_enabled", value) }
+
+        /** 沉浸播放页可视化进度条调试面板 */
+        var immersiveWaveformDebugPanel: Boolean
+            get() = kv.decodeBool("ui_immersive_waveform_debug_panel", false)
+            set(value) { kv.encode("ui_immersive_waveform_debug_panel", value) }
+
+        /** 沉浸播放页波形未播放区域颜色 */
+        var immersiveWaveformRemainingColor: Int
+            get() = kv.decodeInt("ui_immersive_waveform_remaining_color", 0xE6FFFFFF.toInt())
+            set(value) { kv.encode("ui_immersive_waveform_remaining_color", value) }
+
+        /** 沉浸播放页波形已播放区域颜色 */
+        var immersiveWaveformPlayedColor: Int
+            get() = kv.decodeInt("ui_immersive_waveform_played_color", 0x3DFFFFFF)
+            set(value) { kv.encode("ui_immersive_waveform_played_color", value) }
+
+        /** 沉浸播放页高潮段颜色，仅可视化进度条使用 */
+        var immersiveWaveformClimaxColor: Int
+            get() = kv.decodeInt("ui_immersive_waveform_climax_color", 0xFFFF3B30.toInt())
+            set(value) { kv.encode("ui_immersive_waveform_climax_color", value) }
+
         /** 关闭流动光效果 */
         var isFlowingLightDisabled: Boolean
             get() = kv.decodeBool("ui_flowing_light_disabled", false)
@@ -508,12 +563,12 @@ object AppPreferences {
 
     /** 专辑图偏好设置 */
     object AlbumArt {
-        /** 强制使用 ARGB_8888（24位RGB+Alpha） */
+        /** 强制使用 ARGB_8888 软件位图（24位RGB+Alpha），便于取色/模糊背景并减少色带。 */
         var forceArgb8888: Boolean
             get() = kv.decodeBool("aa_8888", true)
             set(value) { kv.encode("aa_8888", value) }
 
-        /** 使用更高分辨率封面 */
+        /** 使用 1024px 播放界面封面和 1440px 全屏封面层级；列表仍走低清层。 */
         var useHigherRes: Boolean
             get() = kv.decodeBool("aa_higher_res", true)
             set(value) { kv.encode("aa_higher_res", value) }
@@ -527,6 +582,11 @@ object AppPreferences {
         var alwaysShowCover: Boolean
             get() = kv.decodeBool("aa_always", true)
             set(value) { kv.encode("aa_always", value) }
+
+        /** 无真实专辑图时是否显示播放器内置默认专辑图。 */
+        var useDefaultArtwork: Boolean
+            get() = kv.decodeBool("aa_use_default_artwork", true)
+            set(value) { kv.encode("aa_use_default_artwork", value) }
 
         /** 封面切换动画 */
         var coverAnimation: Boolean

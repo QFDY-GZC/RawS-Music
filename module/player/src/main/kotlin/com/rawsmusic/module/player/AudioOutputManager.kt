@@ -67,6 +67,38 @@ object AudioOutputManager {
         BIT_DEPTH_32_8_24
     )
 
+    // ==========================
+    // v6d: 按输出引擎区分的采样率/位深范围
+    // ==========================
+
+    /** OpenSL ES 上限：16 bit · 44.1–96 kHz */
+    const val OPENSL_MAX_SAMPLE_RATE = 96_000
+
+    /** AAudio 上限：16–32 bit · 44.1–384 kHz */
+    const val AAUDIO_MAX_SAMPLE_RATE = 384_000
+
+    /** Direct Hi-Res 上限：16–32(8.24) bit · 44.1–384 kHz */
+    const val DIRECT_MAX_SAMPLE_RATE = 384_000
+
+    fun getMaxSampleRateForMode(mode: AudioOutputMode): Int = when (mode) {
+        AudioOutputMode.OPENSL_ES -> OPENSL_MAX_SAMPLE_RATE
+        AudioOutputMode.AAUDIO -> AAUDIO_MAX_SAMPLE_RATE
+        AudioOutputMode.DIRECT -> DIRECT_MAX_SAMPLE_RATE
+    }
+
+    /** 位深选项按输出引擎过滤 */
+    fun getBitDepthOptionsForMode(mode: AudioOutputMode): IntArray = when (mode) {
+        AudioOutputMode.OPENSL_ES -> intArrayOf(BIT_DEPTH_AUTO, BIT_DEPTH_16)
+        AudioOutputMode.AAUDIO -> intArrayOf(BIT_DEPTH_AUTO, BIT_DEPTH_16, BIT_DEPTH_24, BIT_DEPTH_32, BIT_DEPTH_FLOAT32)
+        AudioOutputMode.DIRECT -> intArrayOf(BIT_DEPTH_AUTO, BIT_DEPTH_16, BIT_DEPTH_24, BIT_DEPTH_32, BIT_DEPTH_FLOAT32, BIT_DEPTH_32_8_24)
+    }
+
+    /** 采样率选项按输出引擎过滤（含 0=自动） */
+    fun getSampleRateOptionsForMode(mode: AudioOutputMode): IntArray {
+        val maxRate = getMaxSampleRateForMode(mode)
+        return intArrayOf(0) + STANDARD_SAMPLE_RATES.filter { it <= maxRate }.toIntArray()
+    }
+
     fun normalizeTargetBitDepth(depth: Int): Int {
         return when (depth) {
             BIT_DEPTH_AUTO,

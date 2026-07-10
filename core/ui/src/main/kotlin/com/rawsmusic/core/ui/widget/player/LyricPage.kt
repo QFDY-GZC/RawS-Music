@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,6 +35,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -43,7 +45,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.R
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
+import com.rawsmusic.core.ui.widget.bitmaps.CrossfadeAlbumArt
+import com.rawsmusic.core.ui.theme.ThemeManager
 import io.github.proify.lyricon.lyric.model.Song
 
 @Composable
@@ -67,7 +71,16 @@ fun LyricPage(
     contentAlpha: Float = 1f,
     modifier: Modifier = Modifier
 ) {
+    val dark = ThemeManager.isDarkMode(LocalContext.current)
+    val lyricTextColor = if (dark) Color.White else Color(0xFF1B1B20)
+    val lyricSecondaryColor = lyricTextColor.copy(alpha = if (dark) 0.86f else 0.70f)
+    val lyricTertiaryColor = lyricTextColor.copy(alpha = if (dark) 0.50f else 0.48f)
     val accent = rememberCoverAccentColor(coverPath)
+    LaunchedEffect(coverPath) {
+        if (!coverPath.isNullOrBlank()) {
+            BitmapProvider.warmPlaybackArt(coverPath)
+        }
+    }
     Box(modifier = modifier.fillMaxSize()) {
         if (renderBackdrop) {
             StandardPlayerBackdrop(coverPath = coverPath, accent = accent)
@@ -84,6 +97,9 @@ fun LyricPage(
             LyricHeader(
                 currentSong = currentSong,
                 coverPath = coverPath,
+                primaryColor = lyricTextColor,
+                secondaryColor = lyricSecondaryColor,
+                tertiaryColor = lyricTertiaryColor,
                 moreIconRes = moreIconRes,
                 onMore = onMore,
                 showCover = showHeaderCover,
@@ -99,9 +115,9 @@ fun LyricPage(
                     positionMs = positionMs,
                     displayTranslation = displayTranslation,
                     displayRoma = displayRoma,
-                    textColor = Color.White,
-                    dimColor = Color.White.copy(alpha = 0.32f),
-                    secondaryColor = Color.White.copy(alpha = 0.58f),
+                    textColor = lyricTextColor,
+                    dimColor = lyricTextColor.copy(alpha = 0.42f),
+                    secondaryColor = lyricTextColor.copy(alpha = 0.68f),
                     onLineClick = onSeek,
                     onSwipeRight = onBack,
                     modifier = Modifier.fillMaxSize()
@@ -126,6 +142,9 @@ fun LyricPage(
 private fun LyricHeader(
     currentSong: AudioFile?,
     coverPath: String?,
+    primaryColor: Color,
+    secondaryColor: Color,
+    tertiaryColor: Color,
     @DrawableRes moreIconRes: Int,
     onMore: () -> Unit,
     showCover: Boolean,
@@ -189,7 +208,7 @@ private fun LyricHeader(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = currentSong?.displayName ?: stringResource(R.string.player_no_song),
-                color = Color.White,
+                color = primaryColor,
                 fontSize = 25.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
@@ -197,7 +216,7 @@ private fun LyricHeader(
             )
             Text(
                 text = artistLine(currentSong),
-                color = Color.White.copy(alpha = 0.86f),
+                color = secondaryColor,
                 fontSize = 17.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
@@ -205,7 +224,7 @@ private fun LyricHeader(
             )
             Text(
                 text = lyricAudioMeta(currentSong),
-                color = Color.White.copy(alpha = 0.50f),
+                color = tertiaryColor,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
@@ -217,14 +236,14 @@ private fun LyricHeader(
             modifier = Modifier
                 .size(58.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.20f))
+                .background(primaryColor.copy(alpha = 0.10f))
                 .clickable(onClick = onMore),
             contentAlignment = Alignment.Center
         ) {
             Image(
                 painter = painterResource(moreIconRes),
                 contentDescription = null,
-                colorFilter = ColorFilter.tint(Color.White.copy(alpha = 0.86f)),
+                colorFilter = ColorFilter.tint(secondaryColor),
                 modifier = Modifier.size(28.dp)
             )
         }
@@ -237,13 +256,15 @@ private fun LyricMiniNowPlaying(
     coverPath: String?,
     @DrawableRes moreIconRes: Int,
     onMore: () -> Unit,
-    showCover: Boolean
+    showCover: Boolean,
+    primaryColor: Color = Color.White,
+    secondaryColor: Color = Color.White.copy(alpha = 0.82f)
 ) {
     Row(
         modifier = Modifier
             .height(72.dp)
             .clip(RoundedCornerShape(30.dp))
-            .background(Color.Black.copy(alpha = 0.56f))
+            .background(primaryColor.copy(alpha = 0.10f))
             .clickable(onClick = onMore)
             .padding(start = 10.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -260,7 +281,7 @@ private fun LyricMiniNowPlaying(
         Column(modifier = Modifier.width(190.dp)) {
             Text(
                 text = currentSong?.displayName ?: stringResource(R.string.player_no_song),
-                color = Color.White,
+                color = primaryColor,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
@@ -268,7 +289,7 @@ private fun LyricMiniNowPlaying(
             )
             Text(
                 text = artistLine(currentSong),
-                color = Color.White.copy(alpha = 0.82f),
+                color = secondaryColor,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
@@ -278,7 +299,7 @@ private fun LyricMiniNowPlaying(
         Image(
             painter = painterResource(moreIconRes),
             contentDescription = null,
-            colorFilter = ColorFilter.tint(Color.White),
+            colorFilter = ColorFilter.tint(secondaryColor),
             modifier = Modifier.size(26.dp)
         )
     }
@@ -298,13 +319,15 @@ private fun CoverThumb(
         contentAlignment = Alignment.Center
     ) {
         if (!coverPath.isNullOrBlank()) {
-            BitmapImage(
+            CrossfadeAlbumArt(
                 key = coverPath,
-                contentDescription = title,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
-                targetWidth = 512,
-                targetHeight = 512
+                lowResSize = 192,
+                hiResSize = 512,
+                fadeMillis = 120,
+                holdPreviousOnKeyChange = true,
+                priority = com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest.Priority.LOADING_WIDGET
             )
         } else {
             Text("*", color = Color.White.copy(alpha = 0.5f), fontSize = 22.sp)
@@ -338,12 +361,22 @@ private fun artistLine(song: AudioFile?): String {
 }
 
 private fun lyricAudioMeta(song: AudioFile?): String {
-    val duration = song?.duration?.takeIf { it > 0 }?.let {
+    val audio = song
+    val duration = audio?.duration?.takeIf { it > 0 }?.let {
         val seconds = it / 1000L
         "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
     }
-    val format = song?.format?.takeIf { it.isNotBlank() }?.lowercase()
-    val sample = song?.sampleRate?.takeIf { it > 0 }?.let { "${it / 1000} kHz" }
-    val bits = song?.bitsPerSample?.takeIf { it > 0 }?.let { "$it bit" }
+    val format = audio?.format?.takeIf { it.isNotBlank() }?.lowercase()
+    val sample = audio?.let { current ->
+        current.sampleRate.takeIf { it > 0 }?.let {
+            com.rawsmusic.core.common.utils.SampleRateNormalizer.formatKhz(
+                sampleRate = it,
+                codecName = current.encodingFormat,
+                formatName = current.format,
+                filePath = current.path
+            )
+        }
+    }?.takeIf { it.isNotBlank() }
+    val bits = audio?.bitsPerSample?.takeIf { it > 0 }?.let { "$it bit" }
     return listOfNotNull(duration, format, sample, bits).joinToString(" | ")
 }

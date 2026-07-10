@@ -136,10 +136,12 @@ class LyricsCoordinator(
     /**
      * 播放位置变化时调用。
      */
-    fun onPositionChanged(positionMs: Long) {
+    fun onPositionChanged(positionMs: Long, updateUiPosition: Boolean = true) {
         val lyricOffset = getController()?.lyricManualOffsetMs?.toLong() ?: 0L
         val lyricPos = (positionMs - lyricOffset).coerceAtLeast(0L)
-        lyricPositionMs = lyricPos
+        if (updateUiPosition) {
+            lyricPositionMs = lyricPos
+        }
         updateExternalCurrentLine(lyricPos)
     }
 

@@ -15,11 +15,17 @@ internal object PcmCrossfadeMixer {
     private const val S32_FLOAT_SCALE = 2147483648.0f
 
     fun gainOut(progress: Float): Float {
-        return cos(progress.coerceIn(0f, 1f) * Math.PI.toFloat() / 2f)
+        val p = progress.coerceIn(0f, 1f)
+        val out = cos(p * Math.PI.toFloat() / 2f)
+        val inn = sin(p * Math.PI.toFloat() / 2f)
+        return out / (out + inn).coerceAtLeast(1.0e-6f)
     }
 
     fun gainIn(progress: Float): Float {
-        return sin(progress.coerceIn(0f, 1f) * Math.PI.toFloat() / 2f)
+        val p = progress.coerceIn(0f, 1f)
+        val out = cos(p * Math.PI.toFloat() / 2f)
+        val inn = sin(p * Math.PI.toFloat() / 2f)
+        return inn / (out + inn).coerceAtLeast(1.0e-6f)
     }
 
     fun mixInPlace(

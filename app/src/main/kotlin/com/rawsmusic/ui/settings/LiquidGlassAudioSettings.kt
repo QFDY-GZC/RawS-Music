@@ -1,18 +1,32 @@
 package com.rawsmusic.ui.settings
 
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.basic.SliderDefaults
+import top.yukonga.miuix.kmp.basic.Switch
+import top.yukonga.miuix.kmp.preference.SliderPreference
 import android.widget.Toast
+import androidx.compose.ui.res.stringResource
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -22,31 +36,39 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.AudioOutputManager
 
 @Composable
 fun LiquidGlassAudioSettingsScreen(
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onNavigateToTransitionSettings: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    
 
-    val sampleRates = intArrayOf(0, 44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000)
-    val bitDepths = AudioOutputManager.STANDARD_BIT_DEPTH_OPTIONS
+    var outputMode by remember { mutableStateOf(AppPreferences.Player.audioOutputMode) }
+    // v6f: 采样率/位深选项根据当前输出引擎过滤
+    val sampleRates = remember(outputMode) { AudioOutputManager.getSampleRateOptionsForMode(outputMode) }
+    val bitDepths = remember(outputMode) { AudioOutputManager.getBitDepthOptionsForMode(outputMode) }
 
-    var sampleRateIndex by remember {
+    var sampleRateIndex by remember(outputMode) {
         mutableStateOf(sampleRates.indexOf(AudioOutputManager.getTargetSampleRate()).coerceAtLeast(0))
     }
-    var bitDepthIndex by remember {
+    var bitDepthIndex by remember(outputMode) {
         mutableStateOf(bitDepths.indexOf(AudioOutputManager.getTargetBitDepth()).coerceAtLeast(0))
     }
-    var outputMode by remember { mutableStateOf(AppPreferences.Player.audioOutputMode) }
     var normalization by remember { mutableStateOf(AppPreferences.Player.volumeNormalizationEnabled) }
     var gapless by remember { mutableStateOf(AppPreferences.Player.gaplessPlaybackEnabled) }
     var crossfadeSec by remember { mutableStateOf(AppPreferences.Player.crossfadeDuration) }
@@ -56,85 +78,92 @@ fun LiquidGlassAudioSettingsScreen(
         com.rawsmusic.ui.songs.PlayerHolder.controller?.applyAudioOutputSettingsChanged()
     }
 
-    SettingsPage(title = "音质设置", onBack = onBack) {
-        SettingsCard {
-            SectionHeader("采样率")
-            Text(
-                AudioOutputManager.SAMPLE_RATE_LABELS[sampleRates[sampleRateIndex]] ?: "自动",
-                fontSize = 14.sp,
-                color = MiuixTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-            Slider(
-                value = sampleRateIndex.toFloat(),
-                onValueChange = { idx ->
-                    sampleRateIndex = idx.toInt()
-                    val rate = sampleRates.getOrElse(sampleRateIndex) { 0 }
-                    AudioOutputManager.setTargetSampleRate(rate)
-                },
-                onValueChangeFinished = {
-                    applyAudioOutputSettings()
-                },
-                valueRange = 0f..(sampleRates.size - 1).toFloat(),
-                steps = sampleRates.size - 2,
-                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary)
-            )
+    fun selectEngine(mode: AudioOutputMode) {
+        val isAvailable = AudioOutputManager.isOutputModeAvailable(mode, context)
+        if (!isAvailable) {
+            Toast.makeText(context, context.getString(R.string.settings_audio_output_unavailable, AudioOutputManager.getOutputModeLabel(mode)), Toast.LENGTH_SHORT).show()
+            return
         }
-
-        Spacer(Modifier.height(12.dp))
-
-        SettingsCard {
-            SectionHeader("位深")
-            Text(
-                AudioOutputManager.BIT_DEPTH_LABELS[bitDepths[bitDepthIndex]] ?: "自动",
-                fontSize = 14.sp,
-                color = MiuixTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-            Slider(
-                value = bitDepthIndex.toFloat(),
-                onValueChange = { idx ->
-                    bitDepthIndex = idx.toInt()
-                    val depth = bitDepths.getOrElse(bitDepthIndex) { 0 }
-                    AudioOutputManager.setTargetBitDepth(depth)
-                },
-                onValueChangeFinished = {
-                    applyAudioOutputSettings()
-                },
-                valueRange = 0f..(bitDepths.size - 1).toFloat(),
-                steps = bitDepths.size - 2,
-                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary)
-            )
+        outputMode = mode
+        AudioOutputManager.setOutputMode(mode)
+        // 切换引擎后，如果当前采样率/位深超出新引擎范围，自动钳制
+        val maxRate = AudioOutputManager.getMaxSampleRateForMode(mode)
+        val curRate = AudioOutputManager.getTargetSampleRate()
+        if (curRate > maxRate) {
+            AudioOutputManager.setTargetSampleRate(maxRate)
         }
+        val allowedBits = AudioOutputManager.getBitDepthOptionsForMode(mode).toList()
+        val curBits = AudioOutputManager.getTargetBitDepth()
+        if (curBits !in allowedBits) {
+            AudioOutputManager.setTargetBitDepth(0)
+        }
+        applyAudioOutputSettings()
+    }
 
-        Spacer(Modifier.height(12.dp))
+    SettingsPage(title = stringResource(R.string.settings_audio_quality_title), onBack = onBack) {
+        // ==========================
+        // v6f: 每个输出引擎一张卡片，图标在左，点击展开输出品质
+        // ==========================
+        val engines = listOf(
+            Triple(AudioOutputMode.OPENSL_ES, R.drawable.ic_audio_opensl_png, stringResource(R.string.settings_audio_engine_opensl_hint)),
+            Triple(AudioOutputMode.AAUDIO, R.drawable.ic_audio_aaudio_png, stringResource(R.string.settings_audio_engine_aaudio_hint)),
+            Triple(AudioOutputMode.DIRECT, R.drawable.ic_audio_hires_png, stringResource(R.string.settings_audio_engine_direct_hint))
+        )
 
-        SettingsCard {
-            SectionHeader("输出模式")
-            Spacer(Modifier.height(8.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (mode in listOf(AudioOutputMode.OPENSL_ES, AudioOutputMode.AAUDIO, AudioOutputMode.DIRECT)) {
-                    val label = AudioOutputManager.getOutputModeLabel(mode)
-                    val isSelected = outputMode == mode
-                    val isAvailable = AudioOutputManager.isOutputModeAvailable(mode, context)
-                    TextButton(
-                        onClick = {
-                            if (isAvailable) {
-                                outputMode = mode
-                                AudioOutputManager.setOutputMode(mode)
-                                applyAudioOutputSettings()
-                            } else {
-                                Toast.makeText(context, "$label 当前不可用", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(
-                            label,
-                            color = if (isSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 13.sp,
-                            fontFamily = appFontFamily()
+        for ((mode, iconRes, rangeHint) in engines) {
+            val isSelected = outputMode == mode
+            val label = AudioOutputManager.getOutputModeLabel(mode)
+            val isAvailable = AudioOutputManager.isOutputModeAvailable(mode, context)
+
+            EngineCard(
+                iconRes = iconRes,
+                label = label,
+                rangeHint = rangeHint,
+                isSelected = isSelected,
+                isEnabled = isAvailable,
+                onClick = { selectEngine(mode) }
+            ) {
+                // 展开的输出品质区域（采样率 + 位深滑条）
+                AnimatedVisibility(
+                    visible = isSelected,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    Column(Modifier.padding(top = 12.dp)) {
+                        // 采样率
+                        SliderPreference(
+                            title = stringResource(R.string.settings_audio_sample_rate),
+                            summary = null,
+                            valueText = AudioOutputManager.SAMPLE_RATE_LABELS[sampleRates[sampleRateIndex]] ?: stringResource(R.string.settings_auto),
+                            value = sampleRateIndex.toFloat(),
+                            onValueChange = { idx ->
+                                sampleRateIndex = idx.toInt()
+                                val rate = sampleRates.getOrElse(sampleRateIndex) { 0 }
+                                AudioOutputManager.setTargetSampleRate(rate)
+                            },
+                            onValueChangeFinished = { applyAudioOutputSettings() },
+                            valueRange = 0f..(sampleRates.size - 1).toFloat(),
+                            steps = (sampleRates.size - 2).coerceAtLeast(0),
+                            hapticEffect = SliderDefaults.SliderHapticEffect.Step
+                        )
+
+                        Spacer(Modifier.height(8.dp))
+
+                        // 位深
+                        SliderPreference(
+                            title = stringResource(R.string.settings_audio_bit_depth),
+                            summary = null,
+                            valueText = AudioOutputManager.BIT_DEPTH_LABELS[bitDepths[bitDepthIndex]] ?: stringResource(R.string.settings_auto),
+                            value = bitDepthIndex.toFloat(),
+                            onValueChange = { idx ->
+                                bitDepthIndex = idx.toInt()
+                                val depth = bitDepths.getOrElse(bitDepthIndex) { 0 }
+                                AudioOutputManager.setTargetBitDepth(depth)
+                            },
+                            onValueChangeFinished = { applyAudioOutputSettings() },
+                            valueRange = 0f..(bitDepths.size - 1).toFloat(),
+                            steps = (bitDepths.size - 2).coerceAtLeast(0),
+                            hapticEffect = SliderDefaults.SliderHapticEffect.Step
                         )
                     }
                 }
@@ -144,13 +173,13 @@ fun LiquidGlassAudioSettingsScreen(
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
-            SectionHeader("播放选项")
+            SectionHeader(stringResource(R.string.settings_audio_playback_options))
             Spacer(Modifier.height(4.dp))
-            InfoSwitchRow("音量标准化", "根据歌曲的响度元数据自动调整播放音量，使不同歌曲的听感音量趋于一致。", normalization, { infoDialogId = 1 }) { checked ->
+            InfoSwitchRow(stringResource(R.string.settings_audio_volume_normalization), stringResource(R.string.settings_audio_volume_normalization_desc), normalization, { infoDialogId = 1 }) { checked ->
                 normalization = checked
                 AppPreferences.Player.volumeNormalizationEnabled = checked
             }
-            InfoSwitchRow("无缝播放", "歌曲结束时无间隙地直接切换到下一首，消除曲目切换间的静音停顿。", gapless, { infoDialogId = 2 }) { checked ->
+            InfoSwitchRow(stringResource(R.string.settings_audio_gapless), stringResource(R.string.settings_audio_gapless_desc), gapless, { infoDialogId = 2 }) { checked ->
                 gapless = checked
                 AppPreferences.Player.gaplessPlaybackEnabled = checked
             }
@@ -160,15 +189,21 @@ fun LiquidGlassAudioSettingsScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "交叉淡入淡出: ${if (crossfadeSec == 0) "关闭" else "${crossfadeSec}秒"}",
+                    stringResource(
+                        R.string.settings_audio_crossfade_value,
+                        if (crossfadeSec == 0) stringResource(R.string.settings_audio_crossfade_off) else stringResource(R.string.settings_audio_crossfade_seconds, crossfadeSec)
+                    ),
                     fontSize = 14.sp,
                     color = MiuixTheme.colorScheme.primary,
                     modifier = Modifier.padding(top = 4.dp)
                 )
                 Spacer(Modifier.width(6.dp))
-                Text("ⓘ", fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, modifier = Modifier.padding(top = 4.dp))
+                Text(stringResource(R.string.settings_info_icon), fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, modifier = Modifier.padding(top = 4.dp))
             }
-            Slider(
+            SliderPreference(
+                title = stringResource(R.string.settings_audio_info_crossfade_title),
+                summary = null,
+                valueText = if (crossfadeSec == 0) stringResource(R.string.settings_audio_crossfade_off) else stringResource(R.string.settings_audio_crossfade_seconds, crossfadeSec),
                 value = crossfadeSec.toFloat(),
                 onValueChange = { sec ->
                     crossfadeSec = sec.toInt()
@@ -176,26 +211,29 @@ fun LiquidGlassAudioSettingsScreen(
                 },
                 valueRange = 0f..12f,
                 steps = 11,
-                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary)
+                hapticEffect = SliderDefaults.SliderHapticEffect.Step
+            )
+            Spacer(Modifier.height(8.dp))
+            SettingsActionRow(
+                title = "淡入淡出",
+                description = "播放淡入淡出与交叉淡入淡出设置",
+                onClick = onNavigateToTransitionSettings
             )
         }
 
         Spacer(Modifier.height(12.dp))
 
-        // 蓝牙 SCO 通话信道设置
         SettingsCard {
-            SectionHeader("蓝牙通话信道")
+            SectionHeader(stringResource(R.string.settings_audio_bluetooth_sco))
             Spacer(Modifier.height(4.dp))
 
-            // 说明文字
             Text(
-                "适配仅支持通话协议（HFP/HSP）的车载蓝牙设备",
+                stringResource(R.string.settings_audio_bluetooth_sco_desc),
                 fontSize = 13.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(bottom = 8.dp)
             )
 
-            // 三档选择：关闭/自动/强制
             var scoMode by remember { mutableStateOf(AppPreferences.Player.bluetoothScoMode) }
             var scoDownsample by remember { mutableStateOf(AppPreferences.Player.bluetoothScoDownsample) }
 
@@ -221,7 +259,6 @@ fun LiquidGlassAudioSettingsScreen(
                 }
             }
 
-            // 模式描述
             Text(
                 AudioOutputManager.getScoModeDescription(scoMode),
                 fontSize = 12.sp,
@@ -229,11 +266,10 @@ fun LiquidGlassAudioSettingsScreen(
                 modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
             )
 
-            // 降采样开关
             if (scoMode > 0) {
                 InfoSwitchRow(
-                    "降采样到 16kHz",
-                    "SCO 通话信道带宽有限，降采样可提高兼容性，但音质会降低。",
+                    stringResource(R.string.settings_audio_sco_downsample),
+                    stringResource(R.string.settings_audio_sco_downsample_desc),
                     scoDownsample,
                     { infoDialogId = 4 }
                 ) { checked ->
@@ -244,23 +280,105 @@ fun LiquidGlassAudioSettingsScreen(
         }
 
         if (infoDialogId > 0) {
-            val (title, body) = when (infoDialogId) {
-                1 -> "音量标准化" to "根据歌曲内嵌的响度元数据（ReplayGain）自动调整播放增益，使不同录制响度的歌曲在播放时听感音量趋于一致。\n 基于 ITU-R BS.1770 响度归一化标准。"
-                2 -> "无缝播放" to "在当前歌曲播放结束时，直接无缝切换到下一首歌曲的解码流，消除曲目之间常见的短暂静音间隙（Gap）。\n\n适用于现场专辑、DJ 混音等需要连续播放的场景。"
-                3 -> "交叉淡入淡出" to "在当前歌曲结束前，提前开始播放下一首歌曲，两首歌的音频重叠混合。使用恒定功率曲线（Constant-Power）进行淡入淡出，保持听感自然。\n\n可设置 1~12 秒的重叠时长，0 表示关闭。"
-                4 -> "SCO 降采样" to "蓝牙 SCO（Synchronous Connection Oriented）通话信道的音频带宽有限，通常仅支持 8kHz 或 16kHz 采样率。\n\n开启降采样后，音频会在输出前重采样到 16kHz，可提高与各类车载设备的兼容性，但音质会明显降低（类似电话通话效果）。\n\n关闭此选项时，系统会尝试以原始采样率输出，部分设备可能无法正常播放。"
+            val pair: Pair<String, String> = when (infoDialogId) {
+                1 -> stringResource(R.string.settings_audio_info_volume_title) to stringResource(R.string.settings_audio_info_volume_body)
+                2 -> stringResource(R.string.settings_audio_info_gapless_title) to stringResource(R.string.settings_audio_info_gapless_body)
+                3 -> stringResource(R.string.settings_audio_info_crossfade_title) to stringResource(R.string.settings_audio_info_crossfade_body)
+                4 -> stringResource(R.string.settings_audio_info_sco_title) to stringResource(R.string.settings_audio_info_sco_body)
                 else -> "" to ""
             }
+            val title = pair.first
+            val body = pair.second
             AlertDialog(
                 onDismissRequest = { infoDialogId = 0 },
                 title = { Text(title, fontWeight = FontWeight.Bold) },
                 text = { Text(body, fontSize = 14.sp, lineHeight = 22.sp) },
                 confirmButton = {
-                    TextButton(onClick = { infoDialogId = 0 }) { Text("知道了") }
+                    TextButton(onClick = { infoDialogId = 0 }) { Text(stringResource(R.string.settings_dialog_ok)) }
                 }
             )
         }
     }
+}
+
+// ==========================
+// v6f: 引擎卡片 — 图标在左，可展开
+// ==========================
+
+@Composable
+private fun EngineCard(
+    iconRes: Int,
+    label: String,
+    rangeHint: String,
+    isSelected: Boolean,
+    isEnabled: Boolean,
+    onClick: () -> Unit,
+    expandedContent: @Composable () -> Unit
+) {
+    val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
+    val cardColor = if (isDark) Color(0xFF1E1E1E) else Color.White
+    val borderColor = if (isSelected) MiuixTheme.colorScheme.primary.copy(alpha = 0.3f) else Color.Transparent
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(cardColor)
+            .clickable(enabled = isEnabled, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 图标在左：使用用户 SVG 转出的 PNG，保留原始配色；不加背景框、不 tint，尺寸放大
+            Box(
+                modifier = Modifier.width(64.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Image(
+                    painter = painterResource(id = iconRes),
+                    contentDescription = label,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.size(52.dp)
+                )
+            }
+
+            Spacer(Modifier.width(8.dp))
+
+            Column(Modifier.weight(1f)) {
+                Text(
+                    label,
+                    fontSize = 15.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isEnabled) MiuixTheme.colorScheme.onBackground
+                        else MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.4f),
+                    fontFamily = appFontFamily()
+                )
+                Text(
+                    rangeHint,
+                    fontSize = 11.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    fontFamily = appFontFamily(),
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+
+            // 选中指示
+            if (isSelected) {
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = MiuixTheme.colorScheme.primary,
+                    modifier = Modifier.size(8.dp)
+                ) {}
+            }
+        }
+
+        // 展开内容
+        expandedContent()
+    }
+
+    Spacer(Modifier.height(12.dp))
 }
 
 @Composable
@@ -271,7 +389,6 @@ private fun InfoSwitchRow(
     onInfoClick: () -> Unit,
     onCheckedChange: (Boolean) -> Unit
 ) {
-    
     Row(
         Modifier
             .fillMaxWidth()
@@ -289,22 +406,16 @@ private fun InfoSwitchRow(
             )
             Spacer(Modifier.width(6.dp))
             Text(
-                "ⓘ",
+                stringResource(R.string.settings_info_icon),
                 fontSize = 13.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.clickable { onInfoClick() }
             )
         }
-        androidx.compose.material3.Switch(
+        Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
-            modifier = Modifier.padding(start = 16.dp),
-            colors = androidx.compose.material3.SwitchDefaults.colors(
-                checkedThumbColor = androidx.compose.ui.graphics.Color(0xFFFFFFFF),
-                checkedTrackColor = androidx.compose.ui.graphics.Color(0xFF7F7F7F),
-                uncheckedThumbColor = androidx.compose.ui.graphics.Color(0xFFF1F1F1),
-                uncheckedTrackColor = androidx.compose.ui.graphics.Color(0xFF9F9F9F)
-            )
+            modifier = Modifier.padding(start = 16.dp)
         )
     }
 }

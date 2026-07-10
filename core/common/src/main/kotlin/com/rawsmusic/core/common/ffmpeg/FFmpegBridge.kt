@@ -174,6 +174,25 @@ object FFmpegBridge {
         return nativeWriteMetadata(filePath, metadata, cacheDir)
     }
 
+    /**
+     * Offline waveform scan.
+     * Returns normalized RMS waveform bars in 0..1, or an empty array on failure.
+     * startMs/endMs are used for CUE tracks and segment previews; native side samples by seek-decoding 500ms windows.
+     */
+    fun scanWaveform(path: String, startMs: Long, endMs: Long, sampleCount: Int): FloatArray {
+        if (!loaded || path.isBlank() || sampleCount <= 0) {
+            appendDebug("scanWaveform skipped: loaded=$loaded pathBlank=${path.isBlank()} samples=$sampleCount")
+            return FloatArray(0)
+        }
+        val boundedSamples = sampleCount.coerceIn(32, 100)
+        val result = nativeScanWaveform(path, startMs.coerceAtLeast(0L), endMs.coerceAtLeast(0L), boundedSamples)
+            ?: FloatArray(0)
+        appendDebug(
+            "scanWaveform ${shortPath(path)} start=$startMs end=$endMs samples=$boundedSamples -> ${result.size}"
+        )
+        return result
+    }
+
     // ========== Streaming Decoder API (zero-disk playback) ==========
 
     /**
@@ -283,6 +302,7 @@ object FFmpegBridge {
     private external fun nativeExtractCover(inputPath: String, outputPath: String): Int
     private external fun nativeGetMediaInfo(filePath: String): Map<String, String>?
     private external fun nativeWriteMetadata(filePath: String, metadata: Map<String, String>, cacheDir: String): Int
+    private external fun nativeScanWaveform(path: String, startMs: Long, endMs: Long, sampleCount: Int): FloatArray?
 
     // Streaming decoder native methods
     private external fun nativeOpenDecoder(path: String, targetRate: Int, targetBits: Int, channels: Int): Long

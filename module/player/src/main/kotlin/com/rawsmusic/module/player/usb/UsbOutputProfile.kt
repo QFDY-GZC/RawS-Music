@@ -36,6 +36,7 @@ data class UsbOutputProfile(
     val force1msPacket: Boolean,
     val preferSafeAlt: Boolean,
     val forceSoftwareVolume: Boolean,
+    val fixedDigitalVolume: Boolean = false,
 
     val lastGoodAlt: Int = 0,
     val lastGoodSampleRate: Int = 0,
@@ -52,6 +53,7 @@ data class UsbOutputProfile(
 
     val volumePath: UsbVolumePath
         get() = when {
+            fixedDigitalVolume -> UsbVolumePath.Fixed
             // Existing DSD source direct output is a raw 1-bit bitstream.
             // Software PCM gain cannot be applied without converting it back
             // to PCM, so expose either hardware volume or fixed output.

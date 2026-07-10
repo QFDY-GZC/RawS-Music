@@ -1,6 +1,8 @@
 package com.rawsmusic.ui.settings
 
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.basic.SliderDefaults
+import top.yukonga.miuix.kmp.preference.SliderPreference
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,8 +11,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -26,6 +26,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.FontManager
+import androidx.compose.ui.res.stringResource
+import com.rawsmusic.R
 
 @Composable
 fun GlobalFontSettingsScreen(
@@ -50,9 +52,9 @@ fun GlobalFontSettingsScreen(
         }
     }
 
-    SettingsPage(title = "全局字体", onBack = onBack) {
+    SettingsPage(title = stringResource(R.string.settings_global_font_title), onBack = onBack) {
         SettingsCard {
-            SectionHeader("预览")
+            SectionHeader(stringResource(R.string.settings_font_preview))
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -62,7 +64,7 @@ fun GlobalFontSettingsScreen(
             ) {
                 Column {
                     Text(
-                        "RawS Music",
+                        stringResource(R.string.settings_global_font_preview_title),
                         fontSize = (22 * fontSizeScale / 100f).sp,
                         fontFamily = previewFontFamily,
                         fontWeight = FontWeight(fontWeight),
@@ -71,7 +73,7 @@ fun GlobalFontSettingsScreen(
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                        stringResource(R.string.settings_global_font_preview_alphabet),
                         fontSize = (14 * fontSizeScale / 100f).sp,
                         fontFamily = previewFontFamily,
                         fontWeight = FontWeight(fontWeight),
@@ -80,7 +82,7 @@ fun GlobalFontSettingsScreen(
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        "0123456789 こんにちは 你好",
+                        stringResource(R.string.settings_global_font_preview_mixed),
                         fontSize = (14 * fontSizeScale / 100f).sp,
                         fontFamily = previewFontFamily,
                         fontWeight = FontWeight(fontWeight),
@@ -94,7 +96,7 @@ fun GlobalFontSettingsScreen(
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
-            SectionHeader("字重")
+            SectionHeader(stringResource(R.string.settings_font_weight))
             val weightLabel = when {
                 fontWeight < 200 -> "Thin"
                 fontWeight < 300 -> "ExtraLight"
@@ -106,12 +108,15 @@ fun GlobalFontSettingsScreen(
                 else -> "Bold"
             }
             Text(
-                "$weightLabel ($fontWeight)",
+                stringResource(R.string.settings_font_weight_value, weightLabel, fontWeight),
                 fontSize = 14.sp,
                 color = MiuixTheme.colorScheme.primary,
                 modifier = Modifier.padding(top = 4.dp)
             )
-            Slider(
+            SliderPreference(
+                title = stringResource(R.string.settings_font_weight),
+                summary = null,
+                valueText = stringResource(R.string.settings_font_weight_value, weightLabel, fontWeight),
                 value = fontWeight.toFloat(),
                 onValueChange = {
                     fontWeight = it.toInt()
@@ -119,21 +124,24 @@ fun GlobalFontSettingsScreen(
                 },
                 valueRange = 150f..700f,
                 steps = 10,
-                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary)
+                hapticEffect = SliderDefaults.SliderHapticEffect.Step
             )
         }
 
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
-            SectionHeader("字体大小")
+            SectionHeader(stringResource(R.string.settings_font_size))
             Text(
-                "$fontSizeScale%",
+                stringResource(R.string.settings_percent_value, fontSizeScale),
                 fontSize = 14.sp,
                 color = MiuixTheme.colorScheme.primary,
                 modifier = Modifier.padding(top = 4.dp)
             )
-            Slider(
+            SliderPreference(
+                title = stringResource(R.string.settings_font_size),
+                summary = null,
+                valueText = stringResource(R.string.settings_percent_value, fontSizeScale),
                 value = fontSizeScale.toFloat(),
                 onValueChange = {
                     fontSizeScale = it.toInt()
@@ -141,7 +149,7 @@ fun GlobalFontSettingsScreen(
                 },
                 valueRange = 80f..130f,
                 steps = 9,
-                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary)
+                hapticEffect = SliderDefaults.SliderHapticEffect.Step
             )
         }
 
@@ -149,7 +157,7 @@ fun GlobalFontSettingsScreen(
 
         SettingsCard {
             SwitchRow(
-                label = "斜体",
+                label = stringResource(R.string.settings_font_italic),
                 checked = fontItalic,
                 onCheckedChange = {
                     fontItalic = it

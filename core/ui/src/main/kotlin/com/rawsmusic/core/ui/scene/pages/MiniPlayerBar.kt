@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -32,6 +31,7 @@ import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.ui.widget.MiniPlayerArtwork
 import com.rawsmusic.core.ui.widget.MiniPlayerArtworkMode
 import com.rawsmusic.core.ui.widget.rememberMiniPlayerArtworkMode
+import com.rawsmusic.core.ui.systemui.rawNavigationBarsPadding
 
 /**
  * 底部迷你播放栏。
@@ -60,7 +60,7 @@ fun MiniPlayerBar(
             .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
             .background(colors.surface)
             .clickable(onClick = onClick)
-            .navigationBarsPadding()
+            .rawNavigationBarsPadding(reduceBy = 12.dp)
     ) {
         // 进度条
         Box(
@@ -96,7 +96,8 @@ fun MiniPlayerBar(
                 onDoubleTapToggleMode = {
                     artworkModeState.value = artworkModeState.value.toggle()
                 },
-                onSingleTap = onClick
+                onSingleTap = onClick,
+                animateArtwork = false
             )
 
             Spacer(Modifier.width(8.dp))

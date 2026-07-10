@@ -6,6 +6,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.rawsmusic.module.data.prefs.AppPreferences
+import androidx.compose.ui.res.stringResource
+import com.rawsmusic.R
 
 @Composable
 fun LiquidGlassPlayerInterfaceScreen(
@@ -19,9 +21,9 @@ fun LiquidGlassPlayerInterfaceScreen(
     var miniCoverEnabled by remember { mutableStateOf(AppPreferences.UI.isMiniCoverEnabled) }
     var playPageMemoryEnabled by remember { mutableStateOf(AppPreferences.UI.isPlayPageMemoryEnabled) }
 
-    SettingsPage(title = "界面设置", onBack = onBack) {
-        SettingsSection("背景") {
-            SwitchRow("默认背景", defaultBackgroundEnabled) { checked ->
+    SettingsPage(title = stringResource(R.string.settings_player_interface_title), onBack = onBack) {
+        SettingsSection(stringResource(R.string.settings_player_bg_section)) {
+            SwitchRow(stringResource(R.string.settings_player_default_bg), defaultBackgroundEnabled) { checked ->
                 defaultBackgroundEnabled = checked
                 AppPreferences.UI.isDefaultBackgroundEnabled = checked
                 android.content.Intent("com.rawsmusic.action.DEFAULT_BACKGROUND_SETTING_CHANGED").also {
@@ -30,13 +32,13 @@ fun LiquidGlassPlayerInterfaceScreen(
                 }
             }
             SettingsInfoEntry(
-                title = "默认背景规则",
-                description = "亮色模式白底黑字，暗色模式纯黑底白字"
+                title = stringResource(R.string.settings_player_default_bg_rule_title),
+                description = stringResource(R.string.settings_player_default_bg_rule_desc)
             )
         }
 
-        SettingsSection("播放界面") {
-            SwitchRow("沉浸模式", immersiveEnabled) { checked ->
+        SettingsSection(stringResource(R.string.settings_player_play_page_section)) {
+            SwitchRow(stringResource(R.string.settings_player_immersive), immersiveEnabled) { checked ->
                 immersiveEnabled = checked
                 AppPreferences.UI.isImmersiveEnabled = checked
                 android.content.Intent("com.rawsmusic.action.IMMERSIVE_SETTING_CHANGED").also {
@@ -45,10 +47,10 @@ fun LiquidGlassPlayerInterfaceScreen(
                 }
             }
             SettingsInfoEntry(
-                title = "沉浸模式",
-                description = "进入播放界面时显示专辑封面背景"
+                title = stringResource(R.string.settings_player_immersive),
+                description = stringResource(R.string.settings_player_immersive_desc)
             )
-            SwitchRow("音频可视化", audioVisualizerEnabled) { checked ->
+            SwitchRow(stringResource(R.string.settings_player_visualizer), audioVisualizerEnabled) { checked ->
                 audioVisualizerEnabled = checked
                 AppPreferences.UI.isAudioVisualizerEnabled = checked
                 android.content.Intent("com.rawsmusic.action.AUDIO_VISUALIZER_SETTING_CHANGED").also {
@@ -57,13 +59,13 @@ fun LiquidGlassPlayerInterfaceScreen(
                 }
             }
             SettingsInfoEntry(
-                title = "音频可视化",
-                description = "播放界面底部显示音频频谱动画"
+                title = stringResource(R.string.settings_player_visualizer),
+                description = stringResource(R.string.settings_player_visualizer_desc)
             )
         }
 
-        SettingsSection("主界面") {
-            SwitchRow("主界面常驻封面", miniCoverEnabled) { checked ->
+        SettingsSection(stringResource(R.string.settings_player_main_section)) {
+            SwitchRow(stringResource(R.string.settings_player_mini_cover), miniCoverEnabled) { checked ->
                 miniCoverEnabled = checked
                 AppPreferences.UI.isMiniCoverEnabled = checked
                 android.content.Intent("com.rawsmusic.action.MINI_COVER_SETTING_CHANGED").also {
@@ -72,16 +74,16 @@ fun LiquidGlassPlayerInterfaceScreen(
                 }
             }
             SettingsInfoEntry(
-                title = "主界面常驻封面",
-                description = "在主界面胶囊栏显示专辑封面"
+                title = stringResource(R.string.settings_player_mini_cover),
+                description = stringResource(R.string.settings_player_mini_cover_desc)
             )
-            SwitchRow("播放界面记忆", playPageMemoryEnabled) { checked ->
+            SwitchRow(stringResource(R.string.settings_player_page_memory), playPageMemoryEnabled) { checked ->
                 playPageMemoryEnabled = checked
                 AppPreferences.UI.isPlayPageMemoryEnabled = checked
             }
             SettingsInfoEntry(
-                title = "播放界面记忆",
-                description = "重新打开应用时恢复到上次的播放界面"
+                title = stringResource(R.string.settings_player_page_memory),
+                description = stringResource(R.string.settings_player_page_memory_desc)
             )
         }
     }

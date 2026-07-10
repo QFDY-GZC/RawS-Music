@@ -27,9 +27,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rawsmusic.R
 import com.rawsmusic.module.player.dsp.BassBoostController
 import com.rawsmusic.module.player.dsp.TrebleBoostController
 
@@ -79,10 +81,10 @@ fun LiquidGlassBassTrebleBoostScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = onBack) {
-                Text("← 返回", color = BassTrebleUiColors.Accent, fontSize = 16.sp)
+                Text(stringResource(R.string.settings_back_with_arrow), color = BassTrebleUiColors.Accent, fontSize = 16.sp)
             }
             Text(
-                "低音/高音增强",
+                stringResource(R.string.settings_bass_treble_title),
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Medium,
                 color = BassTrebleUiColors.TextPrimary
@@ -98,7 +100,7 @@ fun LiquidGlassBassTrebleBoostScreen(
         ) {
             // 低音增强部分
             Text(
-                "低音增强",
+                stringResource(R.string.settings_bass_title),
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Medium,
                 color = BassTrebleUiColors.Accent,
@@ -114,7 +116,7 @@ fun LiquidGlassBassTrebleBoostScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "启用低音增强",
+                        stringResource(R.string.settings_bass_enable),
                         fontSize = 16.sp,
                         color = BassTrebleUiColors.TextPrimary
                     )
@@ -133,10 +135,10 @@ fun LiquidGlassBassTrebleBoostScreen(
 
             CardSection {
                 SliderParam(
-                    label = "增益",
+                    label = stringResource(R.string.settings_effect_gain),
                     value = bassGain,
                     valueRange = -12f..12f,
-                    valueFormat = { String.format("%+.1f dB", it) },
+                    valueText = stringResource(R.string.settings_db_value_signed_one_decimal, bassGain),
                     onValueChange = { bassBoostController.setGain(it) },
                     accentColor = BassTrebleUiColors.Accent
                 )
@@ -146,10 +148,10 @@ fun LiquidGlassBassTrebleBoostScreen(
 
             CardSection {
                 SliderParam(
-                    label = "转折频率",
+                    label = stringResource(R.string.settings_effect_corner_frequency),
                     value = bassFrequency,
                     valueRange = 50f..500f,
-                    valueFormat = { String.format("%.0f Hz", it) },
+                    valueText = stringResource(R.string.settings_hz_value, bassFrequency.toInt()),
                     onValueChange = { bassBoostController.setFrequency(it) },
                     accentColor = BassTrebleUiColors.Accent
                 )
@@ -159,7 +161,7 @@ fun LiquidGlassBassTrebleBoostScreen(
 
             // 高音增强部分
             Text(
-                "高音增强",
+                stringResource(R.string.settings_treble_title),
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Medium,
                 color = BassTrebleUiColors.AccentSecondary,
@@ -175,7 +177,7 @@ fun LiquidGlassBassTrebleBoostScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "启用高音增强",
+                        stringResource(R.string.settings_treble_enable),
                         fontSize = 16.sp,
                         color = BassTrebleUiColors.TextPrimary
                     )
@@ -194,10 +196,10 @@ fun LiquidGlassBassTrebleBoostScreen(
 
             CardSection {
                 SliderParam(
-                    label = "增益",
+                    label = stringResource(R.string.settings_effect_gain),
                     value = trebleGain,
                     valueRange = -12f..12f,
-                    valueFormat = { String.format("%+.1f dB", it) },
+                    valueText = stringResource(R.string.settings_db_value_signed_one_decimal, trebleGain),
                     onValueChange = { trebleBoostController.setGain(it) },
                     accentColor = BassTrebleUiColors.AccentSecondary
                 )
@@ -207,10 +209,10 @@ fun LiquidGlassBassTrebleBoostScreen(
 
             CardSection {
                 SliderParam(
-                    label = "转折频率",
+                    label = stringResource(R.string.settings_effect_corner_frequency),
                     value = trebleFrequency,
                     valueRange = 2000f..16000f,
-                    valueFormat = { String.format("%.0f Hz", it) },
+                    valueText = stringResource(R.string.settings_hz_value, trebleFrequency.toInt()),
                     onValueChange = { trebleBoostController.setFrequency(it) },
                     accentColor = BassTrebleUiColors.AccentSecondary
                 )
@@ -238,7 +240,7 @@ private fun SliderParam(
     label: String,
     value: Float,
     valueRange: ClosedFloatingPointRange<Float>,
-    valueFormat: (Float) -> String,
+    valueText: String,
     onValueChange: (Float) -> Unit,
     accentColor: Color = BassTrebleUiColors.Accent
 ) {
@@ -257,7 +259,7 @@ private fun SliderParam(
                 color = BassTrebleUiColors.TextSecondary
             )
             Text(
-                valueFormat(value),
+                valueText,
                 fontSize = 14.sp,
                 color = accentColor
             )

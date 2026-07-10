@@ -1,7 +1,6 @@
 package com.rawsmusic.module.player
 
 import android.content.Context
-import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rawsmusic.core.common.model.AudioFile
@@ -43,8 +42,10 @@ class PlayerViewModel : ViewModel() {
     fun init(context: Context) {
         // PlayerController由MainActivity管理，此处仅确保PlayerService运行
         if (!PlayerService.isRunning) {
-            val intent = Intent(context, PlayerService::class.java)
-            context.startForegroundService(intent)
+            PlayerService.ensureServiceStarted(
+                context,
+                "player_view_model_init"
+            )
         }
     }
 

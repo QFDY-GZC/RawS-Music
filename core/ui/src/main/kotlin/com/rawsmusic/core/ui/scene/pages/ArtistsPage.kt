@@ -203,7 +203,6 @@ private fun ArtistListPage(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MiuixTheme.colorScheme.background)
     ) {
         ComposeGenericPowerList(
             items = items,
@@ -290,7 +289,7 @@ private fun List<AudioFile>.toArtistGroups(): List<ArtistGroupUi> {
                 name = artistName,
                 songs = artistSongs.sortedWith(compareBy<AudioFile> { it.album }.thenBy { it.discNumber }.thenBy { it.trackNumber }.thenBy { it.displayName }),
                 albumCount = albumCount,
-                coverKey = coverSong?.albumArtPath?.ifBlank { coverSong.path }.orEmpty(),
+                coverKey = coverSong?.coverKey.orEmpty(),
                 totalDurationMs = artistSongs.sumOf { it.duration.coerceAtLeast(0L) }
             )
         }

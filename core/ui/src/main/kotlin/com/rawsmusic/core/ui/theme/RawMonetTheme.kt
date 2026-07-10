@@ -237,7 +237,10 @@ fun RawSystemBars(
         // 所有主题统一走 edge-to-edge：状态栏透明，页面自己的背景铺到状态栏后面。
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = android.graphics.Color.TRANSPARENT
-        window.navigationBarColor = navigationBarColor.toArgb()
+        // Keep the navigation bar transparent for real edge-to-edge gesture-bar immersion.
+        // The navigationBarColor argument is kept for source compatibility but no longer paints
+        // a solid strip behind the system handle.
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             window.isStatusBarContrastEnforced = false

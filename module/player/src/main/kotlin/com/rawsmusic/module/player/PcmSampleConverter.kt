@@ -49,4 +49,41 @@ internal object PcmSampleConverter {
         }
         return samplesToWrite * 3
     }
+
+
+    fun s16ToS32Pcm(src: ByteArray, length: Int, dst: ByteArray): Int {
+        val samplesToWrite = minOf(length / 2, dst.size / 4)
+        val bytesToWrite = samplesToWrite * 4
+        val sb = ByteBuffer.wrap(src, 0, samplesToWrite * 2).order(ByteOrder.LITTLE_ENDIAN)
+        val db = ByteBuffer.wrap(dst, 0, bytesToWrite).order(ByteOrder.LITTLE_ENDIAN)
+        for (i in 0 until samplesToWrite) {
+            db.putInt(i * 4, sb.getShort(i * 2).toInt() shl 16)
+        }
+        return bytesToWrite
+    }
+
+    fun s16ToFloatPcm(src: ByteArray, length: Int, dst: ByteArray): Int {
+        val samplesToWrite = minOf(length / 2, dst.size / 4)
+        val bytesToWrite = samplesToWrite * 4
+        val sb = ByteBuffer.wrap(src, 0, samplesToWrite * 2).order(ByteOrder.LITTLE_ENDIAN)
+        val fb = ByteBuffer.wrap(dst, 0, bytesToWrite).order(ByteOrder.LITTLE_ENDIAN)
+        for (i in 0 until samplesToWrite) {
+            fb.putFloat(i * 4, sb.getShort(i * 2).toFloat() / 32768.0f)
+        }
+        return bytesToWrite
+    }
+
+    fun s16ToS24PackedPcm(src: ByteArray, length: Int, dst: ByteArray): Int {
+        val samplesToWrite = minOf(length / 2, dst.size / 3)
+        val sb = ByteBuffer.wrap(src, 0, samplesToWrite * 2).order(ByteOrder.LITTLE_ENDIAN)
+        var di = 0
+        for (i in 0 until samplesToWrite) {
+            val s32 = sb.getShort(i * 2).toInt() shl 16
+            dst[di] = ((s32 ushr 8) and 0xff).toByte()
+            dst[di + 1] = ((s32 ushr 16) and 0xff).toByte()
+            dst[di + 2] = ((s32 ushr 24) and 0xff).toByte()
+            di += 3
+        }
+        return samplesToWrite * 3
+    }
 }

@@ -60,43 +60,42 @@ object CueParser {
             val upper = line.uppercase()
             when {
                 upper.startsWith("FILE ") -> {
-                    val value = extractQuoted(line) ?: line.substringAfter("FILE ", "").trim().substringBefore(" ").trim()
+                    val value = extractQuoted(line) ?: valueAfter(line, "FILE").substringBefore(" ").trim()
                     if (sheetFileName.isBlank()) sheetFileName = value
                 }
                 upper.startsWith("TITLE ") -> {
-                    val value = extractQuoted(line) ?: line.substringAfter("TITLE ", "").trim()
+                    val value = extractQuoted(line) ?: valueAfter(line, "TITLE")
                     if (currentTrackNum > 0) currentTitle = value else sheetTitle = value
                 }
                 upper.startsWith("PERFORMER ") -> {
-                    val value = extractQuoted(line) ?: line.substringAfter("PERFORMER ", "").trim()
+                    val value = extractQuoted(line) ?: valueAfter(line, "PERFORMER")
                     if (currentTrackNum > 0) currentPerformer = value else sheetPerformer = value
                 }
                 upper.startsWith("SONGWRITER ") -> {
                     if (currentTrackNum == 0) {
-                        sheetSongwriter = extractQuoted(line) ?: line.substringAfter("SONGWRITER ", "").trim()
+                        sheetSongwriter = extractQuoted(line) ?: valueAfter(line, "SONGWRITER")
                     }
                 }
                 upper.startsWith("CATALOG ") -> {
-                    sheetCatalog = line.substringAfter("CATALOG ", "").trim()
+                    sheetCatalog = valueAfter(line, "CATALOG")
                 }
                 upper.startsWith("ISRC ") -> {
-                    currentIsrc = line.substringAfter("ISRC ", "").trim()
+                    currentIsrc = valueAfter(line, "ISRC")
                 }
                 upper.startsWith("TRACK ") -> {
                     flushTrack()
-                    val parts = line.substringAfter("TRACK ", "").trim().split("\\s+".toRegex())
+                    val parts = valueAfter(line, "TRACK").split("\\s+".toRegex())
                     currentTrackNum = parts.firstOrNull()?.toIntOrNull() ?: 0
                 }
                 upper.startsWith("INDEX 00 ") -> {
-                    currentIndex00Ms = parseIndexTime(line.substringAfter("INDEX 00 ", "").trim())
+                    currentIndex00Ms = parseIndexTime(valueAfterIndex(line))
                 }
                 upper.startsWith("INDEX 01 ") -> {
-                    currentIndex01Ms = parseIndexTime(line.substringAfter("INDEX 01 ", "").trim())
+                    currentIndex01Ms = parseIndexTime(valueAfterIndex(line))
                 }
                 upper.startsWith("INDEX ") -> {
                     if (currentIndex01Ms < 0) {
-                        val timeStr = line.substringAfter("INDEX ", "").trim()
-                            .substringAfter(" ", "").trim()
+                        val timeStr = valueAfterIndex(line)
                         val ms = parseIndexTime(timeStr)
                         if (ms >= 0 && currentIndex01Ms < 0) currentIndex01Ms = ms
                     }
@@ -127,6 +126,14 @@ object CueParser {
         val lastQuote = line.lastIndexOf('"')
         if (lastQuote <= firstQuote) return null
         return line.substring(firstQuote + 1, lastQuote)
+    }
+
+    private fun valueAfter(line: String, directive: String): String {
+        return line.trim().drop(directive.length).trim()
+    }
+
+    private fun valueAfterIndex(line: String): String {
+        return line.trim().split("\\s+".toRegex()).getOrNull(2).orEmpty()
     }
 
     private fun parseIndexTime(timeStr: String): Long {

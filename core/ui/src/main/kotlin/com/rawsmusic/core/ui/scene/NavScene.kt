@@ -51,7 +51,8 @@ enum class NavScene(
     GENRE_DETAIL(42, "genre_detail", "流派详情", "local_offer"),
     YEAR_DETAIL(43, "year_detail", "年份详情", "date_range"),
     COMPOSER_DETAIL(44, "composer_detail", "作曲家详情", "edit_note"),
-    SCAN_SETTINGS(45, "scan_settings", "扫描设置", "scanner");
+    SCAN_SETTINGS(45, "scan_settings", "扫描设置", "scanner"),
+    TRANSITION_SETTINGS(46, "transition_settings", "淡入淡出", "transition");
 
     companion object {
         private val idMap = entries.associateBy { it.id }

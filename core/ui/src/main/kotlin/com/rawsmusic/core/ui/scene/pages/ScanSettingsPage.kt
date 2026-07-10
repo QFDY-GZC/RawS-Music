@@ -18,13 +18,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateListOf
@@ -38,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -46,12 +45,17 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.rawsmusic.core.ui.R
 import com.rawsmusic.module.data.prefs.AppPreferences
+import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.preference.SliderPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
+import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.roundToInt
 
@@ -130,41 +134,39 @@ fun ScanSettingsPage(
         }.getOrDefault(false)
 
         if (!persisted) {
-            Toast.makeText(context, "无法保存文件夹权限", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.scan_settings_folder_permission_failed), Toast.LENGTH_SHORT).show()
             return@rememberLauncherForActivityResult
         }
 
         AppPreferences.Scanner.addMusicFolderUri(uri.toString())
         selectedFolderUris.clear()
         selectedFolderUris.addAll(AppPreferences.Scanner.musicFolderUris)
-        Toast.makeText(context, "已添加音乐文件夹", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.scan_settings_folder_added), Toast.LENGTH_SHORT).show()
         onRescan()
     }
 
-    if (showLegacyConfirmDialog) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showLegacyConfirmDialog = false },
-            title = { Text("启用传统文件访问方式？") },
-            text = {
-                Text(
-                    "传统文件访问会尝试直接扫描存储路径，需要所有音频访问权限。部分系统可能还需要在系统设置中允许完整文件访问。建议优先使用「选择音乐文件夹」。",
-                    lineHeight = 20.sp
-                )
-            },
-            confirmButton = {
-                androidx.compose.material3.TextButton(
-                    onClick = {
-                        showLegacyConfirmDialog = false
-                        onRequestLegacyAudioAccess()
-                    }
-                ) { Text("去授权") }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(
-                    onClick = { showLegacyConfirmDialog = false }
-                ) { Text("取消") }
-            }
-        )
+    OverlayDialog(
+        show = showLegacyConfirmDialog,
+        title = stringResource(R.string.scan_settings_legacy_access_dialog_title),
+        summary = stringResource(R.string.scan_settings_legacy_access_dialog_text),
+        onDismissRequest = { showLegacyConfirmDialog = false }
+    ) {
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                text = stringResource(R.string.scan_settings_action_cancel),
+                onClick = { showLegacyConfirmDialog = false },
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(16.dp))
+            TextButton(
+                text = stringResource(R.string.scan_settings_action_authorize),
+                onClick = {
+                    showLegacyConfirmDialog = false
+                    onRequestLegacyAudioAccess()
+                },
+                modifier = Modifier.weight(1f)
+            )
+        }
     }
 
     Column(
@@ -173,7 +175,7 @@ fun ScanSettingsPage(
             .background(pageBackground)
     ) {
         SmallTopAppBar(
-            title = "扫描设置",
+            title = stringResource(R.string.scan_settings_title),
             color = pageBackground,
             titleColor = MiuixTheme.colorScheme.onBackground,
             navigationIcon = {}
@@ -188,23 +190,23 @@ fun ScanSettingsPage(
             Spacer(Modifier.height(8.dp))
 
             // ── 音乐库 ──
-            SmallTitle(text = "音乐库")
+            SmallTitle(text = stringResource(R.string.scan_settings_library_section))
             CardGroup {
                 ArrowPreference(
-                    title = "重新扫描",
-                    summary = "重新扫描媒体库和已选择的音乐文件夹",
+                    title = stringResource(R.string.scan_settings_rescan_title),
+                    summary = stringResource(R.string.scan_settings_rescan_summary),
                     onClick = onRescan
                 )
                 ArrowPreference(
-                    title = "选择音乐文件夹",
-                    summary = "可选择 Music 以外的目录，例如 Download、Android/media",
+                    title = stringResource(R.string.scan_settings_choose_folder_title),
+                    summary = stringResource(R.string.scan_settings_choose_folder_summary),
                     onClick = { folderPicker.launch(null) }
                 )
             }
 
             // ── 已选择文件夹 ──
             if (selectedFolderUris.isNotEmpty()) {
-                SmallTitle(text = "文件夹扫描")
+                SmallTitle(text = stringResource(R.string.scan_settings_folder_scan_section))
                 CardGroup {
                     selectedFolderUris.forEachIndexed { index, rawUri ->
                         FolderRow(
@@ -214,7 +216,7 @@ fun ScanSettingsPage(
                                 AppPreferences.Scanner.removeMusicFolderUri(rawUri)
                                 selectedFolderUris.clear()
                                 selectedFolderUris.addAll(AppPreferences.Scanner.musicFolderUris)
-                                Toast.makeText(context, "已移除文件夹", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, context.getString(R.string.scan_settings_folder_removed), Toast.LENGTH_SHORT).show()
                             }
                         )
                         if (index != selectedFolderUris.lastIndex) {
@@ -225,10 +227,10 @@ fun ScanSettingsPage(
             }
 
             // ── 访问方式 ──
-            SmallTitle(text = "访问方式")
+            SmallTitle(text = stringResource(R.string.scan_settings_access_section))
             CardGroup {
                 SwitchPreference(
-                    title = "传统文件访问方式",
+                    title = stringResource(R.string.scan_settings_legacy_access_title),
                     checked = legacyFileAccessEnabled,
                     onCheckedChange = { checked: Boolean ->
                         if (checked) {
@@ -242,12 +244,12 @@ fun ScanSettingsPage(
             }
 
             // ── 扫描过滤 ──
-            SmallTitle(text = "扫描过滤")
+            SmallTitle(text = stringResource(R.string.scan_settings_filter_section))
             CardGroup {
                 SliderRow(
-                    title = "过滤短曲目",
-                    valueLabel = if (minTrackDurationSeconds <= 0) "从不忽略" else "${minTrackDurationSeconds} 秒",
-                    description = "低于该时长的音频不会加入音乐库",
+                    title = stringResource(R.string.scan_settings_min_duration_title),
+                    valueLabel = if (minTrackDurationSeconds <= 0) stringResource(R.string.scan_settings_never_ignore) else stringResource(R.string.scan_settings_seconds_value, minTrackDurationSeconds),
+                    description = stringResource(R.string.scan_settings_min_duration_summary),
                     value = minTrackDurationSeconds.toFloat(),
                     valueRange = 0f..60f,
                     steps = 59,
@@ -258,7 +260,7 @@ fun ScanSettingsPage(
                 )
                 MiuixDivider()
                 SwitchPreference(
-                    title = "忽略视频格式",
+                    title = stringResource(R.string.scan_settings_ignore_video_title),
                     checked = ignoreVideoFormats,
                     onCheckedChange = { checked: Boolean ->
                         ignoreVideoFormats = checked
@@ -268,10 +270,10 @@ fun ScanSettingsPage(
             }
 
             // ── 播放记录 ──
-            SmallTitle(text = "播放记录")
+            SmallTitle(text = stringResource(R.string.scan_settings_history_section))
             CardGroup {
                 SwitchPreference(
-                    title = "音轨进度保存与恢复",
+                    title = stringResource(R.string.scan_settings_track_progress_title),
                     checked = trackProgressMemoryEnabled,
                     onCheckedChange = { checked: Boolean ->
                         trackProgressMemoryEnabled = checked
@@ -281,7 +283,7 @@ fun ScanSettingsPage(
                 )
                 MiuixDivider()
                 SwitchPreference(
-                    title = "计入播放次数",
+                    title = stringResource(R.string.scan_settings_play_count_title),
                     checked = playCountEnabled,
                     onCheckedChange = { checked: Boolean ->
                         playCountEnabled = checked
@@ -290,9 +292,9 @@ fun ScanSettingsPage(
                 )
                 MiuixDivider()
                 SliderRow(
-                    title = "播放次数统计阈值",
-                    valueLabel = "${playCountThresholdPercent}%",
-                    description = "音轨至少播放到该比例才会计入一次播放次数",
+                    title = stringResource(R.string.scan_settings_play_count_threshold_title),
+                    valueLabel = stringResource(R.string.scan_settings_percent_value, playCountThresholdPercent),
+                    description = stringResource(R.string.scan_settings_play_count_threshold_summary),
                     value = playCountThresholdPercent.toFloat(),
                     valueRange = 1f..100f,
                     steps = 98,
@@ -305,10 +307,10 @@ fun ScanSettingsPage(
             }
 
             // ── 提示 ──
-            SmallTitle(text = "提示")
+            SmallTitle(text = stringResource(R.string.scan_settings_hint_section))
             CardGroup {
                 Text(
-                    text = "如果某些目录扫不到，优先使用「选择音乐文件夹」。传统文件访问方式只作为兼容兜底，不建议默认启用。",
+                    text = stringResource(R.string.scan_settings_hint_text),
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     fontSize = 13.sp,
                     lineHeight = 20.sp,
@@ -369,39 +371,17 @@ private fun SliderRow(
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 10.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = title,
-                color = if (enabled) MiuixTheme.colorScheme.onSurface else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium
-            )
-            Text(
-                text = valueLabel,
-                color = if (enabled) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium
-            )
-        }
-        Text(
-            text = description,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            fontSize = 12.sp,
-            lineHeight = 17.sp,
-            modifier = Modifier.padding(top = 2.dp)
-        )
-        Slider(
+        SliderPreference(
+            title = title,
+            summary = description,
+            valueText = valueLabel,
             value = value,
             onValueChange = onValueChange,
             onValueChangeFinished = onValueChangeFinished,
             valueRange = valueRange,
             steps = steps,
             enabled = enabled,
-            modifier = Modifier.padding(top = 4.dp)
+            hapticEffect = SliderDefaults.SliderHapticEffect.Step
         )
     }
 }
@@ -413,11 +393,12 @@ private fun FolderRow(
     onRemove: () -> Unit
 ) {
     val context = LocalContext.current
+    val fallbackName = stringResource(R.string.scan_settings_selected_folder_fallback)
 
-    val displayName = remember(rawUri) {
+    val displayName = remember(rawUri, fallbackName) {
         val uri = runCatching { Uri.parse(rawUri) }.getOrNull()
         uri?.let { DocumentFile.fromTreeUri(context, it)?.name }
-            .orEmpty().ifBlank { rawUri.substringAfterLast('/').ifBlank { "已选择的文件夹" } }
+            .orEmpty().ifBlank { rawUri.substringAfterLast('/').ifBlank { fallbackName } }
     }
 
     Column(
@@ -450,7 +431,7 @@ private fun FolderRow(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "扫描",
+                text = stringResource(R.string.scan_settings_action_scan),
                 color = MiuixTheme.colorScheme.primary,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
@@ -460,7 +441,7 @@ private fun FolderRow(
                     .padding(horizontal = 12.dp, vertical = 6.dp)
             )
             Text(
-                text = "移除",
+                text = stringResource(R.string.scan_settings_action_remove),
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,

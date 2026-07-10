@@ -47,9 +47,11 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.rawsmusic.R
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.scanner.ScanScheduler
@@ -61,6 +63,7 @@ import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import java.io.File
@@ -157,7 +160,7 @@ fun MusicFoldersDialog(
         val file = File(normalized)
 
         if (!file.exists() || !file.isDirectory) {
-            Toast.makeText(context, "文件夹不可用", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.folder_filter_folder_unavailable), Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -177,7 +180,7 @@ fun MusicFoldersDialog(
         }
 
         selectedPaths = addPathSelection(selectedPaths, normalized)
-        Toast.makeText(context, "已添加：${file.name.ifBlank { normalized }}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.folder_filter_folder_added, file.name.ifBlank { normalized }), Toast.LENGTH_SHORT).show()
     }
 
     fun handleFolderUri(uri: Uri?) {
@@ -198,7 +201,7 @@ fun MusicFoldersDialog(
         if (realPath == null) {
             Toast.makeText(
                 context,
-                "这个文件夹无法转换为本地路径，当前扫描链路暂不接入纯 SAF URI",
+                context.getString(R.string.folder_filter_saf_unsupported),
                 Toast.LENGTH_LONG
             ).show()
             AppLogger.w(TAG, "Unsupported SAF uri: $uri")
@@ -212,7 +215,7 @@ fun MusicFoldersDialog(
         val pathsToSave = normalizedSelected.toList()
 
         if (pathsToSave.isEmpty()) {
-            Toast.makeText(context, "请至少选择一个文件夹", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.folder_filter_select_at_least_one), Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -223,7 +226,7 @@ fun MusicFoldersDialog(
 
         Toast.makeText(
             context,
-            "已保存 ${pathsToSave.size} 个文件夹，开始扫描",
+            context.getString(R.string.folder_filter_saved_start_scan, pathsToSave.size),
             Toast.LENGTH_SHORT
         ).show()
 
@@ -277,7 +280,7 @@ fun MusicFoldersDialog(
             loading = false
         }.onFailure { e ->
             loading = false
-            loadError = e.message ?: "加载文件夹失败"
+            loadError = e.message ?: context.getString(R.string.folder_filter_load_failed)
             AppLogger.e(TAG, "load roots failed", e)
         }
     }
@@ -302,7 +305,7 @@ fun MusicFoldersDialog(
                 .fillMaxWidth(0.92f)
                 .heightIn(min = 420.dp, max = 680.dp),
             shape = RoundedCornerShape(28.dp),
-            color = MaterialTheme.colorScheme.surface,
+            color = MiuixTheme.colorScheme.surfaceContainerHigh,
             tonalElevation = 6.dp,
             shadowElevation = 12.dp
         ) {
@@ -312,8 +315,8 @@ fun MusicFoldersDialog(
                 .padding(20.dp)
         ) {
             Text(
-                text = "音乐文件夹",
-                color = MaterialTheme.colorScheme.onSurface,
+                text = stringResource(R.string.folder_filter_title),
+                color = MiuixTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
@@ -321,8 +324,8 @@ fun MusicFoldersDialog(
             Spacer(Modifier.height(4.dp))
 
             Text(
-                text = "选择要扫描的本地音乐目录",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                text = stringResource(R.string.folder_filter_summary),
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 style = MaterialTheme.typography.bodySmall
             )
 
@@ -341,7 +344,7 @@ fun MusicFoldersDialog(
                     .fillMaxWidth()
                     .weight(1f),
                 shape = RoundedCornerShape(22.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                color = MiuixTheme.colorScheme.surface.copy(alpha = 0.62f)
             ) {
                 when {
                     loading -> {
@@ -367,7 +370,7 @@ fun MusicFoldersDialog(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = loadError ?: "加载失败",
+                                text = loadError ?: stringResource(R.string.folder_filter_load_failed),
                                 color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.bodyMedium
                             )
@@ -434,10 +437,10 @@ private fun FolderPickerHeader(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            InfoChip(text = "已选 $selectedCount")
-            InfoChip(text = "根目录 $rootCount")
+            InfoChip(text = stringResource(R.string.folder_filter_selected_count, selectedCount))
+            InfoChip(text = stringResource(R.string.folder_filter_root_count, rootCount))
             if (loading) {
-                InfoChip(text = "加载中")
+                InfoChip(text = stringResource(R.string.folder_filter_loading))
             }
         }
     }
@@ -447,12 +450,12 @@ private fun FolderPickerHeader(
 private fun InfoChip(text: String) {
     Surface(
         shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        color = MiuixTheme.colorScheme.primary.copy(alpha = 0.12f)
     ) {
         Text(
             text = text,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-            color = MaterialTheme.colorScheme.primary,
+            color = MiuixTheme.colorScheme.primary,
             style = MaterialTheme.typography.labelMedium,
             maxLines = 1
         )
@@ -470,8 +473,8 @@ private fun EmptyFolderState(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "还没有可扫描的文件夹",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            text = stringResource(R.string.folder_filter_empty),
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             style = MaterialTheme.typography.bodyMedium
         )
 
@@ -481,7 +484,7 @@ private fun EmptyFolderState(
             onClick = onAddFolder,
             colors = ButtonDefaults.buttonColorsPrimary()
         ) {
-            Text("添加文件夹")
+            Text(stringResource(R.string.folder_filter_add_folder))
         }
     }
 }
@@ -533,7 +536,7 @@ private fun FolderPickerRow(
                 Text(
                     text = "›",
                     modifier = Modifier.rotate(arrowRotation),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -553,7 +556,7 @@ private fun FolderPickerRow(
         ) {
             Text(
                 text = node.displayName,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = MiuixTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (node.isStorage) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
@@ -562,7 +565,7 @@ private fun FolderPickerRow(
 
             Text(
                 text = node.subtitle,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -595,8 +598,8 @@ private fun FolderGlyph(
     val color = when {
         isUsb -> Color(0xFF74A8FF)
         isRemovable -> Color(0xFF9E8CFF)
-        isStorage -> MaterialTheme.colorScheme.primary
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
+        isStorage -> MiuixTheme.colorScheme.primary
+        else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
     }
 
     Box(
@@ -644,7 +647,7 @@ private fun TriStateMiuixCheckbox(
                 modifier = Modifier
                     .size(width = 14.dp, height = 3.dp)
                     .background(
-                        color = MaterialTheme.colorScheme.primary,
+                        color = MiuixTheme.colorScheme.primary,
                         shape = RoundedCornerShape(999.dp)
                     )
             )
@@ -668,13 +671,13 @@ private fun FolderPickerActions(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             TextButton(
-                text = "添加文件夹",
+                text = stringResource(R.string.folder_filter_add_folder),
                 onClick = onAddFolder,
                 modifier = Modifier.weight(1f)
             )
 
             TextButton(
-                text = "清除",
+                text = stringResource(R.string.folder_filter_clear),
                 onClick = onClear,
                 modifier = Modifier.weight(1f)
             )
@@ -687,7 +690,7 @@ private fun FolderPickerActions(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             TextButton(
-                text = "取消",
+                text = stringResource(R.string.folder_filter_cancel),
                 onClick = onCancel,
                 modifier = Modifier.weight(1f)
             )
@@ -700,7 +703,7 @@ private fun FolderPickerActions(
                     .weight(1f)
                     .defaultMinSize(minHeight = 46.dp)
             ) {
-                Text("保存并扫描")
+                Text(stringResource(R.string.folder_filter_save_and_scan))
             }
         }
     }
@@ -770,7 +773,7 @@ private suspend fun buildInitialRoots(
             isStorage = true,
             isRemovable = false,
             isUsb = false,
-            displayNameOverride = "Internal Storage"
+            displayNameOverride = context.getString(R.string.folder_filter_internal_storage)
         )
     }
 
@@ -790,8 +793,8 @@ private suspend fun buildInitialRoots(
 
         val isUsb = path.contains("usb", ignoreCase = true)
         val displayName = when {
-            isUsb -> "USB Storage"
-            volume.isRemovable -> "SD Card"
+            isUsb -> context.getString(R.string.folder_filter_usb_storage)
+            volume.isRemovable -> context.getString(R.string.folder_filter_sd_card)
             else -> file.name.ifBlank { path }
         }
 
@@ -860,11 +863,7 @@ private fun File.toFolderPickerNode(
 ): FolderPickerNode {
     val normalized = normalizePath(absolutePath)
     val canReadDir = canRead()
-    val childCount = try {
-        listFiles()?.count { it.isDirectory && !it.name.startsWith(".") && !it.name.startsWith("_") }
-    } catch (_: Exception) {
-        0
-    } ?: 0
+    val hasVisibleChildren = hasVisibleChildDirectory()
 
     return FolderPickerNode(
         path = normalized,
@@ -875,9 +874,17 @@ private fun File.toFolderPickerNode(
         isRemovable = isRemovable,
         isUsb = isUsb,
         canRead = canReadDir,
-        canExpand = canReadDir && childCount > 0,
-        hasChildren = childCount > 0
+        canExpand = canReadDir && hasVisibleChildren,
+        hasChildren = hasVisibleChildren
     )
+}
+
+private fun File.hasVisibleChildDirectory(): Boolean {
+    return try {
+        listFiles()?.any { it.isDirectory && !it.name.startsWith(".") && !it.name.startsWith("_") } == true
+    } catch (_: Exception) {
+        false
+    }
 }
 
 private fun checkStateForPath(

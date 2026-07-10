@@ -50,8 +50,11 @@ fun RawSMusicTheme(
     content: @Composable () -> Unit
 ) {
     val runtimeVersion = RawThemeRuntimeState.version
+    val activeThemeMode = remember(runtimeVersion, themeMode) {
+        ThemeManager.getCurrentTheme()
+    }
 
-    val isDark = when (themeMode) {
+    val isDark = when (activeThemeMode) {
         ThemeManager.ThemeMode.DARK -> true
         ThemeManager.ThemeMode.LIGHT -> false
         ThemeManager.ThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -63,7 +66,7 @@ fun RawSMusicTheme(
 
     if (colorThemeMode == ColorThemeMode.MIUIX) {
         val controller = remember(
-            themeMode,
+            activeThemeMode,
             accentColor,
             isDark,
             runtimeVersion,

@@ -32,9 +32,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rawsmusic.R
 import com.rawsmusic.module.player.dsp.CompressorController
 
 /**
@@ -92,10 +94,10 @@ fun LiquidGlassCompressorScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = onBack) {
-                Text("← 返回", color = CompressorUiColors.Accent, fontSize = 16.sp)
+                Text(stringResource(R.string.settings_back_with_arrow), color = CompressorUiColors.Accent, fontSize = 16.sp)
             }
             Text(
-                "压限器",
+                stringResource(R.string.settings_compressor_title),
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Medium,
                 color = CompressorUiColors.TextPrimary
@@ -115,7 +117,7 @@ fun LiquidGlassCompressorScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "启用压限器",
+                    stringResource(R.string.settings_compressor_enable),
                     fontSize = 16.sp,
                     color = CompressorUiColors.TextPrimary
                 )
@@ -140,7 +142,7 @@ fun LiquidGlassCompressorScreen(
                     .padding(16.dp)
             ) {
                 Text(
-                    "增益衰减",
+                    stringResource(R.string.settings_compressor_gain_reduction),
                     fontSize = 14.sp,
                     color = CompressorUiColors.TextSecondary
                 )
@@ -160,7 +162,7 @@ fun LiquidGlassCompressorScreen(
                             .background(CompressorUiColors.GRMeter)
                     )
                     Text(
-                        text = String.format("%.1f dB", currentGR),
+                        text = stringResource(R.string.settings_db_value_one_decimal, currentGR),
                         fontSize = 12.sp,
                         color = CompressorUiColors.TextPrimary,
                         modifier = Modifier.align(Alignment.Center)
@@ -179,10 +181,10 @@ fun LiquidGlassCompressorScreen(
             // 阈值
             CardSection {
                 SliderParam(
-                    label = "阈值",
+                    label = stringResource(R.string.settings_compressor_threshold),
                     value = thresholdDB,
                     valueRange = -60f..0f,
-                    valueFormat = { String.format("%.1f dB", it) },
+                    valueText = stringResource(R.string.settings_db_value_one_decimal, thresholdDB),
                     onValueChange = { compressorController.setThreshold(it) }
                 )
             }
@@ -192,10 +194,10 @@ fun LiquidGlassCompressorScreen(
             // 压缩比
             CardSection {
                 SliderParam(
-                    label = "压缩比",
+                    label = stringResource(R.string.settings_compressor_ratio),
                     value = ratio,
                     valueRange = 1f..20f,
-                    valueFormat = { String.format("%.1f:1", it) },
+                    valueText = stringResource(R.string.settings_ratio_value, ratio),
                     onValueChange = { compressorController.setRatio(it) }
                 )
             }
@@ -205,10 +207,10 @@ fun LiquidGlassCompressorScreen(
             // 启动时间
             CardSection {
                 SliderParam(
-                    label = "启动时间",
+                    label = stringResource(R.string.settings_compressor_attack),
                     value = attackMs,
                     valueRange = 0.1f..100f,
-                    valueFormat = { String.format("%.1f ms", it) },
+                    valueText = stringResource(R.string.settings_ms_value_one_decimal, attackMs),
                     onValueChange = { compressorController.setAttack(it) }
                 )
             }
@@ -218,10 +220,10 @@ fun LiquidGlassCompressorScreen(
             // 释放时间
             CardSection {
                 SliderParam(
-                    label = "释放时间",
+                    label = stringResource(R.string.settings_compressor_release),
                     value = releaseMs,
                     valueRange = 10f..1000f,
-                    valueFormat = { String.format("%.0f ms", it) },
+                    valueText = stringResource(R.string.settings_ms_value_integer, releaseMs.toInt()),
                     onValueChange = { compressorController.setRelease(it) }
                 )
             }
@@ -231,10 +233,10 @@ fun LiquidGlassCompressorScreen(
             // 补偿增益
             CardSection {
                 SliderParam(
-                    label = "补偿增益",
+                    label = stringResource(R.string.settings_compressor_makeup_gain),
                     value = makeupGainDB,
                     valueRange = 0f..24f,
-                    valueFormat = { String.format("%.1f dB", it) },
+                    valueText = stringResource(R.string.settings_db_value_one_decimal, makeupGainDB),
                     onValueChange = { compressorController.setMakeupGain(it) }
                 )
             }
@@ -244,10 +246,10 @@ fun LiquidGlassCompressorScreen(
             // 拐点宽度
             CardSection {
                 SliderParam(
-                    label = "拐点宽度",
+                    label = stringResource(R.string.settings_compressor_knee),
                     value = kneeWidthDB,
                     valueRange = 0f..30f,
-                    valueFormat = { String.format("%.1f dB", it) },
+                    valueText = stringResource(R.string.settings_db_value_one_decimal, kneeWidthDB),
                     onValueChange = { compressorController.setKneeWidth(it) }
                 )
             }
@@ -264,7 +266,7 @@ fun LiquidGlassCompressorScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "检测模式",
+                        stringResource(R.string.settings_compressor_detection_mode),
                         fontSize = 14.sp,
                         color = CompressorUiColors.TextSecondary
                     )
@@ -273,7 +275,7 @@ fun LiquidGlassCompressorScreen(
                             onClick = { compressorController.setDetectionMode(0) }
                         ) {
                             Text(
-                                "Peak",
+                                stringResource(R.string.settings_compressor_peak),
                                 color = if (detectionMode == 0) CompressorUiColors.Accent else CompressorUiColors.TextSecondary
                             )
                         }
@@ -282,7 +284,7 @@ fun LiquidGlassCompressorScreen(
                             onClick = { compressorController.setDetectionMode(1) }
                         ) {
                             Text(
-                                "RMS",
+                                stringResource(R.string.settings_compressor_rms),
                                 color = if (detectionMode == 1) CompressorUiColors.Accent else CompressorUiColors.TextSecondary
                             )
                         }
@@ -312,7 +314,7 @@ private fun SliderParam(
     label: String,
     value: Float,
     valueRange: ClosedFloatingPointRange<Float>,
-    valueFormat: (Float) -> String,
+    valueText: String,
     onValueChange: (Float) -> Unit
 ) {
     Column(
@@ -330,7 +332,7 @@ private fun SliderParam(
                 color = CompressorUiColors.TextSecondary
             )
             Text(
-                valueFormat(value),
+                valueText,
                 fontSize = 14.sp,
                 color = CompressorUiColors.Accent
             )

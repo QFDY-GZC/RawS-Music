@@ -12,6 +12,7 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.needsTechnicalMetadataEnrich
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.core.common.utils.BitrateNormalizer
+import com.rawsmusic.core.common.utils.SampleRateNormalizer
 import com.rawsmusic.module.scanner.parser.CueParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -92,10 +93,11 @@ object MediaStoreScanner {
         val startTime = System.currentTimeMillis()
         val contentResolver = context.contentResolver
         val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-        val selection = buildSelection(customPaths, options)
-        val selectionArgs = buildSelectionArgs(customPaths)
+        val forceLegacyPathSelection = shouldUseAndroid10LegacyPathSelection(customPaths)
+        val selection = buildSelection(customPaths, options, forceLegacyPathSelection)
+        val selectionArgs = buildSelectionArgs(customPaths, forceLegacyPathSelection)
 
-        android.util.Log.d("MediaStoreScanner", "scan: customPaths=$customPaths, quickScan=$quickScan")
+        android.util.Log.d("MediaStoreScanner", "scan: customPaths=$customPaths, quickScan=$quickScan, android10LegacyPath=$forceLegacyPathSelection")
 
         val rawFiles = mutableListOf<AudioFile>()
 
@@ -118,6 +120,26 @@ object MediaStoreScanner {
             android.util.Log.w("MediaStoreScanner", "MediaStore query failed", e)
             emit(ScanProgress.Error(e.message ?: "MediaStore query failed"))
             return@flow
+        }
+
+        // Android 10 only: if the user explicitly selected a folder and MediaStore returns 0,
+        // scan that selected folder directly. Do not fall back to public Music or whole storage.
+        if (rawFiles.isEmpty() && shouldAttemptAndroid10SelectedFolderFallback(customPaths)) {
+            val fallbackPaths = android10SelectedFallbackPaths(customPaths)
+
+            if (fallbackPaths.isNotEmpty()) {
+                android.util.Log.w(
+                    "MediaStoreScanner",
+                    "Android 10 MediaStore returned 0 files, fallback to selected filesystem paths only: $fallbackPaths"
+                )
+                emit(ScanProgress.Progress(0, 0, ScanStage.MEDIASTORE, "Android 10 已选目录兜底扫描"))
+                val fallbackFiles = runCatching { scanCustomPathsByFileSystem(context, fallbackPaths) }
+                    .onFailure { e -> android.util.Log.w("MediaStoreScanner", "Android 10 selected filesystem fallback failed", e) }
+                    .getOrDefault(emptyList())
+
+                rawFiles.addAll(fallbackFiles)
+                android.util.Log.d("MediaStoreScanner", "Android 10 selected fallback parsed: ${fallbackFiles.size} files")
+            }
         }
 
         android.util.Log.d("MediaStoreScanner", "MediaStore parsed: ${rawFiles.size} files")
@@ -181,15 +203,8 @@ object MediaStoreScanner {
 
             if (path.isBlank() || size <= 0L) return null
 
-            val albumArtUri = ContentUris.withAppendedId(
-                Uri.parse("content://media/external/audio/albumart"), albumId
-            )
             val format = guessFormat(path, mimeType)
-            val albumArtPath = if (isEmbeddedArtworkPreferredFormat(path, format)) {
-                ""
-            } else {
-                albumArtUri.toString()
-            }
+            val albumArtPath = ""
 
             AudioFile(
                 id = id, path = path, title = title,
@@ -197,7 +212,13 @@ object MediaStoreScanner {
                 album = sanitizeMediaStoreText(album),
                 albumId = albumId, duration = duration.coerceAtLeast(0L),
                 sampleRate = 0,
-                bitRate = BitrateNormalizer.toBps(rawBitrate = bitRateRaw, durationMs = duration, fileSizeBytes = size),
+                bitRate = BitrateNormalizer.toBps(
+                    rawBitrate = bitRateRaw,
+                    durationMs = duration,
+                    fileSizeBytes = size,
+                    formatName = format,
+                    filePath = path
+                ),
                 bitsPerSample = 0, format = format, fileSize = size,
                 trackNumber = normalizeTrackNumber(rawTrack), year = year,
                 dateAdded = dateAdded * 1000L, dateModified = dateModified * 1000L,
@@ -234,24 +255,29 @@ object MediaStoreScanner {
             val fullInfo = FfmpegMetadataReader.readFullInfo(rawFile.path)
             val tagData = fullInfo.tags
             val streamInfo = fullInfo.stream
-            val duration = when {
-                streamInfo.durationMs > 0 -> streamInfo.durationMs
-                rawFile.duration > 0 -> rawFile.duration
-                else -> 0L
-            }
-            val normalizedBitRate = BitrateNormalizer.toBps(
-                rawBitrate = if (streamInfo.bitRate > 0) streamInfo.bitRate else rawFile.bitRate,
-                durationMs = duration, fileSizeBytes = rawFile.fileSize
-            )
+            val duration = resolveDurationMs(rawFile.path, streamInfo.durationMs, rawFile.duration)
             val encodingFormat = FfmpegMetadataReader.mapCodecToFormat(streamInfo.codecName, rawFile.path)
                 .ifBlank { rawFile.encodingFormat.ifBlank { guessFormat(rawFile.path, "") } }
+            val normalizedBitRate = BitrateNormalizer.toBps(
+                rawBitrate = if (streamInfo.bitRate > 0) streamInfo.bitRate else rawFile.bitRate,
+                durationMs = duration,
+                fileSizeBytes = rawFile.fileSize,
+                codecName = streamInfo.codecName,
+                formatName = encodingFormat,
+                filePath = rawFile.path
+            )
 
             val result = rawFile.copy(
                 title = chooseBetterText(rawFile.title, tagData.title),
                 artist = chooseBetterText(rawFile.artist, tagData.artist),
                 album = chooseBetterText(rawFile.album, tagData.album),
                 duration = duration.coerceAtLeast(0L),
-                sampleRate = if (streamInfo.sampleRate > 0) streamInfo.sampleRate else rawFile.sampleRate,
+                sampleRate = SampleRateNormalizer.normalize(
+                    rawSampleRate = if (streamInfo.sampleRate > 0) streamInfo.sampleRate else rawFile.sampleRate,
+                    codecName = streamInfo.codecName,
+                    formatName = encodingFormat,
+                    filePath = rawFile.path
+                ),
                 bitRate = if (normalizedBitRate > 0) normalizedBitRate else rawFile.bitRate,
                 bitsPerSample = resolveBitsPerSample(streamInfo, rawFile.path, rawFile.bitsPerSample, rawFile.encodingFormat.ifBlank { rawFile.format }),
                 format = encodingFormat,
@@ -277,25 +303,31 @@ object MediaStoreScanner {
     }
 
     fun enrichSong(song: AudioFile): AudioFile {
+        val t0 = System.currentTimeMillis()
         return try {
             val fullInfo = FfmpegMetadataReader.readFullInfo(song.path)
             val tagData = fullInfo.tags
             val streamInfo = fullInfo.stream
-            val duration = when {
-                streamInfo.durationMs > 0 -> streamInfo.durationMs
-                song.duration > 0 -> song.duration
-                else -> 0L
-            }
-            val normalizedBitRate = BitrateNormalizer.toBps(
-                rawBitrate = if (streamInfo.bitRate > 0) streamInfo.bitRate else song.bitRate,
-                durationMs = duration, fileSizeBytes = song.fileSize
-            )
+            val duration = resolveDurationMs(song.path, streamInfo.durationMs, song.duration)
             val encodingFormat = if (streamInfo.codecName.isNotBlank())
                 FfmpegMetadataReader.mapCodecToFormat(streamInfo.codecName, song.path) else song.encodingFormat
+            val normalizedBitRate = BitrateNormalizer.toBps(
+                rawBitrate = if (streamInfo.bitRate > 0) streamInfo.bitRate else song.bitRate,
+                durationMs = duration,
+                fileSizeBytes = song.fileSize,
+                codecName = streamInfo.codecName,
+                formatName = encodingFormat,
+                filePath = song.path
+            )
 
-            song.copy(
+            val result = song.copy(
                 duration = if (duration > 0) duration else song.duration,
-                sampleRate = if (streamInfo.sampleRate > 0) streamInfo.sampleRate else song.sampleRate,
+                sampleRate = SampleRateNormalizer.normalize(
+                    rawSampleRate = if (streamInfo.sampleRate > 0) streamInfo.sampleRate else song.sampleRate,
+                    codecName = streamInfo.codecName,
+                    formatName = encodingFormat,
+                    filePath = song.path
+                ),
                 bitRate = if (normalizedBitRate > 0) normalizedBitRate else song.bitRate,
                 bitsPerSample = resolveBitsPerSample(streamInfo, song.path, song.bitsPerSample, song.encodingFormat.ifBlank { song.format }),
                 channelCount = if (streamInfo.channels > 0) streamInfo.channels else song.channelCount,
@@ -315,6 +347,11 @@ object MediaStoreScanner {
                 albumGain = if (tagData.albumGain != 0f) tagData.albumGain else song.albumGain,
                 albumPeak = if (tagData.albumPeak != 1.0f) tagData.albumPeak else song.albumPeak
             )
+            val took = System.currentTimeMillis() - t0
+            if (took >= 800L) {
+                android.util.Log.w("MediaStoreScanner", "slow enrichSong: ${took}ms path=${song.path} format=${song.format} size=${song.fileSize}")
+            }
+            result
         } catch (e: Exception) {
             android.util.Log.w("EnrichSong", "Failed for ${song.path}: ${e.message}", e)
             song
@@ -323,6 +360,30 @@ object MediaStoreScanner {
 
     private fun isMediaStoreDataComplete(file: AudioFile): Boolean {
         return !file.needsTechnicalMetadataEnrich()
+    }
+
+    private fun resolveDurationMs(path: String, streamDurationMs: Long, fallbackDurationMs: Long): Long {
+        return when {
+            streamDurationMs > 0L -> streamDurationMs
+            fallbackDurationMs > 0L -> fallbackDurationMs
+            else -> readDurationWithRetriever(path)
+        }
+    }
+
+    private fun readDurationWithRetriever(path: String): Long {
+        if (path.isBlank()) return 0L
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(path)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()
+                ?.coerceAtLeast(0L)
+                ?: 0L
+        } catch (_: Throwable) {
+            0L
+        } finally {
+            runCatching { retriever.release() }
+        }
     }
 
     private fun resolveBitsPerSample(
@@ -373,11 +434,11 @@ object MediaStoreScanner {
         "wmv", "3gp", "3g2", "ts", "mts", "m2ts", "mpg", "mpeg"
     )
 
-    private fun buildSelection(customPaths: List<String>, options: ScanOptions): String? {
+    private fun buildSelection(customPaths: List<String>, options: ScanOptions, forceLegacyPathSelection: Boolean = false): String? {
         val conditions = mutableListOf<String>()
         if (options.onlyMusic) conditions += "${MediaStore.Audio.Media.IS_MUSIC} != 0"
         if (customPaths.isNotEmpty()) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !forceLegacyPathSelection) {
                 // Android 10+：优先用 RELATIVE_PATH 匹配
                 val relativePaths = customPaths.mapNotNull(::customPathToRelativePath).distinct()
                 if (relativePaths.isNotEmpty()) {
@@ -393,17 +454,17 @@ object MediaStoreScanner {
         return conditions.takeIf { it.isNotEmpty() }?.joinToString(" AND ")
     }
 
-    private fun buildSelectionArgs(customPaths: List<String>): Array<String>? {
+    private fun buildSelectionArgs(customPaths: List<String>, forceLegacyPathSelection: Boolean = false): Array<String>? {
         if (customPaths.isEmpty()) return null
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !forceLegacyPathSelection) {
             val relativePaths = customPaths.mapNotNull(::customPathToRelativePath).distinct()
             if (relativePaths.isNotEmpty()) {
                 relativePaths.toTypedArray()
             } else {
-                customPaths.map { if (it.endsWith("/")) "$it%" else "$it/%" }.toTypedArray()
+                customPaths.map(::pathLikeArg).toTypedArray()
             }
         } else {
-            customPaths.map { if (it.endsWith("/")) "$it%" else "$it/%" }.toTypedArray()
+            customPaths.map(::pathLikeArg).toTypedArray()
         }
     }
 
@@ -416,6 +477,26 @@ object MediaStoreScanner {
             .trim('/')
             .takeIf { it.isNotBlank() }
             ?.let { "$it/%" }
+    }
+
+    private fun shouldUseAndroid10LegacyPathSelection(customPaths: List<String>): Boolean {
+        return Build.VERSION.SDK_INT == Build.VERSION_CODES.Q && customPaths.isNotEmpty()
+    }
+
+    private fun shouldAttemptAndroid10SelectedFolderFallback(customPaths: List<String>): Boolean {
+        return Build.VERSION.SDK_INT == Build.VERSION_CODES.Q && customPaths.isNotEmpty()
+    }
+
+    private fun android10SelectedFallbackPaths(customPaths: List<String>): List<String> {
+        return customPaths
+            .map { it.trimEnd('/') }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    private fun pathLikeArg(path: String): String {
+        val normalized = path.trimEnd('/')
+        return if (normalized.isBlank()) "%" else "$normalized/%"
     }
 
     private fun Cursor.getColumnSafely(columnName: String): Int {
@@ -464,20 +545,33 @@ object MediaStoreScanner {
 
     fun expandCueTracks(song: AudioFile): List<AudioFile> {
         val cueText = readCueSheetForFile(song.path)
-        if (cueText.isBlank()) return listOf(song)
+        if (cueText.isBlank()) {
+            android.util.Log.d("CueExpand", "CUE not found path=${song.path}")
+            return listOf(song)
+        }
         val cueSheet = try { CueParser.parse(cueText) } catch (e: Exception) {
             android.util.Log.w("CueExpand", "CUE parse failed for: ${song.path}", e)
             return listOf(song)
         }
-        if (cueSheet.tracks.isEmpty()) return listOf(song)
+        if (cueSheet.tracks.isEmpty()) {
+            android.util.Log.w("CueExpand", "CUE has no tracks path=${song.path} textLength=${cueText.length}")
+            return listOf(song)
+        }
+        val sourceDuration = when {
+            song.duration > 0L -> song.duration
+            else -> runCatching {
+                FfmpegMetadataReader.readFullInfo(song.path).stream.durationMs
+            }.getOrDefault(0L).takeIf { it > 0L }
+                ?: readDurationWithRetriever(song.path)
+        }
         val results = mutableListOf<AudioFile>()
         for (track in cueSheet.tracks) {
             val trackDuration = when {
                 track.endIndexMs > 0 -> track.endIndexMs - track.startIndexMs
-                song.duration > 0 -> song.duration - track.startIndexMs
+                sourceDuration > 0 -> sourceDuration - track.startIndexMs
                 else -> -1L
             }
-            if (trackDuration == 0L) continue
+            if (trackDuration <= 0L) continue
             val uniqueId = -(kotlin.math.abs(
                 "${song.path}_${track.startIndexMs}_${track.number}".hashCode().toLong() % 1_000_000_000L
             ) + track.number)
@@ -487,13 +581,17 @@ object MediaStoreScanner {
                 artist = track.performer.ifBlank { cueSheet.performer.ifBlank { song.artist } },
                 album = cueSheet.title.ifBlank { song.album },
                 albumArtist = cueSheet.performer.ifBlank { song.albumArtist },
-                duration = if (trackDuration > 0) trackDuration else song.duration,
+                duration = trackDuration,
                 trackNumber = track.number,
                 cueOffsetMs = track.startIndexMs,
-                cueEndMs = if (track.endIndexMs > 0) track.endIndexMs else song.duration,
+                cueEndMs = if (track.endIndexMs > 0) track.endIndexMs else sourceDuration,
                 cueTrackIndex = track.number
             )
         }
+        android.util.Log.i(
+            "CueExpand",
+            "CUE expanded path=${song.path} tracks=${cueSheet.tracks.size} results=${results.size} sourceDuration=$sourceDuration"
+        )
         return results.ifEmpty { listOf(song) }
     }
 
@@ -501,14 +599,19 @@ object MediaStoreScanner {
         try {
             val fullInfo = FfmpegMetadataReader.readFullInfo(filePath)
             val embedded = fullInfo.tags.cueSheet
-            if (embedded.isNotBlank()) return embedded
+            if (embedded.isNotBlank()) {
+                android.util.Log.d("CueExpand", "CUE source=embedded path=$filePath length=${embedded.length}")
+                return embedded
+            }
         } catch (_: Exception) {}
         val cueFile = findExternalCueFile(filePath) ?: return ""
         return try {
             val bytes = cueFile.readBytes()
             val utf8 = String(bytes, Charsets.UTF_8)
-            if (!utf8.contains("\ufffd")) utf8
+            val text = if (!utf8.contains("\ufffd")) utf8
             else try { String(bytes, charset("GBK")) } catch (_: Exception) { utf8 }
+            android.util.Log.d("CueExpand", "CUE source=external file=${cueFile.absolutePath} length=${text.length}")
+            text
         } catch (_: Exception) { "" }
     }
 
@@ -529,6 +632,26 @@ object MediaStoreScanner {
                 if (baseName.startsWith(cueBase, ignoreCase = true)) return file
             }
         }
+        // Some rippers use a generic CUE filename. Match the FILE directive against the
+        // container filename before giving up on an otherwise valid sheet.
+        val audioName = audioFile.name
+        dir.listFiles()?.firstOrNull { file ->
+            if (!file.extension.equals("cue", ignoreCase = true) || !file.isFile || !file.canRead()) {
+                return@firstOrNull false
+            }
+            val header = runCatching {
+                file.readLines(Charsets.UTF_8).take(24).joinToString(" ")
+            }.getOrDefault("")
+            Regex("FILE\\s+\\\"?([^\\\"]+)\\\"?", RegexOption.IGNORE_CASE)
+                .find(header)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.trim()
+                ?.let { referenced ->
+                    referenced.equals(audioName, ignoreCase = true) ||
+                        referenced.substringBeforeLast(".").equals(baseName, ignoreCase = true)
+                } == true
+        }?.let { return it }
         return null
     }
 
@@ -543,7 +666,7 @@ object MediaStoreScanner {
 
         customPaths
             .map { java.io.File(it) }
-            .filter { it.exists() && it.canRead() }
+            .filter { it.exists() && (it.canRead() || Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) }
             .forEach { root ->
                 Log.d(TAG, "legacy path: ${root.absolutePath}, exists=${root.exists()}, canRead=${root.canRead()}")
                 scanDirectoryRecursive(context, root, out)
@@ -581,8 +704,26 @@ object MediaStoreScanner {
         return try {
             retriever.setDataSource(file.absolutePath)
 
-            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            val retrieverDurationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                 ?.toLongOrNull() ?: 0L
+            val fullInfo = runCatching { FfmpegMetadataReader.readFullInfo(file.absolutePath) }.getOrNull()
+            val durationMs = resolveDurationMs(
+                path = file.absolutePath,
+                streamDurationMs = fullInfo?.stream?.durationMs ?: 0L,
+                fallbackDurationMs = retrieverDurationMs
+            )
+            val encodingFormat = fullInfo?.stream?.codecName
+                ?.takeIf { it.isNotBlank() }
+                ?.let { FfmpegMetadataReader.mapCodecToFormat(it, file.absolutePath) }
+                ?: guessFormat(file.absolutePath, "")
+            val bitRate = BitrateNormalizer.toBps(
+                rawBitrate = fullInfo?.stream?.bitRate ?: 0,
+                durationMs = durationMs,
+                fileSizeBytes = file.length(),
+                codecName = fullInfo?.stream?.codecName.orEmpty(),
+                formatName = encodingFormat,
+                filePath = file.absolutePath
+            )
 
             val minSec = AppPreferences.Scanner.minTrackDurationSeconds
             if (minSec > 0 && durationMs in 1 until minSec * 1000L) return null
@@ -613,9 +754,12 @@ object MediaStoreScanner {
                 year = year,
                 trackNumber = track,
                 duration = durationMs,
+                bitRate = bitRate,
+                format = encodingFormat,
+                encodingFormat = encodingFormat,
                 fileSize = file.length(),
                 dateAdded = file.lastModified() / 1000,
-                albumArtPath = file.absolutePath
+                albumArtPath = ""
             )
         } catch (e: Throwable) {
             Log.w(TAG, "legacy read failed: ${file.absolutePath}", e)

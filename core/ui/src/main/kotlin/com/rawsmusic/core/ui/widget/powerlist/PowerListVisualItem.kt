@@ -1,8 +1,9 @@
 package com.rawsmusic.core.ui.widget.powerlist
 
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.utils.BitrateNormalizer
+import com.rawsmusic.core.common.utils.SampleRateNormalizer
 import java.io.File
-import kotlin.math.roundToInt
 
 /**
  * 所有集合页共用的 PowerList item。
@@ -27,7 +28,7 @@ data class SongPowerListItem(
     override val stableId: Long get() = song.id
     override val stableKey: String get() = "${song.id}_${song.path}"
     override val sharedCoverElementId: String get() = "cover:song:$stableId"
-    override val coverKey: String get() = song.albumArtPath.ifBlank { song.path }
+    override val coverKey: String get() = song.coverKey
 
     override val title: String
         get() = song.displayName.ifBlank {
@@ -41,21 +42,36 @@ data class SongPowerListItem(
         get() = buildString {
             if (song.duration > 0L) append(formatPowerListDuration(song.duration))
             if (song.sampleRate > 0) {
-                if (isNotBlank()) append(" · ")
-                append(song.sampleRate / 1000)
-                append("kHz")
+                val normalizedSampleRate = SampleRateNormalizer.formatKhz(
+                    sampleRate = song.sampleRate,
+                    codecName = song.encodingFormat,
+                    formatName = song.format,
+                    filePath = song.path
+                )
+                if (normalizedSampleRate.isNotBlank()) {
+                    if (isNotBlank()) append(" · ")
+                    append(normalizedSampleRate)
+                }
             }
             if (song.bitsPerSample > 0) {
                 if (isNotBlank()) append(" · ")
                 append(song.bitsPerSample)
                 append("bit")
             }
-            val displayBitrate = if (song.bitRate > 0) song.bitRate
-                else if (song.fileSize > 0 && song.duration > 0) ((song.fileSize * 8.0) / (song.duration / 1000.0)).toInt()
-                else 0
-            if (displayBitrate > 0) {
+            val bitrateText = BitrateNormalizer
+                .formatKbps(
+                    rawBitrate = song.bitRate,
+                    durationMs = song.duration,
+                    fileSizeBytes = song.fileSize,
+                    codecName = song.encodingFormat,
+                    formatName = song.format,
+                    filePath = song.path
+                )
+                .takeIf { it != "未知" }
+                ?.replace(" ", "")
+            if (!bitrateText.isNullOrBlank()) {
                 if (isNotBlank()) append(" · ")
-                append("${(displayBitrate / 1000.0).roundToInt()}kbps")
+                append(bitrateText)
             }
             if (song.format.isNotBlank()) {
                 if (isNotBlank()) append(" · ")

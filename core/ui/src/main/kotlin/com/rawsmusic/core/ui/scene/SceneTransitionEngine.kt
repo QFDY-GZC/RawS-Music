@@ -697,7 +697,9 @@ private fun SharedCoverOverlay(
                         shape = RoundedCornerShape(radiusDp.dp)
                     },
                 contentScale = ContentScale.Crop,
-                showPlaceholder = false
+                showPlaceholder = false,
+                fadeMillis = 0,
+                freezeBitmapUpdates = true
             )
         }
     }

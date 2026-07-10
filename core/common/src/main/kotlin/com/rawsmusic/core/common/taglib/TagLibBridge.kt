@@ -52,6 +52,22 @@ object TagLibBridge {
         return metadata.filterKeys { it in audioProps }
     }
 
+    /**
+     * Project-style artwork path: extract embedded art in native code into a cache file, then let
+     * BitmapProvider decode that file with target-size sampling. This avoids moving the full
+     * embedded picture through MediaMetadataRetriever.embeddedPicture as a Java byte[].
+     */
+    fun extractEmbeddedArtworkToFile(filePath: String, outputPath: String): Boolean {
+        if (!loaded) return false
+        if (filePath.isBlank() || outputPath.isBlank()) return false
+        return try {
+            nativeExtractEmbeddedArtworkToFile(filePath, outputPath)
+        } catch (e: Throwable) {
+            Log.d(TAG, "extractEmbeddedArtworkToFile failed: ${filePath.takeLast(80)}, ${e.message}")
+            false
+        }
+    }
+
     // 兼容旧接口
     fun isWavFile(filePath: String): Boolean {
         if (!loaded) return false
@@ -62,4 +78,5 @@ object TagLibBridge {
 
     private external fun nativeReadMetadata(path: String): Map<String, String>?
     private external fun nativeIsSupported(path: String): Boolean
+    private external fun nativeExtractEmbeddedArtworkToFile(path: String, outputPath: String): Boolean
 }

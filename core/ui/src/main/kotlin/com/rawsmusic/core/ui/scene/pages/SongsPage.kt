@@ -1,6 +1,7 @@
 package com.rawsmusic.core.ui.scene.pages
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -30,6 +31,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -38,9 +40,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -51,28 +55,37 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.SortOrder
+import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.scene.CoverTransitionTarget
 import com.rawsmusic.core.ui.scene.LocalSharedTransitionRegistry
 import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.scene.sharedTextAnimated
 import com.rawsmusic.core.ui.widget.index.RawAlphabetIndex
-import com.rawsmusic.core.ui.widget.index.rememberAdaptiveAlphabetIndexData
+import com.rawsmusic.core.ui.widget.index.RawAlphabetIndexData
+import com.rawsmusic.core.ui.widget.index.RawIndexMode
+import com.rawsmusic.core.ui.widget.index.RawAlphabetIndexCache
 import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
 import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListState
 import com.rawsmusic.core.ui.widget.powerlist.ListZoomIndex
 import com.rawsmusic.core.ui.widget.powerlist.rememberComposePowerListState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.Search
 import top.yukonga.miuix.kmp.icon.extended.Back
+import top.yukonga.miuix.kmp.icon.extended.ExpandLess
+import top.yukonga.miuix.kmp.icon.extended.ExpandMore
 import top.yukonga.miuix.kmp.icon.extended.Folder
 import top.yukonga.miuix.kmp.icon.extended.Sort
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -135,19 +148,51 @@ fun SongsPage(
     }
 
     val selectedSongs = remember(visibleSongs, selectedSongIds) {
-        visibleSongs.filter { it.id in selectedSongIds }
+        if (selectedSongIds.isEmpty()) emptyList() else visibleSongs.filter { it.id in selectedSongIds }
     }
 
     val selectedPositions = remember(visibleSongs, selectedSongIds) {
-        visibleSongs.mapIndexedNotNull { index, song ->
-            if (song.id in selectedSongIds) index else null
-        }.toSet()
+        if (selectedSongIds.isEmpty()) {
+            emptySet()
+        } else {
+            visibleSongs.mapIndexedNotNull { index, song ->
+                if (song.id in selectedSongIds) index else null
+            }.toSet()
+        }
     }
 
-    val alphabetIndexData = rememberAdaptiveAlphabetIndexData(visibleSongs) {
-        it.displayName
+    val emptyAlphabetIndexData = remember { RawAlphabetIndexData(emptyList(), emptyMap(), RawIndexMode.AUTO) }
+    val alphabetIndexCacheKey = remember(visibleSongs, searchQuery, currentSortOrder) {
+        RawAlphabetIndexCache.keyForSongs(visibleSongs, searchQuery)
     }
-
+    val firstFrameAlphabetIndexData = remember(alphabetIndexCacheKey, visibleSongs, searchQuery) {
+        RawAlphabetIndexCache.get(alphabetIndexCacheKey)
+            ?: RawAlphabetIndexCache.quickBuild(visibleSongs, searchQuery)
+            .takeIf { it.targets.isNotEmpty() }
+            ?: emptyAlphabetIndexData
+    }
+    val alphabetIndexData by produceState(
+        initialValue = firstFrameAlphabetIndexData,
+        key1 = alphabetIndexCacheKey
+    ) {
+        if (visibleSongs.isEmpty()) {
+            value = emptyAlphabetIndexData
+            return@produceState
+        }
+        RawAlphabetIndexCache.get(alphabetIndexCacheKey)?.let { cached ->
+            value = cached
+            return@produceState
+        }
+        if (value.targets.isEmpty()) {
+            value = RawAlphabetIndexCache.quickBuild(visibleSongs, searchQuery)
+        }
+        val exact = withContext(Dispatchers.Default) {
+            RawAlphabetIndexCache.getOrBuild(alphabetIndexCacheKey, visibleSongs)
+        }
+        if (exact.targets.isNotEmpty()) {
+            value = exact
+        }
+    }
     val statusBarTop = WindowInsets.statusBars
         .asPaddingValues()
         .calculateTopPadding()
@@ -175,11 +220,18 @@ fun SongsPage(
             (powerListState.viewportScrollYPx / triggerPx).coerceIn(0f, 1f)
         }
     }
+    val showNowPlayingLocator by remember(currentPlayingIndex, visibleSongs.size, selectionMode, isSearchActive) {
+        derivedStateOf {
+            currentPlayingIndex in visibleSongs.indices &&
+                !powerListState.isIndexVisible(currentPlayingIndex) &&
+                !selectionMode &&
+                !isSearchActive
+        }
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(backgroundColor)
     ) {
         ComposePowerListFull(
             songs = visibleSongs,
@@ -271,9 +323,21 @@ fun SongsPage(
                     end = 0.dp
                 )
                 .zIndex(30f),
+            onTopSelect = {
+                powerListState.requestScrollToIndex(0)
+            },
             onSelect = { _, index ->
                 powerListState.requestScrollToIndex(index)
             }
+        )
+
+        NowPlayingLocatorButton(
+            visible = showNowPlayingLocator,
+            onClick = { powerListState.requestScrollToIndex(currentPlayingIndex) },
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 42.dp, bottom = 118.dp)
+                .zIndex(32f)
         )
 
         SongsSortLayoutSheet(
@@ -536,6 +600,47 @@ private fun TopGradientGlassTail(
             )
         )
     )
+}
+
+@Composable
+private fun NowPlayingLocatorButton(
+    visible: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tweenMillis(130)) + scaleIn(tweenMillis(220), initialScale = 0.82f) + slideInVertically(tweenMillis(220)) { it / 3 },
+        exit = fadeOut(tweenMillis(110)) + scaleOut(tweenMillis(150), targetScale = 0.86f) + slideOutVertically(tweenMillis(150)) { it / 4 },
+        modifier = modifier
+    ) {
+        val scheme = MiuixTheme.colorScheme
+        Box(
+            modifier = Modifier
+                .size(46.dp)
+                .shadow(
+                    elevation = 12.dp,
+                    shape = RoundedCornerShape(23.dp),
+                    ambientColor = scheme.onBackground.copy(alpha = 0.16f),
+                    spotColor = scheme.onBackground.copy(alpha = 0.24f)
+                )
+                .clip(RoundedCornerShape(23.dp))
+                .background(scheme.surface.copy(alpha = 0.88f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onClick
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                painter = painterResource(R.drawable.ic_now_playing_locator),
+                contentDescription = "定位到正在播放",
+                colorFilter = ColorFilter.tint(scheme.primary),
+                modifier = Modifier.size(24.dp)
+            )
+        }
+    }
 }
 
 @Composable

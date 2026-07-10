@@ -2,10 +2,8 @@ package com.rawsmusic.helper
 
 import android.app.Activity
 import android.os.Build
-import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.rawsmusic.R
 import com.rawsmusic.core.ui.theme.ColorThemeMode
 import com.rawsmusic.core.ui.theme.getCurrentColorThemeMode
 
@@ -17,7 +15,9 @@ class SystemBarsHelper(
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
         window.statusBarColor = android.graphics.Color.TRANSPARENT
-        window.navigationBarColor = ContextCompat.getColor(activity, R.color.scrim_color)
+        // Project-style edge-to-edge: the system gesture/navigation handle stays visible,
+        // but the app surface is allowed to draw behind it. Do not paint a scrim here.
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             window.isNavigationBarContrastEnforced = false
             window.isStatusBarContrastEnforced = false
@@ -39,9 +39,17 @@ class SystemBarsHelper(
             return
         }
 
-        // MIUIx 模式：主场景透明，播放器场景跟随主题
+        // MIUIX 模式：状态栏/导航栏都保持透明，具体页面自己绘制背景。
+        // This mirrors the design: content goes edge-to-edge, controls opt into safe insets.
         window.statusBarColor = android.graphics.Color.TRANSPARENT
-        WindowInsetsControllerCompat(window, window.decorView)
-            .isAppearanceLightStatusBars = isMainScene && !isDarkMode
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
+        }
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = isMainScene && !isDarkMode
+            isAppearanceLightNavigationBars = !isDarkMode
+        }
     }
 }

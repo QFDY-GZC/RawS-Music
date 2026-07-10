@@ -1,7 +1,11 @@
 package com.rawsmusic.core.ui.widget.player
 
+import androidx.activity.compose.BackHandler
 import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -13,6 +17,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -54,7 +60,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -81,14 +89,52 @@ import androidx.compose.ui.platform.LocalDensity
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.ui.R
+import com.rawsmusic.core.ui.widget.flow.rememberCurrentRawFlowMode
+import com.rawsmusic.core.ui.widget.flow.RawFlowBackground
 import com.rawsmusic.core.ui.widget.PlayerSceneController
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
+import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
+import com.rawsmusic.module.data.prefs.AppPreferences
 import io.github.proify.lyricon.lyric.model.Song
 import io.github.proify.lyricon.lyric.model.interfaces.IRichLyricLine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.abs
+
+private data class PlayerForegroundTone(
+    val primary: Color,
+    val secondary: Color,
+    val tertiary: Color,
+    val icon: Color,
+    val iconSoft: Color,
+    val chipBackground: Color,
+    val chipText: Color,
+    val controlTrack: Color,
+    val controlFill: Color
+)
+
+@Composable
+private fun rememberPlayerForegroundTone(): PlayerForegroundTone {
+    val scheme = MiuixTheme.colorScheme
+    val isDark = scheme.background.luminance() < 0.5f
+    val primary = if (isDark) Color.White else scheme.onBackground.copy(alpha = 0.88f)
+    val secondary = if (isDark) Color.White.copy(alpha = 0.76f) else scheme.onBackground.copy(alpha = 0.68f)
+    val tertiary = if (isDark) Color.White.copy(alpha = 0.52f) else scheme.onBackground.copy(alpha = 0.46f)
+    return PlayerForegroundTone(
+        primary = primary,
+        secondary = secondary,
+        tertiary = tertiary,
+        icon = if (isDark) Color.White else scheme.onBackground.copy(alpha = 0.84f),
+        iconSoft = if (isDark) Color.White.copy(alpha = 0.72f) else scheme.onBackground.copy(alpha = 0.62f),
+        chipBackground = if (isDark) Color.Black.copy(alpha = 0.28f) else scheme.surfaceContainerHigh.copy(alpha = 0.72f),
+        chipText = if (isDark) Color.White.copy(alpha = 0.85f) else scheme.onSurface.copy(alpha = 0.82f),
+        controlTrack = if (isDark) Color.White.copy(alpha = 0.16f) else scheme.onSurfaceVariantSummary.copy(alpha = 0.18f),
+        controlFill = if (isDark) Color.White.copy(alpha = 0.88f) else scheme.primary.copy(alpha = 0.84f)
+    )
+}
 
 @Composable
 fun ImmersivePlayerHorizontalStack(
@@ -124,6 +170,7 @@ fun ImmersivePlayerHorizontalStack(
     onAudioQuality: () -> Unit = {},
     onAudioQualityLongPress: () -> Unit = onAudioQuality,
     onMorePanelVisibleChange: (Boolean) -> Unit,
+    onOpenLyric: () -> Unit,
     onLyricSeek: (Long) -> Unit,
     onLyricTranslationToggle: () -> Unit,
     onAlbumSongClick: (AudioFile, Int) -> Unit,
@@ -181,6 +228,7 @@ fun ImmersivePlayerHorizontalStack(
             onAudioQuality = onAudioQuality,
             onAudioQualityLongPress = onAudioQualityLongPress,
             onMorePanelVisibleChange = onMorePanelVisibleChange,
+            onOpenLyric = onOpenLyric,
             pageProgress = basePage,
             renderBackdrop = false,
             renderTopBar = false,
@@ -198,6 +246,7 @@ fun ImmersivePlayerHorizontalStack(
             moreIconRes = R.drawable.ic_more_vert,
             onMore = { },
             onBack = { },
+            showHeaderCover = true,
             renderBackdrop = false,
             modifier = Modifier.pageLayer(2)
         )
@@ -216,6 +265,7 @@ fun ImmersivePlayerHorizontalStack(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ImmersivePlayerMainPage(
     currentSong: AudioFile?,
@@ -243,102 +293,166 @@ fun ImmersivePlayerMainPage(
     onAudioQuality: () -> Unit = {},
     onAudioQualityLongPress: () -> Unit = onAudioQuality,
     onMorePanelVisibleChange: (Boolean) -> Unit,
+    onOpenLyric: () -> Unit = {},
     pageProgress: Float = 1f,
     renderBackdrop: Boolean = true,
     renderTopBar: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     var showMore by remember { mutableStateOf(false) }
+    var immersiveProgressStyle by remember { mutableStateOf(ImmersiveProgressStyle.from(AppPreferences.UI.immersiveProgressStyle)) }
+    var climaxEnabled by remember { mutableStateOf(AppPreferences.UI.immersiveClimaxEnabled) }
+    var waveformDebugPanel by remember { mutableStateOf(AppPreferences.UI.immersiveWaveformDebugPanel) }
+    var waveformRemainingColorInt by remember { mutableStateOf(AppPreferences.UI.immersiveWaveformRemainingColor) }
+    var waveformPlayedColorInt by remember { mutableStateOf(AppPreferences.UI.immersiveWaveformPlayedColor) }
+    var waveformClimaxColorInt by remember { mutableStateOf(AppPreferences.UI.immersiveWaveformClimaxColor) }
+
+    fun saveProgressStyle(style: ImmersiveProgressStyle) {
+        immersiveProgressStyle = style
+        AppPreferences.UI.immersiveProgressStyle = style.value
+    }
+
+    fun saveClimaxEnabled(enabled: Boolean) {
+        climaxEnabled = enabled
+        AppPreferences.UI.immersiveClimaxEnabled = enabled
+    }
+
+    fun saveWaveformDebugPanel(enabled: Boolean) {
+        waveformDebugPanel = enabled
+        AppPreferences.UI.immersiveWaveformDebugPanel = enabled
+    }
+
+    fun saveWaveformRemainingColor(color: Color) {
+        waveformRemainingColorInt = color.toArgb()
+        AppPreferences.UI.immersiveWaveformRemainingColor = waveformRemainingColorInt
+    }
+
+    fun saveWaveformPlayedColor(color: Color) {
+        waveformPlayedColorInt = color.toArgb()
+        AppPreferences.UI.immersiveWaveformPlayedColor = waveformPlayedColorInt
+    }
+
+    fun saveWaveformClimaxColor(color: Color) {
+        waveformClimaxColorInt = color.toArgb()
+        AppPreferences.UI.immersiveWaveformClimaxColor = waveformClimaxColorInt
+    }
+
     Box(modifier = modifier.fillMaxSize()) {
+        val tone = rememberPlayerForegroundTone()
         if (renderBackdrop) ImmersiveBackdrop(coverPath = coverPath, pageProgress = pageProgress)
-        Column(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
                 .padding(horizontal = 30.dp, vertical = 14.dp)
         ) {
+            val titleTop = (maxHeight * 0.405f + 8.dp).coerceAtLeast(116.dp)
+
             if (renderTopBar) {
-                ImmersiveTopBar(pageProgress = pageProgress, showPageDots = false)
-                Spacer(Modifier.height(12.dp))
-            } else {
-                Spacer(Modifier.height(58.dp))
+                ImmersiveTopBar(
+                    pageProgress = pageProgress,
+                    showPageDots = false,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
             }
-            Spacer(modifier = Modifier.weight(1f))
+
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .offset(y = titleTop),
                 verticalAlignment = Alignment.Top
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         currentSong?.displayName ?: stringResource(R.string.player_no_song),
-                        color = Color.White,
-                        fontSize = 26.sp,
+                        color = tone.primary,
+                        fontSize = 21.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Clip,
+                        modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, repeatDelayMillis = 900)
                     )
                     Text(
                         currentSong?.artist?.ifBlank { stringResource(R.string.player_unknown_artist) } ?: "",
-                        color = Color.White.copy(alpha = 0.82f),
-                        fontSize = 17.sp,
+                        color = tone.secondary,
+                        fontSize = 14.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(Modifier.height(18.dp))
+                    Spacer(Modifier.height(12.dp))
                     MiniLyricPreview(
                         song = lyricSong,
                         positionMs = lyricPositionMs,
                         displayTranslation = displayTranslation,
-                        displayRoma = displayRoma
+                        displayRoma = displayRoma,
+                        onClick = onOpenLyric,
+                        primaryColor = tone.primary,
+                        secondaryColor = tone.secondary,
+                        dimColor = tone.tertiary
                     )
                 }
                 Spacer(Modifier.width(16.dp))
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("♡", color = Color.White.copy(alpha = 0.84f), fontSize = 37.sp)
-                    Text("••", color = Color.White.copy(alpha = 0.84f), fontSize = 23.sp, modifier = Modifier.clickable {
+                    Text("♡", color = tone.icon, fontSize = 33.sp)
+                    Text("••", color = tone.iconSoft, fontSize = 23.sp, modifier = Modifier.clickable {
                         showMore = true
                         onMorePanelVisibleChange(true)
                     })
                 }
             }
-            Spacer(Modifier.height(24.dp))
-            ImmersiveProgress(
-                currentPositionMs = currentPositionMs,
-                totalDurationMs = totalDurationMs,
-                onSeekStart = onSeekStart,
-                onSeekStop = onSeekStop
-            )
-            Spacer(Modifier.height(8.dp))
-            // 音频信息胶囊
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
+
+            Column(
+                modifier = Modifier.align(Alignment.BottomCenter)
             ) {
-                ImmersiveQualityPill(
-                    song = currentSong,
-                    text = audioInfoText,
-                    onClick = onAudioQuality,
-                    onLongClick = onAudioQualityLongPress
+                ImmersiveProgress(
+                    currentSong = currentSong,
+                    currentPositionMs = currentPositionMs,
+                    totalDurationMs = totalDurationMs,
+                    isPlaying = isPlaying,
+                    progressStyle = immersiveProgressStyle,
+                    climaxEnabled = climaxEnabled,
+                    waveformDebugPanel = waveformDebugPanel,
+                    waveformRemainingColor = Color(waveformRemainingColorInt),
+                    waveformPlayedColor = Color(waveformPlayedColorInt),
+                    waveformClimaxColor = Color(waveformClimaxColorInt),
+                    onSeekStart = onSeekStart,
+                    onSeekStop = onSeekStop
                 )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    ImmersiveQualityPill(
+                        song = currentSong,
+                        text = audioInfoText,
+                        onClick = onAudioQuality,
+                        onLongClick = onAudioQualityLongPress
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    IconCircle(iconRes = playModeIconRes, size = 38.dp, tint = tone.iconSoft, onClick = onPlayMode)
+                    IconCircle(iconRes = previousIconRes, size = 50.dp, tint = tone.icon, onClick = onPrevious)
+                    IconCircle(
+                        iconRes = if (isPlaying) pauseIconRes else playIconRes,
+                        size = 68.dp,
+                        tint = tone.icon,
+                        onClick = onPlayPause
+                    )
+                    IconCircle(iconRes = nextIconRes, size = 50.dp, tint = tone.icon, onClick = onNext)
+                    Text("≡", color = tone.iconSoft, fontSize = 33.sp)
+                }
             }
-            Spacer(Modifier.height(12.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                IconCircle(iconRes = playModeIconRes, size = 38.dp, tint = Color.White.copy(alpha = 0.72f), onClick = onPlayMode)
-                IconCircle(iconRes = previousIconRes, size = 50.dp, tint = Color.White, onClick = onPrevious)
-                IconCircle(
-                    iconRes = if (isPlaying) pauseIconRes else playIconRes,
-                    size = 68.dp,
-                    tint = Color.White,
-                    onClick = onPlayPause
-                )
-                IconCircle(iconRes = nextIconRes, size = 50.dp, tint = Color.White, onClick = onNext)
-                Text("≡", color = Color.White.copy(alpha = 0.72f), fontSize = 33.sp)
-            }
+        }
+        BackHandler(enabled = showMore) {
+            showMore = false
+            onMorePanelVisibleChange(false)
         }
         AnimatedVisibility(
             visible = showMore,
@@ -349,6 +463,18 @@ fun ImmersivePlayerMainPage(
             ImmersiveMoreSheet(
                 currentSong = currentSong,
                 coverPath = coverPath,
+                progressStyle = immersiveProgressStyle,
+                climaxEnabled = climaxEnabled,
+                waveformDebugPanel = waveformDebugPanel,
+                waveformRemainingColor = Color(waveformRemainingColorInt),
+                waveformPlayedColor = Color(waveformPlayedColorInt),
+                waveformClimaxColor = Color(waveformClimaxColorInt),
+                onProgressStyleChange = ::saveProgressStyle,
+                onClimaxEnabledChange = ::saveClimaxEnabled,
+                onWaveformDebugPanelChange = ::saveWaveformDebugPanel,
+                onWaveformRemainingColorChange = ::saveWaveformRemainingColor,
+                onWaveformPlayedColorChange = ::saveWaveformPlayedColor,
+                onWaveformClimaxColorChange = ::saveWaveformClimaxColor,
                 onDismiss = {
                     showMore = false
                     onMorePanelVisibleChange(false)
@@ -376,6 +502,7 @@ fun ImmersiveLyricPage(
     modifier: Modifier = Modifier
 ) {
     Box(modifier = modifier.fillMaxSize()) {
+        val tone = rememberPlayerForegroundTone()
         if (renderBackdrop) ImmersiveBackdrop(coverPath = coverPath, pageProgress = pageProgress)
         Column(
             modifier = Modifier
@@ -392,14 +519,14 @@ fun ImmersiveLyricPage(
             }
             Text(
                 currentSong?.displayName ?: stringResource(R.string.player_no_song),
-                color = Color.White.copy(alpha = 0.82f),
+                color = tone.primary,
                 fontSize = 34.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
                 currentSong?.artist?.ifBlank { stringResource(R.string.player_unknown_artist) } ?: "",
-                color = Color.White.copy(alpha = 0.58f),
+                color = tone.secondary,
                 fontSize = 21.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -409,14 +536,18 @@ fun ImmersiveLyricPage(
                     .fillMaxWidth()
                     .weight(1f)
             ) {
+                val maxPrimaryLyricLines = remember(song, displayTranslation, displayRoma) {
+                    immersivePrimaryLyricLineLimit(song, displayTranslation, displayRoma)
+                }
                 ComposeLyricView(
                     song = song,
                     positionMs = positionMs,
                     displayTranslation = displayTranslation,
                     displayRoma = displayRoma,
-                    textColor = Color.White,
-                    dimColor = Color.White.copy(alpha = 0.28f),
-                    secondaryColor = Color.White.copy(alpha = 0.58f),
+                    textColor = tone.primary,
+                    dimColor = tone.tertiary.copy(alpha = 0.62f),
+                    secondaryColor = tone.secondary,
+                    maxPrimaryVisibleLines = maxPrimaryLyricLines,
                     onLineClick = onSeek,
                     onSwipeRight = onBack,
                     modifier = Modifier.fillMaxSize()
@@ -429,11 +560,27 @@ fun ImmersiveLyricPage(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                LyricBottomButton(text = if (displayTranslation) "译 on" else "译 off", onClick = onTranslationToggle)
+                LyricBottomButton(
+                    text = stringResource(
+                        if (displayTranslation) R.string.player_lyric_translation_on
+                        else R.string.player_lyric_translation_off
+                    ),
+                    onClick = onTranslationToggle
+                )
                 Spacer(Modifier.width(1.dp))
             }
         }
     }
+}
+
+
+private fun immersivePrimaryLyricLineLimit(song: Song?, displayTranslation: Boolean, displayRoma: Boolean): Int {
+    val hasSecondaryText = song?.lyrics.orEmpty().any { line ->
+        displayTranslation && !line.translation.isNullOrBlank() ||
+            displayRoma && !line.roma.isNullOrBlank() ||
+            !line.secondary.isNullOrBlank()
+    }
+    return if (hasSecondaryText) 3 else 5
 }
 
 @Composable
@@ -469,7 +616,7 @@ fun ImmersiveAlbumInfoPage(
                     Spacer(Modifier.height(126.dp))
                 }
                 Text(
-                    currentSong?.displayName ?: "歌曲信息",
+                    currentSong?.displayName ?: stringResource(R.string.player_song_info_title),
                     color = Color.White,
                     fontSize = 34.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -478,24 +625,28 @@ fun ImmersiveAlbumInfoPage(
                 )
                 Spacer(Modifier.height(14.dp))
                 Text(
-                    "本地歌曲详情  >",
+                    stringResource(R.string.player_local_song_detail),
                     color = Color.White.copy(alpha = 0.66f),
                     fontSize = 20.sp
                 )
             }
-            item { InfoLine("歌手", currentSong?.artist?.ifBlank { "未知艺术家" } ?: "未知艺术家", coverPath) }
-            item { InfoLine("专辑", currentSong?.album?.ifBlank { "未知专辑" } ?: "未知专辑", coverPath) }
-            item { InfoLine("制作", "作词 / 作曲信息来自本地元数据", coverPath) }
+            item { InfoLine(stringResource(R.string.player_info_artist), currentSong?.artist?.ifBlank { stringResource(R.string.player_unknown_artist) } ?: stringResource(R.string.player_unknown_artist), coverPath) }
+            item { InfoLine(stringResource(R.string.player_info_album), currentSong?.album?.ifBlank { stringResource(R.string.player_unknown_album) } ?: stringResource(R.string.player_unknown_album), coverPath) }
+            item { InfoLine(stringResource(R.string.player_info_production), stringResource(R.string.player_info_production_summary), coverPath) }
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     InfoChip("↗ ${sameArtist.size}")
-                    InfoChip("◉ 本地在听")
-                    InfoChip("#${currentSong?.genre?.ifBlank { "Music" } ?: "Music"}")
+                    InfoChip(stringResource(R.string.player_local_listening_chip))
+                    InfoChip("#${currentSong?.genre?.ifBlank { stringResource(R.string.player_default_genre) } ?: stringResource(R.string.player_default_genre)}")
                 }
             }
             item {
                 Text(
-                    "${currentSong?.displayName ?: "这首歌"} ${currentSong?.artist?.ifBlank { "" } ?: ""}",
+                    stringResource(
+                        R.string.player_song_artist_line,
+                        currentSong?.displayName ?: stringResource(R.string.player_this_song),
+                        currentSong?.artist?.ifBlank { "" } ?: ""
+                    ),
                     color = Color.White,
                     fontSize = 25.sp,
                     fontWeight = FontWeight.Medium,
@@ -504,7 +655,7 @@ fun ImmersiveAlbumInfoPage(
                 )
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "这里展示基于本地播放器可获得的歌曲、专辑、歌手和播放列表信息。",
+                    stringResource(R.string.player_local_metadata_summary),
                     color = Color.White.copy(alpha = 0.58f),
                     fontSize = 19.sp,
                     lineHeight = 30.sp
@@ -512,7 +663,10 @@ fun ImmersiveAlbumInfoPage(
             }
             item {
                 Text(
-                    "听「${currentSong?.artist?.ifBlank { "本地音乐" } ?: "本地音乐"}」的也在听",
+                    stringResource(
+                        R.string.player_same_artist_title,
+                        currentSong?.artist?.ifBlank { stringResource(R.string.player_local_music) } ?: stringResource(R.string.player_local_music)
+                    ),
                     color = Color.White,
                     fontSize = 22.sp,
                     fontWeight = FontWeight.SemiBold
@@ -600,303 +754,50 @@ private fun ImmersiveBackdrop(
     coverPath: String?,
     pageProgress: Float = 1f
 ) {
-    val dominant = rememberDominantCoverColor(coverPath)
+    // page: 0 = 专辑页，1 = 播放页，2 = 歌词页。
+    // 背景统一走 RawFlowBackground，和主界面/列表页共用同一套主题跟随与流光开关。
+    val flowMode = rememberCurrentRawFlowMode()
+    val playerProgress = (1f - abs(pageProgress - 1f)).coerceIn(0f, 1f)
+    val density = LocalDensity.current
 
-    val baseColor = darken(dominant, 0.62f)
-    val deepColor = darken(dominant, 0.34f)
-    val shadowColor = darken(dominant, 0.24f)
-
-    // page: 0 = 专辑页，1 = 播放页，2 = 歌词页
-    val sideProgress = abs(pageProgress - 1f).coerceIn(0f, 1f)
-    val albumProgress = (1f - pageProgress).coerceIn(0f, 1f)
-    val lyricProgress = (pageProgress - 1f).coerceIn(0f, 1f)
-    val playerProgress = (1f - sideProgress).coerceIn(0f, 1f)
-
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(deepColor)
-    ) {
-        if (coverPath.isNullOrBlank()) return@BoxWithConstraints
-
-        val density = LocalDensity.current
-
-        // 主播放页顶部封面高度，按你当前要求使用 41%
-        val splitY = maxHeight * 0.41f
-        val overlap = 68.dp
-        val bottomStart = (splitY - overlap).coerceAtLeast(0.dp)
-        val bottomHeight = maxHeight - bottomStart
-
-        // 遮罩层从 splitY 开始，不进入清晰封面区域
-        val maskStart = splitY
-        val maskHeight = maxHeight - maskStart
-
-        val topMaskHeight = maxWidth * 70f / 195f
-        val topEdgeFadePx = with(density) { 88.dp.toPx() }
-        val bottomEdgeFadePx = with(density) { 180.dp.toPx() }
-
-        val cWidth = constraints.maxWidth.toFloat()
-        val cHeight = constraints.maxHeight.toFloat()
-
-        // ---------------------------------------------------------
-        // A. 主播放页背景：顶部清晰封面 + 底部重模糊倒影
-        // ---------------------------------------------------------
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(bottomHeight)
-                .offset(y = bottomStart)
-                .align(Alignment.TopCenter)
-                .clipToBounds()
-                .graphicsLayer {
-                    alpha = playerProgress
-                }
-        ) {
-            BitmapImage(
-                key = coverPath,
-                contentDescription = null,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = -1f
-                        rotationZ = 180f
-                        alpha = 0.94f
-                    }
-                    .immersiveBlur(64.dp),
-                contentScale = ContentScale.Crop,
-                targetWidth = 12,
-                targetHeight = 12
-            )
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(baseColor.copy(alpha = 0.12f))
-            )
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(bottomHeight)
-                .offset(y = bottomStart)
-                .align(Alignment.TopCenter)
-                .clipToBounds()
-                .edgeTransparent(
-                    edge = EdgeFade.Top,
-                    widthPx = bottomEdgeFadePx
-                )
-                .graphicsLayer {
-                    alpha = playerProgress
-                }
-        ) {
-            BitmapImage(
-                key = coverPath,
-                contentDescription = null,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = -1f
-                        rotationZ = 180f
-                        alpha = 0.18f
-                    }
-                    .immersiveBlur(48.dp),
-                contentScale = ContentScale.Crop,
-                targetWidth = 24,
-                targetHeight = 24
-            )
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(splitY + 32.dp)
-                .align(Alignment.TopCenter)
-                .clipToBounds()
-                .edgeTransparent(
-                    edge = EdgeFade.Bottom,
-                    widthPx = topEdgeFadePx
-                )
-                .graphicsLayer {
-                    alpha = playerProgress
-                }
-        ) {
-            BitmapImage(
-                key = coverPath,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-                targetWidth = 1080,
-                targetHeight = 1080
-            )
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(overlap * 2.8f)
-                .offset(y = splitY - overlap)
-                .align(Alignment.TopCenter)
-                .graphicsLayer {
-                    alpha = playerProgress
-                }
-                .background(
-                    Brush.verticalGradient(
-                        colorStops = arrayOf(
-                            0.00f to Color.Transparent,
-                            0.20f to baseColor.copy(alpha = 0.12f),
-                            0.50f to deepColor.copy(alpha = 0.28f),
-                            0.78f to shadowColor.copy(alpha = 0.18f),
-                            1.00f to Color.Transparent
-                        )
-                    )
-                )
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        RawFlowBackground(
+            mode = flowMode,
+            sourceCoverKey = coverPath,
+            modifier = Modifier.fillMaxSize()
         )
 
-        // ---------------------------------------------------------
-        // B. 左右侧页背景：整屏低采样高斯模糊
-        // albumProgress: 左滑进入专辑页
-        // lyricProgress: 右滑进入歌词页
-        // sideProgress: 任意离开播放页都会显示模糊背景
-        // ---------------------------------------------------------
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    alpha = sideProgress
-                }
-        ) {
-            // 主模糊色场：12x12 + 重模糊
-            BitmapImage(
-                key = coverPath,
-                contentDescription = null,
+        if (!coverPath.isNullOrBlank()) {
+            val splitY = maxHeight * 0.41f
+            Box(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .fillMaxWidth()
+                    .height(splitY + 32.dp)
+                    .align(Alignment.TopCenter)
+                    .clipToBounds()
                     .graphicsLayer {
-                        scaleX = 1.18f
-                        scaleY = 1.18f
-                        alpha = 0.86f
+                        // 横滑进入歌词页时只做清晰封面淡出；返回播放页时自然淡入。
+                        alpha = playerProgress
                     }
-                    .immersiveBlur(76.dp),
-                contentScale = ContentScale.Crop,
-                targetWidth = 12,
-                targetHeight = 12
-            )
-
-            // 弱结构层：24x24，避免纯色死板，但不要看出封面
-            BitmapImage(
-                key = coverPath,
-                contentDescription = null,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = 1.10f
-                        scaleY = 1.10f
-                        alpha = 0.08f
-                    }
-                    .immersiveBlur(60.dp),
-                contentScale = ContentScale.Crop,
-                targetWidth = 24,
-                targetHeight = 24
-            )
-
-            // 中央光晕：左右侧页都有，但位置略不同
-            val glowX = cWidth * if (albumProgress > lyricProgress) 0.44f else 0.54f
-            val glowY = cHeight * if (albumProgress > lyricProgress) 0.42f else 0.36f
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.radialGradient(
-                            colorStops = arrayOf(
-                                0.00f to Color.White.copy(alpha = 0.14f),
-                                0.20f to baseColor.copy(alpha = 0.12f),
-                                0.48f to Color.Transparent,
-                                1.00f to Color.Transparent
-                            ),
-                            center = Offset(
-                                x = glowX,
-                                y = glowY
-                            ),
-                            radius = cWidth * 0.78f
-                        )
-                    )
-            )
-
-            // 左侧专辑页比歌词页稍微亮一点，右侧歌词页更深
-            val sideOverlayAlpha = if (albumProgress > lyricProgress) 0.46f else 0.54f
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(deepColor.copy(alpha = sideOverlayAlpha))
-            )
-
-            // 侧页底部压暗
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colorStops = arrayOf(
-                                0.00f to Color.Black.copy(alpha = 0.14f),
-                                0.36f to Color.Transparent,
-                                0.70f to shadowColor.copy(alpha = 0.24f),
-                                1.00f to Color.Black.copy(alpha = 0.32f)
-                            )
-                        )
-                    )
-            )
+            ) {
+                val fadeHeightPx = with(density) { 118.dp.toPx() }
+                BitmapImage(
+                    key = coverPath,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .edgeTransparent(EdgeFade.Bottom, fadeHeightPx),
+                    contentScale = ContentScale.Crop,
+                    targetWidth = 1080,
+                    targetHeight = 1080,
+                    priority = com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest.Priority.LOADING_WIDGET,
+                    surface = ArtworkSurface.Playback,
+                    fadeInMillis = 0,
+                    holdPreviousOnKeyChange = false,
+                    fadeOnBitmapChange = false
+                )
+            }
         }
-
-        // ---------------------------------------------------------
-        // C. 通用顶部 mask
-        // ---------------------------------------------------------
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(topMaskHeight)
-                .align(Alignment.TopCenter)
-                .background(
-                    Brush.verticalGradient(
-                        colorStops = arrayOf(
-                            0.00f to Color.Black.copy(alpha = 0.18f),
-                            0.58f to Color.Black.copy(alpha = 0.06f),
-                            1.00f to Color.Transparent
-                        )
-                    )
-                )
-        )
-
-        // ---------------------------------------------------------
-        // D. 主播放页底部 mask — 注意：offset 用 maskStart，不进入清晰封面
-        // ---------------------------------------------------------
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(maskHeight)
-                .offset(y = maskStart)
-                .align(Alignment.TopCenter)
-                .graphicsLayer {
-                    alpha = playerProgress
-                }
-                .background(
-                    Brush.verticalGradient(
-                        colorStops = arrayOf(
-                            0.00f to Color.Transparent,
-                            0.18f to baseColor.copy(alpha = 0.08f),
-                            0.42f to deepColor.copy(alpha = 0.34f),
-                            0.68f to shadowColor.copy(alpha = 0.58f),
-                            1.00f to Color.Black.copy(alpha = 0.34f)
-                        )
-                    )
-                )
-        )
     }
 }
 
@@ -952,39 +853,136 @@ private fun PageDots(pageProgress: Float) {
     }
 }
 
+private data class ImmersiveLyricPreviewLine(
+    val text: String,
+    val secondary: String?,
+    val active: Boolean,
+    val allowWrap: Boolean
+)
+
 @Composable
 private fun MiniLyricPreview(
     song: Song?,
     positionMs: Long,
     displayTranslation: Boolean,
-    displayRoma: Boolean
+    displayRoma: Boolean,
+    onClick: () -> Unit,
+    primaryColor: Color = Color.White,
+    secondaryColor: Color = Color.White.copy(alpha = 0.58f),
+    dimColor: Color = Color.White.copy(alpha = 0.40f)
 ) {
     val lines = remember(song, positionMs, displayTranslation, displayRoma) {
         currentLyricPreviewLines(song?.lyrics.orEmpty(), positionMs, displayTranslation, displayRoma)
     }
-    if (lines.isEmpty()) {
-        Text(stringResource(R.string.player_no_lyric), color = Color.White.copy(alpha = 0.42f), fontSize = 18.sp, maxLines = 1)
-        return
-    }
-    lines.take(4).forEachIndexed { index, line ->
-        Text(
-            line,
-            color = Color.White.copy(alpha = if (index < 2) 0.74f else 0.42f),
-            fontSize = if (index < 2) 19.sp else 16.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        if (index != lines.lastIndex) Spacer(Modifier.height(if (index == 1) 10.dp else 5.dp))
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = if (lines.any { !it.secondary.isNullOrBlank() }) 118.dp else 132.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 2.dp)
+    ) {
+        if (lines.isEmpty()) {
+            Text(
+                stringResource(R.string.player_no_lyric),
+                color = dimColor,
+                fontSize = 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            return@Column
+        }
+        lines.forEachIndexed { index, line ->
+            val alpha by animateFloatAsState(
+                targetValue = if (line.active) 0.88f else 0.48f,
+                animationSpec = tween(180)
+            )
+            Column(
+                modifier = Modifier.graphicsLayer {
+                    scaleX = if (line.active) 1f else 0.985f
+                    scaleY = if (line.active) 1f else 0.985f
+                }
+            ) {
+                Text(
+                    text = line.text,
+                    color = if (line.active) primaryColor.copy(alpha = alpha) else dimColor.copy(alpha = alpha),
+                    fontSize = if (line.active) 15.sp else 13.sp,
+                    fontWeight = if (line.active) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = if (line.allowWrap) 2 else 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                val secondary = line.secondary
+                if (!secondary.isNullOrBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = secondary,
+                        color = if (line.active) secondaryColor else dimColor.copy(alpha = 0.78f),
+                        fontSize = if (line.active) 13.sp else 12.sp,
+                        fontWeight = FontWeight.Normal,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            if (index != lines.lastIndex) Spacer(Modifier.height(6.dp))
+        }
     }
 }
 
 @Composable
-private fun ImmersiveProgress(
+internal fun ImmersiveProgress(
+    currentSong: AudioFile?,
     currentPositionMs: Long,
     totalDurationMs: Long,
+    isPlaying: Boolean,
+    progressStyle: ImmersiveProgressStyle,
+    climaxEnabled: Boolean,
+    waveformDebugPanel: Boolean,
+    waveformRemainingColor: Color,
+    waveformPlayedColor: Color,
+    waveformClimaxColor: Color,
     onSeekStart: () -> Unit,
     onSeekStop: (Float) -> Unit
 ) {
+    if (progressStyle == ImmersiveProgressStyle.Waveform) {
+        ImmersiveWaveformProgressBar(
+            currentSong = currentSong,
+            currentPositionMs = currentPositionMs,
+            totalDurationMs = totalDurationMs,
+            isPlaying = isPlaying,
+            colors = ImmersiveWaveformColors(
+                played = waveformPlayedColor,
+                remaining = waveformRemainingColor,
+                climaxPlayed = waveformClimaxColor.copy(alpha = 0.46f),
+                climaxRemaining = waveformClimaxColor.copy(alpha = 0.95f),
+                needle = Color.White.copy(alpha = 0.92f)
+            ),
+            climaxEnabled = climaxEnabled,
+            showDebugPanel = waveformDebugPanel,
+            onSeekStart = onSeekStart,
+            onSeekStop = onSeekStop
+        )
+        return
+    }
+    if (progressStyle == ImmersiveProgressStyle.Seconds) {
+        ImmersiveSecondProgressBar(
+            currentSong = currentSong,
+            currentPositionMs = currentPositionMs,
+            totalDurationMs = totalDurationMs,
+            isPlaying = isPlaying,
+            colors = ImmersiveWaveformColors(
+                played = waveformPlayedColor,
+                remaining = waveformRemainingColor,
+                climaxPlayed = waveformClimaxColor,
+                climaxRemaining = waveformClimaxColor,
+                needle = Color.White.copy(alpha = 0.92f)
+            ),
+            onSeekStart = onSeekStart,
+            onSeekStop = onSeekStop
+        )
+        return
+    }
+
     var widthPx by remember { mutableStateOf(1) }
     var isDragging by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(0f) }
@@ -1047,21 +1045,22 @@ private fun ImmersiveProgress(
                     .fillMaxWidth()
                     .height(4.dp)
                     .clip(RoundedCornerShape(50))
-                    .background(Color.White.copy(alpha = 0.16f))
+                    .background(rememberPlayerForegroundTone().controlTrack)
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth(displayFraction.coerceIn(0f, 1f))
                         .height(4.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(Color.White.copy(alpha = 0.88f))
+                        .background(rememberPlayerForegroundTone().controlFill)
                 )
             }
         }
         Spacer(Modifier.height(7.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(AudioUtils.formatDuration(displayPositionMs), color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
-            Text(AudioUtils.formatDuration(totalDurationMs), color = Color.White.copy(alpha = 0.54f), fontSize = 12.sp)
+            val tone = rememberPlayerForegroundTone()
+            Text(AudioUtils.formatDuration(displayPositionMs), color = tone.tertiary, fontSize = 12.sp)
+            Text(AudioUtils.formatDuration(totalDurationMs), color = tone.tertiary, fontSize = 12.sp)
         }
     }
 }
@@ -1091,7 +1090,7 @@ private fun ImmersiveQualityPill(song: AudioFile?, text: String, onClick: () -> 
                 this.alpha = alpha
             }
             .clip(RoundedCornerShape(50))
-            .background(Color.Black.copy(alpha = 0.28f))
+            .background(rememberPlayerForegroundTone().chipBackground)
             .pointerInput(onClick) {
                 detectTapGestures(
                     onPress = {
@@ -1108,7 +1107,7 @@ private fun ImmersiveQualityPill(song: AudioFile?, text: String, onClick: () -> 
     ) {
         Text(
             text = text.ifBlank { audioChainText(song) },
-            color = Color.White.copy(alpha = 0.85f),
+            color = rememberPlayerForegroundTone().chipText,
             fontSize = 9.sp,
             fontWeight = FontWeight.Medium
         )
@@ -1141,12 +1140,12 @@ private fun LyricBottomButton(text: String, onClick: () -> Unit) {
         modifier = Modifier
             .height(44.dp)
             .clip(RoundedCornerShape(22.dp))
-            .background(Color.White.copy(alpha = 0.10f))
+            .background(rememberPlayerForegroundTone().controlTrack)
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(text, color = Color.White.copy(alpha = 0.78f), fontSize = 17.sp)
+        Text(text, color = rememberPlayerForegroundTone().secondary, fontSize = 17.sp)
     }
 }
 
@@ -1160,12 +1159,12 @@ private fun InfoLine(label: String, value: String, coverPath: String?) {
                 .background(Color.White.copy(alpha = 0.12f))
         ) {
             if (!coverPath.isNullOrBlank()) {
-                BitmapImage(key = coverPath, contentDescription = null, modifier = Modifier.fillMaxSize(), targetWidth = 120, targetHeight = 120)
+                BitmapImage(key = coverPath, contentDescription = null, modifier = Modifier.fillMaxSize(), targetWidth = 120, targetHeight = 120, surface = ArtworkSurface.Playback)
             }
         }
         Spacer(Modifier.width(16.dp))
-        Text("$label：", color = Color.White.copy(alpha = 0.64f), fontSize = 20.sp)
-        Text(value, color = Color.White.copy(alpha = 0.82f), fontSize = 21.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("$label：", color = rememberPlayerForegroundTone().secondary, fontSize = 20.sp)
+        Text(value, color = rememberPlayerForegroundTone().primary, fontSize = 21.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -1179,7 +1178,7 @@ private fun InfoChip(text: String) {
             .padding(horizontal = 16.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(text, color = Color.White, fontSize = 16.sp, maxLines = 1)
+        Text(text, color = rememberPlayerForegroundTone().primary, fontSize = 16.sp, maxLines = 1)
     }
 }
 
@@ -1192,34 +1191,50 @@ private fun AlbumInfoSongRow(song: AudioFile, onClick: () -> Unit) {
             .clickable(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        val artworkKey = song.resolvePlaybackArtworkKey(song.albumArtPath)
         Box(
             modifier = Modifier
                 .size(64.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color.White.copy(alpha = 0.12f))
         ) {
-            if (song.albumArtPath.isNotBlank()) {
-                BitmapImage(key = song.albumArtPath, contentDescription = null, modifier = Modifier.fillMaxSize(), targetWidth = 180, targetHeight = 180)
+            if (!artworkKey.isNullOrBlank()) {
+                BitmapImage(key = artworkKey, contentDescription = null, modifier = Modifier.fillMaxSize(), targetWidth = 180, targetHeight = 180, surface = ArtworkSurface.Playback)
             }
         }
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Text(song.displayName, color = Color.White, fontSize = 21.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(song.artist.ifBlank { "未知艺术家" }, color = Color.White.copy(alpha = 0.58f), fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(song.displayName, color = rememberPlayerForegroundTone().primary, fontSize = 21.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(song.artist.ifBlank { stringResource(R.string.player_unknown_artist) }, color = rememberPlayerForegroundTone().secondary, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Text("♡", color = Color.White.copy(alpha = 0.58f), fontSize = 31.sp)
+        Text("♡", color = rememberPlayerForegroundTone().iconSoft, fontSize = 31.sp)
     }
 }
 
 @Composable
-private fun ImmersiveMoreSheet(currentSong: AudioFile?, coverPath: String?, onDismiss: () -> Unit) {
-    val actionLabels = listOf(
-        stringResource(R.string.player_more_add_playlist),
-        stringResource(R.string.player_more_effects),
-        stringResource(R.string.player_more_play_mode),
-        stringResource(R.string.player_more_queue),
-        stringResource(R.string.player_more_metadata)
-    )
+internal fun ImmersiveMoreSheet(
+    currentSong: AudioFile?,
+    coverPath: String?,
+    progressStyle: ImmersiveProgressStyle,
+    climaxEnabled: Boolean,
+    waveformDebugPanel: Boolean,
+    waveformRemainingColor: Color,
+    waveformPlayedColor: Color,
+    waveformClimaxColor: Color,
+    onProgressStyleChange: (ImmersiveProgressStyle) -> Unit,
+    onClimaxEnabledChange: (Boolean) -> Unit,
+    onWaveformDebugPanelChange: (Boolean) -> Unit,
+    onWaveformRemainingColorChange: (Color) -> Unit,
+    onWaveformPlayedColorChange: (Color) -> Unit,
+    onWaveformClimaxColorChange: (Color) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val scheme = MiuixTheme.colorScheme
+    val isDark = scheme.background.luminance() < 0.5f
+    val sheetColor = if (isDark) scheme.background else scheme.surface
+    val cardColor = if (isDark) scheme.surfaceContainerHigh.copy(alpha = 0.72f) else Color.White.copy(alpha = 0.88f)
+    val actionIconColor = if (isDark) scheme.primary else scheme.onSurface
+    val actions = remember { immersiveMoreActions() }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1231,7 +1246,7 @@ private fun ImmersiveMoreSheet(currentSong: AudioFile?, coverPath: String?, onDi
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
-                .background(Color(0xFFEFF4F5))
+                .background(sheetColor)
                 .navigationBarsPadding()
                 .padding(horizontal = 22.dp, vertical = 22.dp)
                 .clickable(
@@ -1245,48 +1260,347 @@ private fun ImmersiveMoreSheet(currentSong: AudioFile?, coverPath: String?, onDi
                     modifier = Modifier
                         .size(76.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(Color.White)
+                        .background(cardColor)
                 ) {
                     if (!coverPath.isNullOrBlank()) {
-                        BitmapImage(key = coverPath, contentDescription = null, modifier = Modifier.fillMaxSize(), targetWidth = 220, targetHeight = 220)
+                        BitmapImage(key = coverPath, contentDescription = null, modifier = Modifier.fillMaxSize(), targetWidth = 220, targetHeight = 220, surface = ArtworkSurface.Playback)
                     }
                 }
                 Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(currentSong?.displayName ?: stringResource(R.string.player_no_song), color = Color(0xFF20242B), fontSize = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(currentSong?.artist?.ifBlank { stringResource(R.string.player_unknown_artist) } ?: "", color = Color(0xFF707783), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(currentSong?.displayName ?: stringResource(R.string.player_no_song), color = scheme.onSurface, fontSize = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(currentSong?.artist?.ifBlank { stringResource(R.string.player_unknown_artist) } ?: "", color = scheme.onSurfaceVariantSummary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
             Spacer(Modifier.height(26.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                itemsIndexed(actionLabels) { _, label ->
+                itemsIndexed(actions) { _, action ->
+                    val label = stringResource(action.labelRes)
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Box(
                             modifier = Modifier
                                 .size(70.dp)
                                 .clip(RoundedCornerShape(18.dp))
-                                .background(Color.White),
+                                .background(cardColor),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(actionGlyph(label), color = Color.Black, fontSize = 28.sp, fontWeight = FontWeight.Medium)
+                            Text(action.glyph, color = actionIconColor, fontSize = 28.sp, fontWeight = FontWeight.Medium)
                         }
                         Spacer(Modifier.height(10.dp))
-                        Text(label, color = Color.Black, fontSize = 15.sp)
+                        Text(label, color = scheme.onSurface, fontSize = 15.sp)
                     }
                 }
             }
+            Spacer(Modifier.height(20.dp))
+            ImmersiveProgressSettingsCard(
+                progressStyle = progressStyle,
+                climaxEnabled = climaxEnabled,
+                waveformDebugPanel = waveformDebugPanel,
+                waveformRemainingColor = waveformRemainingColor,
+                waveformPlayedColor = waveformPlayedColor,
+                waveformClimaxColor = waveformClimaxColor,
+                onProgressStyleChange = onProgressStyleChange,
+                onClimaxEnabledChange = onClimaxEnabledChange,
+                onWaveformDebugPanelChange = onWaveformDebugPanelChange,
+                onWaveformRemainingColorChange = onWaveformRemainingColorChange,
+                onWaveformPlayedColorChange = onWaveformPlayedColorChange,
+                onWaveformClimaxColorChange = onWaveformClimaxColorChange
+            )
             Spacer(Modifier.height(18.dp))
         }
     }
 }
 
-private fun actionGlyph(label: String): String = when (label) {
-    "添加到歌单" -> "+"
-    "音效设置" -> "≋"
-    "播放模式" -> "↻"
-    "播放列表" -> "≡"
-    else -> "i"
+@Composable
+private fun ImmersiveProgressSettingsCard(
+    progressStyle: ImmersiveProgressStyle,
+    climaxEnabled: Boolean,
+    waveformDebugPanel: Boolean,
+    waveformRemainingColor: Color,
+    waveformPlayedColor: Color,
+    waveformClimaxColor: Color,
+    onProgressStyleChange: (ImmersiveProgressStyle) -> Unit,
+    onClimaxEnabledChange: (Boolean) -> Unit,
+    onWaveformDebugPanelChange: (Boolean) -> Unit,
+    onWaveformRemainingColorChange: (Color) -> Unit,
+    onWaveformPlayedColorChange: (Color) -> Unit,
+    onWaveformClimaxColorChange: (Color) -> Unit
+) {
+    val scheme = MiuixTheme.colorScheme
+    val isDark = scheme.background.luminance() < 0.5f
+    val cardColor = if (isDark) scheme.surfaceContainerHigh.copy(alpha = 0.62f) else Color.White.copy(alpha = 0.88f)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(cardColor)
+            .padding(16.dp)
+    ) {
+        Text(
+            text = stringResource(R.string.immersive_progress_settings_title),
+            color = scheme.onSurface,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            text = stringResource(R.string.immersive_progress_style),
+            color = scheme.onSurfaceVariantSummary,
+            fontSize = 13.sp
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            ImmersiveSettingChip(
+                label = stringResource(R.string.immersive_progress_style_classic),
+                selected = progressStyle == ImmersiveProgressStyle.Classic,
+                onClick = { onProgressStyleChange(ImmersiveProgressStyle.Classic) }
+            )
+            ImmersiveSettingChip(
+                label = stringResource(R.string.immersive_progress_style_waveform),
+                selected = progressStyle == ImmersiveProgressStyle.Waveform,
+                onClick = { onProgressStyleChange(ImmersiveProgressStyle.Waveform) }
+            )
+            ImmersiveSettingChip(
+                label = "秒级柱状",
+                selected = progressStyle == ImmersiveProgressStyle.Seconds,
+                onClick = { onProgressStyleChange(ImmersiveProgressStyle.Seconds) }
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+        ImmersiveSettingToggleRow(
+            title = stringResource(R.string.immersive_climax_point),
+            subtitle = stringResource(R.string.immersive_climax_point_desc),
+            enabled = true,
+            checked = climaxEnabled,
+            onClick = { onClimaxEnabledChange(!climaxEnabled) }
+        )
+        AnimatedVisibility(
+            visible = progressStyle == ImmersiveProgressStyle.Waveform || progressStyle == ImmersiveProgressStyle.Seconds,
+            enter = fadeIn(animationSpec = tween(160)),
+            exit = fadeOut(animationSpec = tween(120))
+        ) {
+            Column {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = stringResource(R.string.immersive_waveform_colors),
+                    color = scheme.onSurfaceVariantSummary,
+                    fontSize = 13.sp
+                )
+                Spacer(Modifier.height(8.dp))
+                ImmersiveColorPaletteRow(
+                    title = stringResource(R.string.immersive_waveform_remaining_color),
+                    current = waveformRemainingColor,
+                    enabled = true,
+                    colors = listOf(Color.White.copy(alpha = 0.90f), Color(0xFF8EC5FF), Color(0xFF9BDBFF), Color(0xFFE6D6FF)),
+                    onColor = onWaveformRemainingColorChange
+                )
+                Spacer(Modifier.height(8.dp))
+                ImmersiveColorPaletteRow(
+                    title = stringResource(R.string.immersive_waveform_played_color),
+                    current = waveformPlayedColor,
+                    enabled = true,
+                    colors = listOf(Color.White.copy(alpha = 0.24f), Color(0x667C8CA0), Color(0x553B4652), Color(0x664F6074)),
+                    onColor = onWaveformPlayedColorChange
+                )
+                Spacer(Modifier.height(8.dp))
+                ImmersiveColorPaletteRow(
+                    title = stringResource(R.string.immersive_waveform_climax_color),
+                    current = waveformClimaxColor,
+                    enabled = climaxEnabled,
+                    colors = listOf(Color(0xFFFF3B30), Color(0xFFFF2D55), Color(0xFFFF9500), Color(0xFFAF52DE)),
+                    onColor = onWaveformClimaxColorChange
+                )
+                Spacer(Modifier.height(12.dp))
+                ImmersiveSettingToggleRow(
+                    title = stringResource(R.string.immersive_waveform_debug_panel),
+                    subtitle = stringResource(R.string.immersive_waveform_debug_panel_desc),
+                    enabled = true,
+                    checked = waveformDebugPanel,
+                    onClick = { onWaveformDebugPanelChange(!waveformDebugPanel) }
+                )
+                AnimatedVisibility(
+                    visible = waveformDebugPanel,
+                    enter = fadeIn(animationSpec = tween(160)),
+                    exit = fadeOut(animationSpec = tween(120))
+                ) {
+                    ImmersiveWaveformColorDebugBoard(
+                        remaining = waveformRemainingColor,
+                        played = waveformPlayedColor,
+                        climax = waveformClimaxColor,
+                        climaxEnabled = climaxEnabled
+                    )
+                }
+            }
+        }
+    }
 }
+
+@Composable
+private fun ImmersiveWaveformColorDebugBoard(
+    remaining: Color,
+    played: Color,
+    climax: Color,
+    climaxEnabled: Boolean
+) {
+    val scheme = MiuixTheme.colorScheme
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(scheme.surfaceContainerHigh.copy(alpha = 0.42f))
+            .padding(12.dp)
+    ) {
+        Text(
+            text = stringResource(R.string.immersive_waveform_color_debug_title),
+            color = scheme.onSurface,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            ImmersiveColorDebugSwatch(stringResource(R.string.immersive_waveform_played_color), played)
+            ImmersiveColorDebugSwatch(stringResource(R.string.immersive_waveform_remaining_color), remaining)
+            ImmersiveColorDebugSwatch(stringResource(R.string.immersive_waveform_climax_color), if (climaxEnabled) climax else climax.copy(alpha = 0.24f))
+        }
+    }
+}
+
+@Composable
+private fun ImmersiveColorDebugSwatch(label: String, color: Color) {
+    val scheme = MiuixTheme.colorScheme
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier
+                .width(54.dp)
+                .height(18.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(color)
+                .border(1.dp, scheme.onSurfaceVariantSummary.copy(alpha = 0.22f), RoundedCornerShape(999.dp))
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(label, color = scheme.onSurfaceVariantSummary, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun ImmersiveSettingChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    val scheme = MiuixTheme.colorScheme
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (selected) scheme.primary else scheme.surfaceContainerHigh.copy(alpha = 0.72f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = if (selected) scheme.onPrimary else scheme.onSurface,
+            fontSize = 14.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+        )
+    }
+}
+
+@Composable
+private fun ImmersiveSettingToggleRow(
+    title: String,
+    subtitle: String,
+    enabled: Boolean,
+    checked: Boolean,
+    onClick: () -> Unit
+) {
+    val scheme = MiuixTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(
+                if (enabled) scheme.surfaceContainerHigh.copy(alpha = 0.52f)
+                else scheme.surfaceContainerHigh.copy(alpha = 0.28f)
+            )
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, color = scheme.onSurface.copy(alpha = if (enabled) 1f else 0.42f), fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            Text(subtitle, color = scheme.onSurfaceVariantSummary.copy(alpha = if (enabled) 1f else 0.42f), fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        Spacer(Modifier.width(12.dp))
+        Box(
+            modifier = Modifier
+                .width(42.dp)
+                .height(24.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(
+                    when {
+                        !enabled -> scheme.onSurfaceVariantSummary.copy(alpha = 0.16f)
+                        checked -> scheme.primary
+                        else -> scheme.onSurfaceVariantSummary.copy(alpha = 0.22f)
+                    }
+                )
+                .padding(3.dp),
+            contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart
+        ) {
+            Box(Modifier.size(18.dp).clip(CircleShape).background(Color.White))
+        }
+    }
+}
+
+@Composable
+private fun ImmersiveColorPaletteRow(
+    title: String,
+    current: Color,
+    enabled: Boolean,
+    colors: List<Color>,
+    onColor: (Color) -> Unit
+) {
+    val scheme = MiuixTheme.colorScheme
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            title,
+            color = scheme.onSurface.copy(alpha = if (enabled) 1f else 0.42f),
+            fontSize = 13.sp,
+            modifier = Modifier.weight(1f)
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            colors.forEach { color ->
+                val selected = color.toArgb() == current.toArgb()
+                Box(
+                    modifier = Modifier
+                        .size(26.dp)
+                        .clip(CircleShape)
+                        .background(color)
+                        .border(
+                            width = if (selected) 2.dp else 1.dp,
+                            color = if (selected) scheme.primary else scheme.onSurfaceVariantSummary.copy(alpha = 0.24f),
+                            shape = CircleShape
+                        )
+                        .clickable(enabled = enabled) { onColor(color) }
+                )
+            }
+        }
+    }
+}
+
+private data class ImmersiveMoreAction(
+    @StringRes val labelRes: Int,
+    val glyph: String
+)
+
+private fun immersiveMoreActions(): List<ImmersiveMoreAction> = listOf(
+    ImmersiveMoreAction(R.string.player_more_add_playlist, "+"),
+    ImmersiveMoreAction(R.string.player_more_effects, "≋"),
+    ImmersiveMoreAction(R.string.player_more_play_mode, "↻"),
+    ImmersiveMoreAction(R.string.player_more_queue, "≡"),
+    ImmersiveMoreAction(R.string.player_more_metadata, "i"),
+    ImmersiveMoreAction(R.string.player_more_preferences, "⚙")
+)
 
 private fun scenePageIndex(scene: PlayerSceneController.Scene): Int = when (scene) {
     PlayerSceneController.Scene.ALBUM_DETAIL -> 0
@@ -1358,25 +1672,56 @@ private fun currentLyricPreviewLines(
     positionMs: Long,
     displayTranslation: Boolean,
     displayRoma: Boolean
-): List<String> {
+): List<ImmersiveLyricPreviewLine> {
     if (lines.isEmpty()) return emptyList()
-    val current = lines.indexOfLast { line ->
+    val visibleIndices = lines.indices.filter { index ->
+        lines[index].text.orEmpty().trim().isNotBlank()
+    }
+    if (visibleIndices.isEmpty()) return emptyList()
+
+    val rawCurrent = lines.indexOfLast { line ->
         val end = if (line.end > line.begin) line.end else line.begin + line.duration
         positionMs >= line.begin && positionMs < end
     }.let { if (it >= 0) it else lines.indexOfLast { line -> line.begin <= positionMs }.coerceAtLeast(0) }
-    val result = mutableListOf<String>()
-    for (line in lines.drop(current).take(2)) {
-        val main = line.text.orEmpty().ifBlank { continue }
-        result += main
-        val secondary = when {
-            displayTranslation && !line.translation.isNullOrBlank() -> line.translation
-            displayRoma && !line.roma.isNullOrBlank() -> line.roma
-            !line.secondary.isNullOrBlank() -> line.secondary
-            else -> null
-        }
-        if (!secondary.isNullOrBlank()) result += secondary
+    val anchor = rawCurrent.coerceIn(0, lines.lastIndex)
+    val anchorVisiblePosition = visibleIndices.indexOf(anchor).let { position ->
+        if (position >= 0) position else visibleIndices.indexOfLast { it < anchor }.coerceAtLeast(0)
     }
-    return if (result.isNotEmpty()) result.take(4) else lines.drop(current).take(4).mapNotNull { it.text }
+
+    val hasSecondaryText = lines.any { line ->
+        visiblePreviewSecondary(line, displayTranslation, displayRoma) != null
+    }
+    val maxPrimaryRows = if (hasSecondaryText) 3 else 5
+    val preferredBefore = if (hasSecondaryText) 1 else 2
+    var start = (anchorVisiblePosition - preferredBefore).coerceAtLeast(0)
+    var endExclusive = (start + maxPrimaryRows).coerceAtMost(visibleIndices.size)
+    start = (endExclusive - maxPrimaryRows).coerceAtLeast(0)
+    endExclusive = (start + maxPrimaryRows).coerceAtMost(visibleIndices.size)
+
+    return visibleIndices.subList(start, endExclusive).map { index ->
+        val line = lines[index]
+        val text = line.text.orEmpty().trim()
+        val secondary = visiblePreviewSecondary(line, displayTranslation, displayRoma)
+        ImmersiveLyricPreviewLine(
+            text = text,
+            secondary = secondary,
+            active = index == anchor,
+            allowWrap = index == anchor && text.length > 28
+        )
+    }
+}
+
+private fun visiblePreviewSecondary(
+    line: IRichLyricLine,
+    displayTranslation: Boolean,
+    displayRoma: Boolean
+): String? {
+    return when {
+        displayTranslation && !line.translation.isNullOrBlank() -> line.translation
+        displayRoma && !line.roma.isNullOrBlank() -> line.roma
+        !line.secondary.isNullOrBlank() -> line.secondary
+        else -> null
+    }?.trim()?.takeIf { it.isNotBlank() }
 }
 
 private fun darken(color: Color, factor: Float): Color {

@@ -65,6 +65,9 @@ add_library(
     SHARED
     usb_audio_engine.cpp
     raw_audio_safety.cpp
+    raw_usb_background_scheduler.cpp
+    raw_usb_native_guardian.cpp
+    raw_usb_submit_scheduler.cpp
     raw_audio_format_policy.cpp
     raw_pcm_pipeline.cpp
     raw_uac20_stream.cpp
@@ -97,6 +100,8 @@ add_library(
     usb_uac20_jni_bridge.cpp
     pcm_to_dsd_converter.cpp
     usb_hid.cpp
+    raw_usb_crash_guard.cpp
+    raw_android_audio_identity.cpp
 )
 
 target_include_directories(
@@ -147,6 +152,7 @@ add_library(
     rawsmusic_ffmpeg
     SHARED
     ffmpeg_bridge.cpp
+    raw_waveform_scan.cpp
 )
 
 target_include_directories(

@@ -18,10 +18,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rawsmusic.R
 import com.rawsmusic.module.player.dsp.Surround360Controller
 import kotlin.math.cos
 import kotlin.math.sin
@@ -60,10 +62,10 @@ fun LiquidGlassSurround360Screen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = onBack) {
-                Text("← 返回", color = Surround360UiColors.Accent, fontSize = 16.sp)
+                Text(stringResource(R.string.settings_back_with_arrow), color = Surround360UiColors.Accent, fontSize = 16.sp)
             }
             Text(
-                "360° 环绕音",
+                stringResource(R.string.settings_surround360_title),
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Medium,
                 color = Surround360UiColors.TextPrimary
@@ -89,13 +91,13 @@ fun LiquidGlassSurround360Screen(
                 ) {
                     Column {
                         Text(
-                            "360° 环绕音",
+                            stringResource(R.string.settings_surround360_title),
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Medium,
                             color = Surround360UiColors.TextPrimary
                         )
                         Text(
-                            "2D 水平面双耳渲染 · 声源自动旋转",
+                            stringResource(R.string.settings_surround360_subtitle),
                             fontSize = 12.sp,
                             color = Surround360UiColors.TextSecondary
                         )
@@ -121,7 +123,7 @@ fun LiquidGlassSurround360Screen(
                         .padding(16.dp)
                 ) {
                     Text(
-                        "声源方位（自动旋转）",
+                        stringResource(R.string.settings_surround360_azimuth),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = Surround360UiColors.TextPrimary
@@ -148,21 +150,21 @@ fun LiquidGlassSurround360Screen(
                         .padding(16.dp)
                 ) {
                     Text(
-                        "旋转速度",
+                        stringResource(R.string.settings_surround360_rotation_speed),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = Surround360UiColors.TextPrimary
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        if (rotationSpeed <= 0f) "静止" else "${rotationSpeed.toInt()}°/秒",
+                        if (rotationSpeed <= 0f) stringResource(R.string.settings_effect_static) else stringResource(R.string.settings_degree_per_second_value, rotationSpeed.toInt()),
                         fontSize = 28.sp,
                         fontWeight = FontWeight.Bold,
                         color = Surround360UiColors.Accent
                     )
                     Text(
-                        if (rotationSpeed <= 0f) "声源固定不动"
-                        else "一圈 ${"%.1f".format(360f / rotationSpeed)} 秒",
+                        if (rotationSpeed <= 0f) stringResource(R.string.settings_surround360_rotation_static)
+                        else stringResource(R.string.settings_surround360_rotation_period, 360f / rotationSpeed),
                         fontSize = 12.sp,
                         color = Surround360UiColors.TextSecondary
                     )
@@ -182,9 +184,9 @@ fun LiquidGlassSurround360Screen(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("静止", fontSize = 11.sp, color = Surround360UiColors.TextSecondary)
-                        Text("慢", fontSize = 11.sp, color = Surround360UiColors.TextSecondary)
-                        Text("快", fontSize = 11.sp, color = Surround360UiColors.TextSecondary)
+                        Text(stringResource(R.string.settings_effect_static), fontSize = 11.sp, color = Surround360UiColors.TextSecondary)
+                        Text(stringResource(R.string.settings_effect_slow), fontSize = 11.sp, color = Surround360UiColors.TextSecondary)
+                        Text(stringResource(R.string.settings_effect_fast), fontSize = 11.sp, color = Surround360UiColors.TextSecondary)
                     }
                 }
             }
@@ -199,14 +201,14 @@ fun LiquidGlassSurround360Screen(
                         .padding(16.dp)
                 ) {
                     Text(
-                        "效果强度",
+                        stringResource(R.string.settings_effect_intensity),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = Surround360UiColors.TextPrimary
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "${intensity.toInt()}%",
+                        stringResource(R.string.settings_percent_value, intensity.toInt()),
                         fontSize = 28.sp,
                         fontWeight = FontWeight.Bold,
                         color = Surround360UiColors.Accent
@@ -249,13 +251,13 @@ private fun AzimuthIndicator(azimuthDeg: Float, enabled: Boolean, modifier: Modi
         )
 
         // 方向标签
-        Text("前", fontSize = 10.sp, color = Surround360UiColors.TextSecondary,
+        Text(stringResource(R.string.settings_direction_front), fontSize = 10.sp, color = Surround360UiColors.TextSecondary,
             modifier = Modifier.align(Alignment.TopCenter).padding(top = 4.dp))
-        Text("右", fontSize = 10.sp, color = Surround360UiColors.TextSecondary,
+        Text(stringResource(R.string.settings_direction_right), fontSize = 10.sp, color = Surround360UiColors.TextSecondary,
             modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp))
-        Text("后", fontSize = 10.sp, color = Surround360UiColors.TextSecondary,
+        Text(stringResource(R.string.settings_direction_back), fontSize = 10.sp, color = Surround360UiColors.TextSecondary,
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp))
-        Text("左", fontSize = 10.sp, color = Surround360UiColors.TextSecondary,
+        Text(stringResource(R.string.settings_direction_left), fontSize = 10.sp, color = Surround360UiColors.TextSecondary,
             modifier = Modifier.align(Alignment.CenterStart).padding(start = 4.dp))
 
         // 声源指示点
@@ -274,7 +276,7 @@ private fun AzimuthIndicator(azimuthDeg: Float, enabled: Boolean, modifier: Modi
 
         // 中心文字
         Text(
-            "${azimuthDeg.toInt()}°",
+            stringResource(R.string.settings_degree_value, azimuthDeg.toInt()),
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold,
             color = if (enabled) Surround360UiColors.Accent else Surround360UiColors.Accent.copy(alpha = 0.4f),

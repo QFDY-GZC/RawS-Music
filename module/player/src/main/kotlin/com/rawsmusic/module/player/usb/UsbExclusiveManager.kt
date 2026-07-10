@@ -16,6 +16,7 @@ import android.util.Log
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.prefs.TransitionPreferences
 import com.rawsmusic.module.player.AudioOutputManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -401,6 +402,14 @@ class UsbExclusiveManager(private val context: Context) {
         allowFallback: Boolean = true,
         suppressDsdForRetry: Boolean = false
     ): Boolean {
+        // 配置 native breadcrumb 日志路径（用于突发重启后的崩溃定位）
+        try {
+            val logPath = context.filesDir.absolutePath + "/usb_native_breadcrumb.log"
+            UsbAudioEngine.nativeSetBreadcrumbPath(logPath)
+        } catch (e: Exception) {
+            AppLogger.w(TAG, "Failed to set breadcrumb path: ${e.message}")
+        }
+
         val requestedTargetRate = AppPreferences.Player.usbTargetSampleRate
         val requestedTargetBits = AppPreferences.Player.usbTargetBitDepth
         val pcmMode = UsbPcmOutputMode.fromId(AppPreferences.Player.usbPcmOutputMode)
@@ -429,11 +438,15 @@ class UsbExclusiveManager(private val context: Context) {
         }
         val pcmToDsdMode = if (!sourceIsDsd) {
             buildSupportedPcmToDsdModeConfig(
+                // PCM→DSD is an explicit output transform. Do not let a stale
+                // bit-perfect preference disable it; the active output profile
+                // will turn PCM bit-perfect off for this session.
                 enabled = AppPreferences.Player.dsdConversionEnabled &&
-                    !bitPerfect &&
                     !suppressDsdForRetry,
                 multiplier = AppPreferences.Player.dsdRate,
-                capabilities = caps
+                requestedTransport = dsdTransport,
+                capabilities = caps,
+                sourceSampleRate = sampleRate
             )
         } else {
             null
@@ -442,7 +455,7 @@ class UsbExclusiveManager(private val context: Context) {
         val pcmDsdActive = pcmToDsdMode != null
         val dsdTransportActive = dsdMode != null
         val sourceBitsForUsb = bits.coerceAtMost(32)
-        val strictBitPerfectForUsb = bitPerfect && bits <= 32
+        val strictBitPerfectForUsb = bitPerfect && bits <= 32 && !pcmDsdActive
         if (bits > 32) {
             AppLogger.w(
                 TAG,
@@ -651,6 +664,15 @@ class UsbExclusiveManager(private val context: Context) {
         currentConfig = cfg
         currentSourceSampleRate = sampleRate
         currentSourceBits = cfg.sourceBits
+        val preheatMs = AppPreferences.Player.usbDacPreheatMs
+        if (preheatMs > 0) {
+            AppLogger.i(TAG, "USB DAC preheat delay: ${preheatMs}ms before first playback event")
+            try {
+                Thread.sleep(preheatMs.toLong())
+            } catch (ie: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
         _state.value = State.READY
 
         // 初始化完成后先同步一次无数据窗口安全音量，避免 USB DAC 在空缓冲时突发大声。
@@ -730,7 +752,7 @@ class UsbExclusiveManager(private val context: Context) {
         AppLogger.i(TAG, "Format changed: old=$oldConfig new=$config, need stop/reinit")
 
         // 1. fade out 当前播放（如果有）
-        fadeOutIfStreaming(durationMs = 80)
+        fadeOutIfStreaming(durationMs = TransitionPreferences.transportDurationOrZero())
 
         // 2. stop
         stopStreaming("format_change")
@@ -767,6 +789,7 @@ class UsbExclusiveManager(private val context: Context) {
     private fun fadeOutIfStreaming(durationMs: Int = 80) {
         val handle = UsbAudioEngine.currentHandle
         if (handle == 0L || !UsbAudioEngine.isInitialized()) return
+        if (durationMs <= 0) return
 
         val steps = 8
         val stepMs = durationMs / steps
@@ -786,11 +809,15 @@ class UsbExclusiveManager(private val context: Context) {
     /**
      * Fade in：streaming 已启动后渐增音量。
      */
-    fun fadeInAfterStart(durationMs: Int = 80) {
+    fun fadeInAfterStart(durationMs: Int = TransitionPreferences.transportDurationOrZero()) {
         val steps = 8
-        val stepMs = durationMs / steps
         val handle = UsbAudioEngine.currentHandle
         if (handle == 0L || !UsbAudioEngine.isInitialized()) return
+        if (durationMs <= 0) {
+            runCatching { UsbAudioEngine.nativeSetVolume(handle, 1.0f) }
+            return
+        }
+        val stepMs = durationMs / steps
         try {
             for (i in 0..steps) {
                 val vol = i.toFloat() / steps.toFloat()
@@ -936,7 +963,7 @@ class UsbExclusiveManager(private val context: Context) {
      */
     private fun stopHidListening() {
         try {
-            if (UsbAudioEngine.nativeIsHidListening()) {
+            if (UsbAudioEngine.isHidListening()) {
                 AppLogger.i(TAG, "Stopping HID listening")
                 UsbAudioEngine.stopHidListening()
             }
@@ -961,7 +988,7 @@ class UsbExclusiveManager(private val context: Context) {
      */
     fun isHidListening(): Boolean {
         return try {
-            UsbAudioEngine.nativeIsHidListening()
+            UsbAudioEngine.isHidListening()
         } catch (_: Throwable) {
             false
         }

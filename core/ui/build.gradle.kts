@@ -42,6 +42,9 @@ dependencies {
     implementation(libs.androidx.dynamicanimation)
     implementation(libs.glide)
     kapt(libs.glide.compiler)
+    // Experimental PowerList A/B branch: Coil handles list/grid Compose request state while
+    // BitmapProvider keeps RawSMusic-specific audio/folder/embedded artwork decoding.
+    implementation("io.coil-kt:coil-compose:2.7.0")
     implementation(libs.lottie)
 
     implementation(libs.mpandroidchart)

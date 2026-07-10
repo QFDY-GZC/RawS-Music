@@ -13,13 +13,21 @@
 #include <map>
 #include <cstring>
 #include <cctype>
+#include <fstream>
+#include <cstdio>
 
 // TagLib headers - 按格式专用
 #include "mpegfile.h"
+#include "mpeg/id3v2/id3v2tag.h"
+#include "mpeg/id3v2/frames/attachedpictureframe.h"
 #include "flacfile.h"
+#include "flacpicture.h"
 #include "ogg/vorbis/vorbisfile.h"
 #include "ogg/opus/opusfile.h"
 #include "mp4file.h"
+#include "mp4tag.h"
+#include "mp4item.h"
+#include "mp4coverart.h"
 #include "asffile.h"
 #include "apefile.h"
 #include "riff/wav/wavfile.h"
@@ -83,6 +91,111 @@ static void readAudioProps(TagLib::AudioProperties *props, std::map<std::string,
     if (props->channels() > 0) result["channels"] = std::to_string(props->channels());
     if (props->bitrate() > 0) result["bit_rate"] = std::to_string(props->bitrate());
     if (props->lengthInMilliseconds() > 0) result["duration_ms"] = std::to_string(props->lengthInMilliseconds());
+}
+
+
+static bool writeByteVectorToFile(const TagLib::ByteVector &data, const char *outputPath) {
+    if (outputPath == nullptr || data.size() <= 1024) return false;
+
+    const std::string tmpPath = std::string(outputPath) + ".tmp";
+    {
+        std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+        if (!out.good()) return false;
+        out.write(data.data(), data.size());
+        if (!out.good()) {
+            out.close();
+            std::remove(tmpPath.c_str());
+            return false;
+        }
+        out.flush();
+        out.close();
+    }
+
+    std::remove(outputPath);
+    if (std::rename(tmpPath.c_str(), outputPath) != 0) {
+        std::remove(tmpPath.c_str());
+        return false;
+    }
+    return true;
+}
+
+static TagLib::ByteVector readAttachedPicture(TagLib::ID3v2::Tag *tag) {
+    if (!tag) return TagLib::ByteVector();
+
+    const TagLib::ID3v2::FrameList frames = tag->frameList(TagLib::ByteVector("APIC"));
+    const TagLib::ID3v2::AttachedPictureFrame *best = nullptr;
+    const TagLib::ID3v2::AttachedPictureFrame *fallback = nullptr;
+
+    for (auto *frame : frames) {
+        auto *picture = dynamic_cast<TagLib::ID3v2::AttachedPictureFrame *>(frame);
+        if (!picture) continue;
+        const auto bytes = picture->picture();
+        if (bytes.size() <= 1024) continue;
+        if (!fallback) fallback = picture;
+        if (picture->type() == TagLib::ID3v2::AttachedPictureFrame::FrontCover) {
+            best = picture;
+            break;
+        }
+    }
+
+    const auto *selected = best ? best : fallback;
+    return selected ? selected->picture() : TagLib::ByteVector();
+}
+
+static TagLib::ByteVector extractArtworkBytes(const char *filePath) {
+    std::string ext = getExtension(filePath);
+
+    if (ext == "mp3" || ext == "mp2" || ext == "mpga") {
+        TagLib::MPEG::File file(filePath, false);
+        if (!file.isValid()) return TagLib::ByteVector();
+        return readAttachedPicture(file.ID3v2Tag(false));
+    }
+
+    if (ext == "flac") {
+        TagLib::FLAC::File file(filePath, false);
+        if (!file.isValid()) return TagLib::ByteVector();
+        auto pictures = file.pictureList();
+        TagLib::FLAC::Picture *best = nullptr;
+        TagLib::FLAC::Picture *fallback = nullptr;
+        for (auto *picture : pictures) {
+            if (!picture || picture->data().size() <= 1024) continue;
+            if (!fallback) fallback = picture;
+            if (picture->type() == TagLib::FLAC::Picture::FrontCover) {
+                best = picture;
+                break;
+            }
+        }
+        auto *selected = best ? best : fallback;
+        return selected ? selected->data() : TagLib::ByteVector();
+    }
+
+    if (ext == "m4a" || ext == "m4b" || ext == "m4p" || ext == "mp4") {
+        TagLib::MP4::File file(filePath, false);
+        if (!file.isValid()) return TagLib::ByteVector();
+        auto *tag = file.tag();
+        if (!tag || !tag->contains("covr")) return TagLib::ByteVector();
+        const auto covers = tag->item("covr").toCoverArtList();
+        for (const auto &cover : covers) {
+            const auto data = cover.data();
+            if (data.size() > 1024) return data;
+        }
+        return TagLib::ByteVector();
+    }
+
+    if (ext == "dsf") {
+        TagLib::DSF::File file(filePath, false);
+        if (!file.isValid()) return TagLib::ByteVector();
+        return readAttachedPicture(file.tag());
+    }
+
+    if (ext == "dff" || ext == "dsdiff") {
+        TagLib::DSDIFF::File file(filePath, false);
+        if (!file.isValid()) return TagLib::ByteVector();
+        return readAttachedPicture(file.ID3v2Tag(false));
+    }
+
+    // Other formats remain on FFmpeg/MMR fallback until their native picture APIs are verified.
+    return TagLib::ByteVector();
 }
 
 /**
@@ -243,6 +356,37 @@ Java_com_rawsmusic_core_common_taglib_TagLibBridge_nativeReadMetadata(
 
     env->DeleteLocalRef(mapClass);
     return map;
+}
+
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rawsmusic_core_common_taglib_TagLibBridge_nativeExtractEmbeddedArtworkToFile(
+    JNIEnv *env, jobject, jstring path, jstring outputPath) {
+
+    const char *filePath = env->GetStringUTFChars(path, nullptr);
+    const char *outPath = env->GetStringUTFChars(outputPath, nullptr);
+    if (!filePath || !outPath) {
+        if (filePath) env->ReleaseStringUTFChars(path, filePath);
+        if (outPath) env->ReleaseStringUTFChars(outputPath, outPath);
+        return JNI_FALSE;
+    }
+
+    bool ok = false;
+    try {
+        const auto data = extractArtworkBytes(filePath);
+        ok = writeByteVectorToFile(data, outPath);
+        LOGI("nativeExtractEmbeddedArtworkToFile: %s result=%d bytes=%d", filePath, ok ? 1 : 0, data.size());
+    } catch (const std::exception &e) {
+        LOGE("nativeExtractEmbeddedArtworkToFile failed: %s", e.what());
+        ok = false;
+    } catch (...) {
+        LOGE("nativeExtractEmbeddedArtworkToFile failed: unknown error");
+        ok = false;
+    }
+
+    env->ReleaseStringUTFChars(path, filePath);
+    env->ReleaseStringUTFChars(outputPath, outPath);
+    return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

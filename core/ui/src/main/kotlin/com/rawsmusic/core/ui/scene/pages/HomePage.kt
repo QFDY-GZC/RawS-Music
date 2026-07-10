@@ -56,6 +56,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,6 +67,9 @@ import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.scene.LocalSceneBackgroundFrozen
 import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
+import com.rawsmusic.core.ui.widget.flow.LocalRawFlowMode
+import com.rawsmusic.core.ui.widget.flow.LocalRawFlowModeSetter
+import com.rawsmusic.core.ui.widget.flow.RawFlowModeDialog
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -75,6 +79,8 @@ import kotlin.random.Random
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.SearchBar
 import top.yukonga.miuix.kmp.basic.SearchBarDefaults
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InputField
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -93,6 +99,9 @@ fun HomePage(
 ) {
     var searchExpanded by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    var showFlowModeDialog by remember { mutableStateOf(false) }
+    val rawFlowMode = LocalRawFlowMode.current
+    val setRawFlowMode = LocalRawFlowModeSetter.current
 
     val filteredSongs = remember(searchQuery, songs) {
         if (searchQuery.isBlank()) emptyList()
@@ -106,7 +115,7 @@ fun HomePage(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(MiuixTheme.colorScheme.background)) {
+    Box(modifier = Modifier.fillMaxSize()) {
         HomePageContent(
             songs = songs,
             currentSong = currentSong,
@@ -114,6 +123,7 @@ fun HomePage(
             listState = listState,
             onNavigate = onNavigate,
             onSearchClick = { searchExpanded = true },
+            onFlowBackgroundClick = { showFlowModeDialog = true },
             onSongClick = onSongClick,
             onPlayQueue = onPlayQueue
         )
@@ -136,6 +146,13 @@ fun HomePage(
                 }
             )
         }
+
+        RawFlowModeDialog(
+            show = showFlowModeDialog,
+            selectedMode = rawFlowMode,
+            onSelectMode = setRawFlowMode,
+            onDismissRequest = { showFlowModeDialog = false }
+        )
     }
 }
 
@@ -153,7 +170,6 @@ private fun SearchOverlay(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(backgroundColor)
             .statusBarsPadding()
     ) {
         SearchBar(
@@ -258,9 +274,9 @@ private fun SearchResultSongRow(
                 .clip(RoundedCornerShape(8.dp))
                 .background(pastelColorFor(song.title))
         ) {
-            if (song.albumArtPath.isNotBlank()) {
+            if (song.coverKey.isNotBlank()) {
                 BitmapImage(
-                    key = song.albumArtPath,
+                    key = song.coverKey,
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
@@ -298,6 +314,7 @@ private fun HomePageContent(
     listState: LazyListState = rememberLazyListState(),
     onNavigate: (NavScene) -> Unit,
     onSearchClick: () -> Unit,
+    onFlowBackgroundClick: () -> Unit,
     onSongClick: (AudioFile, Int) -> Unit,
     onPlayQueue: (List<AudioFile>, Int) -> Unit
 ) {
@@ -342,7 +359,6 @@ private fun HomePageContent(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
-            .background(backgroundColor)
             .statusBarsPadding()
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(22.dp)
@@ -358,12 +374,19 @@ private fun HomePageContent(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(stringResource(R.string.home_recommend_title), fontSize = 28.sp, fontWeight = FontWeight.Bold, color = MiuixTheme.colorScheme.onBackground)
                         Text(
                             stringResource(R.string.home_recommend_subtitle),
                             fontSize = 14.sp,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+                        )
+                    }
+                    IconButton(onClick = onFlowBackgroundClick) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_palette),
+                            contentDescription = stringResource(R.string.flow_background_action),
+                            tint = MiuixTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -526,9 +549,9 @@ fun Daily20Page(
                     .fillMaxWidth()
                     .height(520.dp)
             ) {
-                if (coverSong?.albumArtPath?.isNotBlank() == true) {
+                if (coverSong?.coverKey?.isNotBlank() == true) {
                     BitmapImage(
-                        key = coverSong.albumArtPath,
+                        key = coverSong.coverKey,
                         contentDescription = null,
                         modifier = Modifier
                             .fillMaxSize(),
@@ -715,9 +738,9 @@ private fun FeatureCover(song: AudioFile?) {
             },
             label = "feature-cover"
         ) { _ ->
-            if (song?.albumArtPath?.isNotBlank() == true) {
+            if (song?.coverKey?.isNotBlank() == true) {
                 BitmapImage(
-                    key = song.albumArtPath,
+                    key = song.coverKey,
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
@@ -744,9 +767,9 @@ private fun LibraryTile(
                 .clip(RoundedCornerShape(13.dp))
                 .background(pastelColorFor(scene.tag))
         ) {
-            if (song?.albumArtPath?.isNotBlank() == true) {
+            if (song?.coverKey?.isNotBlank() == true) {
                 BitmapImage(
-                    key = song.albumArtPath,
+                    key = song.coverKey,
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
@@ -804,9 +827,9 @@ private fun MostPlayedRow(
                 .clip(RoundedCornerShape(8.dp))
                 .background(pastelColorFor(song.title))
         ) {
-            if (song.albumArtPath.isNotBlank()) {
+            if (song.coverKey.isNotBlank()) {
                 BitmapImage(
-                    key = song.albumArtPath,
+                    key = song.coverKey,
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
@@ -848,9 +871,9 @@ private fun DailySongRow(
                 .clip(RoundedCornerShape(8.dp))
                 .background(pastelColorFor(song.title))
         ) {
-            if (song.albumArtPath.isNotBlank()) {
+            if (song.coverKey.isNotBlank()) {
                 BitmapImage(
-                    key = song.albumArtPath,
+                    key = song.coverKey,
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
@@ -933,7 +956,7 @@ private fun homeLibraryCards(songs: List<AudioFile>): List<LibraryHomeCard> {
         NavScene.YEAR,
         NavScene.COMPOSER
     )
-    val covers = songs.filter { it.albumArtPath.isNotBlank() }.ifEmpty { songs }
+    val covers = songs.filter { it.coverKey.isNotBlank() }.ifEmpty { songs }
     return scenes.mapIndexed { index, scene ->
         LibraryHomeCard(scene, covers.getOrNull(index % covers.size.coerceAtLeast(1)))
     }
@@ -946,7 +969,7 @@ private fun homeToolCards(songs: List<AudioFile>): List<LibraryHomeCard> {
         NavScene.WEBDAV,
         NavScene.LOG_VIEWER
     )
-    val covers = songs.filter { it.albumArtPath.isNotBlank() }.ifEmpty { songs }
+    val covers = songs.filter { it.coverKey.isNotBlank() }.ifEmpty { songs }
     return scenes.mapIndexed { index, scene ->
         LibraryHomeCard(scene, covers.getOrNull((index + 5) % covers.size.coerceAtLeast(1)))
     }

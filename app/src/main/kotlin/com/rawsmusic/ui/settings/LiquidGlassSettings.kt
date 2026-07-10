@@ -36,11 +36,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
+import com.rawsmusic.R
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
@@ -117,7 +119,6 @@ internal fun SettingsPage(
 ) {
     val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
     val pageBackground = if (isDark) Color(0xFF101014) else Color(0xFFF4F4F7)
-
     Column(
         Modifier
             .fillMaxSize()
@@ -132,7 +133,7 @@ internal fun SettingsPage(
                     top.yukonga.miuix.kmp.basic.IconButton(onClick = onBack) {
                         top.yukonga.miuix.kmp.basic.Icon(
                             imageVector = MiuixIcons.Regular.Back,
-                            contentDescription = "返回",
+                            contentDescription = stringResource(R.string.settings_back),
                             tint = MiuixTheme.colorScheme.onSurface
                         )
                     }
@@ -190,29 +191,22 @@ fun LiquidGlassSettingsScreen(
 
     // 搜索状态
     var searchQuery by remember { mutableStateOf("") }
-    var isSearchActive by remember { mutableStateOf(false) }
 
     // 可搜索的设置项
-    val searchableItems = remember(
-        onNavigateToAudioSettings, onNavigateToUsbDac, onNavigateToAudioEffects,
-        onNavigateToPlayerInterface, onNavigateToAppearance, onNavigateToLyricManagement,
-        onNavigateToStatusBarLyric, onNavigateToGlobalFont, onNavigateToAlbumArt, onWebDavBackup
-    ) {
-        listOf(
-            SearchableSetting("音质设置", "采样率 位深 输出模式 重采样 sample rate", onNavigateToAudioSettings),
-            SearchableSetting("USB DAC", "USB 独占 DAC PCM DSD 解码器", onNavigateToUsbDac),
-            SearchableSetting("音频效果", "均衡器 EQ 混响 reverb bass treble", onNavigateToAudioEffects),
-            SearchableSetting("播放器界面", "播放器 专辑图 控制 按钮 player", onNavigateToPlayerInterface),
-            SearchableSetting("外观", "主题 字体 颜色 暗色 深色 dark theme", onNavigateToAppearance),
-            SearchableSetting("歌词管理", "歌词 字体 大小 lrc lyric", onNavigateToLyricManagement),
-            SearchableSetting("状态栏歌词", "状态栏 通知 lyric status bar", onNavigateToStatusBarLyric),
-            SearchableSetting("全局字体", "字体 font typeface global", onNavigateToGlobalFont),
-            SearchableSetting("专辑图", "封面 缓存 高清 album art cover", onNavigateToAlbumArt),
-            SearchableSetting("WebDAV 备份", "备份 恢复 云同步 backup restore", onWebDavBackup),
-            SearchableSetting("关于", "关于 版本 项目 开源 about version", onNavigateToAbout),
-            SearchableSetting("扫描设置", "扫描 文件夹 重新扫描 短曲 播放次数 进度 scan folder", onNavigateToScanSettings),
-        )
-    }
+    val searchableItems = listOf(
+        SearchableSetting(stringResource(R.string.settings_audio_quality_title), stringResource(R.string.settings_audio_quality_keywords), onNavigateToAudioSettings),
+        SearchableSetting(stringResource(R.string.settings_usb_dac_title), stringResource(R.string.settings_usb_dac_keywords), onNavigateToUsbDac),
+        SearchableSetting(stringResource(R.string.settings_audio_effects_title), stringResource(R.string.settings_audio_effects_keywords), onNavigateToAudioEffects),
+        SearchableSetting(stringResource(R.string.settings_player_interface_title), stringResource(R.string.settings_player_interface_keywords), onNavigateToPlayerInterface),
+        SearchableSetting(stringResource(R.string.settings_appearance_title), stringResource(R.string.settings_appearance_keywords), onNavigateToAppearance),
+        SearchableSetting(stringResource(R.string.settings_lyric_management_title), stringResource(R.string.settings_lyric_management_keywords), onNavigateToLyricManagement),
+        SearchableSetting(stringResource(R.string.settings_status_bar_lyric_title), stringResource(R.string.settings_status_bar_lyric_keywords), onNavigateToStatusBarLyric),
+        SearchableSetting(stringResource(R.string.settings_global_font_title), stringResource(R.string.settings_global_font_keywords), onNavigateToGlobalFont),
+        SearchableSetting(stringResource(R.string.settings_album_art_title), stringResource(R.string.settings_album_art_keywords), onNavigateToAlbumArt),
+        SearchableSetting(stringResource(R.string.settings_webdav_backup_title), stringResource(R.string.settings_webdav_backup_keywords), onWebDavBackup),
+        SearchableSetting(stringResource(R.string.settings_about_raws_music_title), stringResource(R.string.settings_about_keywords), onNavigateToAbout),
+        SearchableSetting(stringResource(R.string.settings_scan_settings_title), stringResource(R.string.settings_scan_settings_keywords), onNavigateToScanSettings)
+    )
 
     val filteredItems = if (searchQuery.isBlank()) emptyList()
     else searchableItems.filter { item ->
@@ -226,7 +220,7 @@ fun LiquidGlassSettingsScreen(
             .background(pageBackground)
     ) {
         SmallTopAppBar(
-            title = "设置",
+            title = stringResource(R.string.settings_main_title),
             color = pageBackground,
             titleColor = MiuixTheme.colorScheme.onBackground,
             navigationIcon = {}
@@ -242,7 +236,7 @@ fun LiquidGlassSettingsScreen(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = "搜索设置"
+                label = stringResource(R.string.settings_search_hint)
             )
         }
 
@@ -254,13 +248,13 @@ fun LiquidGlassSettingsScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 12.dp)
             ) {
-                SmallTitle(text = "搜索结果")
+                SmallTitle(text = stringResource(R.string.settings_search_results))
                 SettingsCardGroup {
                     Column {
                         filteredItems.forEach { item ->
                             ArrowPreference(
                                 title = item.title,
-                                summary = "点击进入",
+                                summary = stringResource(R.string.settings_search_open),
                                 onClick = {
                                     searchQuery = ""
                                     item.onClick()
@@ -278,7 +272,7 @@ fun LiquidGlassSettingsScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "未找到匹配的设置项",
+                    text = stringResource(R.string.settings_search_no_results),
                     color = MiuixTheme.colorScheme.onBackground.copy(alpha = 0.5f),
                     fontSize = 14.sp
                 )
@@ -293,86 +287,86 @@ fun LiquidGlassSettingsScreen(
             ) {
                 Spacer(modifier = Modifier.height(8.dp))
 
-            SmallTitle(text = "音频输出")
+            SmallTitle(text = stringResource(R.string.settings_section_audio_output))
 
             SettingsCardGroup {
                 Column {
                     ArrowPreference(
-                        title = "音质设置",
-                        summary = "采样率、位深、输出模式与重采样",
+                        title = stringResource(R.string.settings_audio_quality_title),
+                        summary = stringResource(R.string.settings_audio_quality_summary),
                         onClick = onNavigateToAudioSettings
                     )
                     ArrowPreference(
                         title = "USB DAC",
-                        summary = "USB 独占、DAC 状态、PCM 输出与 DSD",
+                        summary = stringResource(R.string.settings_usb_dac_summary),
                         onClick = onNavigateToUsbDac
                     )
                 }
             }
 
-            SmallTitle(text = "播放与界面")
+            SmallTitle(text = stringResource(R.string.settings_section_playback_ui))
 
             SettingsCardGroup {
                 Column {
                     ArrowPreference(
-                        title = "界面设置",
-                        summary = "默认背景、沉浸模式、常驻封面、音频可视化",
+                        title = stringResource(R.string.settings_player_interface_title),
+                        summary = stringResource(R.string.settings_player_interface_summary),
                         onClick = onNavigateToPlayerInterface
                     )
                     ArrowPreference(
-                        title = "专辑图",
-                        summary = "画质、高清封面、24位 RGB、封面下载与动画",
+                        title = stringResource(R.string.settings_album_art_title),
+                        summary = stringResource(R.string.settings_album_art_summary),
                         onClick = onNavigateToAlbumArt
                     )
                     ArrowPreference(
-                        title = "外观主题",
-                        summary = "主题模式、界面色彩与显示风格",
+                        title = stringResource(R.string.settings_appearance_title),
+                        summary = stringResource(R.string.settings_appearance_summary),
                         onClick = onNavigateToAppearance
                     )
                     ArrowPreference(
-                        title = "全局字体",
-                        summary = "字体大小、字重、斜体与全局显示",
+                        title = stringResource(R.string.settings_global_font_title),
+                        summary = stringResource(R.string.settings_global_font_summary),
                         onClick = onNavigateToGlobalFont
                     )
                 }
             }
 
-            SmallTitle(text = "歌词")
+            SmallTitle(text = stringResource(R.string.settings_section_lyrics))
 
             SettingsCardGroup {
                 Column {
                     ArrowPreference(
-                        title = "歌词管理",
-                        summary = "歌词源、歌词字体设置与歌词显示",
+                        title = stringResource(R.string.settings_lyric_management_title),
+                        summary = stringResource(R.string.settings_lyric_management_summary),
                         onClick = onNavigateToLyricManagement
                     )
                     ArrowPreference(
-                        title = "状态栏歌词",
-                        summary = "Flyme、三星、蓝牙、Lyric Getter",
+                        title = stringResource(R.string.settings_status_bar_lyric_title),
+                        summary = stringResource(R.string.settings_status_bar_lyric_summary),
                         onClick = onNavigateToStatusBarLyric
                     )
                 }
             }
 
-            SmallTitle(text = "媒体库")
+            SmallTitle(text = stringResource(R.string.settings_section_media_library))
 
             SettingsCardGroup {
                 Column {
                     ArrowPreference(
-                        title = "扫描设置",
-                        summary = "音乐文件夹、重新扫描、短曲过滤、播放次数和进度恢复",
+                        title = stringResource(R.string.settings_scan_settings_title),
+                        summary = stringResource(R.string.settings_scan_settings_summary),
                         onClick = onNavigateToScanSettings
                     )
                 }
             }
 
-            SmallTitle(text = "数据")
+            SmallTitle(text = stringResource(R.string.settings_section_data))
 
             SettingsCardGroup {
                 Column {
                     ArrowPreference(
-                        title = "WebDAV 备份",
-                        summary = "备份与恢复歌单、统计数据和应用配置",
+                        title = stringResource(R.string.settings_webdav_backup_title),
+                        summary = stringResource(R.string.settings_webdav_backup_summary),
                         onClick = onWebDavBackup
                     )
                 }
@@ -383,8 +377,8 @@ fun LiquidGlassSettingsScreen(
             SettingsCardGroup {
                 Column {
                     ArrowPreference(
-                        title = "关于 RawS Music",
-                        summary = "版本、核心功能、项目主页与开源组件",
+                        title = stringResource(R.string.settings_about_raws_music_title),
+                        summary = stringResource(R.string.settings_about_raws_music_summary),
                         onClick = onNavigateToAbout
                     )
                 }

@@ -89,7 +89,8 @@ data class NavData(
     val currentSortOrder: SortOrder = SortOrder.TITLE_ASC,
     val artistDataSource: ArtistComposeDataSource? = null,
     val playCounts: Map<Long, Int> = emptyMap(),
-    val bottomChromeHidden: Boolean = false
+    val bottomChromeHidden: Boolean = false,
+    val uiForeground: Boolean = true
 )
 
 /**

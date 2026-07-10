@@ -11,6 +11,7 @@ import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.theme.ThemeManager
 import com.rawsmusic.module.data.DataModule
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.player.PlayerService
 import com.rawsmusic.module.scanner.LibraryScannerDependencies
 import com.rawsmusic.module.scanner.MusicRepositoryAudioLibraryRepository
 import com.rawsmusic.ui.songs.PlayerHolder
@@ -36,6 +37,11 @@ class RawSMusicApp : Application() {
         AppLogger.init()
         ThemeManager.applyStoredTheme()
 
+        PlayerService.ensureRuntimeService(
+            this,
+            "app_process_create_bootstrap"
+        )
+
         // 只启动后台封面线程，保持首屏封面请求可用；重型解码仍在 BitmapProvider worker 中执行。
         com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider.init(this)
 
@@ -50,17 +56,38 @@ class RawSMusicApp : Application() {
 
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
-                PlayerHolder.controller?.onAppForegroundResumed()
+                val handled = PlayerService.dispatchAppProcessForeground(
+                    this@RawSMusicApp,
+                    "process_lifecycle_on_start"
+                )
+                if (!handled) {
+                    (PlayerService.currentRuntimeController() ?: PlayerHolder.controller)
+                        ?.onAppForegroundResumed()
+                }
             }
 
             override fun onStop(owner: LifecycleOwner) {
-                PlayerHolder.controller?.onAppWentBackground()
+                val handled = PlayerService.dispatchAppProcessBackground(
+                    this@RawSMusicApp,
+                    "process_lifecycle_on_stop"
+                )
+                if (!handled) {
+                    (PlayerService.currentRuntimeController() ?: PlayerHolder.controller)
+                        ?.onAppWentBackground()
+                }
             }
         })
 
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityPaused(activity: Activity) {
-                PlayerHolder.controller?.onAppMaybeLeavingForeground()
+                val handled = PlayerService.dispatchActivityPaused(
+                    this@RawSMusicApp,
+                    "activity_paused:${activity.javaClass.simpleName}"
+                )
+                if (!handled) {
+                    (PlayerService.currentRuntimeController() ?: PlayerHolder.controller)
+                        ?.onAppMaybeLeavingForeground()
+                }
             }
 
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit

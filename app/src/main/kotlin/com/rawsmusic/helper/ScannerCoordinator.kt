@@ -19,7 +19,7 @@ class ScannerCoordinator(
 ) {
     private var startupScheduled = false
 
-    fun scheduleStartupScan(delayMs: Long = 10_000L) {
+    fun scheduleStartupScan(delayMs: Long = 1_000L) {
         if (startupScheduled) return
         startupScheduled = true
         mainHandler.postDelayed({
@@ -30,7 +30,11 @@ class ScannerCoordinator(
     }
 
     fun onPermissionGranted() {
-        scheduleStartupScan(delayMs = 2_000L)
+        // 权限通过后不自动触发扫描，只初始化扫描入口和 MediaStore 变化监听
+        // 用户需要手动选择文件夹后才会触发扫描
+        if (isActivityAlive()) {
+            startupScanHelper.start()
+        }
     }
 
     fun release() {

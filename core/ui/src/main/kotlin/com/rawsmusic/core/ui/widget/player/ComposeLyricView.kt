@@ -55,6 +55,7 @@ fun ComposeLyricView(
     dimColor: Color = Color.White.copy(alpha = 0.28f),
     secondaryColor: Color = Color.White.copy(alpha = 0.58f),
     fontFamily: FontFamily? = null,
+    maxPrimaryVisibleLines: Int = Int.MAX_VALUE,
     onLineClick: (Long) -> Unit = {},
     onSwipeRight: () -> Unit = {}
 ) {
@@ -65,6 +66,28 @@ fun ComposeLyricView(
         derivedStateOf { calculateLyricPlaybackState(lines, positionMs) }
     }
     val currentIndex = playbackState.currentLineIndex
+    val compactWindowEnabled = maxPrimaryVisibleLines != Int.MAX_VALUE
+    val inferredCompactLineLimit = remember(lines, displayTranslation, displayRoma) {
+        immersivePrimaryLyricLineLimit(lines, displayTranslation, displayRoma)
+    }
+    val compactLineLimit = remember(compactWindowEnabled, maxPrimaryVisibleLines, inferredCompactLineLimit) {
+        if (!compactWindowEnabled) {
+            Int.MAX_VALUE
+        } else {
+            maxOf(maxPrimaryVisibleLines, inferredCompactLineLimit).coerceIn(1, 5)
+        }
+    }
+    val visibleLineIndices = remember(lines, currentIndex, compactLineLimit) {
+        if (!compactWindowEnabled || lines.isEmpty()) {
+            lines.indices.toList()
+        } else {
+            centeredLyricWindowIndices(
+                total = lines.size,
+                currentIndex = currentIndex,
+                maxLines = compactLineLimit
+            )
+        }
+    }
 
     // 用户手动滚动时暂停自动追踪
     var userScrolling by remember { mutableStateOf(false) }
@@ -77,8 +100,8 @@ fun ComposeLyricView(
         }
     }
 
-    LaunchedEffect(currentIndex, lines.size) {
-        if (currentIndex >= 0 && lines.isNotEmpty() && !userScrolling && !listState.isScrollInProgress) {
+    LaunchedEffect(currentIndex, lines.size, compactWindowEnabled) {
+        if (!compactWindowEnabled && currentIndex >= 0 && lines.isNotEmpty() && !userScrolling && !listState.isScrollInProgress) {
             listState.animateScrollToItem(currentIndex, scrollOffset = -160)
         }
     }
@@ -92,6 +115,66 @@ fun ComposeLyricView(
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center
             )
+        }
+        return
+    }
+
+    if (compactWindowEnabled) {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    var totalX = 0f
+                    var totalY = 0f
+                    detectDragGestures(
+                        onDragStart = {
+                            totalX = 0f
+                            totalY = 0f
+                        },
+                        onDragEnd = {
+                            if (totalX > 150f && abs(totalX) > abs(totalY)) onSwipeRight()
+                        },
+                        onDrag = { change, dragAmount ->
+                            totalX += dragAmount.x
+                            totalY += dragAmount.y
+                            change.consume()
+                        }
+                    )
+                },
+            verticalArrangement = Arrangement.spacedBy(
+                space = if (visibleLineIndices.size <= 3) 18.dp else 12.dp,
+                alignment = Alignment.CenterVertically
+            ),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            visibleLineIndices.forEach { index ->
+                val line = lines[index]
+                val active = index == currentIndex
+                val distance = if (currentIndex >= 0) abs(index - currentIndex) else 4
+
+                ComposeLyricLine(
+                    line = line,
+                    active = active,
+                    progress = if (active) playbackState.lineProgress else 0f,
+                    positionMs = positionMs,
+                    displayTranslation = displayTranslation,
+                    displayRoma = displayRoma,
+                    textColor = if (active) textColor else dimColor,
+                    dimColor = dimColor,
+                    secondaryColor = if (active) secondaryColor else secondaryColor.copy(alpha = 0.58f),
+                    fontFamily = fontFamily,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .appleLyricLineVisuals(
+                            active = active,
+                            distance = distance,
+                            alignedRight = line.isAlignedRight
+                        )
+                        .clickable {
+                            scope.launch { onLineClick(line.begin) }
+                        }
+                )
+            }
         }
         return
     }
@@ -122,7 +205,11 @@ fun ComposeLyricView(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         item { Spacer(Modifier.height(topPadding)) }
-        items(lines.size, key = { index -> "${lines[index].begin}-$index" }) { index ->
+        items(visibleLineIndices.size, key = { itemIndex ->
+            val sourceIndex = visibleLineIndices[itemIndex]
+            "${lines[sourceIndex].begin}-$sourceIndex"
+        }) { itemIndex ->
+            val index = visibleLineIndices[itemIndex]
             val line = lines[index]
             val active = index == currentIndex
             val distance = if (currentIndex >= 0) abs(index - currentIndex) else 4
@@ -273,4 +360,27 @@ private fun Modifier.appleLyricLineVisuals(
             TransformOrigin(0f, 0.5f)
         }
     }
+}
+
+private fun immersivePrimaryLyricLineLimit(
+    lines: List<IRichLyricLine>,
+    displayTranslation: Boolean,
+    displayRoma: Boolean
+): Int {
+    val hasSecondaryText = lines.any { line ->
+        displayTranslation && !line.translation.isNullOrBlank() ||
+            displayRoma && !line.roma.isNullOrBlank() ||
+            !line.secondary.isNullOrBlank()
+    }
+    return if (hasSecondaryText) 3 else 5
+}
+
+
+private fun centeredLyricWindowIndices(total: Int, currentIndex: Int, maxLines: Int): List<Int> {
+    if (total <= 0) return emptyList()
+    val count = maxLines.coerceIn(1, total)
+    val anchor = currentIndex.coerceIn(0, total - 1)
+    var start = anchor - count / 2
+    start = start.coerceIn(0, (total - count).coerceAtLeast(0))
+    return (start until start + count).toList()
 }

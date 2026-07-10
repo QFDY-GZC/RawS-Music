@@ -1,5 +1,6 @@
 package com.rawsmusic.core.ui.widget.player
 
+import androidx.activity.compose.BackHandler
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.CubicBezierEasing
@@ -46,6 +47,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -60,11 +62,42 @@ import androidx.compose.ui.unit.sp
 import androidx.palette.graphics.Palette
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.R
+import com.rawsmusic.core.ui.widget.flow.rememberCurrentRawFlowMode
+import com.rawsmusic.core.ui.widget.flow.RawFlowBackground
+import com.rawsmusic.core.ui.widget.bitmaps.AlbumArtTiers
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.bitmaps.CrossfadeAlbumArt
+import com.rawsmusic.module.data.prefs.AppPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+private data class StandardPlayerTone(
+    val primary: Color,
+    val secondary: Color,
+    val tertiary: Color,
+    val icon: Color,
+    val iconSoft: Color,
+    val chipBackground: Color,
+    val chipText: Color
+)
+
+@Composable
+private fun rememberStandardPlayerTone(): StandardPlayerTone {
+    val scheme = MiuixTheme.colorScheme
+    val isDark = scheme.background.luminance() < 0.5f
+    return StandardPlayerTone(
+        primary = if (isDark) Color.White else scheme.onBackground.copy(alpha = 0.88f),
+        secondary = if (isDark) Color.White.copy(alpha = 0.86f) else scheme.onBackground.copy(alpha = 0.68f),
+        tertiary = if (isDark) Color.White.copy(alpha = 0.62f) else scheme.onBackground.copy(alpha = 0.48f),
+        icon = if (isDark) Color.White else scheme.onBackground.copy(alpha = 0.84f),
+        iconSoft = if (isDark) Color.White.copy(alpha = 0.86f) else scheme.onBackground.copy(alpha = 0.64f),
+        chipBackground = if (isDark) Color.Black.copy(alpha = 0.28f) else scheme.surfaceContainerHigh.copy(alpha = 0.72f),
+        chipText = if (isDark) Color.White.copy(alpha = 0.85f) else scheme.onSurface.copy(alpha = 0.82f)
+    )
+}
 
 @Composable
 fun PlayerMainPage(
@@ -89,6 +122,7 @@ fun PlayerMainPage(
     onPlayMode: () -> Unit,
     onPlayModeLongPress: () -> Unit,
     onMore: () -> Unit,
+    onModalVisibleChange: (Boolean) -> Unit = {},
     onAudioQuality: () -> Unit,
     onAudioQualityLongPress: () -> Unit = onAudioQuality,
     onOpenLyric: () -> Unit,
@@ -109,7 +143,60 @@ fun PlayerMainPage(
     val isLandscape = configuration.screenWidthDp > configuration.screenHeightDp
     val baseColor = rememberCoverAccentColor(coverPath)
     var showAudioChain by remember { mutableStateOf(false) }
+    var showMoreSheet by remember { mutableStateOf(false) }
+    var progressStyle by remember { mutableStateOf(ImmersiveProgressStyle.from(AppPreferences.UI.immersiveProgressStyle)) }
+    var climaxEnabled by remember { mutableStateOf(AppPreferences.UI.immersiveClimaxEnabled) }
+    var waveformDebugPanel by remember { mutableStateOf(AppPreferences.UI.immersiveWaveformDebugPanel) }
+    var waveformRemainingColorInt by remember { mutableStateOf(AppPreferences.UI.immersiveWaveformRemainingColor) }
+    var waveformPlayedColorInt by remember { mutableStateOf(AppPreferences.UI.immersiveWaveformPlayedColor) }
+    var waveformClimaxColorInt by remember { mutableStateOf(AppPreferences.UI.immersiveWaveformClimaxColor) }
 
+    fun saveProgressStyle(style: ImmersiveProgressStyle) {
+        progressStyle = style
+        AppPreferences.UI.immersiveProgressStyle = style.value
+    }
+
+    fun saveClimaxEnabled(enabled: Boolean) {
+        climaxEnabled = enabled
+        AppPreferences.UI.immersiveClimaxEnabled = enabled
+    }
+
+    fun saveWaveformDebugPanel(enabled: Boolean) {
+        waveformDebugPanel = enabled
+        AppPreferences.UI.immersiveWaveformDebugPanel = enabled
+    }
+
+    fun saveWaveformRemainingColor(color: Color) {
+        waveformRemainingColorInt = color.toArgbCompat()
+        AppPreferences.UI.immersiveWaveformRemainingColor = waveformRemainingColorInt
+    }
+
+    fun saveWaveformPlayedColor(color: Color) {
+        waveformPlayedColorInt = color.toArgbCompat()
+        AppPreferences.UI.immersiveWaveformPlayedColor = waveformPlayedColorInt
+    }
+
+    fun saveWaveformClimaxColor(color: Color) {
+        waveformClimaxColorInt = color.toArgbCompat()
+        AppPreferences.UI.immersiveWaveformClimaxColor = waveformClimaxColorInt
+    }
+
+    fun openUnifiedMoreSheet() {
+        showMoreSheet = true
+        onModalVisibleChange(true)
+    }
+
+    fun closeUnifiedMoreSheet() {
+        showMoreSheet = false
+        onModalVisibleChange(false)
+    }
+
+    LaunchedEffect(coverPath) {
+        if (!coverPath.isNullOrBlank()) {
+            BitmapProvider.warmPlaybackArt(coverPath)
+            BitmapProvider.warmFullCoverArt(coverPath)
+        }
+    }
     Box(modifier = modifier.fillMaxSize()) {
         if (renderBackdrop) {
             StandardPlayerBackdrop(coverPath = coverPath, accent = baseColor)
@@ -162,7 +249,13 @@ fun PlayerMainPage(
                     onNext = onNext,
                     onPlayMode = onPlayMode,
                     onPlayModeLongPress = onPlayModeLongPress,
-                    onMore = onMore,
+                    onMore = ::openUnifiedMoreSheet,
+                    progressStyle = progressStyle,
+                    climaxEnabled = climaxEnabled,
+                    waveformDebugPanel = waveformDebugPanel,
+                    waveformRemainingColor = Color(waveformRemainingColorInt),
+                    waveformPlayedColor = Color(waveformPlayedColorInt),
+                    waveformClimaxColor = Color(waveformClimaxColorInt),
                     onAudioQuality = onAudioQuality,
                     onAudioQualityLongPress = onAudioQualityLongPress,
                     onOpenLyric = onOpenLyric,
@@ -220,7 +313,13 @@ fun PlayerMainPage(
                     onNext = onNext,
                     onPlayMode = onPlayMode,
                     onPlayModeLongPress = onPlayModeLongPress,
-                    onMore = onMore,
+                    onMore = ::openUnifiedMoreSheet,
+                    progressStyle = progressStyle,
+                    climaxEnabled = climaxEnabled,
+                    waveformDebugPanel = waveformDebugPanel,
+                    waveformRemainingColor = Color(waveformRemainingColorInt),
+                    waveformPlayedColor = Color(waveformPlayedColorInt),
+                    waveformClimaxColor = Color(waveformClimaxColorInt),
                     onAudioQuality = onAudioQuality,
                     onAudioQualityLongPress = onAudioQualityLongPress,
                     onOpenLyric = onOpenLyric,
@@ -232,6 +331,34 @@ fun PlayerMainPage(
                 )
             }
         }
+
+        BackHandler(enabled = showMoreSheet) {
+            closeUnifiedMoreSheet()
+        }
+        AnimatedVisibility(
+            visible = showMoreSheet,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            ImmersiveMoreSheet(
+                currentSong = currentSong,
+                coverPath = coverPath,
+                progressStyle = progressStyle,
+                climaxEnabled = climaxEnabled,
+                waveformDebugPanel = waveformDebugPanel,
+                waveformRemainingColor = Color(waveformRemainingColorInt),
+                waveformPlayedColor = Color(waveformPlayedColorInt),
+                waveformClimaxColor = Color(waveformClimaxColorInt),
+                onProgressStyleChange = ::saveProgressStyle,
+                onClimaxEnabledChange = ::saveClimaxEnabled,
+                onWaveformDebugPanelChange = ::saveWaveformDebugPanel,
+                onWaveformRemainingColorChange = ::saveWaveformRemainingColor,
+                onWaveformPlayedColorChange = ::saveWaveformPlayedColor,
+                onWaveformClimaxColorChange = ::saveWaveformClimaxColor,
+                onDismiss = ::closeUnifiedMoreSheet
+            )
+        }
     }
 }
 
@@ -241,36 +368,12 @@ internal fun StandardPlayerBackdrop(
     accent: Color,
     modifier: Modifier = Modifier
 ) {
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(accent)
-    ) {
-        if (!coverPath.isNullOrBlank()) {
-            BitmapImage(
-                key = coverPath,
-                contentDescription = null,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .blur(34.dp),
-                contentScale = ContentScale.Crop,
-                targetWidth = 480,
-                targetHeight = 480
-            )
-        }
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        0f to accent.copy(alpha = 0.62f),
-                        0.34f to accent.copy(alpha = 0.72f),
-                        0.72f to Color(0xE6161320),
-                        1f to Color.Black.copy(alpha = 0.94f)
-                    )
-                )
-        )
-    }
+    // 普通播放页和沉浸播放页统一使用 RawFlowBackground，不再维护另一套模糊封面背景。
+    RawFlowBackground(
+        mode = rememberCurrentRawFlowMode(),
+        sourceCoverKey = coverPath,
+        modifier = modifier.fillMaxSize()
+    )
 }
 
 @Composable
@@ -349,13 +452,21 @@ private fun AlbumArtCard(
                 key = coverPath,
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer { alpha = if (showArt) 1f else 0f }
+                    .graphicsLayer { alpha = if (showArt) 1f else 0f },
+                priority = com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
+                lowResSize = AlbumArtTiers.HI_RES_SIDE,
+                hiResSize = AlbumArtTiers.FULL_RES_SIDE,
+                holdPreviousOnKeyChange = true,
+                fadeMillis = 0,
+                freezeBitmapUpdates = dragY != 0f,
+                skipLowResPlaceholder = false,
+                forceTargetHighRequest = true
             )
         } else {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
                     text = stringResource(R.string.player_no_song),
-                    color = Color.White.copy(alpha = 0.56f),
+                    color = rememberStandardPlayerTone().tertiary,
                     fontSize = 22.sp,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -387,6 +498,12 @@ private fun StandardPlayerBody(
     onPlayMode: () -> Unit,
     onPlayModeLongPress: () -> Unit,
     onMore: () -> Unit,
+    progressStyle: ImmersiveProgressStyle,
+    climaxEnabled: Boolean,
+    waveformDebugPanel: Boolean,
+    waveformRemainingColor: Color,
+    waveformPlayedColor: Color,
+    waveformClimaxColor: Color,
     onAudioQuality: () -> Unit,
     onAudioQualityLongPress: () -> Unit,
     onOpenLyric: () -> Unit,
@@ -412,25 +529,33 @@ private fun StandardPlayerBody(
             IconOnlyButton(iconRes = moreIconRes, onClick = onMore)
         }
         Spacer(Modifier.weight(1f))
-        ComposePlayerControls(
-            isPlaying = isPlaying,
+        ImmersiveProgress(
+            currentSong = currentSong,
             currentPositionMs = currentPositionMs,
             totalDurationMs = totalDurationMs,
-            textColor = Color.White.copy(alpha = 0.86f),
-            iconColor = Color.White,
-            playIconTint = Color.White,
+            isPlaying = isPlaying,
+            progressStyle = progressStyle,
+            climaxEnabled = climaxEnabled,
+            waveformDebugPanel = waveformDebugPanel,
+            waveformRemainingColor = waveformRemainingColor,
+            waveformPlayedColor = waveformPlayedColor,
+            waveformClimaxColor = waveformClimaxColor,
+            onSeekStart = onSeekStart,
+            onSeekStop = onSeekStop
+        )
+        Spacer(Modifier.height(14.dp))
+        StandardTransportButtons(
+            isPlaying = isPlaying,
             previousIconRes = previousIconRes,
             playIconRes = playIconRes,
             pauseIconRes = pauseIconRes,
             nextIconRes = nextIconRes,
-            onSeekStart = onSeekStart,
-            onSeekStop = onSeekStop,
+            playModeIconRes = playModeIconRes,
             onPrevious = onPrevious,
             onPlayPause = onPlayPause,
             onNext = onNext,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(132.dp)
+            onPlayMode = onPlayMode,
+            onQueuePlaceholder = onOpenQueue
         )
         Spacer(Modifier.height(4.dp))
         Row(
@@ -450,6 +575,87 @@ private fun StandardPlayerBody(
 }
 
 @Composable
+private fun StandardTransportButtons(
+    isPlaying: Boolean,
+    @DrawableRes previousIconRes: Int,
+    @DrawableRes playIconRes: Int,
+    @DrawableRes pauseIconRes: Int,
+    @DrawableRes nextIconRes: Int,
+    @DrawableRes playModeIconRes: Int,
+    onPrevious: () -> Unit,
+    onPlayPause: () -> Unit,
+    onNext: () -> Unit,
+    onPlayMode: () -> Unit,
+    onQueuePlaceholder: () -> Unit
+) {
+    val tone = rememberStandardPlayerTone()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        PlayerTransportIcon(iconRes = playModeIconRes, size = 40.dp, iconSize = 30.dp, tint = tone.tertiary, onClick = onPlayMode)
+        Spacer(Modifier.width(10.dp))
+        PlayerTransportIcon(iconRes = previousIconRes, size = 48.dp, iconSize = 40.dp, tint = tone.icon, onClick = onPrevious)
+        Spacer(Modifier.width(16.dp))
+        PlayerTransportIcon(
+            iconRes = if (isPlaying) pauseIconRes else playIconRes,
+            size = 56.dp,
+            iconSize = 42.dp,
+            tint = tone.icon,
+            onClick = onPlayPause
+        )
+        Spacer(Modifier.width(16.dp))
+        PlayerTransportIcon(iconRes = nextIconRes, size = 48.dp, iconSize = 40.dp, tint = tone.icon, onClick = onNext)
+        Spacer(Modifier.width(10.dp))
+        PlayerQueuePlaceholder(size = 40.dp, tint = tone.tertiary, onClick = onQueuePlaceholder)
+    }
+}
+
+@Composable
+private fun PlayerQueuePlaceholder(
+    size: androidx.compose.ui.unit.Dp,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("≡", color = tint, fontSize = 31.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun PlayerTransportIcon(
+    @DrawableRes iconRes: Int,
+    size: androidx.compose.ui.unit.Dp,
+    iconSize: androidx.compose.ui.unit.Dp,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        if (iconRes != 0) {
+            Image(
+                painter = painterResource(iconRes),
+                contentDescription = null,
+                colorFilter = ColorFilter.tint(tint),
+                modifier = Modifier.size(iconSize)
+            )
+        }
+    }
+}
+
+@Composable
 private fun PillTitleInfo(
     currentSong: AudioFile?,
     onSwipeUpStart: () -> Unit,
@@ -459,14 +665,15 @@ private fun PillTitleInfo(
 ) {
     var dragY by remember { mutableStateOf(0f) }
     var titleSize by remember { mutableStateOf(IntSize.Zero) }
+    val tone = rememberStandardPlayerTone()
     ComposePlayerTitleInfo(
         title = currentSong?.displayName ?: stringResource(R.string.player_no_song),
         artist = currentSong?.artist?.takeIf { it.isNotBlank() }
             ?: stringResource(R.string.player_unknown_artist),
         album = currentSong?.album?.takeIf { it.isNotBlank() }.orEmpty(),
-        titleColor = Color.White,
-        artistColor = Color.White.copy(alpha = 0.86f),
-        albumColor = Color.White.copy(alpha = 0.62f),
+        titleColor = tone.primary,
+        artistColor = tone.secondary,
+        albumColor = tone.tertiary,
         modifier = modifier
             .onSizeChanged { titleSize = it }
             .pointerInput(Unit) {
@@ -514,7 +721,7 @@ private fun IconOnlyButton(
     Image(
         painter = painterResource(iconRes),
         contentDescription = null,
-        colorFilter = ColorFilter.tint(Color.White.copy(alpha = 0.86f)),
+        colorFilter = ColorFilter.tint(rememberStandardPlayerTone().iconSoft),
         modifier = Modifier
             .size(44.dp)
             .clip(CircleShape)
@@ -548,7 +755,7 @@ private fun QualityPill(song: AudioFile?, text: String, onClick: () -> Unit, onL
                 this.alpha = alpha
             }
             .clip(RoundedCornerShape(50))
-            .background(Color.Black.copy(alpha = 0.28f))
+            .background(rememberStandardPlayerTone().chipBackground)
             .pointerInput(onClick, onLongClick) {
                 detectTapGestures(
                     onPress = {
@@ -565,7 +772,7 @@ private fun QualityPill(song: AudioFile?, text: String, onClick: () -> Unit, onL
     ) {
         Text(
             text = text.ifBlank { audioChainText(song) },
-            color = Color.White.copy(alpha = 0.85f),
+            color = rememberStandardPlayerTone().chipText,
             fontSize = 9.sp,
             fontWeight = FontWeight.Medium
         )
@@ -578,11 +785,11 @@ private fun AudioChainCard(song: AudioFile?, modifier: Modifier = Modifier) {
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(24.dp))
-            .background(Color.Black.copy(alpha = 0.30f))
+            .background(rememberStandardPlayerTone().chipBackground)
             .padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text(audioChainText(song), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Text(audioChainText(song), color = rememberStandardPlayerTone().primary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
         Text(
             text = listOfNotNull(
                 song?.format?.takeIf { it.isNotBlank() },
@@ -591,7 +798,7 @@ private fun AudioChainCard(song: AudioFile?, modifier: Modifier = Modifier) {
                     com.rawsmusic.core.common.utils.BitrateNormalizer.formatKbps(it, song.duration, song.fileSize)
                 }
             ).joinToString("  "),
-            color = Color.White.copy(alpha = 0.72f),
+            color = rememberStandardPlayerTone().secondary,
             fontSize = 12.sp
         )
     }
@@ -599,40 +806,73 @@ private fun AudioChainCard(song: AudioFile?, modifier: Modifier = Modifier) {
 
 @Composable
 internal fun rememberCoverAccentColor(coverPath: String?): Color {
-    var color by remember(coverPath) { mutableStateOf(Color(0xFF6B5A70)) }
+    val defaultColor = Color(0xFF6B5A70)
+    var color by remember { mutableStateOf(defaultColor) }
+
     LaunchedEffect(coverPath) {
-        if (coverPath.isNullOrBlank()) {
-            color = Color(0xFF6B5A70)
+        val key = coverPath?.takeIf { it.isNotBlank() }
+        if (key == null) {
+            color = defaultColor
             return@LaunchedEffect
         }
-        val t0 = android.os.SystemClock.uptimeMillis()
-        val next = withContext(Dispatchers.IO) {
-            // 先查缓存（复用 CrossfadeAlbumArt 已加载的 128px / 1080px）
-            val peek128 = BitmapProvider.peek(coverPath, 128, 128)
-            val peek1080 = if (peek128 == null) BitmapProvider.peek(coverPath, 1080, 1080) else null
-            val cached = peek128 ?: peek1080 ?: BitmapProvider.execute(coverPath, 96, 96)
-            val hitType = when {
-                peek128 != null -> "PEEK_128"
-                peek1080 != null -> "PEEK_1080"
-                cached != null -> "EXEC_96"
-                else -> "NULL"
-            }
-            val elapsed = android.os.SystemClock.uptimeMillis() - t0
-            android.util.Log.d("AlbumArt", "COLOR key=${coverPath.takeLast(30)} hit=$hitType result=${cached != null} ${elapsed}ms")
-            if (cached != null && !cached.isRecycled) {
-                val swatch = Palette.from(cached).maximumColorCount(8).generate()
-                val rgb = swatch.mutedSwatch?.rgb
-                    ?: swatch.vibrantSwatch?.rgb
-                    ?: swatch.dominantSwatch?.rgb
-                    ?: 0xFF6B5A70.toInt()
-                Color(rgb).softenedForPlayer()
-            } else {
-                Color(0xFF6B5A70)
-            }
+
+        CoverAccentColorCache[key]?.let { cached ->
+            color = cached
+            return@LaunchedEffect
         }
-        color = next
+
+        // 不把上一首的背景色缓存到新歌上。先退回稳定默认色，等当前封面已预热后再取色。
+        color = defaultColor
+
+        repeat(3) { attempt ->
+            val next = withContext(Dispatchers.IO) {
+                val cached = BitmapProvider.peekThumbnail(key, 192, 192)
+                    ?: BitmapProvider.peekThumbnail(key, 512, 512)
+                    ?: BitmapProvider.peek(key, 512, 512)
+                    ?: BitmapProvider.peekAny(key)
+                cached?.safePaletteColor(defaultColor)
+            }
+            if (next != null) {
+                CoverAccentColorCache[key] = next
+                color = next
+                return@LaunchedEffect
+            }
+            kotlinx.coroutines.delay(if (attempt == 0) 80L else 180L)
+        }
     }
     return color
+}
+
+private val CoverAccentColorCache = ConcurrentHashMap<String, Color>()
+
+private fun android.graphics.Bitmap.safePaletteColor(defaultColor: Color): Color? {
+    if (isRecycled) return null
+    val softwareCopy = if (android.os.Build.VERSION.SDK_INT >= 26 && config == android.graphics.Bitmap.Config.HARDWARE) {
+        copy(android.graphics.Bitmap.Config.ARGB_8888, false) ?: return null
+    } else {
+        null
+    }
+    val source = softwareCopy ?: this
+    return try {
+        val swatch = Palette.from(source).maximumColorCount(8).generate()
+        val rgb = swatch.mutedSwatch?.rgb
+            ?: swatch.vibrantSwatch?.rgb
+            ?: swatch.dominantSwatch?.rgb
+            ?: defaultColor.toArgbCompat()
+        Color(rgb).softenedForPlayer()
+    } catch (_: Throwable) {
+        null
+    } finally {
+        softwareCopy?.recycle()
+    }
+}
+
+private fun Color.toArgbCompat(): Int {
+    val a = (alpha.coerceIn(0f, 1f) * 255f + 0.5f).toInt()
+    val r = (red.coerceIn(0f, 1f) * 255f + 0.5f).toInt()
+    val g = (green.coerceIn(0f, 1f) * 255f + 0.5f).toInt()
+    val b = (blue.coerceIn(0f, 1f) * 255f + 0.5f).toInt()
+    return (a shl 24) or (r shl 16) or (g shl 8) or b
 }
 
 private fun Color.softenedForPlayer(): Color {
@@ -646,20 +886,31 @@ private fun Color.softenedForPlayer(): Color {
 }
 
 internal fun audioChainText(song: AudioFile?): String {
-    val bits = song?.bitsPerSample?.takeIf { it > 0 }?.let { "$it BIT" }
-    val sampleRate = song?.sampleRate?.takeIf { it > 0 }?.let {
-        val khz = it / 1000.0
-        if (khz == khz.toLong().toDouble()) "${khz.toLong()} KHZ" else "%.1f KHZ".format(khz)
+    val audio = song
+    val bits = audio?.bitsPerSample?.takeIf { it > 0 }?.let { "$it BIT" }
+    val sampleRate = audio?.let { current ->
+        current.sampleRate.takeIf { it > 0 }?.let {
+            com.rawsmusic.core.common.utils.SampleRateNormalizer.formatKhz(
+                sampleRate = it,
+                codecName = current.encodingFormat,
+                formatName = current.format,
+                filePath = current.path,
+                uppercase = true
+            )
+        }
+    }?.takeIf { it.isNotBlank() }
+    val bitRate = audio?.let { current ->
+        current.bitRate.takeIf { it > 0 }?.let {
+            com.rawsmusic.core.common.utils.BitrateNormalizer.formatKbps(it, current.duration, current.fileSize).uppercase()
+        }
     }
-    val bitRate = song?.bitRate?.takeIf { it > 0 }?.let {
-        com.rawsmusic.core.common.utils.BitrateNormalizer.formatKbps(it, song.duration, song.fileSize).uppercase()
-    }
-    val format = song?.format?.takeIf { it.isNotBlank() }?.uppercase()
+    val format = audio?.format?.takeIf { it.isNotBlank() }?.uppercase()
     return listOfNotNull(bits, sampleRate, bitRate, format)
         .takeIf { it.isNotEmpty() }
         ?.joinToString("  ")
         ?: "LOCAL AUDIO"
 }
+
 
 private val CoverEasing = CubicBezierEasing(0f, 0f, 0.2f, 1f)
 
@@ -685,3 +936,4 @@ internal fun StandardMiniWaveform(
         }
     }
 }
+

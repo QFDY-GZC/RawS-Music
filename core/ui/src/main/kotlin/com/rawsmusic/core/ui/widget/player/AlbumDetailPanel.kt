@@ -31,7 +31,9 @@ import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.ui.scene.pages.themeColors
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
+import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 
 @Composable
 fun AlbumDetailPanel(
@@ -46,6 +48,7 @@ fun AlbumDetailPanel(
     val albumName = currentSong?.album?.ifBlank { "未知专辑" } ?: "未知专辑"
     val artist = currentSong?.albumArtist?.ifBlank { currentSong.artist }?.ifBlank { "未知艺术家" } ?: "未知艺术家"
     val hasHiRes = songs.any { it.isHiRes }
+    val resolvedCoverPath = currentSong.resolvePlaybackArtworkKey(coverPath)
 
     Column(
         modifier
@@ -84,14 +87,15 @@ fun AlbumDetailPanel(
                     .clip(RoundedCornerShape(10.dp))
                     .background(colors.surface)
             ) {
-                if (!coverPath.isNullOrBlank()) {
+                if (!resolvedCoverPath.isNullOrBlank()) {
                     BitmapImage(
-                        key = coverPath,
+                        key = resolvedCoverPath,
                         contentDescription = null,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,
                         targetWidth = 320,
-                        targetHeight = 320
+                        targetHeight = 320,
+                        surface = ArtworkSurface.Playback
                     )
                 }
             }

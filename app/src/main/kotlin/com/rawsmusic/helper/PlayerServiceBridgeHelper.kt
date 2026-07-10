@@ -2,7 +2,6 @@ package com.rawsmusic.helper
 
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.module.player.PlayerController
@@ -14,12 +13,10 @@ class PlayerServiceBridgeHelper(
     private val resolveCoverUri: (AudioFile) -> String
 ) {
     fun startForegroundServiceIfNeeded() {
-        val intent = Intent(context, PlayerService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent)
-        } else {
-            context.startService(intent)
-        }
+        PlayerService.ensureServiceStarted(
+            context,
+            "player_service_bridge_start"
+        )
     }
 
     fun pushLyricsUpdate() {
@@ -39,13 +36,21 @@ class PlayerServiceBridgeHelper(
         try {
             val playerController = getPlayerController()
             val coverUri = resolveCoverUri(song).ifBlank { song.albumArtPath }
+            // Keep system notification / MediaSession artwork on the same identity as the UI.
+            // MediaStore albumArtPath is often blank in RawSMusic because covers are extracted from
+            // the audio file itself, so pass the real audio path as a fallback.
+            val serviceArtworkPath = coverUri.ifBlank { song.path }
             val intent = Intent(context, PlayerService::class.java).apply {
                 action = PlayerService.ACTION_UPDATE
                 putExtra("title", song.title)
                 putExtra("artist", song.artist)
                 putExtra("album", song.album)
-                putExtra("albumArtPath", coverUri)
+                putExtra("albumArtPath", serviceArtworkPath)
                 putExtra("duration", song.duration)
+                putExtra("path", song.path)
+                putExtra("fileSize", song.fileSize)
+                putExtra("dateModified", song.dateModified)
+                putExtra("cueTrackIndex", song.cueTrackIndex)
                 putExtra("playState", (playerController?.playState?.value ?: PlayState.IDLE).ordinal)
                 putExtra("position", playerController?.position?.value ?: 0L)
                 putExtra("sampleRate", song.sampleRate)

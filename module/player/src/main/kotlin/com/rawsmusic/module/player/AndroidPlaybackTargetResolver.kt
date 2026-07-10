@@ -40,7 +40,10 @@ internal class AndroidPlaybackTargetResolver(
         val sharedMixerMode = outputMode != AudioOutputMode.DIRECT
         val sourceRate = FFmpegBridge.probeSampleRate(sourcePath).let { if (it > 0) it else 44100 }
         val preferredRate = if (userTargetRate > 0) userTargetRate else sourceRate
-        val cappedTargetRate = if (sharedMixerMode && preferredRate > 48_000) 48_000 else preferredRate
+        // v6d: 不再把 AAudio/OpenSL 共享输出统一压到 48kHz
+        // OpenSL 按 96kHz 上限，AAudio 按 384kHz 上限，DIRECT 按 384kHz 上限
+        val maxRate = AudioOutputManager.getMaxSampleRateForMode(outputMode)
+        val cappedTargetRate = if (preferredRate > maxRate) maxRate else preferredRate
         val (probedRate, rawEncoding) = AudioOutputManager.probeRateAndEncoding(
             cappedTargetRate,
             channelConfig,

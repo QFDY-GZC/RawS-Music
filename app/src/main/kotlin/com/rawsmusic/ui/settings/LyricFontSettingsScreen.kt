@@ -12,8 +12,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,6 +26,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.basic.SliderDefaults
+import top.yukonga.miuix.kmp.preference.SliderPreference
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -40,6 +40,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import androidx.compose.ui.res.stringResource
+import com.rawsmusic.R
 
 @Composable
 fun LiquidGlassLyricFontSettingsScreen(
@@ -77,9 +79,9 @@ fun LiquidGlassLyricFontSettingsScreen(
         }
     }
 
-    SettingsPage(title = "歌词字体设置", onBack = onBack) {
+    SettingsPage(title = stringResource(R.string.settings_lyric_font_title), onBack = onBack) {
         SettingsCard {
-            SectionHeader("预览")
+            SectionHeader(stringResource(R.string.settings_font_preview))
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -88,7 +90,7 @@ fun LiquidGlassLyricFontSettingsScreen(
                     .padding(16.dp)
             ) {
                 Text(
-                    "歌词预览 Lyrics Preview",
+                    stringResource(R.string.settings_lyric_font_preview_text),
                     fontSize = (20 * fontScale / 100f).sp,
                     fontFamily = previewFontFamily,
                     fontWeight = FontWeight(fontWeight),
@@ -100,9 +102,9 @@ fun LiquidGlassLyricFontSettingsScreen(
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
-            SectionHeader("系统默认")
+            SectionHeader(stringResource(R.string.settings_default_system_font))
             FontItemRow(
-                name = "系统默认",
+                name = stringResource(R.string.settings_default_system_font),
                 isSelected = selectedFontPath.isBlank(),
                 onClick = {
                     selectedFontPath = ""
@@ -115,14 +117,17 @@ fun LiquidGlassLyricFontSettingsScreen(
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
-            SectionHeader("字重")
+            SectionHeader(stringResource(R.string.settings_font_weight))
             Text(
-                "$fontWeight",
+                fontWeight.toString(),
                 fontSize = 14.sp,
                 color = MiuixTheme.colorScheme.primary,
                 modifier = Modifier.padding(top = 4.dp)
             )
-            Slider(
+            SliderPreference(
+                title = stringResource(R.string.settings_font_weight),
+                summary = null,
+                valueText = fontWeight.toString(),
                 value = fontWeight.toFloat(),
                 onValueChange = {
                     fontWeight = it.toInt()
@@ -130,21 +135,24 @@ fun LiquidGlassLyricFontSettingsScreen(
                 },
                 valueRange = 100f..900f,
                 steps = 15,
-                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary)
+                hapticEffect = SliderDefaults.SliderHapticEffect.Step
             )
         }
 
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
-            SectionHeader("字体缩放")
+            SectionHeader(stringResource(R.string.settings_lyric_font_scale))
             Text(
-                "$fontScale%",
+                stringResource(R.string.settings_percent_value, fontScale),
                 fontSize = 14.sp,
                 color = MiuixTheme.colorScheme.primary,
                 modifier = Modifier.padding(top = 4.dp)
             )
-            Slider(
+            SliderPreference(
+                title = stringResource(R.string.settings_lyric_font_scale),
+                summary = null,
+                valueText = stringResource(R.string.settings_percent_value, fontScale),
                 value = fontScale.toFloat(),
                 onValueChange = {
                     fontScale = it.toInt()
@@ -152,16 +160,16 @@ fun LiquidGlassLyricFontSettingsScreen(
                 },
                 valueRange = 75f..130f,
                 steps = 10,
-                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary)
+                hapticEffect = SliderDefaults.SliderHapticEffect.Step
             )
         }
 
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
-            SectionHeader("系统字体")
+            SectionHeader(stringResource(R.string.settings_lyric_system_font))
             Text(
-                "点击选择系统字体",
+                stringResource(R.string.settings_lyric_system_font_desc),
                 fontSize = 13.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(top = 2.dp),
@@ -170,7 +178,7 @@ fun LiquidGlassLyricFontSettingsScreen(
             Spacer(Modifier.height(8.dp))
 
             if (isLoading) {
-                Text("加载中…", fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontFamily = appFontFamily())
+                Text(stringResource(R.string.settings_lyric_loading), fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontFamily = appFontFamily())
             } else {
                 systemFonts.forEach { font ->
                     FontItemRow(
@@ -189,9 +197,9 @@ fun LiquidGlassLyricFontSettingsScreen(
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
-            SectionHeader("导入字体")
+            SectionHeader(stringResource(R.string.settings_lyric_import_font))
             Text(
-                "支持 TTF / OTF / TTC 格式",
+                stringResource(R.string.settings_lyric_import_font_desc),
                 fontSize = 13.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(top = 2.dp),
@@ -199,7 +207,7 @@ fun LiquidGlassLyricFontSettingsScreen(
             )
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = onImportFont) {
-                Text("导入字体文件 +", color = MiuixTheme.colorScheme.primary, fontSize = 14.sp, fontFamily = appFontFamily())
+                Text(stringResource(R.string.settings_lyric_import_font_file), color = MiuixTheme.colorScheme.primary, fontSize = 14.sp, fontFamily = appFontFamily())
             }
 
             if (importedFonts.isNotEmpty()) {
@@ -233,7 +241,7 @@ fun LiquidGlassLyricFontSettingsScreen(
                                 }
                             }
                         }) {
-                            Text("删除", color = Color.White, fontSize = 13.sp, fontFamily = appFontFamily())
+                            Text(stringResource(R.string.settings_delete), color = Color.White, fontSize = 13.sp, fontFamily = appFontFamily())
                         }
                     }
                 }

@@ -174,6 +174,12 @@ class PlayerSceneController {
         startInteractiveDrag(actualFrom, actualTo)
     }
 
+    /** Starts the lyric-header downward gesture with an explicit lyric -> player direction. */
+    fun startLyricToPlayerDrag() {
+        if (currentScene != Scene.LYRIC && composeCurrentScene != Scene.LYRIC) return
+        startInteractiveDrag(Scene.LYRIC, Scene.PLAYER)
+    }
+
     fun updateCoverSwipeUpDrag(ratio: Float) {
         updateInteractiveDrag(ratio)
     }
@@ -182,6 +188,15 @@ class PlayerSceneController {
         val target = if (shouldOpen) toScene else fromScene
         val endRatio = if (shouldOpen) 1f else 0f
         settleScene(fromScene, target, duration, transitionRatio, endRatio, velocity)
+    }
+
+    fun endLyricToPlayerDrag(shouldReturnToPlayer: Boolean, velocity: Float = 0f) {
+        if (fromScene != Scene.LYRIC || toScene != Scene.PLAYER) {
+            startInteractiveDrag(Scene.LYRIC, Scene.PLAYER)
+        }
+        val target = if (shouldReturnToPlayer) Scene.PLAYER else Scene.LYRIC
+        val endRatio = if (shouldReturnToPlayer) 1f else 0f
+        settleScene(Scene.LYRIC, target, SCENE_ANIM_DURATION, transitionRatio, endRatio, velocity)
     }
 
     fun onDragStart(directionLeft: Boolean, forceBackToMain: Boolean = false) {
@@ -267,11 +282,10 @@ class PlayerSceneController {
 
     fun closePlayPage(animated: Boolean = true) {
         if (currentScene != Scene.PLAYER) return
-        if (animated) {
-            onPreparePlayerToMain?.invoke { transitionToScene(Scene.MAIN) } ?: transitionToScene(Scene.MAIN)
-        } else {
-            switchToSceneSilent(Scene.MAIN)
-        }
+        // Temporarily bypass the player -> main shared-cover handoff.  Keep the
+        // scene state path simple while the player/mini-player artwork paths are
+        // being stabilized; player -> lyric animation remains enabled below.
+        if (animated) transitionToScene(Scene.MAIN) else switchToSceneSilent(Scene.MAIN)
     }
 
     fun closePlayPageWithCoverAlign(animated: Boolean = true) {
@@ -280,11 +294,8 @@ class PlayerSceneController {
 
     fun closeCurrentPlayerStackToMain(animated: Boolean = true) {
         if (currentScene == Scene.MAIN) return
-        if (animated) {
-            onPreparePlayerToMain?.invoke { transitionToScene(Scene.MAIN) } ?: transitionToScene(Scene.MAIN)
-        } else {
-            switchToSceneSilent(Scene.MAIN)
-        }
+        // Same as closePlayPage(): no temporary shared-cover handoff to main.
+        if (animated) transitionToScene(Scene.MAIN) else switchToSceneSilent(Scene.MAIN)
     }
 
     fun openLyricPage(animated: Boolean = true) {

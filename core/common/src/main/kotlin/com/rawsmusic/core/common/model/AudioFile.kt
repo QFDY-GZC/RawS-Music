@@ -42,6 +42,18 @@ data class AudioFile(
     val displayName: String
         get() = title.ifBlank { path.substringAfterLast("/", "").substringBeforeLast(".") }
 
+    /**
+     * 封面 key：用于 BitmapProvider 加载封面。
+     * - albumArtPath 有值 → 直接使用（file:// 或 content://）
+     * - albumArtPath 为空 → 返回 audio://path|fileSize|dateModified，
+     *   让 BitmapProvider 提取当前歌曲自己的内嵌封面
+     * - 没有内嵌封面 → BitmapProvider 返回 null，UI 显示占位
+     */
+    val coverKey: String
+        get() = albumArtPath.ifBlank {
+            if (path.isNotBlank()) "audio://$path|$fileSize|$dateModified" else ""
+        }
+
     val extension: String
         get() = path.substringAfterLast(".", "").uppercase()
 

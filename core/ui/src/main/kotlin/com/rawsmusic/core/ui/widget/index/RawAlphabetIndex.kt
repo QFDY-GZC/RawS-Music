@@ -2,6 +2,10 @@ package com.rawsmusic.core.ui.widget.index
 
 import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
+import com.rawsmusic.core.ui.R
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -204,19 +208,14 @@ fun RawAlphabetIndex(
     modifier: Modifier = Modifier,
     enabled: Boolean = data.targets.isNotEmpty(),
     minCellHeightDp: Float = 11.5f,
+    onTopSelect: (() -> Unit)? = null,
     onSelect: (letter: String, index: Int) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
     val colorScheme = MiuixTheme.colorScheme
     val isLight = colorScheme.background.luminance() > 0.5f
-
-    // 不透明背景
-    val railColor = if (isLight) {
-        colorScheme.background.blendWith(Color.Black, 0.045f)
-    } else {
-        colorScheme.background.blendWith(Color.White, 0.10f)
-    }
+    val railColor = colorScheme.background.copy(alpha = if (isLight) 0.28f else 0.34f)
 
     val selectedBgColor = colorScheme.primary.copy(alpha = 0.16f)
 
@@ -228,22 +227,25 @@ fun RawAlphabetIndex(
     val activeColor = colorScheme.primary
 
     var railHeightPx by remember { mutableIntStateOf(0) }
+    var topButtonHeightPx by remember { mutableIntStateOf(0) }
     var selectedLetter by remember { mutableStateOf<String?>(null) }
     var touching by remember { mutableStateOf(false) }
     var lastDispatchedLetter by remember { mutableStateOf<String?>(null) }
 
+    val labelRailHeightPx = (railHeightPx - topButtonHeightPx).coerceAtLeast(0)
+
     val visibleLabels = remember(
         data.labels,
         data.targets,
-        railHeightPx,
+        labelRailHeightPx,
         minCellHeightDp
     ) {
         val minCellPx = with(density) { minCellHeightDp.dp.toPx() }
 
-        val maxCount = if (railHeightPx <= 0) {
+        val maxCount = if (labelRailHeightPx <= 0) {
             data.labels.size
         } else {
-            floor(railHeightPx / minCellPx)
+            floor(labelRailHeightPx / minCellPx)
                 .toInt()
                 .coerceAtLeast(8)
         }
@@ -258,7 +260,15 @@ fun RawAlphabetIndex(
     fun selectByOffset(y: Float) {
         if (!enabled || railHeightPx <= 0 || visibleLabels.isEmpty()) return
 
-        val rawIndex = ((y / railHeightPx.toFloat()) * visibleLabels.size)
+        if (onTopSelect != null && topButtonHeightPx > 0 && y <= topButtonHeightPx) {
+            selectedLetter = null
+            onTopSelect()
+            return
+        }
+
+        val labelY = (y - topButtonHeightPx).coerceAtLeast(0f)
+        val labelHeight = labelRailHeightPx.coerceAtLeast(1).toFloat()
+        val rawIndex = ((labelY / labelHeight) * visibleLabels.size)
             .toInt()
             .coerceIn(0, visibleLabels.lastIndex)
 
@@ -381,6 +391,25 @@ fun RawAlphabetIndex(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
+            if (onTopSelect != null) {
+                Box(
+                    modifier = Modifier
+                        .height(22.dp)
+                        .width(22.dp)
+                        .onSizeChanged { topButtonHeightPx = it.height },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(R.drawable.ic_index_top),
+                        contentDescription = null,
+                        colorFilter = ColorFilter.tint(activeColor),
+                        modifier = Modifier.size(13.dp)
+                    )
+                }
+            } else if (topButtonHeightPx != 0) {
+                topButtonHeightPx = 0
+            }
+
             visibleLabels.forEach { letter ->
                 val hasTarget = data.targets.containsKey(letter)
                 val isSelected = touching && selectedLetter == letter

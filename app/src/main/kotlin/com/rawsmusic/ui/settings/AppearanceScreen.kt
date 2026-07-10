@@ -2,7 +2,7 @@ package com.rawsmusic.ui.settings
 
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -20,16 +20,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.ui.theme.ThemeManager
+import com.rawsmusic.core.ui.theme.RawThemeRuntimeState
 import com.rawsmusic.core.ui.theme.ThemeManager.ThemeMode
 import com.rawsmusic.core.ui.theme.ColorThemeMode
 import com.rawsmusic.core.ui.theme.setColorThemeMode
 import com.rawsmusic.core.ui.theme.getCurrentColorThemeMode
+import androidx.compose.ui.res.stringResource
+import com.rawsmusic.R
 
 @Composable
 fun LiquidGlassAppearanceScreen(
@@ -39,13 +41,14 @@ fun LiquidGlassAppearanceScreen(
     val fontFamily = appFontFamily()
     val context = LocalContext.current
 
-    var currentTheme by remember { mutableStateOf(ThemeManager.getCurrentTheme()) }
+    val themeRuntimeVersion = RawThemeRuntimeState.version
+    var currentTheme by remember(themeRuntimeVersion) { mutableStateOf(ThemeManager.getCurrentTheme()) }
 
-    SettingsPage(title = "外观主题", onBack = onBack) {
+    SettingsPage(title = stringResource(R.string.settings_appearance_title), onBack = onBack) {
         SettingsCard {
-            SectionHeader("主题模式")
+            SectionHeader(stringResource(R.string.settings_appearance_theme_mode))
             Text(
-                "选择应用的显示主题",
+                stringResource(R.string.settings_appearance_theme_mode_desc),
                 fontSize = 13.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(top = 2.dp),
@@ -59,9 +62,9 @@ fun LiquidGlassAppearanceScreen(
                 ThemeMode.values().forEach { mode ->
                     val isSelected = currentTheme == mode
                     val label = when (mode) {
-                        ThemeMode.LIGHT -> "亮色"
-                        ThemeMode.DARK -> "暗色"
-                        ThemeMode.SYSTEM -> "跟随系统"
+                        ThemeMode.LIGHT -> stringResource(R.string.settings_theme_light)
+                        ThemeMode.DARK -> stringResource(R.string.settings_theme_dark)
+                        ThemeMode.SYSTEM -> stringResource(R.string.settings_theme_system)
                     }
                     Box(
                         modifier = Modifier
@@ -69,11 +72,9 @@ fun LiquidGlassAppearanceScreen(
                             .height(40.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .background(if (isSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainer)
-                            .pointerInput(Unit) {
-                                detectTapGestures {
-                                    currentTheme = mode
-                                    ThemeManager.applyTheme(mode)
-                                }
+                            .clickable {
+                                currentTheme = mode
+                                ThemeManager.applyTheme(mode)
                             },
                         contentAlignment = Alignment.Center
                     ) {
@@ -90,9 +91,9 @@ fun LiquidGlassAppearanceScreen(
         }
 
         SettingsCard {
-            SectionHeader("配色方案")
+            SectionHeader(stringResource(R.string.settings_appearance_color_scheme))
             Text(
-                "选择应用的配色风格",
+                stringResource(R.string.settings_appearance_color_scheme_desc),
                 fontSize = 13.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(top = 2.dp),
@@ -100,13 +101,13 @@ fun LiquidGlassAppearanceScreen(
             )
             Spacer(Modifier.height(12.dp))
 
-            var currentColorTheme by remember { mutableStateOf(getCurrentColorThemeMode()) }
+            var currentColorTheme by remember(themeRuntimeVersion) { mutableStateOf(getCurrentColorThemeMode()) }
 
             val colorOptions = listOf(
-                ColorThemeMode.MIUIX to "MIUIx",
-                ColorThemeMode.MONET_AUTO to "Monet 自动",
-                ColorThemeMode.MONET_LIGHT to "Monet 浅色",
-                ColorThemeMode.MONET_DARK to "Monet 深色"
+                ColorThemeMode.MIUIX to stringResource(R.string.settings_color_miuix),
+                ColorThemeMode.MONET_AUTO to stringResource(R.string.settings_color_monet_auto),
+                ColorThemeMode.MONET_LIGHT to stringResource(R.string.settings_color_monet_light),
+                ColorThemeMode.MONET_DARK to stringResource(R.string.settings_color_monet_dark)
             )
 
             colorOptions.chunked(2).forEach { row ->
@@ -124,11 +125,9 @@ fun LiquidGlassAppearanceScreen(
                                 .height(40.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(if (isSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainer)
-                                .pointerInput(Unit) {
-                                    detectTapGestures {
-                                        currentColorTheme = mode
-                                        setColorThemeMode(mode, context)
-                                    }
+                                .clickable {
+                                    currentColorTheme = mode
+                                    setColorThemeMode(mode, context)
                                 },
                             contentAlignment = Alignment.Center
                         ) {

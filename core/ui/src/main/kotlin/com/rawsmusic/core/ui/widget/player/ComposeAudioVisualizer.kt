@@ -1,7 +1,11 @@
 package com.rawsmusic.core.ui.widget.player
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -16,24 +20,52 @@ fun ComposeAudioVisualizer(
     levels: List<Float>,
     modifier: Modifier = Modifier,
     color: Color = Color(0xB0FFFFFF),
-    glowColor: Color = Color(0x55FFFFFF)
+    glowColor: Color = Color(0x55FFFFFF),
+    isActive: Boolean = true
 ) {
+    val collapse by animateFloatAsState(
+        targetValue = if (isActive) 0f else 1f,
+        animationSpec = tween(
+            durationMillis = if (isActive) 180 else 360,
+            easing = FastOutSlowInEasing
+        ),
+        label = "audioVisualizerCollapse"
+    )
+
     Canvas(modifier = modifier) {
         if (levels.isEmpty() || size.width <= 0f || size.height <= 0f) return@Canvas
 
         val barCount = levels.size
-        val barWidth = size.width / barCount
+        val spreadScale = (1f - collapse * 0.30f).coerceIn(0.70f, 1f)
+        val activeWidth = size.width * spreadScale
+        val leftInset = (size.width - activeWidth) * 0.5f
+        val barWidth = activeWidth / barCount
         val centerY = size.height * 0.5f
         val maxBarHeight = max(1f, centerY - 4f)
-        val strokeWidth = 2.2f * density
+        val strokeWidth = (2.2f * density * (1f - collapse * 0.18f)).coerceAtLeast(1.2f * density)
+        val activeAlpha = 1f - collapse * 0.32f
         val path = Path()
         val reversePath = Path()
 
+        fun collapsedLevel(index: Int): Float {
+            return 0.030f + when (index % 6) {
+                0 -> 0.010f
+                1 -> 0.018f
+                2 -> 0.014f
+                3 -> 0.022f
+                4 -> 0.012f
+                else -> 0.016f
+            }
+        }
+
         for (i in 0 until barCount) {
-            val x = i * barWidth + barWidth * 0.5f
-            val shaped = levels[i].coerceIn(0f, 1f)
-            val y = centerY - maxBarHeight * shaped * shaped
-            val reverseY = centerY + maxBarHeight * levels[barCount - 1 - i].coerceIn(0f, 1f).let { it * it }
+            val x = leftInset + i * barWidth + barWidth * 0.5f
+            val live = levels[i].coerceIn(0f, 1f).let { it * it }
+            val reverseLive = levels[barCount - 1 - i].coerceIn(0f, 1f).let { it * it }
+            val shaped = live * (1f - collapse) + collapsedLevel(i) * collapse
+            val reverseShaped = reverseLive * (1f - collapse) + collapsedLevel(barCount - 1 - i) * collapse
+            val y = centerY - maxBarHeight * shaped
+            val reverseY = centerY + maxBarHeight * reverseShaped
 
             if (i == 0) {
                 path.moveTo(x, y)
@@ -44,14 +76,14 @@ fun ComposeAudioVisualizer(
             }
 
             drawLine(
-                color = color,
+                color = color.copy(alpha = color.alpha * activeAlpha),
                 start = Offset(x, centerY),
                 end = Offset(x, y),
                 strokeWidth = strokeWidth,
                 cap = StrokeCap.Round
             )
             drawLine(
-                color = color.copy(alpha = 0.35f),
+                color = color.copy(alpha = 0.35f * activeAlpha),
                 start = Offset(x, centerY),
                 end = Offset(x, reverseY),
                 strokeWidth = strokeWidth,
@@ -64,14 +96,14 @@ fun ComposeAudioVisualizer(
             cap = StrokeCap.Round,
             join = StrokeJoin.Round
         )
-        drawPath(path, glowColor, style = Stroke(width = strokeWidth * 3f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        drawPath(path, color, style = stroke)
-        drawPath(reversePath, glowColor.copy(alpha = 0.4f), style = Stroke(width = strokeWidth * 3f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        drawPath(reversePath, color.copy(alpha = 0.35f), style = stroke)
+        drawPath(path, glowColor.copy(alpha = glowColor.alpha * activeAlpha), style = Stroke(width = strokeWidth * 3f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawPath(path, color.copy(alpha = color.alpha * activeAlpha), style = stroke)
+        drawPath(reversePath, glowColor.copy(alpha = 0.4f * activeAlpha), style = Stroke(width = strokeWidth * 3f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawPath(reversePath, color.copy(alpha = 0.35f * activeAlpha), style = stroke)
         drawLine(
-            color = color.copy(alpha = 0.45f),
-            start = Offset(barWidth * 0.5f, centerY),
-            end = Offset(size.width - barWidth * 0.5f, centerY),
+            color = color.copy(alpha = 0.45f * activeAlpha),
+            start = Offset(leftInset + barWidth * 0.5f, centerY),
+            end = Offset(leftInset + activeWidth - barWidth * 0.5f, centerY),
             strokeWidth = 1.4f * density,
             cap = StrokeCap.Round
         )

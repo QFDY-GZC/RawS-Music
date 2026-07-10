@@ -14,7 +14,7 @@ import java.util.LinkedList
  */
 object BitmapPool {
 
-    private const val MAX_POOL_SIZE = 32
+    private const val MAX_POOL_SIZE = 8
 
     private val pool = LinkedList<Bitmap>()
     private val lock = Any()

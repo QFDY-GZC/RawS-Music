@@ -64,9 +64,14 @@ internal class UsbPlaybackTargetResolver(
         }
         val pcmToDsdMode = if (!sourceIsDsd) {
             buildSupportedPcmToDsdModeConfig(
-                enabled = AppPreferences.Player.dsdConversionEnabled && !usbBitPerfectMode,
+                // PCM→DSD must win over PCM bit-perfect. PlayerController will
+                // disable strict bit-perfect for the active USB session when a
+                // DSD transport is selected.
+                enabled = AppPreferences.Player.dsdConversionEnabled,
                 multiplier = AppPreferences.Player.dsdRate,
-                capabilities = caps
+                requestedTransport = dsdTransport,
+                capabilities = caps,
+                sourceSampleRate = srcSr
             )
         } else {
             null
@@ -82,7 +87,8 @@ internal class UsbPlaybackTargetResolver(
         // Decode it to S32LE, then let the USB engine select 32-bit/subslot4.
         val strictBitPerfect = usbBitPerfectMode &&
             !sourceExceedsUsbPcm &&
-            !sourceIsDsd
+            !sourceIsDsd &&
+            pcmToDsdMode == null
 
         if (usbBitPerfectMode && sourceExceedsUsbPcm) {
             AppLogger.w(

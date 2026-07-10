@@ -19,6 +19,9 @@ interface FolderFileDao {
     @Update
     suspend fun update(file: FolderFileEntity)
 
+    @Update
+    suspend fun updateBatch(files: List<FolderFileEntity>)
+
     @Query("SELECT * FROM folder_files WHERE _id = :id LIMIT 1")
     suspend fun getById(id: Long): FolderFileEntity?
 

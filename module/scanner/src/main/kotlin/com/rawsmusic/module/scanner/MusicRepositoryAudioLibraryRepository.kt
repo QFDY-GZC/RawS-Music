@@ -11,11 +11,27 @@ class MusicRepositoryAudioLibraryRepository : AudioLibraryRepository {
         return MusicRepository.getAllSongsSuspend()
     }
 
+    override suspend fun getAllSongsForSync(): List<AudioFile> {
+        return MusicRepository.getAllSongsUnsortedSuspend()
+    }
+
     override suspend fun upsertSongs(songs: List<AudioFile>) {
         MusicRepository.upsertSongsSuspend(songs)
     }
 
     override suspend fun deleteSongs(songs: List<AudioFile>) {
         MusicRepository.deleteSongsSuspend(songs)
+    }
+
+    override suspend fun upsertSongsForScan(songs: List<AudioFile>, refreshLibrary: Boolean) {
+        MusicRepository.upsertSongsSuspend(songs, refreshLibrary = refreshLibrary)
+    }
+
+    override suspend fun deleteSongsForScan(songs: List<AudioFile>, refreshLibrary: Boolean) {
+        MusicRepository.deleteSongsSuspend(songs, refreshLibrary = refreshLibrary)
+    }
+
+    override suspend fun refreshAfterScanSync() {
+        MusicRepository.refreshAfterBulkScanSyncSuspend()
     }
 }

@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 
 /**
@@ -73,7 +74,8 @@ fun ImmersiveBackgroundCompose(
                         .graphicsLayer { alpha = 0.6f },
                     contentScale = ContentScale.Crop,
                     targetWidth = 128,
-                    targetHeight = 128
+                    targetHeight = 128,
+                    surface = ArtworkSurface.Playback
                 )
 
                 // 主封面（居中，带圆角）
@@ -85,7 +87,8 @@ fun ImmersiveBackgroundCompose(
                         .alpha(0.25f),
                     contentScale = ContentScale.Crop,
                     targetWidth = 512,
-                    targetHeight = 512
+                    targetHeight = 512,
+                    surface = ArtworkSurface.Playback
                 )
             }
 

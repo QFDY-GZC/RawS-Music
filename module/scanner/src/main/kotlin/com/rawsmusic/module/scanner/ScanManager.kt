@@ -57,11 +57,13 @@ object ScanManager {
                 }
             }
         } else {
-            val paths = customPaths.ifEmpty {
-                listOf(
-                    android.os.Environment.getExternalStorageDirectory().absolutePath
-                )
+            // 空路径直接返回错误，不再 fallback 到外部存储根目录
+            if (customPaths.isEmpty()) {
+                Log.w("ScanManager", "startScan: no custom paths and MediaStore disabled — refusing to scan external storage root")
+                emit(ScanProgress.Error("请先选择音乐文件夹"))
+                return@flow
             }
+            val paths = customPaths
             val allSongs = mutableListOf<AudioFile>()
             var totalEstimated = 0
 

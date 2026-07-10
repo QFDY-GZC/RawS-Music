@@ -101,3 +101,14 @@ app.zip
 reference.zip
 *.patch
 *.bundle.zip
+
+# Local Codex artifacts and unpacked tool sources
+.codex-video-frames/
+.codex-video-frames-new/
+pet-runs/
+tools/ffmpeg-6.0/
+tools/native_refactor/
+app/src/main/cpp/reference/
+app/src/main/cpp/*.diff
+nul
+trim.ps1

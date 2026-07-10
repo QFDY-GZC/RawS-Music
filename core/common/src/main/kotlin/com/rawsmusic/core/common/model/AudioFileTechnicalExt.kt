@@ -1,5 +1,7 @@
 package com.rawsmusic.core.common.model
 
+import com.rawsmusic.core.common.utils.BitrateNormalizer
+
 /**
  * AudioFile 技术元数据判断扩展。
  *
@@ -39,7 +41,18 @@ fun AudioFile.requiresSourceBitDepth(): Boolean {
  * 基础技术元数据：时长、码率、采样率、声道。
  */
 fun AudioFile.hasBasicTechnicalMetadata(): Boolean {
-    return duration > 0L && bitRate > 0 && sampleRate > 0 && channelCount > 0
+    if (duration <= 0L || bitRate <= 0 || sampleRate <= 0 || channelCount <= 0) return false
+    val normalizedBitRate = BitrateNormalizer.toBps(
+        rawBitrate = bitRate,
+        durationMs = duration,
+        fileSizeBytes = fileSize,
+        codecName = encodingFormat,
+        formatName = format,
+        filePath = path
+    )
+    if (normalizedBitRate <= 0) return false
+    // UI/DB 中出现过 MP3/AAC 被缓存成几十 Mbps 的异常值；这些应触发重新 enrich。
+    return true
 }
 
 /**

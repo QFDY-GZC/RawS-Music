@@ -1,48 +1,45 @@
 package com.rawsmusic.core.ui.scene.pages
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.rawsmusic.core.ui.theme.getCurrentColorThemeMode
-import com.rawsmusic.core.ui.theme.RawMonet
+import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.theme.ColorThemeMode
-import com.rawsmusic.core.ui.theme.ThemeManager
+import com.rawsmusic.core.ui.theme.RawMonet
+import com.rawsmusic.core.ui.theme.getCurrentColorThemeMode
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Back
+import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
- * 设置页面共享组件。
- * 从 app 模块 LiquidGlassSettings.kt 提取到 core:ui，供所有 Compose 页面使用。
+ * 设置页面共享组件。使用 miuix 标准标题栏、分组标题与偏好项。
  */
-
-// ============================================================================
-// 主题颜色
-// ============================================================================
 
 data class ThemeColors(
     val background: Color,
@@ -61,7 +58,6 @@ data class ThemeColors(
 fun themeColors(): ThemeColors {
     val colorThemeMode = getCurrentColorThemeMode()
 
-    // Monet 模式直接读 RawMonet tokens
     if (colorThemeMode != ColorThemeMode.MIUIX) {
         val monet = RawMonet
         return ThemeColors(
@@ -78,10 +74,9 @@ fun themeColors(): ThemeColors {
         )
     }
 
-    // MIUIx 模式读 MiuixTheme.colorScheme
     val cs = MiuixTheme.colorScheme
     val isDark = cs.background.luminance() < 0.5f
-    val surface = cs.background.blendForSettings(cs.primary, if (isDark) 0.12f else 0.055f)
+    val surface = cs.background.blendForSettings(cs.primary, if (isDark) 0.10f else 0.045f)
 
     return ThemeColors(
         background = cs.background,
@@ -108,19 +103,11 @@ private fun Color.blendForSettings(target: Color, fraction: Float): Color {
     )
 }
 
-// ============================================================================
-// 字体
-// ============================================================================
-
 @Composable
 fun appFontFamily(): FontFamily {
     val tf = com.rawsmusic.module.data.prefs.FontManager.typeface
     return if (tf != null) FontFamily(tf) else FontFamily.Default
 }
-
-// ============================================================================
-// 页面脚手架
-// ============================================================================
 
 @Composable
 fun SettingsPage(
@@ -133,61 +120,43 @@ fun SettingsPage(
         Modifier
             .fillMaxSize()
             .background(colors.background)
-            .verticalScroll(rememberScrollState())
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
-        Spacer(Modifier.height(18.dp))
-        if (onBack == null) {
-            Text(
-                title,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = colors.onSurface,
-                modifier = Modifier.padding(horizontal = 8.dp),
-                fontFamily = appFontFamily()
-            )
-        } else {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = onBack) {
-                    Text("返回", color = colors.primary, fontSize = 14.sp, fontFamily = appFontFamily())
+        SmallTopAppBar(
+            title = title,
+            color = colors.background,
+            titleColor = colors.onSurface,
+            navigationIcon = {
+                if (onBack != null) {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = MiuixIcons.Regular.Back,
+                            contentDescription = stringResource(R.string.settings_back),
+                            tint = colors.onSurface
+                        )
+                    }
                 }
-                Text(
-                    title,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = colors.onSurface,
-                    fontFamily = appFontFamily()
-                )
-                Spacer(Modifier.weight(1f))
             }
-        }
-        Spacer(Modifier.height(22.dp))
-        content()
-        Spacer(Modifier.height(180.dp))
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
+                .padding(horizontal = 12.dp),
+            content = {
+                Spacer(Modifier.height(8.dp))
+                content()
+                Spacer(Modifier.height(180.dp))
+            }
+        )
     }
 }
 
-// ============================================================================
-// 通用组件
-// ============================================================================
-
 @Composable
 fun SectionHeader(title: String) {
-    val colors = themeColors()
-    Text(
-        title,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.Medium,
-        color = colors.secondaryText,
-        modifier = Modifier.padding(start = 4.dp, top = 16.dp, bottom = 4.dp),
-        fontFamily = appFontFamily()
+    SmallTitle(
+        text = title,
+        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
     )
 }
 
@@ -199,7 +168,6 @@ fun Divider() {
             .fillMaxWidth()
             .height(1.dp)
             .background(colors.outline.copy(alpha = 0.15f))
-            .padding(vertical = 8.dp)
     )
 }
 
@@ -209,9 +177,9 @@ fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(18.dp))
             .background(colors.surface)
-            .padding(16.dp),
+            .padding(vertical = 4.dp),
         content = content
     )
 }
@@ -222,33 +190,11 @@ fun SettingsNavigationEntry(
     description: String,
     onClick: () -> Unit
 ) {
-    val colors = themeColors()
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .clickable { onClick() }
-            .padding(horizontal = 4.dp, vertical = 14.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                title,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Medium,
-                color = colors.onSurface,
-                fontFamily = appFontFamily()
-            )
-            Text(
-                description,
-                fontSize = 13.sp,
-                color = colors.secondaryText,
-                modifier = Modifier.padding(top = 2.dp),
-                fontFamily = appFontFamily()
-            )
-        }
-    }
+    ArrowPreference(
+        title = title,
+        summary = description,
+        onClick = onClick
+    )
 }
 
 @Composable
@@ -260,7 +206,7 @@ fun SettingsInfoEntry(
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
         Text(
             title,

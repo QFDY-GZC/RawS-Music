@@ -46,6 +46,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -56,6 +57,7 @@ import androidx.core.content.ContextCompat
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.rawsmusic.R
+import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.core.common.model.isDsdSourceFile
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
@@ -159,9 +161,24 @@ class AudioInfoCapsuleHelper(
             song != null && com.rawsmusic.module.scanner.AudioBitDepthResolver.isLossyDisplayFormat(song.format) -> "LOSSY"
             else -> null
         }
-        val sampleRate = song?.sampleRate?.takeIf { it > 0 }?.let { formatSampleRate(it).uppercase() }
+        val sampleRate = song?.sampleRate?.takeIf { it > 0 }?.let {
+            com.rawsmusic.core.common.utils.SampleRateNormalizer.formatKhz(
+                sampleRate = it,
+                codecName = song.encodingFormat,
+                formatName = song.format,
+                filePath = song.path,
+                uppercase = true
+            )
+        }
         val bitRate = song?.bitRate?.takeIf { it > 0 }?.let {
-            com.rawsmusic.core.common.utils.BitrateNormalizer.formatKbps(it, song.duration, song.fileSize).uppercase()
+            com.rawsmusic.core.common.utils.BitrateNormalizer.formatKbps(
+                rawBitrate = it,
+                durationMs = song.duration,
+                fileSizeBytes = song.fileSize,
+                codecName = song.encodingFormat,
+                formatName = song.format,
+                filePath = song.path
+            ).uppercase()
         }
         val format = when {
             song?.isDsdSourceFile() == true -> "DSD"
@@ -226,55 +243,125 @@ class AudioInfoCapsuleHelper(
 
         val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
         val devices = am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
-        val activeDevice = devices.firstOrNull {
-            it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
-        } ?: devices.firstOrNull {
-            it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET ||
-            it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
-            it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET
-        } ?: devices.firstOrNull {
-            it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-        }
-        val result = when (activeDevice?.type) {
-            android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> {
+        val activeDevice = devices.firstOrNull { isBluetoothOutputType(it.type) }
+            ?: devices.firstOrNull { isUsbOutputType(it.type) }
+            ?: devices.firstOrNull { isWiredHeadphoneOutputType(it.type) }
+            ?: devices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+        val result = when {
+            activeDevice != null && isBluetoothOutputType(activeDevice.type) -> {
                 val name = activeDevice.productName?.toString() ?: "Bluetooth"
                 val codec = cachedBluetoothCodec ?: ""
                 if (codec.isNotBlank()) "$name $codec" else name
             }
-            android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
-            android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "有线耳机"
-            android.media.AudioDeviceInfo.TYPE_USB_HEADSET -> {
+            activeDevice != null && isWiredHeadphoneOutputType(activeDevice.type) -> "有线耳机"
+            activeDevice != null && isUsbOutputType(activeDevice.type) -> {
                 val name = activeDevice.productName?.toString() ?: "USB DAC"
                 "USB DAC ($name)"
             }
             else -> "内置扬声器"
         }
-        if (activeDevice?.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP && cachedBluetoothCodec == null && !bluetoothCodecFetching) {
+        if (activeDevice != null && isBluetoothOutputType(activeDevice.type) && cachedBluetoothCodec == null && !bluetoothCodecFetching) {
             fetchBluetoothCodecAsync()
         }
         return result
     }
 
-    private fun getDeviceIconRes(): Int {
-        val pc = getPlayerController()
-        val isUsbExclusive = pc?.isUsbExclusiveActive() == true
-        if (isUsbExclusive) return R.drawable.ic_usb
+    private fun resolveOutputDeviceIcon(
+        isUsbExclusive: Boolean,
+        kind: OutputDeviceKind? = null
+    ): TimelineIcon {
+        val resolvedKind = kind ?: resolveOutputDeviceKind(isUsbExclusive)
+        return when (resolvedKind) {
+            OutputDeviceKind.USB -> TimelineIcon(R.drawable.ic_audio_device_usb_png, tintIcon = false, sizeDp = 30)
+            OutputDeviceKind.WIRED_HEADPHONES -> TimelineIcon(R.drawable.ic_audio_device_wired_headphone_png, tintIcon = false, sizeDp = 30)
+            OutputDeviceKind.BLUETOOTH_HEADSET -> TimelineIcon(R.drawable.ic_audio_device_bluetooth_headset_png, tintIcon = false, sizeDp = 30)
+            OutputDeviceKind.BLUETOOTH_CAR -> TimelineIcon(R.drawable.ic_audio_device_car_png, tintIcon = false, sizeDp = 30)
+            OutputDeviceKind.BLUETOOTH_SPEAKER -> TimelineIcon(R.drawable.ic_audio_device_bluetooth_speaker_png, tintIcon = false, sizeDp = 30)
+            OutputDeviceKind.BLUETOOTH -> TimelineIcon(R.drawable.ic_audio_device_bluetooth_png, tintIcon = false, sizeDp = 30)
+            OutputDeviceKind.SPEAKER -> TimelineIcon(R.drawable.ic_audio_device_speaker_png, tintIcon = false, sizeDp = 30)
+        }
+    }
+
+    @Suppress("MissingPermission", "DEPRECATION")
+    private fun resolveOutputDeviceKind(isUsbExclusive: Boolean): OutputDeviceKind {
+        if (isUsbExclusive) return OutputDeviceKind.USB
 
         val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
         val devices = am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
-        val btDevice = devices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
-        if (btDevice != null) return R.drawable.ic_bluetooth_connect
 
-        val wiredDevice = devices.firstOrNull {
-            it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET ||
-            it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+        val btDevice = devices.firstOrNull { isBluetoothOutputType(it.type) }
+        if (btDevice != null) {
+            return classifyBluetoothOutputDevice(btDevice.productName?.toString().orEmpty())
         }
-        if (wiredDevice != null) return R.drawable.ic_headphone
 
-        val usbHeadset = devices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET }
-        if (usbHeadset != null) return R.drawable.ic_usb
+        val usbDevice = devices.firstOrNull { isUsbOutputType(it.type) }
+        if (usbDevice != null) return OutputDeviceKind.USB
 
-        return R.drawable.ic_volume_up
+        val wiredDevice = devices.firstOrNull { isWiredHeadphoneOutputType(it.type) }
+        if (wiredDevice != null) return OutputDeviceKind.WIRED_HEADPHONES
+
+        return OutputDeviceKind.SPEAKER
+    }
+
+    private fun isBluetoothOutputType(type: Int): Boolean {
+        return type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+            type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+    }
+
+    private fun isUsbOutputType(type: Int): Boolean {
+        return type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET ||
+            type == android.media.AudioDeviceInfo.TYPE_USB_DEVICE ||
+            type == android.media.AudioDeviceInfo.TYPE_USB_ACCESSORY
+    }
+
+    private fun isWiredHeadphoneOutputType(type: Int): Boolean {
+        return type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+            type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+    }
+
+    private fun classifyBluetoothOutputDevice(name: String): OutputDeviceKind {
+        val key = name.lowercase()
+        return when {
+            key.contains("车") ||
+                key.contains("car") ||
+                key.contains("auto") ||
+                key.contains("vehicle") ||
+                key.contains("head unit") ||
+                key.contains("carplay") ||
+                key.contains("android auto") ||
+                key.contains("toyota") ||
+                key.contains("honda") ||
+                key.contains("mazda") ||
+                key.contains("nissan") ||
+                key.contains("hyundai") ||
+                key.contains("kia") ||
+                key.contains("bmw") ||
+                key.contains("benz") ||
+                key.contains("mercedes") ||
+                key.contains("audi") ||
+                key.contains("volkswagen") ||
+                key.contains("vw ") ||
+                key.contains("tesla") -> OutputDeviceKind.BLUETOOTH_CAR
+
+            key.contains("earbud") ||
+                key.contains("earphone") ||
+                key.contains("headphone") ||
+                key.contains("headset") ||
+                key.contains("airpods") ||
+                key.contains("buds") ||
+                key.contains("tws") ||
+                key.contains("freebuds") ||
+                key.contains("耳机") ||
+                key.contains("耳塞") -> OutputDeviceKind.BLUETOOTH_HEADSET
+
+            key.contains("speaker") ||
+                key.contains("音箱") ||
+                key.contains("音响") ||
+                key.contains("woofer") ||
+                key.contains("soundbar") -> OutputDeviceKind.BLUETOOTH_SPEAKER
+
+            else -> OutputDeviceKind.BLUETOOTH
+        }
     }
 
     @Suppress("MissingPermission")
@@ -369,6 +456,13 @@ class AudioInfoCapsuleHelper(
         val actualOutputMode = AudioOutputManager.getCurrentOutputMode(context)
         val outputApi = if (isUsbExclusive) "USB DAC 独占" else AudioOutputManager.getOutputModeLabel(actualOutputMode)
         val outputSettingsDest = if (isUsbExclusive) R.id.nav_usb_dac_settings else R.id.nav_audio_settings
+        val trackIcon = resolveTrackFormatIcon(fmt, song.path)
+        val bitPerfectIconActive = isUsbExclusive && AppPreferences.Player.bitPerfectEnabled
+        val outputIcon = resolveOutputProtocolIcon(
+            isUsbExclusive = isUsbExclusive,
+            outputMode = actualOutputMode,
+            bitPerfectActive = bitPerfectIconActive
+        )
         val usbStatus = if (isUsbExclusive) runCatching { pc.getUsbDeviceStatus() }.getOrNull() else null
         val srChanged = ffmpegOutputSr > 0 && srcSr > 0 && srcSr != ffmpegOutputSr
         val bdChanged = ffmpegOutputBd > 0 && srcBd > 0 && srcBd != ffmpegOutputBd
@@ -428,6 +522,7 @@ class AudioInfoCapsuleHelper(
             InfoLine("输出延迟：$outputLatencyDisplay")
         )
         val deviceInfo = resolveDeviceInfo(pc, isUsbExclusive, ffmpegOutputSr, ffmpegOutputBd, targetBits, usbStatus)
+        val deviceIcon = resolveOutputDeviceIcon(isUsbExclusive, deviceInfo.kind)
         val deviceLines = listOf(
             InfoLine(deviceInfo.name, outputSettingsDest, isUsbExclusive),
             InfoLine("架构：${deviceInfo.route}"),
@@ -438,12 +533,12 @@ class AudioInfoCapsuleHelper(
         popupData = AudioInfoPopupData(
             sections = listOf(
                 TimelineSection(R.drawable.ic_music_2_fill, "媒体库", mediaLines),
-                TimelineSection(R.drawable.ic_file_info_fill, "音轨", trackLines),
-                TimelineSection(R.drawable.ic_sound_module_fill, "解码器", decoderLines),
-                TimelineSection(R.drawable.ic_speed_fill, "重采样", resampleLines),
-                TimelineSection(R.drawable.ic_equalizer_bars, "信号处理", signalLines),
-                TimelineSection(R.drawable.ic_volume_up, "输出", outputLines),
-                TimelineSection(getDeviceIconRes(), "设备", deviceLines)
+                TimelineSection(trackIcon.iconRes, "音轨", trackLines, tintIcon = trackIcon.tintIcon, iconSizeDp = trackIcon.sizeDp),
+                TimelineSection(R.drawable.ic_audio_decoder_ffmpeg_png, "解码器", decoderLines, tintIcon = false, iconSizeDp = 34),
+                TimelineSection(R.drawable.ic_audio_resample_png, "重采样", resampleLines, tintIcon = false, iconSizeDp = 28),
+                TimelineSection(R.drawable.ic_audio_signal_processing_png, "信号处理", signalLines, tintIcon = false, iconSizeDp = 30),
+                TimelineSection(outputIcon.iconRes, "输出", outputLines, tintIcon = outputIcon.tintIcon, iconSizeDp = outputIcon.sizeDp),
+                TimelineSection(deviceIcon.iconRes, "设备", deviceLines, tintIcon = deviceIcon.tintIcon, iconSizeDp = deviceIcon.sizeDp)
             ),
             navigateToSettings = { onNavigateDestination(outputSettingsDest) },
             outputSettingsDest = outputSettingsDest
@@ -456,6 +551,41 @@ class AudioInfoCapsuleHelper(
             "popup: outputMode=$actualOutputMode, outputSr=$ffmpegOutputSr, outputBd=$ffmpegOutputBd, " +
                 "srcSr=$srcSr, srcBd=$srcBd, latencyMs=$actualLatencyMs, bufFrames=$actualBufFrames, usbExclusive=$isUsbExclusive"
         )
+    }
+
+    private fun resolveTrackFormatIcon(format: String, path: String): TimelineIcon {
+        val ext = runCatching { File(path).extension }.getOrDefault("")
+        val key = listOf(format, ext).joinToString(" ").uppercase()
+        return when {
+            key.contains("DSD") || key.contains("DSF") || key.contains("DFF") ->
+                TimelineIcon(R.drawable.ic_audio_codec_dsd_png, tintIcon = false, sizeDp = 32)
+            key.contains("FLAC") ->
+                TimelineIcon(R.drawable.ic_audio_codec_flac_png, tintIcon = false, sizeDp = 34)
+            key.contains("OGG") || key.contains("OPUS") || key.contains("VORBIS") ->
+                TimelineIcon(R.drawable.ic_audio_codec_ogg_png, tintIcon = false, sizeDp = 34)
+            key.contains("MP3") || key.contains("MPEG") ->
+                TimelineIcon(R.drawable.ic_audio_codec_mp3_png, tintIcon = false, sizeDp = 34)
+            else ->
+                TimelineIcon(R.drawable.ic_file_info_fill, tintIcon = true, sizeDp = 21)
+        }
+    }
+
+    private fun resolveOutputProtocolIcon(
+        isUsbExclusive: Boolean,
+        outputMode: AudioOutputMode,
+        bitPerfectActive: Boolean = false
+    ): TimelineIcon {
+        if (bitPerfectActive) {
+            return TimelineIcon(R.drawable.ic_audio_bit_perfect_png, tintIcon = false, sizeDp = 31)
+        }
+        if (isUsbExclusive) {
+            return TimelineIcon(R.drawable.ic_audio_output_usb_png, tintIcon = false, sizeDp = 34)
+        }
+        return when (outputMode) {
+            AudioOutputMode.OPENSL_ES -> TimelineIcon(R.drawable.ic_audio_opensl_png, tintIcon = false, sizeDp = 34)
+            AudioOutputMode.AAUDIO -> TimelineIcon(R.drawable.ic_audio_aaudio_png, tintIcon = false, sizeDp = 34)
+            AudioOutputMode.DIRECT -> TimelineIcon(R.drawable.ic_audio_hires_png, tintIcon = false, sizeDp = 34)
+        }
     }
 
     private fun buildSignalProcessingLines(outputSr: Int, outputBits: Int): List<InfoLine> {
@@ -530,15 +660,13 @@ class AudioInfoCapsuleHelper(
         val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
         val devices = am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
         val usbDeviceName = pc.getUsbDeviceName()
-        val btDevice = devices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
+        val btDevice = devices.firstOrNull { isBluetoothOutputType(it.type) }
         val wiredDevice = devices.firstOrNull {
-            it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET ||
-                it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
-                it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET ||
-                it.type == android.media.AudioDeviceInfo.TYPE_USB_DEVICE
+            isWiredHeadphoneOutputType(it.type) || isUsbOutputType(it.type)
         }
         return when {
             isUsbExclusive && usbDeviceName != null -> DeviceInfoLine(
+                kind = OutputDeviceKind.USB,
                 name = "$usbDeviceName (DAC)",
                 route = "USB Audio Class / Raw USB",
                 format = usbStatus?.actualOutputFormat?.takeIf { it.isNotBlank() && it != "未开始输出" }
@@ -546,15 +674,16 @@ class AudioInfoCapsuleHelper(
                 volumePath = if (AppPreferences.Player.hardwareFeatureUnitEnabled) "USB 硬件音量" else "应用软件音量"
             )
             btDevice != null -> DeviceInfoLine(
+                kind = classifyBluetoothOutputDevice(btDevice.productName?.toString().orEmpty()),
                 name = btDevice.productName?.toString() ?: "蓝牙设备",
                 route = "Android AudioTrack / Bluetooth A2DP",
                 format = "系统协商 / ${cachedBluetoothCodec ?: "Codec 检测中"}",
                 volumePath = "系统蓝牙音量"
             )
             wiredDevice != null -> DeviceInfoLine(
+                kind = if (isUsbOutputType(wiredDevice.type)) OutputDeviceKind.USB else OutputDeviceKind.WIRED_HEADPHONES,
                 name = wiredDevice.productName?.toString() ?: "有线音频设备",
-                route = if (wiredDevice.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET ||
-                    wiredDevice.type == android.media.AudioDeviceInfo.TYPE_USB_DEVICE) {
+                route = if (isUsbOutputType(wiredDevice.type)) {
                     "Android USB Audio"
                 } else {
                     "Android Wired Output"
@@ -563,6 +692,7 @@ class AudioInfoCapsuleHelper(
                 volumePath = "系统音量"
             )
             else -> DeviceInfoLine(
+                kind = OutputDeviceKind.SPEAKER,
                 name = "内置扬声器",
                 route = "Android Mixer",
                 format = "${formatOutputBitDepth(outputBits, targetBits)} / ${formatSampleRate(outputSr)}",
@@ -703,11 +833,28 @@ class AudioInfoCapsuleHelper(
         return if (value >= 1000f) "%.1f kHz".format(value / 1000f) else "${value.roundToInt()} Hz"
     }
 
+    private enum class OutputDeviceKind {
+        USB,
+        WIRED_HEADPHONES,
+        SPEAKER,
+        BLUETOOTH,
+        BLUETOOTH_HEADSET,
+        BLUETOOTH_SPEAKER,
+        BLUETOOTH_CAR
+    }
+
     private data class DeviceInfoLine(
+        val kind: OutputDeviceKind,
         val name: String,
         val route: String,
         val format: String,
         val volumePath: String
+    )
+
+    private data class TimelineIcon(
+        val iconRes: Int,
+        val tintIcon: Boolean,
+        val sizeDp: Int
     )
 }
 
@@ -721,7 +868,9 @@ data class InfoLine(
 data class TimelineSection(
     val iconRes: Int,
     val title: String,
-    val lines: List<InfoLine>
+    val lines: List<InfoLine>,
+    val tintIcon: Boolean = true,
+    val iconSizeDp: Int = 21
 )
 
 data class AudioInfoPopupData(
@@ -838,7 +987,7 @@ private fun AudioInfoSection(
 ) {
     var contentHeightPx by remember { mutableStateOf(0) }
     val density = LocalDensity.current
-    val iconSizeDp = 21.dp
+    val iconSizeDp = section.iconSizeDp.dp
     val iconGapDp = 8.dp
     val connectorColor = ComposeColor.White.copy(alpha = 0.22f)
 
@@ -855,7 +1004,8 @@ private fun AudioInfoSection(
             Image(
                 painter = painterResource(section.iconRes),
                 contentDescription = null,
-                colorFilter = ColorFilter.tint(ComposeColor.White.copy(alpha = 0.7f)),
+                colorFilter = if (section.tintIcon) ColorFilter.tint(ComposeColor.White.copy(alpha = 0.7f)) else null,
+                contentScale = ContentScale.Fit,
                 modifier = Modifier.size(iconSizeDp)
             )
             if (showConnector) {

@@ -85,7 +85,6 @@ internal fun CollectionHeroDetailPage(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MiuixTheme.colorScheme.background)
     ) {
         ComposePowerListFull(
             songs = hero.songs,

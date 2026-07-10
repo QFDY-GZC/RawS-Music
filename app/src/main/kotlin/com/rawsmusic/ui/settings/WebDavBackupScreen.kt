@@ -32,6 +32,8 @@ import com.rawsmusic.module.data.prefs.WebDavBackupManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.ui.res.stringResource
+import com.rawsmusic.R
 
 @Composable
 fun WebDavBackupScreen(onBack: () -> Unit) {
@@ -46,10 +48,10 @@ fun WebDavBackupScreen(onBack: () -> Unit) {
 
     val isConfigured = AppPreferences.WebDav.url.isNotBlank()
 
-    SettingsPage(title = "WebDAV 备份", onBack = onBack) {
+    SettingsPage(title = stringResource(R.string.settings_webdav_backup_title), onBack = onBack) {
         SettingsCard {
             Text(
-                "备份与恢复",
+                stringResource(R.string.settings_webdav_backup_restore_header),
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Medium,
                 color = MiuixTheme.colorScheme.onBackground,
@@ -57,7 +59,7 @@ fun WebDavBackupScreen(onBack: () -> Unit) {
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                "将歌单和听歌统计数据备份到 WebDAV 服务器，或在其他设备上恢复。",
+                stringResource(R.string.settings_webdav_backup_restore_desc),
                 fontSize = 14.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 fontFamily = appFontFamily()
@@ -66,7 +68,7 @@ fun WebDavBackupScreen(onBack: () -> Unit) {
             if (!isConfigured) {
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    "⚠ 未配置 WebDAV，请先在侧边栏「WebDAV」中配置连接信息。",
+                    stringResource(R.string.settings_webdav_not_configured),
                     fontSize = 13.sp,
                     color = Color.White,
                     fontFamily = appFontFamily()
@@ -100,7 +102,7 @@ fun WebDavBackupScreen(onBack: () -> Unit) {
                             scope.launch {
                                 val result = WebDavBackupManager.backup(context)
                                 isBackingUp = false
-                                statusMessage = result.getOrElse { "备份失败：${it.message}" }
+                                statusMessage = result.getOrElse { context.getString(R.string.settings_webdav_backup_failed, it.message ?: "") }
                             }
                         },
                         enabled = isConfigured && !isBackingUp,
@@ -115,7 +117,7 @@ fun WebDavBackupScreen(onBack: () -> Unit) {
                             Spacer(Modifier.padding(start = 8.dp))
                         }
                         Text(
-                            if (isBackingUp) "备份中…" else "备份到 WebDAV",
+                            if (isBackingUp) stringResource(R.string.settings_webdav_backing_up) else stringResource(R.string.settings_webdav_backup_action),
                             color = if (isConfigured && !isBackingUp) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.outline,
                             fontSize = 15.sp,
                             fontFamily = appFontFamily()
@@ -137,7 +139,7 @@ fun WebDavBackupScreen(onBack: () -> Unit) {
                             scope.launch {
                                 val result = WebDavBackupManager.restore(context)
                                 isRestoring = false
-                                statusMessage = result.getOrElse { "恢复失败：${it.message}" }
+                                statusMessage = result.getOrElse { context.getString(R.string.settings_webdav_restore_failed, it.message ?: "") }
                             }
                         },
                         enabled = isConfigured && !isRestoring,
@@ -152,7 +154,7 @@ fun WebDavBackupScreen(onBack: () -> Unit) {
                             Spacer(Modifier.padding(start = 8.dp))
                         }
                         Text(
-                            if (isRestoring) "恢复中…" else "从 WebDAV 恢复",
+                            if (isRestoring) stringResource(R.string.settings_webdav_restoring) else stringResource(R.string.settings_webdav_restore_action),
                             color = if (isConfigured && !isRestoring) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.outline,
                             fontSize = 15.sp,
                             fontFamily = appFontFamily()
@@ -168,7 +170,7 @@ fun WebDavBackupScreen(onBack: () -> Unit) {
                 Text(
                     statusMessage,
                     fontSize = 14.sp,
-                    color = if (statusMessage.contains("成功")) Color(0xFF2E7D32) else Color(0xFFC62828),
+                    color = if (statusMessage.contains(stringResource(R.string.settings_success_keyword))) Color(0xFF2E7D32) else Color(0xFFC62828),
                     fontFamily = appFontFamily()
                 )
             }
@@ -177,14 +179,14 @@ fun WebDavBackupScreen(onBack: () -> Unit) {
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
-            SectionHeader("WebDAV 配置信息")
+            SectionHeader(stringResource(R.string.settings_webdav_config_info))
             Spacer(Modifier.height(4.dp))
-            ConfigInfoRow("地址", AppPreferences.WebDav.url.ifBlank { "未配置" })
-            ConfigInfoRow("用户名", AppPreferences.WebDav.username.ifBlank { "未配置" })
-            ConfigInfoRow("认证方式", when (AppPreferences.WebDav.authMode) {
+            ConfigInfoRow(stringResource(R.string.settings_webdav_address), AppPreferences.WebDav.url.ifBlank { stringResource(R.string.settings_not_configured) })
+            ConfigInfoRow(stringResource(R.string.settings_webdav_username), AppPreferences.WebDav.username.ifBlank { stringResource(R.string.settings_not_configured) })
+            ConfigInfoRow(stringResource(R.string.settings_webdav_auth_mode), when (AppPreferences.WebDav.authMode) {
                 1 -> "Basic"
                 2 -> "Digest"
-                else -> "自动"
+                else -> stringResource(R.string.settings_auto)
             })
         }
     }

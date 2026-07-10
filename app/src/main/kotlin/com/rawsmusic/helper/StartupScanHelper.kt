@@ -3,6 +3,7 @@ package com.rawsmusic.helper
 import android.content.Context
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.module.data.repository.MusicRepository
 import com.rawsmusic.module.scanner.AudioFileListUpdater
 import com.rawsmusic.module.scanner.AudioLibraryRepository
 import com.rawsmusic.module.scanner.LibraryScanCoordinator
@@ -37,6 +38,7 @@ class StartupScanHelper(
     private var autoObserverJob: Job? = null
     private var currentScanJob: Job? = null
     private var pendingScanReason: String? = null
+    private var _enrichedCount = 0  // enriched 节流计数器
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var scanCoordinator: LibraryScanCoordinator? = null
     private val resolvedRepository: AudioLibraryRepository? by lazy {
@@ -58,8 +60,11 @@ class StartupScanHelper(
                     resolvedRepository?.getAllSongs()?.size ?: 0
                 }.getOrDefault(0)
                 if (existingCount <= 0) {
-                    AppLogger.d(TAG, "library empty, running first scan")
-                    requestScan(context, "首次扫描", restartIfRunning = false)
+                    // 空库不自动扫描，显示空态提示用户选择文件夹
+                    AppLogger.d(TAG, "library empty, waiting for user to select folders")
+                    _scanUiState.value = ScanUiState.idle().copy(
+                        message = "音乐库为空，请选择文件夹或手动添加音乐"
+                    )
                 } else {
                     AppLogger.d(TAG, "skip startup auto scan, existing songs=$existingCount")
                     _scanUiState.value = ScanUiState.idle().copy(
@@ -143,6 +148,7 @@ class StartupScanHelper(
         var reason = initialReason
         while (true) {
             pendingScanReason = null
+            _enrichedCount = 0  // 重置 enriched 节流计数器
             try {
                 runSingleScan(context, reason)
             } catch (e: CancellationException) {
@@ -165,6 +171,18 @@ class StartupScanHelper(
     }
 
     private suspend fun runSingleScan(context: Context, reason: String) {
+        // 检查用户是否已选择扫描文件夹
+        val scanPaths = com.rawsmusic.module.data.prefs.AppPreferences.UI.scanPaths
+        if (scanPaths.isEmpty()) {
+            AppLogger.w(TAG, "runSingleScan: scanPaths is empty, requesting folder selection")
+            _scanUiState.value = ScanUiState.idle().copy(
+                message = "请先选择音乐文件夹"
+            )
+            // 触发文件夹选择需求
+            com.rawsmusic.module.scanner.ScanStateBus.notifyFolderSelectionNeeded()
+            return
+        }
+
         _scanUiState.value = ScanUiState.starting(reason)
         val coordinator = scanCoordinator ?: resolvedRepository?.let { LibraryScanCoordinator(it).also { c -> scanCoordinator = c } } ?: return
 
@@ -172,22 +190,42 @@ class StartupScanHelper(
             context = context,
             options = TwoStageMediaScanner.Options(
                 scannerOptions = MediaStoreScanner.ScanOptions.fromPreferences(),
-                expandCueTracks = true, emitEachSong = true, usePersistentCache = true
+                expandCueTracks = true, emitEachSong = false, usePersistentCache = true
             )
         ).collect { event ->
             when (event) {
                 is LibraryScanCoordinator.Event.ScannerEvent -> handleScannerEvent(reason, event.event)
                 is LibraryScanCoordinator.Event.DatabaseSyncStarted -> {
+                    val stageText = when (event.phase) {
+                        LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> "快速写入"
+                        LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> "后台补全"
+                        LibraryScanCoordinator.SyncPhase.FINAL -> "最终同步"
+                    }
                     _scanUiState.value = _scanUiState.value.copy(
-                        isScanning = true, canCancel = true, stage = "同步数据库",
-                        message = "$reason：同步数据库，旧 ${event.oldCount}，新 ${event.newCount}"
+                        isScanning = true, canCancel = true, stage = stageText,
+                        message = "$reason：$stageText ${event.newCount} 首"
                     )
                 }
                 is LibraryScanCoordinator.Event.DatabaseSyncCompleted -> {
+                    val message = when (event.phase) {
+                        LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> "$reason：快速结果已显示，新增/变更 ${event.upserted} 首"
+                        LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> "$reason：后台补全已写入 ${event.upserted} 首"
+                        LibraryScanCoordinator.SyncPhase.FINAL -> "$reason：数据库同步完成，更新 ${event.upserted}，删除 ${event.deleted}，未变 ${event.unchanged}"
+                    }
                     _scanUiState.value = _scanUiState.value.copy(
                         isScanning = true, canCancel = true, stage = "数据库完成",
                         dbUpserted = event.upserted, dbDeleted = event.deleted, dbUnchanged = event.unchanged,
-                        message = "$reason：数据库同步完成，更新 ${event.upserted}，删除 ${event.deleted}，未变 ${event.unchanged}"
+                        message = message
+                    )
+                }
+                is LibraryScanCoordinator.Event.VisibleCompleted -> {
+                    _songs.value = event.songs
+                    MusicRepository.publishTransientScanSongs(event.songs)
+                    _scanUiState.value = _scanUiState.value.copy(
+                        isScanning = true, canCancel = true, pendingScan = false,
+                        stage = "可浏览", progress = _scanUiState.value.progress.coerceAtLeast(0.40f),
+                        found = event.found, timeMs = event.timeMs,
+                        message = "$reason：${event.found} 首已可浏览，后台继续补全音频信息"
                     )
                 }
                 is LibraryScanCoordinator.Event.Completed -> {
@@ -232,6 +270,8 @@ class StartupScanHelper(
             }
             is TwoStageMediaScanner.Event.QuickCompleted -> {
                 _songs.value = event.songs
+                // 快速扫描完成：立即发布到 MusicRepository 让 UI 显示
+                MusicRepository.publishTransientScanSongs(event.songs)
                 _scanUiState.value = _scanUiState.value.copy(
                     isScanning = true, canCancel = true, stage = "快速扫描完成",
                     found = event.found, progress = 0.35f,
@@ -249,12 +289,23 @@ class StartupScanHelper(
                 )
             }
             is TwoStageMediaScanner.Event.SongEnriched -> {
-                _songs.value = AudioFileListUpdater.applyEnrichedResult(
+                val updated = AudioFileListUpdater.applyEnrichedResult(
                     _songs.value, event.originalSongId, event.originalPath, event.songs
                 )
+                _songs.value = updated
+                // 节流发布到 MusicRepository（每 20 首发布一次）
+                if (_enrichedCount % 20 == 0) {
+                    MusicRepository.publishTransientScanSongs(updated)
+                }
+                _enrichedCount++
+            }
+            is TwoStageMediaScanner.Event.EnrichBatchCompleted -> {
+                // 后台懒同步批次，UI 进度由 EnrichProgress 统一更新。
             }
             is TwoStageMediaScanner.Event.FullyCompleted -> {
                 _songs.value = event.songs
+                // 强制发布最终扫描结果到 MusicRepository
+                MusicRepository.publishTransientScanSongs(event.songs)
                 _scanUiState.value = _scanUiState.value.copy(
                     isScanning = true, canCancel = true, stage = "准备同步数据库",
                     progress = 0.90f, found = event.found,

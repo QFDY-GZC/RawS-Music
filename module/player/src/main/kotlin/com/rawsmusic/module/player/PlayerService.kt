@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.hardware.usb.UsbDevice
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -25,12 +26,15 @@ import android.view.KeyEvent
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.common.model.PlayState
+import com.rawsmusic.core.common.artwork.EmbeddedArtworkRegion
 import com.rawsmusic.core.common.model.RepeatMode
+import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.lyrics.BluetoothLyricBridge
 import com.rawsmusic.module.player.lyrics.PlaybackTickerState
@@ -47,6 +51,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URLDecoder
 
@@ -70,6 +75,20 @@ class PlayerService : LifecycleService() {
         const val ACTION_USB_MEDIA_IDENTITY = "com.rawsmusic.action.USB_MEDIA_IDENTITY"
         /** Sticky restart / task-removed restore path for background playback. */
         const val ACTION_RESTORE_STICKY_STATE = "com.rawsmusic.action.RESTORE_STICKY_STATE"
+        /** App process entered foreground; Service should own runtime-side resume hooks. */
+        const val ACTION_RUNTIME_APP_FOREGROUND = "com.rawsmusic.action.RUNTIME_APP_FOREGROUND"
+        /** App process entered background; Service should own runtime-side background hooks. */
+        const val ACTION_RUNTIME_APP_BACKGROUND = "com.rawsmusic.action.RUNTIME_APP_BACKGROUND"
+        /** Top activity paused while playback may continue in background. */
+        const val ACTION_RUNTIME_ACTIVITY_PAUSED = "com.rawsmusic.action.RUNTIME_ACTIVITY_PAUSED"
+        /** Bootstrap runtime state and let Service own the playback facade early. */
+        const val ACTION_RUNTIME_BOOTSTRAP = "com.rawsmusic.action.RUNTIME_BOOTSTRAP"
+        /** UI host is being destroyed; Service decides whether runtime should survive. */
+        const val ACTION_RUNTIME_UI_HOST_DESTROYED = "com.rawsmusic.action.RUNTIME_UI_HOST_DESTROYED"
+        /** Route USB attach alias events into the Service-owned runtime. */
+        const val ACTION_RUNTIME_USB_ATTACH = "com.rawsmusic.action.RUNTIME_USB_ATTACH"
+        /** Ask the Service-owned runtime to probe/request pending USB permission. */
+        const val ACTION_RUNTIME_USB_PERMISSION_SCAN = "com.rawsmusic.action.RUNTIME_USB_PERMISSION_SCAN"
         /** 停止播放服务（仅用户主动停止/关闭独占/USB拔出时调用） */
         const val ACTION_STOP_PLAYBACK_SERVICE = "com.rawsmusic.action.STOP_PLAYBACK_SERVICE"
         /** 屏幕解锁时检查USB状态 */
@@ -122,6 +141,211 @@ class PlayerService : LifecycleService() {
             service.clearUsbMediaIdentity(reason, releaseFocus)
             return true
         }
+
+        fun shouldBootstrapRuntime(): Boolean {
+            if (_instance != null || PlayerRuntimeRegistry.currentControllerOrNull() != null) {
+                return true
+            }
+            val lastState = PlayState.entries.getOrElse(AppPreferences.Player.lastPlayStateOrdinal) {
+                PlayState.IDLE
+            }
+            return AppPreferences.Player.lastUsbExclusiveActive ||
+                AppPreferences.Player.lastSongPath.isNotBlank() ||
+                lastState == PlayState.PLAYING ||
+                lastState == PlayState.PAUSED ||
+                lastState == PlayState.PREPARING
+        }
+
+        fun shouldRetainRuntimeOnUiDestroy(
+            controller: PlayerController? = PlayerRuntimeRegistry.currentControllerOrNull()
+        ): Boolean {
+            val service = _instance
+            val serviceState = service?.currentPlayState
+            return controller?.isUsbExclusiveActive() == true ||
+                controller?.playState?.value == PlayState.PLAYING ||
+                serviceState == PlayState.PLAYING ||
+                (service != null && AppPreferences.Player.lastUsbExclusiveActive)
+        }
+
+        fun currentRuntimeController(): PlayerController? =
+            PlayerRuntimeRegistry.currentControllerOrNull() ?: PlayerController.getInstanceOrNull()
+
+        private fun startServiceAction(
+            context: Context,
+            action: String,
+            reason: String,
+            requireForegroundStart: Boolean,
+            configureIntent: (Intent.() -> Unit)? = null
+        ): Boolean {
+            return runCatching {
+                val intent = Intent(context, PlayerService::class.java).apply {
+                    this.action = action
+                    putExtra("reason", reason)
+                    configureIntent?.invoke(this)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && requireForegroundStart) {
+                    ContextCompat.startForegroundService(context, intent)
+                } else {
+                    context.startService(intent)
+                }
+                true
+            }.getOrDefault(false)
+        }
+
+        fun ensureServiceStarted(
+            context: Context,
+            reason: String,
+            action: String = ACTION_RUNTIME_BOOTSTRAP
+        ): Boolean {
+            if (_instance != null && action == ACTION_RUNTIME_BOOTSTRAP) {
+                _instance?.bootstrapRuntimeState(reason)
+                return true
+            }
+            return startServiceAction(
+                context = context,
+                action = action,
+                reason = reason,
+                requireForegroundStart = true
+            )
+        }
+
+        fun ensureRuntimeService(
+            context: Context,
+            reason: String,
+            force: Boolean = false
+        ): Boolean {
+            if (!force && !shouldBootstrapRuntime()) return false
+            if (_instance != null) {
+                _instance?.bootstrapRuntimeState(reason)
+                return true
+            }
+            return startServiceAction(
+                context = context,
+                action = ACTION_RUNTIME_BOOTSTRAP,
+                reason = reason,
+                requireForegroundStart = true
+            )
+        }
+
+        fun obtainRuntimeController(
+            context: Context,
+            reason: String,
+            ensureService: Boolean = false
+        ): PlayerController {
+            val current = currentRuntimeController()
+            if (current != null) {
+                PlayerRuntimeRegistry.attachController(current, "runtime_obtain:$reason")
+                return current
+            }
+            if (ensureService) {
+                ensureServiceStarted(context, "obtain_runtime:$reason")
+            } else if (shouldBootstrapRuntime()) {
+                ensureRuntimeService(context, "obtain_runtime:$reason")
+            }
+            return (currentRuntimeController() ?: PlayerController.getInstance(context)).also {
+                PlayerRuntimeRegistry.attachController(it, "runtime_obtain:$reason")
+            }
+        }
+
+        fun dispatchUsbAttachIntent(
+            context: Context,
+            device: UsbDevice,
+            reason: String
+        ): Boolean {
+            _instance?.let { service ->
+                service.playerController.handleUsbDeviceAttachIntent(
+                    device,
+                    "service_direct:$reason"
+                )
+                return true
+            }
+            return startServiceAction(
+                context = context,
+                action = ACTION_RUNTIME_USB_ATTACH,
+                reason = reason,
+                requireForegroundStart = true
+            ) {
+                putExtra("device", device)
+            }
+        }
+
+        fun dispatchUsbAttachPermissionScan(context: Context, reason: String): Boolean {
+            _instance?.let { service ->
+                service.playerController.requestUsbAttachPermissionIfPresent(
+                    "service_direct:$reason"
+                )
+                return true
+            }
+            return startServiceAction(
+                context = context,
+                action = ACTION_RUNTIME_USB_PERMISSION_SCAN,
+                reason = reason,
+                requireForegroundStart = false
+            )
+        }
+
+        fun dispatchUiHostDestroyed(
+            context: Context,
+            reason: String,
+            finishing: Boolean
+        ): Boolean {
+            _instance?.let { service ->
+                service.handleUiHostDestroyed(reason, finishing, source = "direct")
+                return true
+            }
+
+            val current = currentRuntimeController()
+            if (finishing && current != null && !shouldRetainRuntimeOnUiDestroy(current)) {
+                runCatching {
+                    current.release()
+                }
+                return true
+            }
+
+            if (!isRunning) return false
+            return startServiceAction(
+                context = context,
+                action = ACTION_RUNTIME_UI_HOST_DESTROYED,
+                reason = reason,
+                requireForegroundStart = false
+            ) {
+                putExtra("finishing", finishing)
+            }
+        }
+
+        private fun dispatchRuntimeLifecycleAction(
+            context: Context,
+            action: String,
+            reason: String
+        ): Boolean {
+            _instance?.let { service ->
+                service.handleRuntimeLifecycleAction(action, reason, source = "direct")
+                return true
+            }
+            if (!isRunning) return false
+            return runCatching {
+                context.startService(
+                    Intent(context, PlayerService::class.java).apply {
+                        this.action = action
+                        putExtra("reason", reason)
+                    }
+                )
+                true
+            }.getOrDefault(false)
+        }
+
+        fun dispatchAppProcessForeground(context: Context, reason: String): Boolean =
+            dispatchRuntimeLifecycleAction(context, ACTION_RUNTIME_APP_FOREGROUND, reason)
+
+        fun dispatchAppProcessBackground(context: Context, reason: String): Boolean =
+            dispatchRuntimeLifecycleAction(context, ACTION_RUNTIME_APP_BACKGROUND, reason)
+
+        fun dispatchActivityPaused(context: Context, reason: String): Boolean =
+            dispatchRuntimeLifecycleAction(context, ACTION_RUNTIME_ACTIVITY_PAUSED, reason)
+    }
+
+    private val playerController: PlayerController by lazy {
+        PlayerController.getInstance(this)
     }
 
     private var mediaSessionCompat: MediaSessionCompat? = null
@@ -150,6 +374,8 @@ class PlayerService : LifecycleService() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var lastUsbForegroundEnsureElapsed: Long = 0L
     private var lastUsbProgressPulseLogElapsed: Long = 0L
+    private var usbBackgroundGuardianJob: Job? = null
+    private var lastUsbBackgroundGuardianLogElapsed: Long = 0L
 
     /** 屏幕解锁广播接收器 — USER_PRESENT 监听，确保USB独占模式在锁屏后正常工作 */
     private val screenUnlockReceiver = object : android.content.BroadcastReceiver() {
@@ -159,11 +385,8 @@ class PlayerService : LifecycleService() {
                 // 屏幕解锁时确保 WakeLock 持有
                 acquireWakeLockIfNeeded()
                 // 如果当前正在播放且使用USB独占模式，确保WakeLock有效
-                if (currentPlayState == PlayState.PLAYING) {
-                    val ctrl = PlayerController.getInstance(this@PlayerService)
-                    if (ctrl.isUsbExclusiveActive()) {
-                        acquireUsbWakeLock()
-                    }
+                if (currentPlayState == PlayState.PLAYING && playerController.isUsbExclusiveActive()) {
+                    acquireUsbWakeLock()
                 }
             }
         }
@@ -176,7 +399,7 @@ class PlayerService : LifecycleService() {
         _instance = this
 
         // Service 持有 PlayerController 单例，避免 UI 层重建导致重复创建
-        val controller = PlayerController.getInstance(this)
+        val controller = playerController
         // Service cold start only remembers an attached DAC.  Do not request
         // permission or arm USB exclusive while Android is still restoring the
         // foreground service; HyperOS can stall cold playback if USB work starts
@@ -196,33 +419,27 @@ class PlayerService : LifecycleService() {
         mediaSessionCompat = MediaSessionCompat(this, "RawSMusic").apply {
             setCallback(object : MediaSessionCompat.Callback() {
                 override fun onPlay() {
-                    val ctrl = PlayerController.getInstance(this@PlayerService)
-                    ctrl.resume()
+                    playerController.resume()
                     notifyActivity(ACTION_PLAY)
                 }
                 override fun onPause() {
-                    val ctrl = PlayerController.getInstance(this@PlayerService)
-                    ctrl.pause()
+                    playerController.pause()
                     notifyActivity(ACTION_PAUSE)
                 }
                 override fun onSkipToNext() {
-                    val ctrl = PlayerController.getInstance(this@PlayerService)
-                    ctrl.next()
+                    playerController.next()
                     notifyActivity(ACTION_NEXT)
                 }
                 override fun onSkipToPrevious() {
-                    val ctrl = PlayerController.getInstance(this@PlayerService)
-                    ctrl.previous()
+                    playerController.previous()
                     notifyActivity(ACTION_PREVIOUS)
                 }
                 override fun onStop() {
-                    val ctrl = PlayerController.getInstance(this@PlayerService)
-                    ctrl.stop()
+                    playerController.stop()
                     notifyActivity(ACTION_STOP)
                 }
                 override fun onSeekTo(pos: Long) {
-                    val ctrl = PlayerController.getInstance(this@PlayerService)
-                    ctrl.seekTo(pos)
+                    playerController.seekTo(pos)
                     lastKnownPosition = pos
                     updateMediaSessionPlaybackState(currentPlayState, pos)
                     PlayerEventBus.emit("com.rawsmusic.action.SEEK", pos)
@@ -230,19 +447,18 @@ class PlayerService : LifecycleService() {
                 override fun onMediaButtonEvent(mediaButtonEvent: Intent?): Boolean {
                     val ev = mediaButtonEvent?.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT)
                     if (ev?.action == KeyEvent.ACTION_DOWN) {
-                        val ctrl = PlayerController.getInstance(this@PlayerService)
-                        if (ctrl.shouldUseUsbRemoteVolume()) {
+                        if (playerController.shouldUseUsbRemoteVolume()) {
                             when (ev.keyCode) {
                                 KeyEvent.KEYCODE_VOLUME_UP -> {
-                                    ctrl.stepUsbVolume(UsbVolumeController.DEFAULT_STEP)
+                                    playerController.stepUsbVolume(UsbVolumeController.DEFAULT_STEP)
                                     return true
                                 }
                                 KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                                    ctrl.stepUsbVolume(-UsbVolumeController.DEFAULT_STEP)
+                                    playerController.stepUsbVolume(-UsbVolumeController.DEFAULT_STEP)
                                     return true
                                 }
                                 KeyEvent.KEYCODE_VOLUME_MUTE -> {
-                                    ctrl.setUsbVolumeLinear(0f)
+                                    playerController.setUsbVolumeLinear(0f)
                                     return true
                                 }
                             }
@@ -285,7 +501,7 @@ class PlayerService : LifecycleService() {
         } else {
             handleAction(action, intent)
         }
-        val controller = PlayerController.getInstance(this)
+        val controller = playerController
         val activelyPlaying = currentPlayState == PlayState.PLAYING ||
             controller.playState.value == PlayState.PLAYING
         val usbProtected = controller.isUsbExclusiveActive() || AppPreferences.Player.lastUsbExclusiveActive
@@ -293,7 +509,7 @@ class PlayerService : LifecycleService() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        val controller = PlayerController.getInstance(this)
+        val controller = playerController
         if (controller.isUsbExclusiveActive()) {
             val activelyPlaying = currentPlayState == PlayState.PLAYING ||
                 controller.playState.value == PlayState.PLAYING
@@ -401,8 +617,71 @@ class PlayerService : LifecycleService() {
         }
     }
 
+    private fun bootstrapRuntimeState(reason: String) {
+        val controller = playerController
+        val controllerSong = controller.currentSong.value
+        if (controllerSong == null && AppPreferences.Player.lastSongPath.isBlank()) {
+            Log.i("PlayerService", "bootstrapRuntimeState skipped: no retained song reason=$reason")
+            return
+        }
+        if (controllerSong == null) {
+            restoreStickyPlaybackState(reason = "bootstrap:$reason", autoResume = false)
+            return
+        }
+
+        val restoredState = controller.playState.value.takeIf { it != PlayState.IDLE }
+            ?: PlayState.entries.getOrElse(AppPreferences.Player.lastPlayStateOrdinal) {
+                PlayState.IDLE
+            }
+
+        currentSong = controllerSong
+        currentPlayState = restoredState
+        lastKnownPosition = controller.position.value.coerceAtLeast(0L)
+        lastPositionTime = SystemClock.elapsedRealtime()
+        mediaSessionCompat?.isActive = true
+
+        updateMediaSessionMetadata(
+            controllerSong.title,
+            controllerSong.artist,
+            controllerSong.album,
+            controllerSong.albumArtPath,
+            controllerSong.duration
+        )
+        updateMediaSessionPlaybackState(restoredState, lastKnownPosition)
+
+        if (restoredState == PlayState.PLAYING) {
+            acquireWakeLockIfNeeded()
+            acquireWifiLockIfNeeded("bootstrap:$reason")
+            requestServiceAudioFocus("bootstrap:$reason")
+            forceMediaSessionPlaying("bootstrap:$reason")
+            startPositionUpdates()
+        } else {
+            updateNotification()
+        }
+
+        if (controller.isUsbExclusiveActive() || AppPreferences.Player.lastUsbExclusiveActive) {
+            ensureUsbForegroundThrottled("runtime_bootstrap:$reason", force = true)
+            updateForegroundServiceType()
+        }
+
+        Log.i(
+            "PlayerService",
+            "bootstrapRuntimeState: reason=$reason song=${controllerSong.title} " +
+                "state=$restoredState usb=${controller.isUsbExclusiveActive()} pos=$lastKnownPosition"
+        )
+    }
+
+    private fun extractUsbDevice(intent: Intent): UsbDevice? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra("device", UsbDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra("device")
+        }
+    }
+
     private fun restoreStickyPlaybackState(reason: String, autoResume: Boolean) {
-        val controller = PlayerController.getInstance(this)
+        val controller = playerController
         val restoredSong = controller.currentSong.value ?: controller.restoreLastSong()
         if (restoredSong == null) {
             Log.w("PlayerService", "restoreStickyPlaybackState skipped: no last song reason=$reason")
@@ -470,27 +749,87 @@ class PlayerService : LifecycleService() {
         )
     }
 
+    private fun handleRuntimeLifecycleAction(action: String, reason: String, source: String) {
+        val controller = playerController
+        when (action) {
+            ACTION_RUNTIME_APP_FOREGROUND -> {
+                Log.i("PlayerService", "runtime lifecycle foreground: reason=$reason source=$source")
+                controller.onAppForegroundResumed()
+            }
+            ACTION_RUNTIME_APP_BACKGROUND -> {
+                Log.i("PlayerService", "runtime lifecycle background: reason=$reason source=$source")
+                controller.onAppWentBackground()
+            }
+            ACTION_RUNTIME_ACTIVITY_PAUSED -> {
+                Log.i("PlayerService", "runtime lifecycle activity paused: reason=$reason source=$source")
+                controller.onAppMaybeLeavingForeground()
+            }
+        }
+        syncUsbBackgroundGuardian("runtime_lifecycle:$action:$reason")
+    }
+
+    private fun releaseRuntimeController(reason: String) {
+        runCatching {
+            playerController.release()
+            Log.i("PlayerService", "runtime controller released: reason=$reason")
+        }.onFailure {
+            Log.w("PlayerService", "runtime controller release failed: reason=$reason ${it.message}")
+        }
+    }
+
+    private fun shutdownIdleRuntime(reason: String) {
+        Log.i("PlayerService", "shutdownIdleRuntime: reason=$reason")
+        stopUsbBackgroundGuardian("shutdown_idle:$reason")
+        clearUsbMediaIdentity("shutdown_idle:$reason", releaseFocus = true)
+        releaseUsbWakeLock()
+        releaseWakeLock()
+        releaseWifiLock("shutdown_idle:$reason")
+        stopForegroundCompat(removeNotification = true)
+        releaseRuntimeController("shutdown_idle:$reason")
+        stopSelf()
+    }
+
+    private fun handleUiHostDestroyed(reason: String, finishing: Boolean, source: String) {
+        if (!finishing) {
+            Log.i("PlayerService", "ui host destroyed but not finishing: reason=$reason source=$source")
+            return
+        }
+
+        if (shouldRetainRuntimeOnUiDestroy(playerController)) {
+            Log.i(
+                "PlayerService",
+                "ui host destroyed: retaining runtime reason=$reason source=$source " +
+                    "playState=${playerController.playState.value} serviceState=$currentPlayState " +
+                    "usb=${playerController.isUsbExclusiveActive()}"
+            )
+            return
+        }
+
+        shutdownIdleRuntime("ui_host_destroyed:$reason")
+    }
+
     private fun handleAction(action: String, intent: Intent) {
         when (action) {
             ACTION_PLAY -> {
                 notifyActivity(action)
-                PlayerController.getInstance(this).resume()
+                playerController.resume()
             }
             ACTION_PAUSE -> {
                 notifyActivity(action)
-                PlayerController.getInstance(this).pause()
+                playerController.pause()
             }
             ACTION_NEXT -> {
                 notifyActivity(action)
-                PlayerController.getInstance(this).next()
+                playerController.next()
             }
             ACTION_PREVIOUS -> {
                 notifyActivity(action)
-                PlayerController.getInstance(this).previous()
+                playerController.previous()
             }
             ACTION_STOP -> {
                 notifyActivity(action)
-                PlayerController.getInstance(this).stop()
+                playerController.stop()
+                stopUsbBackgroundGuardian("action_stop")
             }
             "com.rawsmusic.action.SYNC_POSITION" -> {
                 // 从应用同步播放进度，避免通知栏进度条漂移
@@ -509,6 +848,11 @@ class PlayerService : LifecycleService() {
                 val artist = intent.getStringExtra("artist") ?: ""
                 val album = intent.getStringExtra("album") ?: ""
                 val albumArtPath = intent.getStringExtra("albumArtPath") ?: ""
+                val path = intent.getStringExtra("path") ?: ""
+                val fileSize = intent.getLongExtra("fileSize", 0L)
+                val dateModified = intent.getLongExtra("dateModified", 0L)
+                val cueTrackIndex = intent.getIntExtra("cueTrackIndex", 0)
+                val serviceArtworkPath = albumArtPath.ifBlank { path }
                 val duration = intent.getLongExtra("duration", 0L)
                 val state = intent.getIntExtra("playState", PlayState.IDLE.ordinal)
                 val position = intent.getLongExtra("position", 0L)
@@ -516,12 +860,21 @@ class PlayerService : LifecycleService() {
                 lastKnownPosition = position
                 lastPositionTime = SystemClock.elapsedRealtime()
 
-                val songChanged = currentSong?.albumArtPath != albumArtPath ||
+                val songChanged = currentSong?.albumArtPath != serviceArtworkPath ||
+                        currentSong?.path != path ||
                         currentSong?.title != title
 
                 currentSong = AudioFile(
-                    id = 0, path = "", title = title, artist = artist,
-                    album = album, duration = duration, albumArtPath = albumArtPath
+                    id = 0,
+                    path = path,
+                    title = title,
+                    artist = artist,
+                    album = album,
+                    duration = duration,
+                    albumArtPath = serviceArtworkPath,
+                    fileSize = fileSize,
+                    dateModified = dateModified,
+                    cueTrackIndex = cueTrackIndex
                 )
                 currentPlayState = PlayState.entries.getOrElse(state) { PlayState.IDLE }
                 if (currentPlayState == PlayState.PLAYING) {
@@ -530,7 +883,7 @@ class PlayerService : LifecycleService() {
                 }
 
                 // 始终更新完整元数据+播放状态（解决切歌后封面不更新）
-                updateMediaSessionMetadata(title, artist, album, albumArtPath, duration)
+                updateMediaSessionMetadata(title, artist, album, serviceArtworkPath, duration)
 
                 // 显式更新播放状态，触发系统通知栏刷新元数据
                 updateMediaSessionPlaybackState(currentPlayState, lastKnownPosition)
@@ -566,6 +919,7 @@ class PlayerService : LifecycleService() {
                 acquireWakeLockIfNeeded()
                 ensureUsbForegroundThrottled("USB_PLAYBACK_FOREGROUND", force = true)
                 acquireUsbWakeLock()
+                syncUsbBackgroundGuardian("usb_playback_foreground")
                 Log.i("PlayerService", "USB playback foreground ensured")
             }
             ACTION_RESTORE_STICKY_STATE -> {
@@ -574,12 +928,50 @@ class PlayerService : LifecycleService() {
                     autoResume = intent.getBooleanExtra("autoResume", !AppPreferences.Player.lastUsbExclusiveActive)
                 )
             }
+            ACTION_RUNTIME_APP_FOREGROUND,
+            ACTION_RUNTIME_APP_BACKGROUND,
+            ACTION_RUNTIME_ACTIVITY_PAUSED -> {
+                handleRuntimeLifecycleAction(
+                    action = action,
+                    reason = intent.getStringExtra("reason") ?: "runtime_lifecycle",
+                    source = "intent"
+                )
+            }
+            ACTION_RUNTIME_BOOTSTRAP -> {
+                bootstrapRuntimeState(
+                    reason = intent.getStringExtra("reason") ?: "runtime_bootstrap"
+                )
+            }
+            ACTION_RUNTIME_UI_HOST_DESTROYED -> {
+                handleUiHostDestroyed(
+                    reason = intent.getStringExtra("reason") ?: "runtime_ui_host_destroyed",
+                    finishing = intent.getBooleanExtra("finishing", true),
+                    source = "intent"
+                )
+            }
+            ACTION_RUNTIME_USB_ATTACH -> {
+                val device = extractUsbDevice(intent)
+                if (device == null) {
+                    Log.w("PlayerService", "runtime usb attach ignored: missing device")
+                } else {
+                    playerController.handleUsbDeviceAttachIntent(
+                        device,
+                        intent.getStringExtra("reason") ?: "runtime_usb_attach"
+                    )
+                }
+            }
+            ACTION_RUNTIME_USB_PERMISSION_SCAN -> {
+                playerController.requestUsbAttachPermissionIfPresent(
+                    intent.getStringExtra("reason") ?: "runtime_usb_permission_scan"
+                )
+            }
             ACTION_USB_MEDIA_IDENTITY -> {
                 handleUsbMediaIdentity(intent)
             }
             ACTION_STOP_PLAYBACK_SERVICE -> {
                 // 仅用户主动停止/关闭独占/USB拔出时调用
                 releaseUsbWakeLock()
+                stopUsbBackgroundGuardian("stop_playback_service")
                 abandonServiceAudioFocus("STOP_PLAYBACK_SERVICE")
                 updateForegroundServiceType()
                 Log.i("PlayerService", "USB playback service stop requested")
@@ -591,7 +983,7 @@ class PlayerService : LifecycleService() {
                 deactivateUsbRemoteVolume("controller_request")
             }
             ACTION_TOGGLE_SHUFFLE -> {
-                val ctrl = PlayerController.getInstance(this)
+                val ctrl = playerController
                 if (ctrl.isShuffle.value) {
                     ctrl.toggleShuffle()
                 } else {
@@ -643,6 +1035,7 @@ class PlayerService : LifecycleService() {
                 startPositionUpdates()
             }
         }
+        syncUsbBackgroundGuardian("notify:$action")
     }
 
 
@@ -658,6 +1051,7 @@ class PlayerService : LifecycleService() {
         val album = intent.getStringExtra("album") ?: ""
         val albumArtPath = intent.getStringExtra("albumArtPath") ?: ""
         val path = intent.getStringExtra("path") ?: currentSong?.path.orEmpty()
+        val serviceArtworkPath = albumArtPath.ifBlank { path }
         val duration = intent.getLongExtra("duration", currentSong?.duration ?: 0L)
         val position = intent.getLongExtra("position", lastKnownPosition).coerceAtLeast(0L)
         val reason = intent.getStringExtra("reason") ?: "usb_media_identity"
@@ -671,7 +1065,7 @@ class PlayerService : LifecycleService() {
                 artist = artist,
                 album = album,
                 duration = duration,
-                albumArtPath = albumArtPath
+                albumArtPath = serviceArtworkPath
             )
         } else {
             null
@@ -743,6 +1137,7 @@ class PlayerService : LifecycleService() {
      */
     private fun updateMediaSessionMetadata(title: String, artist: String, album: String, albumArtPath: String, duration: Long) {
         coverBitmap = null
+        val serviceArtworkPath = albumArtPath.ifBlank { currentSong?.path.orEmpty() }
 
         val lrcText = _currentLyrics.value?.let { lyrics ->
             if (!lyrics.isEmpty) buildLrcText(lyrics) else null
@@ -765,8 +1160,8 @@ class PlayerService : LifecycleService() {
         updateNotification()
 
         // 异步加载新封面
-        if (albumArtPath.isNotBlank()) {
-            loadCoverBitmap(albumArtPath)
+        if (serviceArtworkPath.isNotBlank()) {
+            loadCoverBitmap(serviceArtworkPath)
         }
 
         // 强制更新播放状态，触发系统通知栏刷新元数据（尤其是封面）
@@ -872,6 +1267,16 @@ class PlayerService : LifecycleService() {
         return String.format("%02d:%02d.%02d", minutes, seconds, millis)
     }
 
+    private fun normalizeServiceArtworkPath(rawPath: String): String {
+        if (!rawPath.startsWith("audio://", ignoreCase = true)) return rawPath
+        val body = rawPath.removePrefix("audio://")
+        // RawSMusic UI keys are audio://<path>|<fileSize>|<dateModified>.  The service does
+        // not need the version suffix; it needs the actual audio file so it can extract embedded art
+        // for MediaSession / notification just like the in-app artwork provider.
+        val withoutModified = body.substringBeforeLast("|", body)
+        return withoutModified.substringBeforeLast("|", withoutModified)
+    }
+
     /**
      * 异步加载封面Bitmap
      * 支持：content:// URI（含 albumart 高清提取）、文件路径
@@ -880,7 +1285,8 @@ class PlayerService : LifecycleService() {
         loadingArtPath = albumArtPath
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val path = try { URLDecoder.decode(albumArtPath, "UTF-8") } catch (_: Exception) { albumArtPath }
+                val rawPath = try { URLDecoder.decode(albumArtPath, "UTF-8") } catch (_: Exception) { albumArtPath }
+                val path = normalizeServiceArtworkPath(rawPath)
                 var bitmap: Bitmap? = null
 
                 if (path.startsWith("file://")) {
@@ -908,6 +1314,13 @@ class PlayerService : LifecycleService() {
                     // 文件路径解码失败时，尝试作为内嵌封面从音频文件提取
                     if (bitmap == null && path.isNotBlank()) {
                         bitmap = extractEmbeddedFromAudioFile(path)
+                    }
+                }
+
+                if (bitmap == null) {
+                    val audioFallback = currentSong?.path.orEmpty()
+                    if (audioFallback.isNotBlank() && audioFallback != path && File(audioFallback).exists()) {
+                        bitmap = extractEmbeddedFromAudioFile(audioFallback)
                     }
                 }
 
@@ -955,13 +1368,15 @@ class PlayerService : LifecycleService() {
         // 查询该专辑的第一首音频文件路径
         val audioPath = queryFirstAudioPathForAlbum(albumId) ?: return null
 
+        extractCoverWithTagLib(audioPath, 512, 512)?.let { return it }
+
         val ext = audioPath.substringAfterLast(".", "").uppercase()
         // WAV/DSF/DFF/AIFF 等格式：MediaMetadataRetriever 无法提取封面，使用 FFmpegKit
         if (ext in setOf("WAV", "DSF", "DFF", "AIFF", "AIF")) {
             return extractCoverWithFfmpeg(audioPath)
         }
 
-        // 其他格式：使用 MediaMetadataRetriever
+        // 其他格式：native TagLib 失败后才 fallback 到 MediaMetadataRetriever
         val retriever = MediaMetadataRetriever()
         try {
             retriever.setDataSource(audioPath)
@@ -980,23 +1395,76 @@ class PlayerService : LifecycleService() {
     }
 
     /**
+     * Notification/MediaSession artwork path: try native TagLib first so playback
+     * metadata does not bypass the shared artwork policy by pulling embeddedPicture into Java heap.
+     */
+    private fun extractCoverWithTagLib(audioPath: String, reqWidth: Int, reqHeight: Int): Bitmap? {
+        decodeSampledRegion(audioPath, reqWidth, reqHeight)?.let { return it }
+
+        if (!TagLibBridge.isLoaded()) return null
+        return try {
+            val audioFile = File(audioPath)
+            if (!audioFile.exists() || !audioFile.canRead()) return null
+            val dir = File(cacheDir, "albumart_sources")
+            if (!dir.exists()) dir.mkdirs()
+            val out = File(dir, "service_${audioPath.hashCode()}_${audioFile.length()}_${audioFile.lastModified()}.art")
+            if (!out.exists() || out.length() <= 1024) {
+                val tmp = File(out.parentFile, "${out.name}.tmp")
+                if (tmp.exists()) tmp.delete()
+                val ok = TagLibBridge.extractEmbeddedArtworkToFile(audioPath, tmp.absolutePath)
+                if (!ok || !tmp.exists() || tmp.length() <= 1024) {
+                    tmp.delete()
+                    return null
+                }
+                if (out.exists()) out.delete()
+                if (!tmp.renameTo(out)) {
+                    tmp.delete()
+                    return null
+                }
+            }
+            decodeSampledFile(out.absolutePath, reqWidth, reqHeight)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun decodeSampledRegion(audioPath: String, reqWidth: Int, reqHeight: Int): Bitmap? {
+        return try {
+            val region = EmbeddedArtworkRegion.find(audioPath) ?: return null
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            region.openStream().use { stream ->
+                BitmapFactory.decodeStream(stream, null, options)
+            }
+            if (options.outWidth <= 0 || options.outHeight <= 0) return null
+            val sampleSize = calculateSampleSize(options.outWidth, options.outHeight, reqWidth, reqHeight)
+            val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            region.openStream().use { stream ->
+                BitmapFactory.decodeStream(stream, null, decodeOptions)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
      * 使用 FFmpegKit 从音频文件提取嵌入封面
      */
     private fun extractCoverWithFfmpeg(audioPath: String): Bitmap? {
         return try {
-            val coverFile = java.io.File(cacheDir, "albumart/cover_${audioPath.hashCode()}.jpg")
+            val audioFile = File(audioPath)
+            val version = "${audioPath.hashCode()}_${audioFile.length()}_${audioFile.lastModified()}"
+            val coverFile = java.io.File(cacheDir, "albumart/cover_$version.jpg")
             val coverDir = coverFile.parentFile
             if (coverDir != null && !coverDir.exists()) coverDir.mkdirs()
 
-            val ret = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.extractCover(audioPath, coverFile.absolutePath)
-            if (ret == 0 && coverFile.exists() && coverFile.length() > 1024) {
-                val bitmap = decodeSampledFile(coverFile.absolutePath, 512, 512)
-                coverFile.delete()
-                bitmap
-            } else {
-                if (coverFile.exists()) coverFile.delete()
-                null
+            if (!coverFile.exists() || coverFile.length() <= 1024) {
+                val ret = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.extractCover(audioPath, coverFile.absolutePath)
+                if (ret != 0 || !coverFile.exists() || coverFile.length() <= 1024) {
+                    if (coverFile.exists()) coverFile.delete()
+                    return null
+                }
             }
+            decodeSampledFile(coverFile.absolutePath, 512, 512)
         } catch (_: Exception) { null }
     }
 
@@ -1067,7 +1535,9 @@ class PlayerService : LifecycleService() {
         val ext = audioPath.substringAfterLast(".", "").lowercase()
         if (ext !in extensions) return null
 
-        // WAV/DSF/DFF/AIFF：直接用 FFmpegKit
+        extractCoverWithTagLib(audioPath, 512, 512)?.let { return it }
+
+        // WAV/DSF/DFF/AIFF：native TagLib 失败后直接用 FFmpegKit
         if (ext in setOf("wav", "dsf", "dff", "aiff", "aif")) {
             return extractCoverWithFfmpeg(audioPath)
         }
@@ -1110,7 +1580,7 @@ class PlayerService : LifecycleService() {
             // event loop during repeated app launches/background transitions.
             val type = usbForegroundServiceType()
             startForegroundWithTypeFallback(id, notification, type)
-            Log.i("PlayerService", "Foreground service started/updated type=$type usb=${PlayerController.getInstance(this).isUsbExclusiveActive()}")
+            Log.i("PlayerService", "Foreground service started/updated type=$type usb=${playerController.isUsbExclusiveActive()}")
         } else {
             startForeground(id, notification)
         }
@@ -1118,7 +1588,7 @@ class PlayerService : LifecycleService() {
 
     private fun usbForegroundServiceType(): Int {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-            PlayerController.getInstance(this).isUsbExclusiveActive()
+            playerController.isUsbExclusiveActive()
         ) {
             android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
                 android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
@@ -1168,6 +1638,7 @@ class PlayerService : LifecycleService() {
     @Suppress("DEPRECATION")
     private fun buildNotification(): Notification {
         val song = currentSong
+        val notificationSmallIcon = R.drawable.ic_music_2_fill
         val contentIntent = PendingIntent.getActivity(
             this, 0,
             packageManager.getLaunchIntentForPackage(packageName),
@@ -1198,7 +1669,7 @@ class PlayerService : LifecycleService() {
             .setContentTitle(notificationTitle)
             .setContentText(notificationText)
             .setSubText(song?.album)
-            .setSmallIcon(R.drawable.ic_flyme_ticker)
+            .setSmallIcon(notificationSmallIcon)
             .setOngoing(true)
             .setContentIntent(contentIntent)
             .setOnlyAlertOnce(false)
@@ -1211,7 +1682,7 @@ class PlayerService : LifecycleService() {
             builder.setTicker(tickerText)
         }
 
-        val ctrl = PlayerController.getInstance(this)
+        val ctrl = playerController
         val isShuffle = ctrl.isShuffle.value
         val repeatMode = ctrl.repeatMode.value
 
@@ -1245,7 +1716,8 @@ class PlayerService : LifecycleService() {
         )
         builder.addAction(
             Notification.Action.Builder(
-                null, "上一曲", prevIntent
+                android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_skip_previous),
+                "上一曲", prevIntent
             ).build()
         )
 
@@ -1258,7 +1730,8 @@ class PlayerService : LifecycleService() {
             )
             builder.addAction(
                 Notification.Action.Builder(
-                    null, "暂停", pauseIntent
+                    android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_pause),
+                    "暂停", pauseIntent
                 ).build()
             )
         } else {
@@ -1269,7 +1742,8 @@ class PlayerService : LifecycleService() {
             )
             builder.addAction(
                 Notification.Action.Builder(
-                    null, "播放", playIntent
+                    android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_play),
+                    "播放", playIntent
                 ).build()
             )
         }
@@ -1281,7 +1755,8 @@ class PlayerService : LifecycleService() {
         )
         builder.addAction(
             Notification.Action.Builder(
-                null, "下一曲", nextIntent
+                android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_skip_next),
+                "下一曲", nextIntent
             ).build()
         )
 
@@ -1353,7 +1828,7 @@ class PlayerService : LifecycleService() {
         if (tickerText.isNotBlank()) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
                 notification.extras.putBoolean("ticker_icon_switch", false)
-                notification.extras.putInt("ticker_icon", R.drawable.ic_flyme_ticker)
+                notification.extras.putInt("ticker_icon", notificationSmallIcon)
                 notification.extras.putString("ticker_text", tickerText)
                 notification.extras.putString("lyric", tickerText)
                 notification.extras.putString("text", tickerText)
@@ -1383,6 +1858,8 @@ class PlayerService : LifecycleService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        stopUsbBackgroundGuardian("service_destroy")
+        releaseRuntimeController("service_destroy")
         isRunning = false
         _instance = null
         positionUpdateJob?.cancel()
@@ -1447,7 +1924,7 @@ class PlayerService : LifecycleService() {
                 val type = usbForegroundServiceType()
                 val notification = buildNotification()
                 startForegroundWithTypeFallback(NOTIFICATION_ID, notification, type)
-                Log.d("PlayerService", "Foreground service type updated: $type (USB exclusive: ${PlayerController.getInstance(this).isUsbExclusiveActive()})")
+                Log.d("PlayerService", "Foreground service type updated: $type (USB exclusive: ${playerController.isUsbExclusiveActive()})")
             } catch (e: Exception) {
                 Log.w("PlayerService", "Failed to update foreground service type", e)
             }
@@ -1472,9 +1949,72 @@ class PlayerService : LifecycleService() {
         }
     }
 
+    private fun shouldRunUsbBackgroundGuardian(): Boolean {
+        val controller = playerController
+        if (!controller.shouldSustainUsbBackgroundPlayback()) {
+            return false
+        }
+        val controllerState = controller.playState.value
+        val activelyPlaying =
+            currentPlayState == PlayState.PLAYING ||
+                currentPlayState == PlayState.PREPARING ||
+                controllerState == PlayState.PLAYING ||
+                controllerState == PlayState.PREPARING
+        if (!activelyPlaying) {
+            return false
+        }
+        return controller.currentSong.value != null || currentSong != null
+    }
+
+    private fun stopUsbBackgroundGuardian(reason: String) {
+        val job = usbBackgroundGuardianJob ?: return
+        if (job.isActive) {
+            Log.i("PlayerService", "USB background guardian stop: reason=$reason")
+        }
+        job.cancel()
+        usbBackgroundGuardianJob = null
+    }
+
+    private fun syncUsbBackgroundGuardian(reason: String) {
+        if (!shouldRunUsbBackgroundGuardian()) {
+            stopUsbBackgroundGuardian("sync_stop:$reason")
+            return
+        }
+        if (usbBackgroundGuardianJob?.isActive == true) {
+            return
+        }
+        usbBackgroundGuardianJob = lifecycleScope.launch(Dispatchers.Default) {
+            Log.i("PlayerService", "USB background guardian start: reason=$reason")
+            while (isActive) {
+                if (!shouldRunUsbBackgroundGuardian()) {
+                    break
+                }
+                playerController.reinforceUsbBackgroundPlayback("service_guardian:$reason")
+                withContext(Dispatchers.Main.immediate) {
+                    requestServiceAudioFocus("usb_background_guardian")
+                    acquireWakeLockIfNeeded()
+                    acquireWifiLockIfNeeded("usb_background_guardian")
+                    ensureUsbForegroundThrottled("usb_background_guardian")
+                    forceMediaSessionPlaying("usb_background_guardian")
+                }
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastUsbBackgroundGuardianLogElapsed >= 10_000L) {
+                    lastUsbBackgroundGuardianLogElapsed = now
+                    Log.i(
+                        "PlayerService",
+                        "USB background guardian pulse: reason=$reason " +
+                            "playState=$currentPlayState song=${currentSong?.title ?: playerController.currentSong.value?.title}"
+                    )
+                }
+                delay(3_000L)
+            }
+            Log.i("PlayerService", "USB background guardian exit: reason=$reason")
+        }
+    }
+
     private fun ensureUsbForegroundThrottled(reason: String, force: Boolean = false) {
         val now = SystemClock.elapsedRealtime()
-        if (!force && now - lastUsbForegroundEnsureElapsed < 15_000L) return
+        if (!force && now - lastUsbForegroundEnsureElapsed < 5_000L) return
         lastUsbForegroundEnsureElapsed = now
         ensureForegroundForUsb()
         acquireUsbWakeLock()
@@ -1568,7 +2108,7 @@ class PlayerService : LifecycleService() {
     // ========== USB 硬件音量 MediaSession VolumeProvider ==========
 
     private fun setupUsbVolumeProvider() {
-        val ctrl = PlayerController.getInstance(this)
+        val ctrl = playerController
         usbVolumeProvider = UsbHardwareVolumeProvider(
             getCurrentStep = { ctrl.getUsbVolumeStepForMediaSession() },
             onSetStep = { step, reason -> ctrl.setUsbVolumeStepFromMediaSession(step, reason) },
@@ -1577,11 +2117,11 @@ class PlayerService : LifecycleService() {
         android.util.Log.i("PlayerService", "USB VolumeProvider initialized")
     }
 
-    /** USB 独占启用 + 硬件音量可用时，切换到 remote volume 控制 */
+    /** USB 独占启用时，硬件音量和软件音量都使用 MediaSession remote volume 接管音量键。 */
     fun activateUsbRemoteVolume(reason: String) {
         val session = mediaSessionCompat ?: return
         val provider = usbVolumeProvider ?: return
-        val ctrl = PlayerController.getInstance(this)
+        val ctrl = playerController
 
         if (!ctrl.shouldUseUsbRemoteVolume()) {
             android.util.Log.i("PlayerService", "activateUsbRemoteVolume: using local STREAM_MUSIC route, reason=$reason")
@@ -1643,7 +2183,9 @@ class PlayerService : LifecycleService() {
             acquireWifiLockIfNeeded("pulse:$reason")
             ensureUsbForegroundThrottled(reason, force = !isProgressPulse)
             startPositionUpdates()
+            syncUsbBackgroundGuardian("media_identity:$reason")
         } else {
+            stopUsbBackgroundGuardian("media_identity_pause:$reason")
             releaseWifiLock("pulse_pause:$reason")
             positionUpdateJob?.cancel()
         }
@@ -1661,6 +2203,7 @@ class PlayerService : LifecycleService() {
     }
 
     private fun clearUsbMediaIdentity(reason: String, releaseFocus: Boolean) {
+        stopUsbBackgroundGuardian("clear_usb_media_identity:$reason")
         releaseWifiLock("clear_usb_media_identity:$reason")
         if (releaseFocus) {
             abandonServiceAudioFocus(reason)

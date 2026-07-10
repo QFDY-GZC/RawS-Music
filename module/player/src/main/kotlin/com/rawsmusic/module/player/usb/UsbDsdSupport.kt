@@ -2,7 +2,8 @@ package com.rawsmusic.module.player.usb
 
 enum class UsbDsdTransport(val prefValue: Int, val label: String) {
     DOP(0, "DoP"),
-    NATIVE(1, "Native DSD");
+    NATIVE(1, "Native DSD"),
+    PCM(2, "PCM");
 
     companion object {
         fun fromPref(value: Int): UsbDsdTransport {
@@ -13,13 +14,16 @@ enum class UsbDsdTransport(val prefValue: Int, val label: String) {
 
 
 /**
- * DSD source direct output and PCM->DSD conversion are intentionally separate.
+ * DSD source direct output and PCM→DSD conversion are intentionally separate.
  *
- * - SOURCE_DIRECT: source file is already DSD; choose a USB DSD transport for
- *   the source rate and do not treat the user PCM->DSD switch as required.
- * - PCM_TO_DSD: source is PCM; RawSMusic converts PCM to DSD. For now this is
- *   Native DSD only so DoP remains a compatibility transport for DSD source
- *   bitstreams, not the realtime PCM->DSD path.
+ * SOURCE_DIRECT: the file is already DSD.  Use the source 1-bit rate to derive
+ * the USB container clock.
+ *
+ * PCM_TO_DSD: RawSMusic converts PCM to DSD in real time.  The DSD clock must
+ * follow the PCM input clock family.  For example, DSD256 from 44.1k-family PCM
+ * is 11.2896MHz and Native-DSD USB container rate is 352.8kHz; from 48k-family
+ * PCM it is 12.288MHz and the container rate is 384kHz.  The old fixed 44.1k
+ * calculation made DSD256 fail on devices that correctly expose 384k RAW_DATA.
  */
 enum class UsbDsdPlaybackIntent {
     SOURCE_DIRECT,
@@ -34,13 +38,24 @@ data class UsbDsdModeConfig(
     val deviceSubslot: Int
 )
 
-fun dsdRateHzForMultiplier(multiplier: Int): Int = when (multiplier) {
-    64 -> 2_822_400
-    128 -> 5_644_800
-    256 -> 11_289_600
-    512 -> 22_579_200
-    else -> 2_822_400
+fun dsdBaseRateForPcmSource(sourceRateHz: Int): Int {
+    if (sourceRateHz > 0) {
+        if (sourceRateHz % 48_000 == 0) return 48_000
+        if (sourceRateHz % 44_100 == 0) return 44_100
+    }
+    return 44_100
 }
+
+fun dsdRateHzForMultiplier(multiplier: Int): Int = 44_100 * when (multiplier) {
+    64, 128, 256, 512 -> multiplier
+    else -> 64
+}
+
+fun dsdRateHzForPcmSource(multiplier: Int, sourceRateHz: Int): Int =
+    dsdBaseRateForPcmSource(sourceRateHz) * when (multiplier) {
+        64, 128, 256, 512 -> multiplier
+        else -> 64
+    }
 
 fun normalizeDsdSourceRateHz(sourceRateHz: Int): Int {
     return when {
@@ -53,9 +68,6 @@ fun normalizeDsdSourceRateHz(sourceRateHz: Int): Int {
 /**
  * FFmpeg raw-DSD probing reports the DSD byte clock (for example DSD64 ->
  * 352800, DSD512 -> 2822400) rather than the real 1-bit stream rate.
- *
- * Keep this separate from [normalizeDsdSourceRateHz]: callers that already have
- * header-level DSF/DFF rates from metadata must not be multiplied again.
  */
 fun normalizeProbedDsdSourceRateHz(probedRateHz: Int): Int {
     if (probedRateHz <= 0) return 2_822_400
@@ -78,61 +90,99 @@ fun dsdMultiplierFromSourceRate(sourceDsdRateHz: Int): Int {
     }
 }
 
+private fun deviceRateForTransport(
+    multiplier: Int,
+    transport: UsbDsdTransport,
+    sourceRateHz: Int,
+    sourceIsAlreadyDsd: Boolean
+): Int {
+    val dsdRateHz = if (sourceIsAlreadyDsd) {
+        normalizeDsdSourceRateHz(sourceRateHz)
+    } else {
+        dsdRateHzForPcmSource(multiplier, sourceRateHz)
+    }
+    return when (transport) {
+        UsbDsdTransport.DOP -> dsdRateHz / 16
+        UsbDsdTransport.NATIVE -> dsdRateHz / 32
+        UsbDsdTransport.PCM -> 0
+    }
+}
+
 fun buildSupportedDsdSourceDirectModeConfig(
     sourceDsdRateHz: Int,
     requestedTransport: UsbDsdTransport,
     capabilities: UsbDeviceAudioCapabilities?
 ): UsbDsdModeConfig? {
     val multiplier = dsdMultiplierFromSourceRate(sourceDsdRateHz)
-    val caps = capabilities ?: return buildUsbDsdModeConfig(true, multiplier, UsbDsdTransport.NATIVE)
-    if (caps.supportsNativeDsd(multiplier) || caps.nativeDsdFormats.isNotEmpty()) {
-        return buildUsbDsdModeConfig(true, multiplier, UsbDsdTransport.NATIVE)
+    if (requestedTransport == UsbDsdTransport.PCM) return null
+    val caps = capabilities ?: return buildUsbDsdModeConfig(true, multiplier, requestedTransport, sourceDsdRateHz, true)
+
+    val requestedRate = deviceRateForTransport(multiplier, requestedTransport, sourceDsdRateHz, true)
+    val requestedSupported = when (requestedTransport) {
+        UsbDsdTransport.DOP -> caps.supportsDopDeviceRate(requestedRate)
+        UsbDsdTransport.NATIVE -> caps.supportsNativeDsdDeviceRate(requestedRate)
+        UsbDsdTransport.PCM -> false
     }
-    if (requestedTransport == UsbDsdTransport.DOP && caps.supportsDop(multiplier)) {
-        return buildUsbDsdModeConfig(true, multiplier, UsbDsdTransport.DOP)
+    if (requestedSupported) return buildUsbDsdModeConfig(true, multiplier, requestedTransport, sourceDsdRateHz, true)
+
+    val nativeRate = deviceRateForTransport(multiplier, UsbDsdTransport.NATIVE, sourceDsdRateHz, true)
+    if (caps.supportsNativeDsdDeviceRate(nativeRate) || caps.hasAnyNativeDsdDescriptor) {
+        return buildUsbDsdModeConfig(true, multiplier, UsbDsdTransport.NATIVE, sourceDsdRateHz, true)
     }
-    return buildUsbDsdModeConfig(true, multiplier, UsbDsdTransport.NATIVE)
+    val dopRate = deviceRateForTransport(multiplier, UsbDsdTransport.DOP, sourceDsdRateHz, true)
+    if (caps.supportsDopDeviceRate(dopRate)) {
+        return buildUsbDsdModeConfig(true, multiplier, UsbDsdTransport.DOP, sourceDsdRateHz, true)
+    }
+    return null
 }
 
 fun buildSupportedPcmToDsdModeConfig(
     enabled: Boolean,
     multiplier: Int,
-    capabilities: UsbDeviceAudioCapabilities?
+    requestedTransport: UsbDsdTransport = UsbDsdTransport.NATIVE,
+    capabilities: UsbDeviceAudioCapabilities?,
+    sourceSampleRate: Int = 44_100
 ): UsbDsdModeConfig? {
     if (!enabled) return null
-    // PCM->DSD is Native DSD only.  DoP is only a container/compatibility
-    // transport for existing DSD source material.
-    //
-    // Be deliberately optimistic when the current capability snapshot has not
-    // yet observed any RAW_DATA descriptor. Right after app-data clear, or
-    // before the first full native scan/RAW session, Kotlin may only have a
-    // partial PCM-format snapshot. In that phase, blocking PCM->DSD here makes
-    // the feature appear "unavailable until a real DSD track is played once".
-    // Native init / descriptor scoring remains authoritative and will fall
-    // back to PCM if the DAC truly lacks Native DSD.
-    val caps = capabilities ?: return buildUsbDsdModeConfig(true, multiplier, UsbDsdTransport.NATIVE)
-    if (caps.supportsNativeDsd(multiplier)) {
-        return buildUsbDsdModeConfig(true, multiplier, UsbDsdTransport.NATIVE)
+    val requested = if (requestedTransport == UsbDsdTransport.PCM) UsbDsdTransport.NATIVE else requestedTransport
+    val caps = capabilities ?: return buildUsbDsdModeConfig(true, multiplier, requested, sourceSampleRate, false)
+
+    val requestedRate = deviceRateForTransport(multiplier, requested, sourceSampleRate, false)
+    val requestedSupported = when (requested) {
+        UsbDsdTransport.DOP -> caps.supportsDopDeviceRate(requestedRate)
+        UsbDsdTransport.NATIVE -> caps.supportsNativeDsdDeviceRate(requestedRate)
+        UsbDsdTransport.PCM -> false
     }
-    if (caps.nativeDsdFormats.isEmpty() && !caps.hasAnyNativeDsdDescriptor) {
-        return buildUsbDsdModeConfig(true, multiplier, UsbDsdTransport.NATIVE)
+    if (requestedSupported) return buildUsbDsdModeConfig(true, multiplier, requested, sourceSampleRate, false)
+
+    // DSD256 DoP needs 705.6/768kHz PCM; many dongles top out at 352.8/384k PCM
+    // but support RAW_DATA Native DSD.  Fall forward to Native rather than
+    // silently disabling PCM→DSD.
+    val nativeRate = deviceRateForTransport(multiplier, UsbDsdTransport.NATIVE, sourceSampleRate, false)
+    if (caps.supportsNativeDsdDeviceRate(nativeRate) || caps.hasAnyNativeDsdDescriptor) {
+        return buildUsbDsdModeConfig(true, multiplier, UsbDsdTransport.NATIVE, sourceSampleRate, false)
     }
-    if (!caps.hasAnyNativeDsdDescriptor) return null
-    return buildUsbDsdModeConfig(true, multiplier, UsbDsdTransport.NATIVE)
+    val dopRate = deviceRateForTransport(multiplier, UsbDsdTransport.DOP, sourceSampleRate, false)
+    if (caps.supportsDopDeviceRate(dopRate)) {
+        return buildUsbDsdModeConfig(true, multiplier, UsbDsdTransport.DOP, sourceSampleRate, false)
+    }
+    return null
 }
 
 fun buildUsbDsdModeConfig(
     enabled: Boolean,
     multiplier: Int,
-    transport: UsbDsdTransport
+    transport: UsbDsdTransport,
+    sourceRateHz: Int = 44_100,
+    sourceIsAlreadyDsd: Boolean = false
 ): UsbDsdModeConfig? {
     if (!enabled) return null
-    val rate = dsdRateHzForMultiplier(multiplier)
+    val deviceRate = deviceRateForTransport(multiplier, transport, sourceRateHz, sourceIsAlreadyDsd)
     return if (transport == UsbDsdTransport.DOP) {
         UsbDsdModeConfig(
             multiplier = multiplier,
             transport = UsbDsdTransport.DOP,
-            deviceSampleRate = rate / 16,
+            deviceSampleRate = deviceRate,
             deviceBits = 24,
             deviceSubslot = 3
         )
@@ -140,7 +190,7 @@ fun buildUsbDsdModeConfig(
         UsbDsdModeConfig(
             multiplier = multiplier,
             transport = UsbDsdTransport.NATIVE,
-            deviceSampleRate = rate / 32,
+            deviceSampleRate = deviceRate,
             deviceBits = 32,
             deviceSubslot = 4
         )
@@ -163,10 +213,20 @@ fun buildSupportedUsbDsdModeConfig(
     transport: UsbDsdTransport,
     capabilities: UsbDeviceAudioCapabilities?
 ): UsbDsdModeConfig? {
-    if (!enabled) return null
+    if (!enabled || transport == UsbDsdTransport.PCM) return null
     val caps = capabilities ?: return buildUsbDsdModeConfig(true, multiplier, transport)
-    val resolvedTransport = caps.preferredDsdTransport(multiplier, transport) ?: return null
-    return buildUsbDsdModeConfig(true, multiplier, resolvedTransport)
+    val rate = deviceRateForTransport(multiplier, transport, 44_100, false)
+    val ok = when (transport) {
+        UsbDsdTransport.DOP -> caps.supportsDopDeviceRate(rate)
+        UsbDsdTransport.NATIVE -> caps.supportsNativeDsdDeviceRate(rate)
+        UsbDsdTransport.PCM -> false
+    }
+    if (ok) return buildUsbDsdModeConfig(true, multiplier, transport)
+    val nativeRate = deviceRateForTransport(multiplier, UsbDsdTransport.NATIVE, 44_100, false)
+    if (caps.supportsNativeDsdDeviceRate(nativeRate) || caps.hasAnyNativeDsdDescriptor) {
+        return buildUsbDsdModeConfig(true, multiplier, UsbDsdTransport.NATIVE)
+    }
+    return null
 }
 
 fun isLikelyDsdSource(

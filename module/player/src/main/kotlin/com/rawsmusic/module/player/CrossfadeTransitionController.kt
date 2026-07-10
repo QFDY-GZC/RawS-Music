@@ -24,11 +24,16 @@ internal class CrossfadeTransitionController(private val tag: String) {
 
     private var totalFrames: Long = 0L
     private var bytesMixed: Long = 0L
+    @Volatile
+    private var activeTargetPath: String? = null
     private var nextReadBuffer = ByteArray(0)
     private var nextMixBuffer = ByteArray(0)
 
     val mixedBytesSoFar: Long
         get() = bytesMixed
+
+    val targetPath: String?
+        get() = activeTargetPath
 
     fun reset(reason: String) {
         if (active || bytesMixed != 0L || totalFrames != 0L) {
@@ -37,15 +42,17 @@ internal class CrossfadeTransitionController(private val tag: String) {
         active = false
         totalFrames = 0L
         bytesMixed = 0L
+        activeTargetPath = null
     }
 
-    fun start(durationMs: Int, sampleRate: Int, bufferSize: Int, remainingMs: Long): Boolean {
+    fun start(targetPath: String, durationMs: Int, sampleRate: Int, bufferSize: Int, remainingMs: Long): Boolean {
         if (durationMs <= 0 || sampleRate <= 0) return false
         totalFrames = (durationMs.toLong() * sampleRate.toLong() / 1000L).coerceAtLeast(1L)
         bytesMixed = 0L
         ensureBuffers(bufferSize)
+        activeTargetPath = targetPath
         active = true
-        AppLogger.d(tag, "Crossfade: START remaining=${remainingMs}ms totalFrames=$totalFrames")
+        AppLogger.d(tag, "Crossfade: START target=$targetPath remaining=${remainingMs}ms totalFrames=$totalFrames")
         return true
     }
 
@@ -65,9 +72,24 @@ internal class CrossfadeTransitionController(private val tag: String) {
         if (!active || currentRead <= 0) {
             return MixResult(nextRead = 0, mixedBytes = 0, progressBeforeMix = 0f, completed = false)
         }
-        ensureBuffers(currentRead.coerceAtLeast(frameSize).coerceAtMost(currentBuf.size))
+        val alignedCurrent = PcmFrameAligner.alignDown(currentRead, frameSize)
+        val outputBytesPerSample = when {
+            outputIsFloat -> 4
+            outputIsPacked24 -> 3
+            bitsPerSample <= 16 -> 2
+            else -> 4
+        }
+        val channels = (frameSize / outputBytesPerSample).coerceAtLeast(1)
+        val currentFrames = (alignedCurrent / frameSize).coerceAtLeast(0)
+        // FFmpegBridge outputs 24/32-bit PCM as S32LE.  When the Android output
+        // container is packed24/S16, the next decoder therefore needs more source
+        // bytes than the current output buffer length.  Under-reading here causes
+        // partial-frame mixes and Direct-mode motor-like noise.
+        val nextBytesPerSample = if (next.bitsPerSample <= 16) 2 else 4
+        val desiredNextRead = (currentFrames * channels * nextBytesPerSample).coerceAtLeast(0)
+        ensureBuffers(maxOf(alignedCurrent, desiredNextRead).coerceAtLeast(frameSize).coerceAtMost(currentBuf.size * 2))
 
-        val decodeLimit = currentRead.coerceAtMost(nextReadBuffer.size)
+        val decodeLimit = desiredNextRead.coerceAtMost(nextReadBuffer.size)
         val nextRead = try {
             FFmpegBridge.decodeChunk(next.handle, nextReadBuffer, 0, decodeLimit)
         } catch (t: Throwable) {
@@ -94,17 +116,34 @@ internal class CrossfadeTransitionController(private val tag: String) {
         val gainIn = PcmCrossfadeMixer.gainIn(progressBefore)
 
         var mixNextLen = nextRead
-        val mixNextBuffer = if (outputIsFloat && next.bitsPerSample > 16) {
-            mixNextLen = PcmSampleConverter.s32ToFloatPcm(nextReadBuffer, nextRead, nextMixBuffer)
-            nextMixBuffer
-        } else if (outputIsPacked24 && next.bitsPerSample > 16) {
-            mixNextLen = PcmSampleConverter.s32ToS24PackedPcm(nextReadBuffer, nextRead, nextMixBuffer)
-            nextMixBuffer
-        } else {
-            nextReadBuffer
+        val mixNextBuffer = when {
+            outputIsFloat && next.bitsPerSample > 16 -> {
+                mixNextLen = PcmSampleConverter.s32ToFloatPcm(nextReadBuffer, nextRead, nextMixBuffer)
+                nextMixBuffer
+            }
+            outputIsFloat && next.bitsPerSample <= 16 -> {
+                mixNextLen = PcmSampleConverter.s16ToFloatPcm(nextReadBuffer, nextRead, nextMixBuffer)
+                nextMixBuffer
+            }
+            outputIsPacked24 && next.bitsPerSample > 16 -> {
+                mixNextLen = PcmSampleConverter.s32ToS24PackedPcm(nextReadBuffer, nextRead, nextMixBuffer)
+                nextMixBuffer
+            }
+            outputIsPacked24 && next.bitsPerSample <= 16 -> {
+                mixNextLen = PcmSampleConverter.s16ToS24PackedPcm(nextReadBuffer, nextRead, nextMixBuffer)
+                nextMixBuffer
+            }
+            bitsPerSample <= 16 && next.bitsPerSample > 16 -> {
+                mixNextLen = PcmSampleConverter.s32ToS16Pcm(nextReadBuffer, nextRead, nextMixBuffer)
+                nextMixBuffer
+            }
+            bitsPerSample > 16 && next.bitsPerSample <= 16 -> {
+                mixNextLen = PcmSampleConverter.s16ToS32Pcm(nextReadBuffer, nextRead, nextMixBuffer)
+                nextMixBuffer
+            }
+            else -> nextReadBuffer
         }
 
-        val alignedCurrent = PcmFrameAligner.alignDown(currentRead, frameSize)
         val alignedNext = PcmFrameAligner.alignDown(mixNextLen, frameSize)
         val mixLen = minOf(alignedCurrent, alignedNext)
         if (mixLen > 0) {

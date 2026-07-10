@@ -9,6 +9,7 @@ import android.util.Log
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.KeyEvent
 import android.widget.Toast
 import io.github.proify.lyricon.lyric.model.Song
@@ -153,6 +154,12 @@ class MainActivity : ComponentActivity() {
     private var composeDisplayRoma by mutableStateOf(AppPreferences.Lyricon.displayRoma)
     private var composeLyricIsLight by mutableStateOf(false)
 
+    @Volatile
+    private var activityForegroundForPower = false
+    private var composeActivityForeground by mutableStateOf(false)
+    @Volatile
+    private var lastVisualizerUiFrameMs = 0L
+
     private var legacyDestinationId: Int = R.id.nav_songs
     private lateinit var playerSceneController: PlayerSceneController
     internal var playerController: PlayerController? = null
@@ -223,6 +230,22 @@ class MainActivity : ComponentActivity() {
         seekTargetMs = -1L
     }
 
+    internal fun ensureRuntimeController(reason: String): PlayerController {
+        val existing = playerController
+            ?: PlayerHolder.controller
+            ?: PlayerService.currentRuntimeController()
+            ?: PlayerController.getInstanceOrNull()
+        if (existing != null) {
+            playerController = existing
+            PlayerHolder.controller = existing
+            return existing
+        }
+        return PlayerService.obtainRuntimeController(this, reason).also { controller ->
+            playerController = controller
+            PlayerHolder.controller = controller
+        }
+    }
+
     private var isSideMenuOpen by mutableStateOf(false)
 
     /** 进入播放器前的 Fragment 导航目标，用于返回时恢复正确的页面 */
@@ -276,8 +299,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         // 初始化 PlayerController，如果当前没有 controller 则创建
         if (playerController == null) {
-            playerController = PlayerController.getInstance(this)
-            PlayerHolder.controller = playerController
+            ensureRuntimeController("main_activity_on_create")
         }
         // USB 独占激活后引导用户加入电池优化白名单
         playerController?.onUsbExclusiveActivated = {
@@ -320,7 +342,13 @@ class MainActivity : ComponentActivity() {
         scheduleDeferredStartupWork()
         window.decorView.postDelayed({
             if (!isFinishing && !isDestroyed) {
-                playerController?.onAppForegroundResumed()
+                val handled = PlayerService.dispatchAppProcessForeground(
+                    this,
+                    "main_activity_on_create_posted"
+                )
+                if (!handled) {
+                    playerController?.onAppForegroundResumed()
+                }
             }
         }, 360)
     }
@@ -343,7 +371,10 @@ class MainActivity : ComponentActivity() {
             intent.getParcelableExtra(android.hardware.usb.UsbManager.EXTRA_DEVICE)
         } ?: return
         AppLogger.i("MainActivity", "USB attach intent received: ${device.deviceName} reason=$reason")
-        playerController?.handleUsbDeviceAttachIntent(device, reason)
+        val handled = PlayerService.dispatchUsbAttachIntent(this, device, reason)
+        if (!handled) {
+            playerController?.handleUsbDeviceAttachIntent(device, reason)
+        }
     }
 
     private fun setUsbAttachAliasEnabled(enabled: Boolean, reason: String) {
@@ -556,6 +587,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             },
+            isPlayerUiVisible = { isPlayerUiVisibleForPower() },
             context = this
         )
     }
@@ -663,9 +695,10 @@ class MainActivity : ComponentActivity() {
 
         // 在onCreate 中初始化 PlayerController 相关组件
         if (playerController == null) {
-            playerController = PlayerController.getInstance(this)
+            ensureRuntimeController("main_activity_init_view")
+        } else {
+            PlayerHolder.controller = playerController
         }
-        PlayerHolder.controller = playerController
 
         // 初始化封面 URI 解析器
         coverUriResolver = coverCoordinator.resolver
@@ -700,16 +733,28 @@ class MainActivity : ComponentActivity() {
         setupDrawerLayout()
         setupSideMenu()
         playerController?.setEqualizerController { }
-        playerController?.onPcmWaveformFrame = { buffer, read, channels, sampleRate, bitsPerSample ->
-            if (AppPreferences.UI.isAudioVisualizerEnabled) {
-                runOnUiThread {
-                    visualizerLevels = com.rawsmusic.core.ui.widget.player.pcmWaveformLevels(
-                        buffer = buffer,
-                        read = read,
-                        channels = channels,
-                        bitsPerSample = bitsPerSample
-                    )
+        playerController?.onPcmWaveformFrame = waveform@{ buffer, read, channels, sampleRate, bitsPerSample ->
+            if (!activityForegroundForPower || !AppPreferences.UI.isAudioVisualizerEnabled) {
+                return@waveform
+            }
+            val now = SystemClock.uptimeMillis()
+            if (now - lastVisualizerUiFrameMs < VISUALIZER_UI_FRAME_INTERVAL_MS) {
+                return@waveform
+            }
+            lastVisualizerUiFrameMs = now
+            runOnUiThread {
+                if (!isAudioVisualizerUiActiveForPower()) {
+                    if (visualizerLevels.any { it > 0f }) {
+                        visualizerLevels = FloatArray(80)
+                    }
+                    return@runOnUiThread
                 }
+                visualizerLevels = com.rawsmusic.core.ui.widget.player.pcmWaveformLevels(
+                    buffer = buffer,
+                    read = read,
+                    channels = channels,
+                    bitsPerSample = bitsPerSample
+                )
             }
         }
         metadataDetailHelper.setup()
@@ -1008,10 +1053,19 @@ class MainActivity : ComponentActivity() {
                     if (playerSceneController.currentScene == PlayerSceneController.Scene.MAIN && !playerSceneController.isDeepHomePage) {
                         return@awaitEachGesture
                     }
-                    dragging = true
+                    // 普通播放界面只保留系统式侧滑返回，不再把内容区左滑解释为进入歌词。
+                    // 歌词页自己的手势不在这里处理，保持原逻辑。
                     val forceBackToMain = playerSceneController.currentScene == PlayerSceneController.Scene.PLAYER &&
                             dxFromStart > 0f &&
                             start.x <= edgeBackWidthPx
+                    if (playerSceneController.currentScene == PlayerSceneController.Scene.PLAYER &&
+                        !playerSceneController.isImmersiveEnabled &&
+                        !forceBackToMain
+                    ) {
+                        return@awaitEachGesture
+                    }
+
+                    dragging = true
                     playerSceneController.onDragStart(dxFromStart < 0f, forceBackToMain)
                 }
                 if (dragging) {
@@ -1039,20 +1093,27 @@ class MainActivity : ComponentActivity() {
         val currentSong by playerController?.currentSong?.collectAsState()
             ?: androidx.compose.runtime.mutableStateOf(null)
 
-        // 监听扫描状态，首次运行时自动弹出文件夹选择器
+        // 监听扫描状态（首次运行不再自动弹文件夹选择器，直接进入歌曲列表触发 MediaStore 扫描）
         val scanStatus by com.rawsmusic.module.scanner.ScanStateBus.status.collectAsState()
-        androidx.compose.runtime.LaunchedEffect(scanStatus.state) {
-            if (scanStatus.state == com.rawsmusic.module.scanner.ScanStateBus.ScanState.FOLDER_SELECTION_NEEDED) {
-                overlayCoordinator.showFolderDialog = true
+        androidx.compose.runtime.LaunchedEffect(scanStatus.state, scanStatus.timeMs, scanStatus.progress) {
+            when (scanStatus.state) {
+                com.rawsmusic.module.scanner.ScanStateBus.ScanState.FOLDER_SELECTION_NEEDED -> {
+                    overlayCoordinator.setFolderDialogVisible(true)
+                }
+                com.rawsmusic.module.scanner.ScanStateBus.ScanState.COMPLETED -> {
+                    com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider.notifyLibraryArtworkChanged("scan_completed")
+                }
+                else -> Unit
             }
         }
-        // 首次启动检查：如果 scanPaths 为空且数据库为空，直接弹出文件夹选择器
+        // 首次启动检查：首次授权后如果仍是空库且没有扫描目录，直接弹出文件夹过滤弹窗。
         androidx.compose.runtime.LaunchedEffect(Unit) {
-            kotlinx.coroutines.delay(1500) // 等待 Activity 完全初始化
+            kotlinx.coroutines.delay(900) // 等待权限回调 / Compose overlay 初始化
             val scanPaths = com.rawsmusic.module.data.prefs.AppPreferences.UI.scanPaths
             val dbEmpty = withContext(Dispatchers.IO) { MusicRepository.getAllSongsSuspend().isEmpty() }
             if (scanPaths.isEmpty() && dbEmpty && !overlayCoordinator.showFolderDialog) {
-                overlayCoordinator.showFolderDialog = true
+                AppLogger.i("Startup", "Empty library on first launch — showing folder filter dialog")
+                overlayCoordinator.setFolderDialogVisible(true)
             }
         }
 
@@ -1212,7 +1273,8 @@ class MainActivity : ComponentActivity() {
             currentSortOrder = AppPreferences.Sort.songSortOrder,
             artistDataSource = null,
             playCounts = playbackStats.associate { it.songId to it.playCount },
-            bottomChromeHidden = songsSelectionMode || songActionSheetHelper.isPlaylistPickerShowing
+            bottomChromeHidden = songsSelectionMode || songActionSheetHelper.isPlaylistPickerShowing,
+            uiForeground = composeActivityForeground
         )
 
         com.rawsmusic.core.ui.scene.AppMainLayout(
@@ -1276,18 +1338,21 @@ class MainActivity : ComponentActivity() {
         ioScope.launch {
             val start = System.currentTimeMillis()
             try {
-                val songs = MusicRepository.refreshSongsOnlySuspend(invalidate = true)
+                MusicRepository.warmStartCacheAsync("main_activity_deferred")
+                val snapshotSongs = MusicRepository.songs.value
                 AppLogger.d(
                     "Startup",
-                    "deferred MusicRepository.refreshSongsOnly() done in ${System.currentTimeMillis() - start}ms"
+                    "deferred MusicRepository snapshot size=${snapshotSongs.size} in ${System.currentTimeMillis() - start}ms"
                 )
-                kotlinx.coroutines.delay(2_000L)
-                val indexStart = System.currentTimeMillis()
-                MusicRepository.refreshLibraryIndexes(songs)
-                AppLogger.d(
-                    "Startup",
-                    "deferred MusicRepository.refreshLibraryIndexes() done in ${System.currentTimeMillis() - indexStart}ms"
-                )
+                if (snapshotSongs.isNotEmpty()) {
+                    kotlinx.coroutines.delay(5_500L)
+                    val indexStart = System.currentTimeMillis()
+                    MusicRepository.refreshLibraryIndexes(snapshotSongs)
+                    AppLogger.d(
+                        "Startup",
+                        "deferred snapshot indexes ${snapshotSongs.size} songs done in ${System.currentTimeMillis() - indexStart}ms"
+                    )
+                }
             } catch (e: Exception) {
                 AppLogger.e("Startup", "deferred MusicRepository startup load failed", e)
             }
@@ -1302,7 +1367,7 @@ class MainActivity : ComponentActivity() {
                 lyricsCoordinator.resendToLyricon()
             }
             LyricGetterBridge.init(this)
-        }, 250L)
+        }, 60L)
 
         mainHandler.postDelayed({
             if (!isFinishing && !isDestroyed) {
@@ -1718,6 +1783,8 @@ class MainActivity : ComponentActivity() {
     private fun PlayerOverlayContent() {
         if (!overlayCoordinator.composeOverlayContentVisible) return
         Box(Modifier.fillMaxSize()) {
+            val visualizerPlayState by playerController?.playState?.collectAsState()
+                ?: androidx.compose.runtime.mutableStateOf(PlayState.IDLE)
             val currentScene = playerSceneState.currentScene
             val controllerPlayerVisible = ::playerSceneController.isInitialized &&
                 playerSceneController.composeIsTransitioning &&
@@ -1901,10 +1968,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onLyricCoverSwipeDownStart = {
                         if (::playerSceneController.isInitialized) {
-                            playerSceneController.startCoverSwipeUpDrag(
-                                PlayerSceneController.Scene.PLAYER,
-                                PlayerSceneController.Scene.LYRIC
-                            )
+                            playerSceneController.startLyricToPlayerDrag()
                         }
                     },
                     onLyricCoverSwipeDownProgress = { ratio ->
@@ -1914,7 +1978,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onLyricCoverSwipeDownEnd = { commit, velocity ->
                         if (::playerSceneController.isInitialized) {
-                            playerSceneController.endCoverSwipeUpDrag(commit, velocity = velocity)
+                            playerSceneController.endLyricToPlayerDrag(commit, velocity = velocity)
                         }
                     },
                     queueSongs = queueSongs,
@@ -1975,6 +2039,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 com.rawsmusic.core.ui.widget.player.ComposeAudioVisualizer(
                     levels = visualizerLevels.toList(),
+                    isActive = visualizerPlayState == PlayState.PLAYING,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
@@ -2010,6 +2075,19 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    private fun isPlayerUiVisibleForPower(): Boolean {
+        if (!activityForegroundForPower || !::playerSceneController.isInitialized) return false
+        return playerSceneController.currentScene == PlayerSceneController.Scene.PLAYER ||
+            playerSceneController.currentScene == PlayerSceneController.Scene.LYRIC ||
+            playerSceneController.isTransitioning
+    }
+
+    private fun isAudioVisualizerUiActiveForPower(): Boolean {
+        if (!AppPreferences.UI.isAudioVisualizerEnabled || !isPlayerUiVisibleForPower()) return false
+        if (!::playerSceneController.isInitialized) return false
+        return playerSceneController.currentScene != PlayerSceneController.Scene.QUEUE
     }
 
     private fun updateComposeRootVisibility(forceVisible: Boolean = false) {
@@ -2376,8 +2454,8 @@ class MainActivity : ComponentActivity() {
     private fun onLyricTapToPlayer() {
         playBackgroundState.syncFrom(lyricBackgroundState)
         playBackgroundState.resumeAnimations()
-        playerSceneController.startCoverSwipeUpDrag()
-        playerSceneController.endCoverSwipeUpDrag(shouldOpen = true)
+        playerSceneController.startLyricToPlayerDrag()
+        playerSceneController.endLyricToPlayerDrag(shouldReturnToPlayer = true)
     }
 
     private fun onImmersiveSwipeLeft() {
@@ -2463,6 +2541,7 @@ class MainActivity : ComponentActivity() {
 
     fun setPlayerController(controller: PlayerController) {
         playerControllerBindingHelper.bind(controller)
+        PlayerHolder.controller = controller
     }
 
     fun toggleSideMenu() {
@@ -2552,10 +2631,7 @@ class MainActivity : ComponentActivity() {
                     }
                     // 子播放页的系统侧滑先回到播放页，保持播放器内部层级一致。
                     currentScene == PlayerSceneController.Scene.LYRIC -> {
-                        playerSceneController.startCoverSwipeUpDrag(
-                            PlayerSceneController.Scene.PLAYER,
-                            PlayerSceneController.Scene.LYRIC
-                        )
+                        playerSceneController.startLyricToPlayerDrag()
                         dragType = BackDragType.COVER
                     }
                     currentScene == PlayerSceneController.Scene.QUEUE -> {
@@ -2808,8 +2884,14 @@ class MainActivity : ComponentActivity() {
         PlaybackStatsHelper(this) { playerController }
     }
 
+    private companion object {
+        const val VISUALIZER_UI_FRAME_INTERVAL_MS = 100L
+    }
+
     override fun onResume() {
         super.onResume()
+        activityForegroundForPower = true
+        composeActivityForeground = true
         setUsbAttachAliasEnabled(true, "on_resume_restore")
         if (!::playerSceneController.isInitialized) return
 
@@ -2880,8 +2962,20 @@ class MainActivity : ComponentActivity() {
 
         mainHandler.postDelayed({
             if (!isFinishing && !isDestroyed) {
-                playerController?.requestUsbAttachPermissionIfPresent("activity_on_resume_scan")
-                playerController?.onAppForegroundResumed()
+                val permissionHandled = PlayerService.dispatchUsbAttachPermissionScan(
+                    this,
+                    "activity_on_resume_scan"
+                )
+                if (!permissionHandled) {
+                    playerController?.requestUsbAttachPermissionIfPresent("activity_on_resume_scan")
+                }
+                val handled = PlayerService.dispatchAppProcessForeground(
+                    this,
+                    "main_activity_on_resume_posted"
+                )
+                if (!handled) {
+                    playerController?.onAppForegroundResumed()
+                }
             }
         }, 180)
 
@@ -2894,6 +2988,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        activityForegroundForPower = false
+        composeActivityForeground = false
+        visualizerLevels = FloatArray(80)
         super.onStop()
     }
 
@@ -2910,13 +3007,13 @@ class MainActivity : ComponentActivity() {
         gestureLockCoordinator.clear()
 
         if (finishing) {
-            LyriconProviderManager.destroy()
-            TickerBridge.destroy(this)
+            PlayerService.dispatchUiHostDestroyed(
+                this,
+                reason = "main_activity_on_destroy",
+                finishing = true
+            )
             LyricGetterBridge.destroy()
-            BluetoothLyricBridge.destroy()
-            playerController?.release()
             playerController = null
-            PlayerHolder.controller = null
         } else {
             // 配置变化（主题切换、旋转等）：只暂停位置同步，保留 provider
             LyriconProviderManager.stopPositionSync()

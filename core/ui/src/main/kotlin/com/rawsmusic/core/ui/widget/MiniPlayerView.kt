@@ -70,6 +70,7 @@ fun ComposeMiniPlayer(
     coverPath: String? = null,
     coverBitmap: Bitmap? = null,
     backdrop: Backdrop? = null,
+    animateArtwork: Boolean = false,
     onClick: () -> Unit = {},
     onPlayPause: () -> Unit = {},
     onSkipPrevious: () -> Unit = {},
@@ -99,16 +100,10 @@ fun ComposeMiniPlayer(
                 spotColor = Color.Black.copy(alpha = if (isLight) 0.20f else 0.50f)
             )
             .clip(shape)
-            .then(
-                if (artworkMode == MiniPlayerArtworkMode.Vinyl) {
-                    Modifier.miniPlayerOuterRemainingProgress(
-                        progress = progress,
-                        radiusDp = 31f,
-                        color = cs.primary
-                    )
-                } else {
-                    Modifier
-                }
+            .miniPlayerOuterRemainingProgress(
+                progress = progress,
+                radiusDp = 31f,
+                color = cs.primary
             )
             .pointerInput(Unit) {
                 var dragAmount = 0f
@@ -155,7 +150,8 @@ fun ComposeMiniPlayer(
                 onDoubleTapToggleMode = {
                     artworkModeState.value = artworkModeState.value.toggle()
                 },
-                onSingleTap = onClick
+                onSingleTap = onClick,
+                animateArtwork = animateArtwork
             )
 
             Spacer(modifier = Modifier.width(8.dp))

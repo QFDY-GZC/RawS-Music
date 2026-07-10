@@ -12,17 +12,30 @@ class LibraryScanCoordinator(
 ) {
     sealed class Event {
         data class ScannerEvent(val event: TwoStageMediaScanner.Event) : Event()
-        data class DatabaseSyncStarted(val oldCount: Int, val newCount: Int) : Event()
+        data class DatabaseSyncStarted(
+            val oldCount: Int,
+            val newCount: Int,
+            val phase: SyncPhase = SyncPhase.FINAL
+        ) : Event()
         data class DatabaseSyncCompleted(
             val added: Int,
             val updated: Int,
             val upserted: Int,
             val deleted: Int,
-            val unchanged: Int
+            val unchanged: Int,
+            val phase: SyncPhase = SyncPhase.FINAL
         ) : Event()
+        /**
+         * Quick MediaStore results have already been written/refreshed and can be
+         * shown immediately. Detailed FFmpeg/TagLib enrichment may continue in the
+         * background after this event.
+         */
+        data class VisibleCompleted(val songs: List<AudioFile>, val found: Int, val timeMs: Long) : Event()
         data class Completed(val songs: List<AudioFile>, val timeMs: Long) : Event()
         data class Error(val message: String) : Event()
     }
+
+    enum class SyncPhase { QUICK_VISIBLE, ENRICHED_BATCH, FINAL }
 
     fun scanAndSync(
         context: Context,
@@ -30,72 +43,101 @@ class LibraryScanCoordinator(
     ): Flow<Event> = flow {
         val start = System.currentTimeMillis()
         var finalSongs: List<AudioFile> = emptyList()
-
+        var quickSongs: List<AudioFile> = emptyList()
         var hadError = false
+        val lazySync = LibraryScanLazySync(repository)
+
+        android.util.Log.d(TAG, "scanAndSync start: lazy=true")
+
         TwoStageMediaScanner.scan(
             context = context.applicationContext, options = options
         ).collect { scannerEvent ->
             emit(Event.ScannerEvent(scannerEvent))
-            if (scannerEvent is TwoStageMediaScanner.Event.FullyCompleted) {
-                finalSongs = scannerEvent.songs
-            }
-            if (scannerEvent is TwoStageMediaScanner.Event.Error) {
-                hadError = true
-                emit(Event.Error(scannerEvent.message))
+            when (scannerEvent) {
+                is TwoStageMediaScanner.Event.QuickCompleted -> {
+                    quickSongs = scannerEvent.songs
+                    emit(Event.DatabaseSyncStarted(0, scannerEvent.found, SyncPhase.QUICK_VISIBLE))
+                    val t0 = System.currentTimeMillis()
+                    val result = lazySync.syncQuickVisible(scannerEvent.songs)
+                    android.util.Log.d(
+                        TAG,
+                        "lazy quick sync: visible=${scannerEvent.found} changed=${result.changed} time=${System.currentTimeMillis() - t0}ms"
+                    )
+                    emit(
+                        Event.DatabaseSyncCompleted(
+                            added = result.changed,
+                            updated = 0,
+                            upserted = result.changed,
+                            deleted = 0,
+                            unchanged = (scannerEvent.found - result.changed).coerceAtLeast(0),
+                            phase = SyncPhase.QUICK_VISIBLE
+                        )
+                    )
+                    emit(Event.VisibleCompleted(scannerEvent.songs, scannerEvent.found, System.currentTimeMillis() - start))
+                }
+
+                is TwoStageMediaScanner.Event.EnrichBatchCompleted -> {
+                    val t0 = System.currentTimeMillis()
+                    val result = lazySync.enqueueEnriched(scannerEvent.songs)
+                    if (result != null) {
+                        android.util.Log.d(
+                            TAG,
+                            "lazy enrich sync: batch=${result.requested} time=${System.currentTimeMillis() - t0}ms processed=${scannerEvent.processed}/${scannerEvent.total}"
+                        )
+                        emit(Event.DatabaseSyncStarted(0, result.requested, SyncPhase.ENRICHED_BATCH))
+                        emit(
+                            Event.DatabaseSyncCompleted(
+                                added = 0,
+                                updated = result.changed,
+                                upserted = result.changed,
+                                deleted = 0,
+                                unchanged = 0,
+                                phase = SyncPhase.ENRICHED_BATCH
+                            )
+                        )
+                    }
+                }
+
+                is TwoStageMediaScanner.Event.FullyCompleted -> {
+                    finalSongs = scannerEvent.songs
+                }
+
+                is TwoStageMediaScanner.Event.Error -> {
+                    hadError = true
+                    emit(Event.Error(scannerEvent.message))
+                }
+
+                else -> Unit
             }
         }
 
         if (hadError) return@flow
 
-        val oldSongs = repository.getAllSongs()
-        android.util.Log.d(TAG, "sync started: old=${oldSongs.size}, new=${finalSongs.size}")
-        emit(Event.DatabaseSyncStarted(oldCount = oldSongs.size, newCount = finalSongs.size))
+        val syncInput = finalSongs.ifEmpty { quickSongs }
+        android.util.Log.d(TAG, "final sync started: new=${syncInput.size}")
+        emit(Event.DatabaseSyncStarted(oldCount = 0, newCount = syncInput.size, phase = SyncPhase.FINAL))
 
-        val oldKeys = oldSongs.mapTo(HashSet()) { it.scanStableKey() }
-        val newKeys = finalSongs.mapTo(HashSet()) { it.scanStableKey() }
-        val addedCount = newKeys.count { it !in oldKeys }
-
-        val delta = LibrarySyncPlanner.calculateDelta(
-            oldSongs = oldSongs,
-            newSongs = finalSongs
-        )
-
-        val updatedCount = (delta.upserts.size - addedCount).coerceAtLeast(0)
-
-        if (delta.deletes.isNotEmpty()) {
-            repository.deleteSongs(delta.deletes)
-        }
-
-        if (delta.upserts.isNotEmpty()) {
-            repository.upsertSongs(delta.upserts)
-        }
-
+        val tFinal = System.currentTimeMillis()
+        val result = lazySync.syncFinal(syncInput)
         android.util.Log.d(
             TAG,
-            "sync completed: added=$addedCount, updated=$updatedCount, upserts=${delta.upserts.size}, deletes=${delta.deletes.size}, unchanged=${delta.unchanged.size}"
+            "final sync completed: added=${result.added}, updated=${result.updated}, upserts=${result.upserted}, deletes=${result.deleted}, unchanged=${result.unchanged}, time=${System.currentTimeMillis() - tFinal}ms"
         )
 
         emit(
             Event.DatabaseSyncCompleted(
-                added = addedCount,
-                updated = updatedCount,
-                upserted = delta.upserts.size,
-                deleted = delta.deletes.size,
-                unchanged = delta.unchanged.size
+                added = result.added,
+                updated = result.updated,
+                upserted = result.upserted,
+                deleted = result.deleted,
+                unchanged = result.unchanged,
+                phase = SyncPhase.FINAL
             )
         )
-        emit(Event.Completed(songs = finalSongs, timeMs = System.currentTimeMillis() - start))
+        emit(Event.Completed(songs = syncInput, timeMs = System.currentTimeMillis() - start))
     }.flowOn(Dispatchers.IO)
 
     companion object {
         private const val TAG = "LibraryScanCoordinator"
-    }
-}
-
-private fun AudioFile.scanStableKey(): String {
-    return if (cueTrackIndex > 0 || cueOffsetMs > 0L) {
-        "cue|$path|$cueTrackIndex|$cueOffsetMs"
-    } else {
-        "file|$path"
     }
 }

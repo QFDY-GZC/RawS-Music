@@ -86,11 +86,20 @@ class LibraryScanForegroundService : Service() {
                 updateNotification(state)
                 when (event) {
                     is LibraryScanCoordinator.Event.DatabaseSyncCompleted -> {
-                        showScanToast(
-                            added = event.added,
-                            updated = event.updated,
-                            deleted = event.deleted
-                        )
+                        if (event.phase == LibraryScanCoordinator.SyncPhase.FINAL) {
+                            showScanToast(
+                                added = event.added,
+                                updated = event.updated,
+                                deleted = event.deleted
+                            )
+                        }
+                    }
+                    is LibraryScanCoordinator.Event.VisibleCompleted -> {
+                        // Project-style: publish the fast MediaStore list as soon as it is
+                        // visible in Room. Enrichment continues, but the library can be used now.
+                        LibraryScanEventBus.tryEmitSongs(event.songs)
+                        ScanStateBus.notifyCompleted(event.found, event.timeMs)
+                        AppLogger.d(TAG, "quick visible completed: found=${event.found} time=${event.timeMs}ms; enrichment continues")
                     }
                     is LibraryScanCoordinator.Event.Completed -> {
                         LibraryScanEventBus.tryEmitSongs(event.songs)
@@ -134,14 +143,35 @@ class LibraryScanForegroundService : Service() {
     private fun reduceEventToState(reason: String, current: ScanUiState, event: LibraryScanCoordinator.Event): ScanUiState {
         return when (event) {
             is LibraryScanCoordinator.Event.ScannerEvent -> reduceScannerEvent(reason, current, event.event)
-            is LibraryScanCoordinator.Event.DatabaseSyncStarted -> current.copy(
-                isScanning = true, canCancel = true, stage = "同步数据库", progress = 0.90f,
-                message = "$reason：同步数据库，旧 ${event.oldCount}，新 ${event.newCount}"
-            )
-            is LibraryScanCoordinator.Event.DatabaseSyncCompleted -> current.copy(
-                isScanning = true, canCancel = true, stage = "数据库完成", progress = 0.96f,
-                dbUpserted = event.upserted, dbDeleted = event.deleted, dbUnchanged = event.unchanged,
-                message = "$reason：数据库同步完成，新增 ${event.added}，更新 ${event.updated}，删除 ${event.deleted}，未变 ${event.unchanged}"
+            is LibraryScanCoordinator.Event.DatabaseSyncStarted -> {
+                val stageText = when (event.phase) {
+                    LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> "快速写入"
+                    LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> "后台补全"
+                    LibraryScanCoordinator.SyncPhase.FINAL -> "最终同步"
+                }
+                current.copy(
+                    isScanning = true, canCancel = true, stage = stageText,
+                    progress = if (event.phase == LibraryScanCoordinator.SyncPhase.FINAL) 0.90f else current.progress,
+                    message = "$reason：$stageText ${event.newCount} 首"
+                )
+            }
+            is LibraryScanCoordinator.Event.DatabaseSyncCompleted -> {
+                val message = when (event.phase) {
+                    LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> "$reason：快速结果已显示，新增/变更 ${event.upserted} 首"
+                    LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> "$reason：后台补全已写入 ${event.upserted} 首"
+                    LibraryScanCoordinator.SyncPhase.FINAL -> "$reason：数据库同步完成，新增 ${event.added}，更新 ${event.updated}，删除 ${event.deleted}，未变 ${event.unchanged}"
+                }
+                current.copy(
+                    isScanning = true, canCancel = true, stage = "数据库完成",
+                    progress = if (event.phase == LibraryScanCoordinator.SyncPhase.FINAL) 0.96f else current.progress,
+                    dbUpserted = event.upserted, dbDeleted = event.deleted, dbUnchanged = event.unchanged,
+                    message = message
+                )
+            }
+            is LibraryScanCoordinator.Event.VisibleCompleted -> current.copy(
+                isScanning = true, canCancel = true, pendingScan = false, stage = "可浏览",
+                progress = current.progress.coerceAtLeast(0.40f), found = event.found, timeMs = event.timeMs,
+                message = "$reason：${event.found} 首已可浏览，后台继续补全音频信息"
             )
             is LibraryScanCoordinator.Event.Completed -> current.copy(
                 isScanning = false, canCancel = false, pendingScan = false, stage = "完成",
@@ -174,7 +204,7 @@ class LibraryScanForegroundService : Service() {
             is TwoStageMediaScanner.Event.QuickCompleted -> current.copy(
                 isScanning = true, canCancel = true, stage = "快速扫描完成",
                 found = event.found, progress = 0.35f,
-                message = "$reason：已找到 ${event.found} 首，正在补全信息"
+                message = "$reason：已找到 ${event.found} 首，正在写入快速结果"
             )
             is TwoStageMediaScanner.Event.EnrichProgress -> {
                 val ep = if (event.total > 0) event.processed.toFloat() / event.total else 0f
@@ -185,6 +215,7 @@ class LibraryScanForegroundService : Service() {
                     message = "$reason：${event.message} ${event.processed}/${event.total}，缓存 ${event.cacheHits}，新读 ${event.enrichedCount}")
             }
             is TwoStageMediaScanner.Event.SongEnriched -> current
+            is TwoStageMediaScanner.Event.EnrichBatchCompleted -> current
             is TwoStageMediaScanner.Event.FullyCompleted -> current.copy(
                 isScanning = true, canCancel = true, stage = "准备同步数据库", progress = 0.90f,
                 found = event.found, cacheHits = event.cacheHits, enrichedCount = event.enrichedCount,

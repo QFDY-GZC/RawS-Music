@@ -1,6 +1,9 @@
 package com.rawsmusic.core.ui.widget.player
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.widthIn
@@ -144,9 +147,16 @@ private fun KaraokeWordGroup(
         }
     }
 
-    val p = progress.coerceIn(0f, 1f)
+    // Smooth the glyph fill between playback position ticks.  The authoritative
+    // timing still comes from positionMs, but the visual brush no longer jumps
+    // word-by-word when the controller dispatch interval is coarse.
+    val p by animateFloatAsState(
+        targetValue = progress.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 92, easing = LinearEasing),
+        label = "karaokeWordProgress"
+    )
 
-    val featherPx = with(density) { 22.dp.toPx() }.coerceAtMost(widthPx * 0.88f)
+    val featherPx = with(density) { 18.dp.toPx() }.coerceAtMost(widthPx * 0.72f)
     val sweepPx = widthPx * p
     val fadeStart = ((sweepPx - featherPx) / widthPx).coerceIn(0f, 1f)
     val fadeEnd = (sweepPx / widthPx).coerceIn(0f, 1f)
@@ -282,10 +292,10 @@ private fun buildLyricSegments(fullText: String, words: List<LyricWord>): List<L
     var searchFrom = 0
     for (index in words.indices) {
         val word = words[index]
-        val raw = word.text.orEmpty()
+        val raw = word.text.orEmpty().cleanLyricSegmentText()
         if (raw.isEmpty()) continue
         val start = fullText.indexOf(raw, startIndex = searchFrom)
-            .takeIf { it >= 0 } ?: searchFrom.coerceAtMost(fullText.length)
+        if (start < 0) continue
         if (start > searchFrom) {
             result += LyricSegment.Space(text = fullText.substring(searchFrom, start))
         }
@@ -301,6 +311,12 @@ private fun buildLyricSegments(fullText: String, words: List<LyricWord>): List<L
         result += LyricSegment.Space(text = fullText.substring(searchFrom))
     }
     return result
+}
+
+private fun String.cleanLyricSegmentText(): String = filter { ch ->
+    ch == '\n' ||
+        ch == '\t' ||
+        (ch.code >= 0x20 && ch != '\uFFFC' && ch != '\uFFFD' && ch.code !in 0xE000..0xF8FF)
 }
 
 // ========== 时间计算 ==========

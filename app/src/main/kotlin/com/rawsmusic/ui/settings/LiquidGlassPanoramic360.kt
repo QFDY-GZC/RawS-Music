@@ -16,9 +16,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rawsmusic.R
 import com.rawsmusic.module.player.dsp.Panoramic360Controller
 
 private object Panoramic360UiColors {
@@ -52,10 +54,10 @@ fun LiquidGlassPanoramic360Screen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = onBack) {
-                Text("← 返回", color = Panoramic360UiColors.Accent, fontSize = 16.sp)
+                Text(stringResource(R.string.settings_back_with_arrow), color = Panoramic360UiColors.Accent, fontSize = 16.sp)
             }
             Text(
-                "360° 全景音",
+                stringResource(R.string.settings_panoramic360_title),
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Medium,
                 color = Panoramic360UiColors.TextPrimary
@@ -81,13 +83,13 @@ fun LiquidGlassPanoramic360Screen(
                 ) {
                     Column {
                         Text(
-                            "360° 全景音",
+                            stringResource(R.string.settings_panoramic360_title),
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Medium,
                             color = Panoramic360UiColors.TextPrimary
                         )
                         Text(
-                            "3D 球面双耳渲染 · 全方位扩散 · 耳廓EQ + 早期反射 + FDN混响",
+                            stringResource(R.string.settings_panoramic360_subtitle),
                             fontSize = 12.sp,
                             color = Panoramic360UiColors.TextSecondary
                         )
@@ -113,14 +115,14 @@ fun LiquidGlassPanoramic360Screen(
                         .padding(16.dp)
                 ) {
                     Text(
-                        "效果说明",
+                        stringResource(R.string.settings_effect_description),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = Panoramic360UiColors.TextPrimary
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "将音频信号全方位360°扩散，模拟真实空间中的声音包围感。无需手动调节方向，开启即可体验沉浸式全景声场。",
+                        stringResource(R.string.settings_panoramic360_description),
                         fontSize = 13.sp,
                         color = Panoramic360UiColors.TextSecondary,
                         lineHeight = 20.sp
@@ -138,14 +140,14 @@ fun LiquidGlassPanoramic360Screen(
                         .padding(16.dp)
                 ) {
                     Text(
-                        "效果强度",
+                        stringResource(R.string.settings_effect_intensity),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = Panoramic360UiColors.TextPrimary
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "${intensity.toInt()}%",
+                        stringResource(R.string.settings_percent_value, intensity.toInt()),
                         fontSize = 28.sp,
                         fontWeight = FontWeight.Bold,
                         color = Panoramic360UiColors.Accent
@@ -165,9 +167,9 @@ fun LiquidGlassPanoramic360Screen(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("轻微", fontSize = 11.sp, color = Panoramic360UiColors.TextSecondary)
-                        Text("适中", fontSize = 11.sp, color = Panoramic360UiColors.TextSecondary)
-                        Text("强烈", fontSize = 11.sp, color = Panoramic360UiColors.TextSecondary)
+                        Text(stringResource(R.string.settings_effect_light), fontSize = 11.sp, color = Panoramic360UiColors.TextSecondary)
+                        Text(stringResource(R.string.settings_effect_medium), fontSize = 11.sp, color = Panoramic360UiColors.TextSecondary)
+                        Text(stringResource(R.string.settings_effect_strong), fontSize = 11.sp, color = Panoramic360UiColors.TextSecondary)
                     }
                 }
             }

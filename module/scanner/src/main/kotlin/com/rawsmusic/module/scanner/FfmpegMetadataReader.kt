@@ -3,6 +3,7 @@ package com.rawsmusic.module.scanner
 import android.util.Log
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.taglib.TagLibBridge
+import com.rawsmusic.core.common.utils.SampleRateNormalizer
 import java.io.RandomAccessFile
 
 /**
@@ -12,6 +13,19 @@ import java.io.RandomAccessFile
 object FfmpegMetadataReader {
 
     private const val TAG = "FfmpegMetadataReader"
+    private const val ENABLE_TRACE_LOGS = false
+
+    private inline fun logd(message: () -> String) {
+        if (ENABLE_TRACE_LOGS) Log.d(TAG, message())
+    }
+
+    private inline fun logw(message: () -> String) {
+        if (ENABLE_TRACE_LOGS) Log.w(TAG, message())
+    }
+
+    private inline fun loge(message: () -> String) {
+        if (ENABLE_TRACE_LOGS) Log.e(TAG, message())
+    }
 
     data class ExtendedTags(
         val title: String = "",
@@ -65,20 +79,18 @@ object FfmpegMetadataReader {
 
             // 优先使用 TagLib（全格式支持，比 FFmpeg 更快）
             if (TagLibBridge.isLoaded() && TagLibBridge.isSupported(filePath)) {
-                Log.d(TAG, "readFullInfo: Using TagLib for: $filePath")
+                logd { "readFullInfo: Using TagLib for: $filePath" }
                 tagLibInfo = readFullInfoFromTagLib(filePath)
 
                 if (!tagLibInfo.stream.needsFfmpegStreamFallback(filePath)) {
                     return tagLibInfo
                 }
 
-                Log.d(TAG, "readFullInfo: TagLib stream incomplete, fallback FFmpeg. " +
-                    "sr=${tagLibInfo.stream.sampleRate}, bits=${tagLibInfo.stream.bitsPerSample}, " +
-                    "ch=${tagLibInfo.stream.channels}, file=$filePath")
+                logd { "readFullInfo: TagLib stream incomplete, fallback FFmpeg. sr=${tagLibInfo.stream.sampleRate}, bits=${tagLibInfo.stream.bitsPerSample}, ch=${tagLibInfo.stream.channels}, file=$filePath" }
             }
 
             // 回退到 FFmpeg
-            Log.d(TAG, "readFullInfo: Using FFmpeg for: $filePath")
+            logd { "readFullInfo: Using FFmpeg for: $filePath" }
             val ffmpegInfo = readFullInfoFromFfmpeg(filePath)
 
             if (tagLibInfo != null) {
@@ -91,7 +103,7 @@ object FfmpegMetadataReader {
                 ffmpegInfo
             }
         } catch (e: Exception) {
-            Log.w(TAG, "readFullInfo failed for $filePath: ${e.message}")
+            logw { "readFullInfo failed for $filePath: ${e.message}" }
             FullAudioInfo()
         }
     }
@@ -99,16 +111,14 @@ object FfmpegMetadataReader {
     private fun readFullInfoFromFfmpeg(filePath: String): FullAudioInfo {
         val info = FFmpegBridge.getMediaInfo(filePath)
         if (info == null) {
-            Log.e(TAG, "readFullInfoFromFfmpeg: FFmpegBridge.getMediaInfo returned NULL for $filePath")
+            loge { "readFullInfoFromFfmpeg: FFmpegBridge.getMediaInfo returned NULL for $filePath" }
             return FullAudioInfo()
         }
 
         val tags = parseTags(info)
         val stream = parseStreamInfo(info, filePath).withResolvedBitDepth(filePath)
 
-        Log.d(TAG, "readFullInfoFromFfmpeg result: sr=${stream.sampleRate}, " +
-            "bps=${stream.bitsPerSample}, br=${stream.bitRate}, " +
-            "ch=${stream.channels}, codec=${stream.codecName}")
+        logd { "readFullInfoFromFfmpeg result: sr=${stream.sampleRate}, bps=${stream.bitsPerSample}, br=${stream.bitRate}, ch=${stream.channels}, codec=${stream.codecName}" }
 
         return FullAudioInfo(tags = tags, stream = stream)
     }
@@ -120,26 +130,24 @@ object FfmpegMetadataReader {
         return try {
             val metadata = TagLibBridge.readMetadata(filePath)
             if (metadata.isEmpty()) {
-                Log.w(TAG, "readFullInfoFromTagLib: TagLib returned empty metadata for $filePath")
+                logw { "readFullInfoFromTagLib: TagLib returned empty metadata for $filePath" }
                 return FullAudioInfo()
             }
 
-            Log.d(TAG, "readFullInfoFromTagLib: file=$filePath, totalKeys=${metadata.size}")
+            logd { "readFullInfoFromTagLib: file=$filePath, totalKeys=${metadata.size}" }
             for ((key, value) in metadata) {
-                Log.d(TAG, "  TAG: $key = '$value'")
+                logd { "  TAG: $key = '$value'" }
             }
 
             val tags = parseTagLibTags(metadata)
             val stream = parseTagLibStreamInfo(metadata)
 
-            Log.d(TAG, "readFullInfoFromTagLib parsed tags: title='${tags.title}', artist='${tags.artist}', " +
-                    "album='${tags.album}', genre='${tags.genre}', year=${tags.year}, track=${tags.trackNumber}")
-            Log.d(TAG, "readFullInfoFromTagLib result: sr=${stream.sampleRate}, bps=${stream.bitsPerSample}, " +
-                    "br=${stream.bitRate}, ch=${stream.channels}, codec=${stream.codecName}")
+            logd { "readFullInfoFromTagLib parsed tags: title='${tags.title}', artist='${tags.artist}', album='${tags.album}', genre='${tags.genre}', year=${tags.year}, track=${tags.trackNumber}" }
+            logd { "readFullInfoFromTagLib result: sr=${stream.sampleRate}, bps=${stream.bitsPerSample}, br=${stream.bitRate}, ch=${stream.channels}, codec=${stream.codecName}" }
 
             FullAudioInfo(tags = tags, stream = stream)
         } catch (e: Exception) {
-            Log.w(TAG, "readFullInfoFromTagLib failed for $filePath: ${e.message}")
+            logw { "readFullInfoFromTagLib failed for $filePath: ${e.message}" }
             FullAudioInfo()
         }
     }
@@ -166,7 +174,11 @@ object FfmpegMetadataReader {
     ): AudioStreamInfo {
         val merged = AudioStreamInfo(
             durationMs = if (tagLib.durationMs > 0) tagLib.durationMs else ffmpeg.durationMs,
-            sampleRate = if (tagLib.sampleRate > 0) tagLib.sampleRate else ffmpeg.sampleRate,
+            sampleRate = when {
+                ffmpeg.sampleRate > 0 && ffmpeg.sampleRate > tagLib.sampleRate -> ffmpeg.sampleRate
+                tagLib.sampleRate > 0 -> tagLib.sampleRate
+                else -> ffmpeg.sampleRate
+            },
             channels = if (tagLib.channels > 0) tagLib.channels else ffmpeg.channels,
             bitsPerSample = when {
                 tagLib.bitsPerSample > 0 -> tagLib.bitsPerSample
@@ -263,7 +275,11 @@ object FfmpegMetadataReader {
             trackGain = parseReplayGain(metadata["replaygain_track_gain"]),
             trackPeak = parseReplayGainPeak(metadata["replaygain_track_peak"]),
             albumGain = parseReplayGain(metadata["replaygain_album_gain"]),
-            albumPeak = parseReplayGainPeak(metadata["replaygain_album_peak"])
+            albumPeak = parseReplayGainPeak(metadata["replaygain_album_peak"]),
+            cueSheet = metadata.entries.firstOrNull { (key, value) ->
+                value.isNotBlank() && key.replace("_", "").replace("-", "")
+                    .equals("cuesheet", ignoreCase = true)
+            }?.value.orEmpty()
         )
     }
 
@@ -273,7 +289,11 @@ object FfmpegMetadataReader {
     private fun parseTagLibStreamInfo(metadata: Map<String, String>): AudioStreamInfo {
         return AudioStreamInfo(
             durationMs = metadata["duration_ms"]?.toLongOrNull() ?: 0L,
-            sampleRate = metadata["sample_rate"]?.toIntOrNull() ?: 0,
+            sampleRate = SampleRateNormalizer.normalize(
+                rawSampleRate = metadata["sample_rate"]?.toIntOrNull() ?: 0,
+                codecName = metadata["codec_name"].orEmpty(),
+                formatName = metadata["format_name"].orEmpty()
+            ),
             channels = metadata["channels"]?.toIntOrNull() ?: 0,
             bitsPerSample = metadata["bits_per_sample"]?.toIntOrNull() ?: 0,
             bitRate = metadata["bit_rate"]?.toIntOrNull() ?: 0,
@@ -334,7 +354,8 @@ object FfmpegMetadataReader {
             trackGain = parseReplayGain(tag("replaygain_track_gain")),
             trackPeak = parseReplayGainPeak(tag("replaygain_track_peak")),
             albumGain = parseReplayGain(tag("replaygain_album_gain")),
-            albumPeak = parseReplayGainPeak(tag("replaygain_album_peak"))
+            albumPeak = parseReplayGainPeak(tag("replaygain_album_peak")),
+            cueSheet = tag("cuesheet", "cue_sheet", "CUESHEET", "CUE_SHEET")
         )
     }
 
@@ -344,11 +365,14 @@ object FfmpegMetadataReader {
         var durationMs = 0L
         var formatName = ""
 
+        fun parseDurationMs(value: String): Long =
+            value.toDoubleOrNull()?.let { (it * 1000).toLong() }?.coerceAtLeast(0L) ?: 0L
+
         for ((key, value) in info) {
             val k = key.toString()
             val v = value.toString()
-            if (k == "duration") {
-                durationMs = try { v.toDoubleOrNull()?.let { (it * 1000).toLong() } ?: 0L } catch (_: Exception) { 0L }
+            if (k == "duration" || k == "format_duration") {
+                durationMs = maxOf(durationMs, parseDurationMs(v))
             }
             if (k == "format_name") {
                 formatName = v
@@ -374,7 +398,7 @@ object FfmpegMetadataReader {
         }
 
         if (audioStreamIndex < 0) {
-            Log.w(TAG, "parseStreamInfo: NO audio stream found!")
+            logw { "parseStreamInfo: NO audio stream found!" }
             return AudioStreamInfo(durationMs = durationMs, formatName = formatName)
         }
 
@@ -385,6 +409,7 @@ object FfmpegMetadataReader {
         var bitsPerCodedSample = 0
         var sampleFmt = ""
         var bitRate = 0
+        var effectiveSampleRate = 0
         var codecName = ""
         var codecLongName = ""
 
@@ -396,6 +421,8 @@ object FfmpegMetadataReader {
             "bits_per_coded_sample" to { v: String -> bitsPerCodedSample = v.toIntOrNull() ?: 0 },
             "sample_fmt" to { v: String -> sampleFmt = v },
             "bit_rate" to { v: String -> bitRate = v.toIntOrNull() ?: 0 },
+            "duration" to { v: String -> durationMs = maxOf(durationMs, parseDurationMs(v)) },
+            "effective_sample_rate" to { v: String -> effectiveSampleRate = v.toIntOrNull() ?: 0 },
             "codec_name" to { v: String -> codecName = v },
             "codec_long_name" to { v: String -> codecLongName = v }
         )
@@ -435,10 +462,16 @@ object FfmpegMetadataReader {
             sampleFmt = sampleFmt
         )
         val isLossy = AudioBitDepthResolver.isLossyCodec(codecName, formatName)
+        sampleRate = SampleRateNormalizer.normalize(
+            rawSampleRate = sampleRate,
+            codecName = codecName,
+            formatName = formatName,
+            filePath = filePath,
+            effectiveSampleRate = effectiveSampleRate
+        )
         bitsPerSample = resolvedBits
 
-        Log.d(TAG, "parseStreamInfo: idx=$audioStreamIndex, codec=$codecName, sr=$sampleRate, ch=$channels, " +
-                "bps=$bitsPerSample, br=$bitRate, lossy=$isLossy")
+        logd { "parseStreamInfo: idx=$audioStreamIndex, codec=$codecName, sr=$sampleRate, effectiveSr=$effectiveSampleRate, ch=$channels, bps=$bitsPerSample, br=$bitRate, lossy=$isLossy" }
 
         return AudioStreamInfo(
             durationMs = durationMs,
@@ -467,6 +500,7 @@ object FfmpegMetadataReader {
     fun mapCodecToFormat(codecName: String, filePath: String): String {
         val ext = filePath.substringAfterLast(".", "").uppercase()
         return when {
+            ext == "MP3" -> "MP3"
             codecName.contains("flac", true) -> "FLAC"
             codecName.contains("alac", true) -> "ALAC"
             codecName.contains("opus", true) -> "Opus"

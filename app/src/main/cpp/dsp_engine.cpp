@@ -727,15 +727,16 @@ class StereoExpander {
     }
 
     void updateCoeffs() {
-        // 350Hz：中低频的空间信息也能被带出来，
-        // 但 120Hz 以下仍不明显扩，低频不会散。
-        float fcSide = 350.0f;
+        // 420Hz: keep bass, warmth and vocal fundamentals centered. The expander only
+        // opens upper ambience, which is more comfortable than widening low-mids.
+        float fcSide = 420.0f;
         float rc = 1.0f / (2.0f * (float)M_PI * fcSide);
         float dt = 1.0f / (float)m_sampleRate;
         m_sideHpAlpha = rc / (rc + dt);
 
-        // 一阶 all-pass，中心约 1800Hz，让 side 高频产生很轻的相位展开。
-        float fcAp = 1800.0f;
+        // One-pole all-pass above the vocal presence band. Kept very subtle to avoid
+        // metallic/phasey coloration on cymbals and vocals.
+        float fcAp = 2400.0f;
         float t = tanf((float)M_PI * fcAp / (float)m_sampleRate);
         m_apA = (t - 1.0f) / (t + 1.0f);
 
@@ -764,7 +765,9 @@ public:
         for (int i = 0; i < numFrames; ++i) {
             m_smoothedFactor += (m_factor - m_smoothedFactor) * 0.006f;
 
-            float amount = clampf(m_smoothedFactor, 0.0f, 1.0f);
+            // Perceptual curve: old linear 10% felt almost inaudible. sqrt() gives low and
+            // medium UI values enough movement while keeping 100% bounded by the limiter.
+            float amount = sqrtf(clampf(m_smoothedFactor, 0.0f, 1.0f));
 
             float L = sanitize(samples[i * 2]);
             float R = sanitize(samples[i * 2 + 1]);
@@ -782,26 +785,37 @@ public:
             // 轻微 all-pass 去相关，只混入高频 side，不碰 mid
             float decorSideHp = processAllPass(sideHp);
 
-            // 低频 side：最多 1.05x，保持低频稳定
-            // 高频 side：最多 2.15x，声场会明显打开
-            float lowGain  = 1.0f + amount * 0.05f;
-            float highGain = 1.0f + amount * 1.15f;
-
-            // 去相关混合量：最多 28%，足够明显，但不会像 Haas 那样破坏 mono
-            float decorMix = amount * 0.28f;
+            // Natural widen profile: less low-mid widening, less decorrelation, and a
+            // smoother high-side lift. This avoids the "pulled apart / hollow" feeling.
+            float lowGain  = 1.0f;
+            float highGain = 1.0f + amount * 1.05f;
+            float decorMix = amount * 0.08f;
 
             float widenedHp = sideHp * (1.0f - decorMix) + decorSideHp * decorMix;
             float outSide = sideLp * lowGain + widenedHp * highGain;
 
-            // 中心保护：当 side 变强时，轻微保留/强化 mid，避免人声空心
-            float midProtect = 1.0f + amount * 0.04f;
-            float outMid = mid * midProtect;
+            // Dynamic side guard: keep extreme side-only passages from becoming harsh or
+            // phasey, but do not collapse normal ambience.
+            float sideLimit = (fabsf(mid) + 0.12f) * (1.20f + amount * 0.38f);
+            float sideAbs = fabsf(outSide);
+            if (sideAbs > sideLimit) {
+                float excess = sideAbs - sideLimit;
+                float soft = sideLimit + excess * 0.35f;
+                outSide *= soft / (sideAbs + 1e-12f);
+            }
 
-            float outL = outMid + outSide;
-            float outR = outMid - outSide;
+            float outMid = mid;
 
-            // 补偿：满强度时约 0.87，不再把宽度感压回去
-            float compensateGain = 1.0f / (1.0f + amount * 0.15f);
+            float wetL = outMid + outSide;
+            float wetR = outMid - outSide;
+
+            // Dry/wet blend keeps transients comfortable and stops the center image from
+            // suddenly changing character at medium/high values.
+            float wetMix = 0.62f + amount * 0.22f;
+            float outL = L * (1.0f - wetMix) + wetL * wetMix;
+            float outR = R * (1.0f - wetMix) + wetR * wetMix;
+
+            float compensateGain = 1.0f / (1.0f + amount * 0.025f);
             outL *= compensateGain;
             outR *= compensateGain;
 

@@ -1,6 +1,7 @@
 package com.rawsmusic.module.scanner
 
 import android.content.Context
+import android.util.Log
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.BitrateNormalizer
 import kotlinx.coroutines.Dispatchers
@@ -14,6 +15,8 @@ class PersistentMetadataCache private constructor(
     private val cacheFile: File,
     private val records: ConcurrentHashMap<String, CachedMetadata>
 ) {
+    @Volatile private var dirty: Boolean = false
+
     fun get(raw: AudioFile): AudioFile? {
         val record = records[cacheKey(raw)] ?: return null
         return record.applyTo(raw)
@@ -21,22 +24,34 @@ class PersistentMetadataCache private constructor(
 
     fun put(song: AudioFile) {
         if (song.path.isBlank() || song.fileSize <= 0L || song.dateModified <= 0L) return
-        records[cacheKey(song)] = CachedMetadata.from(song)
+        val key = cacheKey(song)
+        val record = CachedMetadata.from(song)
+        if (records[key] != record) {
+            records[key] = record
+            dirty = true
+        }
     }
 
-    fun remove(song: AudioFile) { records.remove(cacheKey(song)) }
+    fun remove(song: AudioFile) { if (records.remove(cacheKey(song)) != null) dirty = true }
     fun contains(song: AudioFile): Boolean = records.containsKey(cacheKey(song))
     fun size(): Int = records.size
 
     suspend fun save() {
+        if (!dirty) return
         withContext(Dispatchers.IO) {
+            if (!dirty) return@withContext
+            val t0 = System.currentTimeMillis()
+            val snapshot = records.values.toList()
             val array = JSONArray()
-            records.values.forEach { array.put(it.toJson()) }
+            snapshot.forEach { array.put(it.toJson()) }
             val root = JSONObject().put("version", CACHE_VERSION).put("items", array)
             val tempFile = File(cacheFile.parentFile, "${cacheFile.name}.tmp")
             tempFile.writeText(root.toString(), Charsets.UTF_8)
             if (cacheFile.exists()) cacheFile.delete()
-            tempFile.renameTo(cacheFile)
+            if (tempFile.renameTo(cacheFile)) {
+                dirty = false
+                Log.d(TAG, "save: items=${snapshot.size} time=${System.currentTimeMillis() - t0}ms bytes=${cacheFile.length()}")
+            }
         }
     }
 
@@ -57,7 +72,14 @@ class PersistentMetadataCache private constructor(
             album = album.ifBlank { raw.album },
             duration = if (duration > 0L) duration else raw.duration,
             sampleRate = if (sampleRate > 0) sampleRate else raw.sampleRate,
-            bitRate = if (bitRate > 0) bitRate else raw.bitRate,
+            bitRate = BitrateNormalizer.toBps(
+                rawBitrate = if (bitRate > 0) bitRate else raw.bitRate,
+                durationMs = if (duration > 0L) duration else raw.duration,
+                fileSizeBytes = raw.fileSize,
+                codecName = encodingFormat.ifBlank { format },
+                formatName = raw.format,
+                filePath = raw.path
+            ),
             bitsPerSample = if (bitsPerSample > 0) bitsPerSample else raw.bitsPerSample,
             format = format.ifBlank { raw.format },
             genre = genre.ifBlank { raw.genre },
@@ -90,7 +112,14 @@ class PersistentMetadataCache private constructor(
                 path = song.path, fileSize = song.fileSize, dateModified = song.dateModified,
                 title = song.title, artist = song.artist, album = song.album,
                 duration = song.duration, sampleRate = song.sampleRate,
-                bitRate = BitrateNormalizer.toBps(song.bitRate, song.duration, song.fileSize),
+                bitRate = BitrateNormalizer.toBps(
+                    rawBitrate = song.bitRate,
+                    durationMs = song.duration,
+                    fileSizeBytes = song.fileSize,
+                    codecName = song.encodingFormat,
+                    formatName = song.format,
+                    filePath = song.path
+                ),
                 bitsPerSample = song.bitsPerSample, format = song.format,
                 genre = song.genre, composer = song.composer, discNumber = song.discNumber,
                 channelCount = song.channelCount, bpm = song.bpm, albumArtist = song.albumArtist,
@@ -124,7 +153,7 @@ class PersistentMetadataCache private constructor(
     }
 
     companion object {
-        private const val CACHE_VERSION = 2
+        private const val CACHE_VERSION = 3
         private const val CACHE_FILE_NAME = "audio_metadata_cache.json"
 
         suspend fun load(context: Context): PersistentMetadataCache = withContext(Dispatchers.IO) {
@@ -133,18 +162,26 @@ class PersistentMetadataCache private constructor(
             if (file.exists()) {
                 runCatching {
                     val root = JSONObject(file.readText(Charsets.UTF_8))
-                    val items = root.optJSONArray("items") ?: JSONArray()
-                    for (i in 0 until items.length()) {
-                        val item = items.optJSONObject(i) ?: continue
-                        val record = CachedMetadata.fromJson(item) ?: continue
-                        map[buildKey(record.path, record.fileSize, record.dateModified)] = record
+                    val version = root.optInt("version", 0)
+                    if (version == CACHE_VERSION) {
+                        val items = root.optJSONArray("items") ?: JSONArray()
+                        for (i in 0 until items.length()) {
+                            val item = items.optJSONObject(i) ?: continue
+                            val record = CachedMetadata.fromJson(item) ?: continue
+                            map[buildKey(record.path, record.fileSize, record.dateModified)] = record
+                        }
+                    } else {
+                        Log.w(TAG, "ignore old metadata cache: version=$version current=$CACHE_VERSION")
                     }
                 }.onFailure {
-                    android.util.Log.w("PersistentMetadataCache", "Failed to load: ${it.message}", it)
+                    Log.w(TAG, "Failed to load: ${it.message}", it)
                 }
             }
+            Log.d(TAG, "load: items=${map.size} exists=${file.exists()} bytes=${if (file.exists()) file.length() else 0}")
             PersistentMetadataCache(file, map)
         }
+
+        private const val TAG = "PersistentMetadataCache"
 
         private fun buildKey(path: String, fileSize: Long, dateModified: Long): String =
             "$path|$fileSize|$dateModified"

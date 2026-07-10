@@ -28,6 +28,14 @@ object CjkSortUtils {
         }
     }
 
+    /**
+     * sortKey 结果缓存。sortKey 在排序/索引构建中被高频调用（每次 sortedBy 对每个元素计算一次，
+     * 且同一标题会在 artists/albums/genres/folders 等多次聚合里重复计算）。
+     * 使用 ConcurrentHashMap 保证多协程并发访问安全；现有 transliterate 的 LinkedHashMap 缓存
+     * 并不能避免每次 .lowercase() 的字符串分配，这里直接缓存最终 sortKey 结果。
+     */
+    private val cjkSortKeyCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     val hasTransliterator: Boolean
         get() = transliterator != null
 
@@ -39,10 +47,12 @@ object CjkSortUtils {
     }
 
     fun sortKey(input: String): String {
-        return if (transliterator != null) {
-            transliterate(input).lowercase()
-        } else {
-            input.lowercase()
+        return cjkSortKeyCache.getOrPut(input) {
+            if (transliterator != null) {
+                transliterate(input).lowercase()
+            } else {
+                input.lowercase()
+            }
         }
     }
 

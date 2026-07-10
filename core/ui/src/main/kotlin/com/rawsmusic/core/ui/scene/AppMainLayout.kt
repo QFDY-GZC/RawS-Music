@@ -1,6 +1,8 @@
 package com.rawsmusic.core.ui.scene
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -8,17 +10,15 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -38,8 +38,12 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.widget.ComposeMiniPlayer
+import com.rawsmusic.core.ui.widget.flow.ProvideRawFlowMode
+import com.rawsmusic.core.ui.widget.flow.RawFlowBackground
+import com.rawsmusic.core.ui.widget.flow.rememberRawFlowModeState
 import com.rawsmusic.core.ui.widget.bottombar.LiquidBottomTab
 import com.rawsmusic.core.ui.widget.bottombar.LiquidBottomTabs
+import com.rawsmusic.core.ui.systemui.rawNavigationBarsPadding
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Music
 import top.yukonga.miuix.kmp.icon.extended.Search
@@ -119,6 +123,7 @@ fun AppMainLayout(
                 NavScene.USB_DAC_SETTINGS,
                 NavScene.WEBDAV_BACKUP,
                 NavScene.SCAN_SETTINGS,
+                NavScene.TRANSITION_SETTINGS,
                 NavScene.ABOUT -> 4
             }
         }
@@ -128,26 +133,70 @@ fun AppMainLayout(
     }
 
     val backdrop = rememberLayerBackdrop()
+    val rawFlowModeState = rememberRawFlowModeState()
+    val rawFlowSceneActive by remember {
+        derivedStateOf { navState.currentScene.supportsRawFlowBackground() }
+    }
+    val rawFlowMotionActive by remember {
+        derivedStateOf {
+            navData.uiForeground &&
+                rawFlowSceneActive &&
+                !navState.isTransitioning &&
+                !navState.isDraggingBack &&
+                !navState.isAnimatingBack
+        }
+    }
+    val bottomChromeScrollState = remember { BottomChromeScrollState() }
+    LaunchedEffect(navState.currentScene) {
+        bottomChromeScrollState.reset()
+    }
 
-    Box(
-        modifier = Modifier.fillMaxSize()
-    ) {
-        // 主内容（导航），应用 layerBackdrop 以捕获背景供液态玻璃使用
-        CompositionLocalProvider(LocalAppBackdrop provides backdrop) {
-            ComposeNavHost(
-                state = navState,
-                callbacks = navCallbacks,
-                data = navData,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .layerBackdrop(backdrop),
-                externalPageRenderer = externalPageRenderer
-            )
+    CompositionLocalProvider(LocalBottomChromeScrollState provides bottomChromeScrollState) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 主内容（背景 + 导航）一起进入 layerBackdrop，保证底栏液态玻璃能采到流光背景。
+        ProvideRawFlowMode(rawFlowModeState) {
+            CompositionLocalProvider(LocalAppBackdrop provides backdrop) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .layerBackdrop(backdrop)
+                ) {
+                    if (rawFlowSceneActive) {
+                        RawFlowBackground(
+                            mode = rawFlowModeState.value,
+                            sourceCoverKey = navData.currentSong?.coverKey,
+                            modifier = Modifier.fillMaxSize(),
+                            active = navData.uiForeground,
+                            motionEnabled = rawFlowMotionActive,
+                            frameIntervalMs = MAIN_RAW_FLOW_FRAME_INTERVAL_MS
+                        )
+                    }
+
+                    ComposeNavHost(
+                        state = navState,
+                        callbacks = navCallbacks,
+                        data = navData,
+                        modifier = Modifier.fillMaxSize(),
+                        externalPageRenderer = externalPageRenderer
+                    )
+                }
+            }
         }
 
         // 设置页由独立 Activity 承载；若旧路径误把主导航切到设置场景，也不显示底部栏。
         if (!isSettingsScene) {
             val showBottomChrome = !navData.bottomChromeHidden
+            val chromeHidden = bottomChromeScrollState.hidden
+            val miniPlayerOffsetY by animateDpAsState(
+                targetValue = if (chromeHidden) (-12).dp else (-76).dp,
+                animationSpec = tween(durationMillis = 240),
+                label = "mini-player-chrome-offset"
+            )
+            val bottomTabsOffsetY by animateDpAsState(
+                targetValue = if (chromeHidden) 84.dp else (-12).dp,
+                animationSpec = tween(durationMillis = 240),
+                label = "bottom-tabs-scroll-offset"
+            )
             // MiniPlayer：在导航栏上方，所有页面可见
             val hasSong = navData.miniPlayerTitle.isNotBlank() && navData.miniPlayerTitle != "暂无音乐播放"
             AnimatedVisibility(
@@ -166,6 +215,7 @@ fun AppMainLayout(
                     isPlaying = navData.miniPlayerIsPlaying,
                     progress = navData.miniPlayerProgress,
                     coverPath = miniCoverPath,
+                    animateArtwork = false,
                     backdrop = backdrop,
                     onPlayPause = navCallbacks.onMiniPlayerPlayPause,
                     onSkipPrevious = navCallbacks.onMiniPlayerPrevious,
@@ -174,8 +224,8 @@ fun AppMainLayout(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 36.dp)
-                        .offset(y = (-76).dp)
-                        .windowInsetsPadding(WindowInsets.navigationBars)
+                        .offset(y = miniPlayerOffsetY)
+                        .rawNavigationBarsPadding(reduceBy = 12.dp)
                 )
             }
 
@@ -204,8 +254,8 @@ fun AppMainLayout(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 36.dp)
-                        .offset(y = (-12).dp)
-                        .windowInsetsPadding(WindowInsets.navigationBars)
+                        .offset(y = bottomTabsOffsetY)
+                        .rawNavigationBarsPadding(reduceBy = 12.dp)
                 ) {
                 // Tab 0: 主界面
                 LiquidBottomTab({ navState.navigateTo(NavScene.HOME) }) {
@@ -279,6 +329,35 @@ fun AppMainLayout(
                 }
             }
         }
+    }
+    }
+}
+
+private const val MAIN_RAW_FLOW_FRAME_INTERVAL_MS = 250L
+
+private fun NavScene.supportsRawFlowBackground(): Boolean {
+    return when (this) {
+        NavScene.HOME,
+        NavScene.SONGS,
+        NavScene.FOLDERS,
+        NavScene.FOLDER_HIERARCHY,
+        NavScene.ALBUMS,
+        NavScene.ALBUM_DETAIL,
+        NavScene.ARTISTS,
+        NavScene.ARTIST_DETAIL,
+        NavScene.PLAYLISTS,
+        NavScene.PLAYLIST_DETAIL,
+        NavScene.QUEUE,
+        NavScene.RECENTLY_ADDED,
+        NavScene.DAILY_20,
+        NavScene.GENRE,
+        NavScene.YEAR,
+        NavScene.COMPOSER,
+        NavScene.GENRE_DETAIL,
+        NavScene.YEAR_DETAIL,
+        NavScene.COMPOSER_DETAIL,
+        NavScene.SEARCH -> true
+        else -> false
     }
 }
 

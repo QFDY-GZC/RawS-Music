@@ -27,7 +27,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.scene.CoverTransitionTarget
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
+import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.core.ui.widget.player.AlbumDetailPanel
 import com.rawsmusic.core.ui.widget.player.FullCoverPage
 import com.rawsmusic.core.ui.widget.player.ImmersiveAlbumInfoPage
@@ -41,6 +43,8 @@ import com.rawsmusic.core.ui.widget.player.StandardPlayerBackdrop
 import com.rawsmusic.core.ui.widget.player.rememberCoverAccentColor
 import io.github.proify.lyricon.lyric.model.Song
 
+// The ordinary player should keep its own artwork visible while returning to the main page.
+// The list-to-player shared handoff made the default artwork disappear during the gesture.
 private const val ENABLE_PLAYER_LIST_COVER_TRANSITION = false
 
 /**
@@ -111,7 +115,7 @@ fun ComposePlayerContainer(
     sourceCoverTarget: CoverTransitionTarget? = null,
     modifier: Modifier = Modifier
 ) {
-    val resolvedCoverPath = currentSong.resolveArtworkKey(coverPath)
+    val resolvedCoverPath = currentSong.resolvePlaybackArtworkKey(coverPath)
     val resolvedAlbumCoverPath = albumCoverPath?.takeIf { it.isNotBlank() } ?: resolvedCoverPath
 
     if (isImmersiveEnabled) {
@@ -146,6 +150,7 @@ fun ComposePlayerContainer(
             onPlayPause = onPlayPause,
             onNext = onNext,
             onPlayMode = onPlayMode,
+            onOpenLyric = onOpenLyric,
             audioInfoText = audioInfoText,
             onAudioQuality = onAudioQuality,
             onAudioQualityLongPress = onAudioQualityLongPress,
@@ -216,6 +221,7 @@ fun ComposePlayerContainer(
             controllerProgress = controllerProgress,
             controllerIsTransitioning = controllerIsTransitioning,
             sourceCoverTarget = sourceCoverTarget,
+            onModalVisibleChange = onModalVisibleChange,
             modifier = modifier
         )
     }
@@ -253,6 +259,7 @@ private fun ImmersiveComposePlayerContainer(
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onPlayMode: () -> Unit,
+    onOpenLyric: () -> Unit,
     audioInfoText: String = "",
     onAudioQuality: () -> Unit = {},
     onAudioQualityLongPress: () -> Unit = onAudioQuality,
@@ -328,6 +335,7 @@ private fun ImmersiveComposePlayerContainer(
                     onAudioQuality = onAudioQuality,
                     onAudioQualityLongPress = onAudioQualityLongPress,
                     onMorePanelVisibleChange = onModalVisibleChange,
+                    onOpenLyric = onOpenLyric,
                     onLyricSeek = onLyricSeek,
                     onLyricTranslationToggle = onLyricTranslationToggle,
                     onAlbumSongClick = onAlbumSongClick,
@@ -365,7 +373,7 @@ private fun ImmersiveComposePlayerContainer(
             modifier = Modifier.fillMaxSize()
         ) {
             FullCoverPage(
-                coverPath = currentSong?.albumArtPath,
+                coverPath = coverPath,
                 title = currentSong?.title ?: "",
                 onBack = { sceneState.backToPlayer() }
             )
@@ -431,6 +439,7 @@ private fun StandardComposePlayerContainer(
     controllerProgress: Float,
     controllerIsTransitioning: Boolean,
     sourceCoverTarget: CoverTransitionTarget?,
+    onModalVisibleChange: (Boolean) -> Unit,
     modifier: Modifier
 ) {
     val controllerSceneForVisibility = if (controllerIsTransitioning) {
@@ -509,6 +518,7 @@ private fun StandardComposePlayerContainer(
                 onClosePlayer = onClosePlayer,
                 onBackToPlayer = onBackToPlayer,
                 sourceCoverTarget = sourceCoverTarget,
+                onModalVisibleChange = onModalVisibleChange,
                 drawerProgress = drawerProgress,
                 modifier = Modifier
                     .fillMaxSize()
@@ -610,7 +620,7 @@ private fun StandardComposePlayerContainer(
             modifier = Modifier.fillMaxSize()
         ) {
             FullCoverPage(
-                coverPath = currentSong?.albumArtPath,
+                coverPath = coverPath,
                 title = currentSong?.title ?: "",
                 onBack = { sceneState.backToPlayer() }
             )
@@ -677,6 +687,7 @@ private fun StandardPlayerLyricStack(
     onClosePlayer: () -> Unit,
     onBackToPlayer: () -> Unit,
     sourceCoverTarget: CoverTransitionTarget?,
+    onModalVisibleChange: (Boolean) -> Unit,
     drawerProgress: Float,
     modifier: Modifier = Modifier
 ) {
@@ -817,32 +828,6 @@ private fun StandardPlayerLyricStack(
                     }
             )
         }
-        if (playerLyricTransition && !coverPath.isNullOrBlank()) {
-            val f = if (fromScene == PlayerSceneController.Scene.PLAYER) progress.coerceIn(0f, 1f) else 1f - progress.coerceIn(0f, 1f)
-            val rect = lerpRect(playerCoverRect, lyricCoverRect, f)
-            Box(
-                modifier = Modifier
-                    .offset { IntOffset(rect.left.toInt(), rect.top.toInt()) }
-                    .size(
-                        width = with(density) { rect.width().toDp() },
-                        height = with(density) { rect.height().toDp() }
-                    )
-                    .graphicsLayer {
-                        alpha = 1f
-                        clip = true
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(lerpFloat(28, 24, f).dp)
-                    }
-            ) {
-                BitmapImage(
-                    key = coverPath,
-                    contentDescription = currentSong?.displayName,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                    targetWidth = 1080,
-                    targetHeight = 1080
-                )
-            }
-        }
         if (mainSharedTransition) {
             val f = if (fromScene == PlayerSceneController.Scene.MAIN) progress.coerceIn(0f, 1f) else 1f - progress.coerceIn(0f, 1f)
             val rect = lerpRect(source, playerCoverRect, f)
@@ -871,7 +856,62 @@ private fun StandardPlayerLyricStack(
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                     targetWidth = 1080,
-                    targetHeight = 1080
+                    targetHeight = 1080,
+                    priority = com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
+                    surface = ArtworkSurface.Playback,
+                    fadeInMillis = 0,
+                    holdPreviousOnKeyChange = false,
+                    fadeOnBitmapChange = false
+                )
+            }
+        }
+
+        if (playerLyricTransition) {
+            val f = if (fromScene == PlayerSceneController.Scene.PLAYER) {
+                progress.coerceIn(0f, 1f)
+            } else {
+                1f - progress.coerceIn(0f, 1f)
+            }
+            val startRect = if (fromScene == PlayerSceneController.Scene.PLAYER) {
+                playerCoverRect
+            } else {
+                lyricCoverRect
+            }
+            val endRect = if (fromScene == PlayerSceneController.Scene.PLAYER) {
+                lyricCoverRect
+            } else {
+                playerCoverRect
+            }
+            val rect = lerpRect(startRect, endRect, f)
+            val startRadius = if (fromScene == PlayerSceneController.Scene.PLAYER) 28f else 18f
+            val endRadius = if (fromScene == PlayerSceneController.Scene.PLAYER) 18f else 28f
+            Box(
+                modifier = Modifier
+                    .offset { IntOffset(rect.left.toInt(), rect.top.toInt()) }
+                    .size(
+                        width = with(density) { rect.width().toDp() },
+                        height = with(density) { rect.height().toDp() }
+                    )
+                    .graphicsLayer {
+                        clip = true
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(
+                            lerpFloat(startRadius, endRadius, f).dp
+                        )
+                    }
+            ) {
+                BitmapImage(
+                    key = coverPath.orEmpty(),
+                    contentDescription = currentSong?.displayName,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                    targetWidth = 1080,
+                    targetHeight = 1080,
+                    priority = com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
+                    surface = ArtworkSurface.Playback,
+                    fadeInMillis = 0,
+                    holdPreviousOnKeyChange = true,
+                    fadeOnBitmapChange = false,
+                    freezeBitmapUpdates = true
                 )
             }
         }
@@ -929,17 +969,4 @@ private fun PlayerSceneController.Scene.toPlayerScene(): PlayerScene = when (thi
     PlayerSceneController.Scene.LYRIC -> PlayerScene.LYRIC
     PlayerSceneController.Scene.QUEUE -> PlayerScene.QUEUE
     PlayerSceneController.Scene.ALBUM_DETAIL -> PlayerScene.ALBUM_DETAIL
-}
-
-private fun AudioFile?.resolveArtworkKey(fallback: String?): String? {
-    val song = this
-    return song?.albumArtPath?.takeIf { it.isNotBlank() }
-        ?: fallback?.takeIf { it.isNotBlank() }
-        ?: song?.path?.takeIf { it.isLocalArtworkSource() }
-}
-
-private fun String.isLocalArtworkSource(): Boolean {
-    return isNotBlank() &&
-        !startsWith("http://", ignoreCase = true) &&
-        !startsWith("https://", ignoreCase = true)
 }

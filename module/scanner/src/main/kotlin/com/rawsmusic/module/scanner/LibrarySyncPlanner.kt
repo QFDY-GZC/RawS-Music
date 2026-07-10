@@ -12,6 +12,59 @@ object LibrarySyncPlanner {
         val hasChanges: Boolean get() = upserts.isNotEmpty() || deletes.isNotEmpty()
     }
 
+
+    /**
+     * Quick scan must make new files visible immediately, but it must not downgrade
+     * already-enriched records with placeholder technical fields. Existing rows are
+     * only touched when the underlying file changed; advanced metadata is preserved
+     * until the lazy enrich pass replaces it with real values.
+     */
+    fun calculateQuickVisibleUpserts(oldSongs: List<AudioFile>, quickSongs: List<AudioFile>): List<AudioFile> {
+        if (quickSongs.isEmpty()) return emptyList()
+        val oldByKey = oldSongs.associateBy { it.stableLibraryKey() }
+        val upserts = ArrayList<AudioFile>()
+
+        for (quick in quickSongs.distinctBy { it.stableLibraryKey() }) {
+            val old = oldByKey[quick.stableLibraryKey()]
+            if (old == null) {
+                upserts += quick
+                continue
+            }
+
+            val fileChanged = old.fileSize != quick.fileSize || old.dateModified != quick.dateModified
+            if (fileChanged) {
+                upserts += mergeQuickWithExisting(old, quick)
+            }
+        }
+        return upserts
+    }
+
+    private fun mergeQuickWithExisting(old: AudioFile, quick: AudioFile): AudioFile {
+        return quick.copy(
+            id = old.id,
+            title = quick.title.ifBlank { old.title },
+            artist = quick.artist.ifBlank { old.artist },
+            album = quick.album.ifBlank { old.album },
+            albumArtist = old.albumArtist.ifBlank { quick.albumArtist },
+            sampleRate = old.sampleRate.takeIf { it > 0 } ?: quick.sampleRate,
+            bitRate = old.bitRate.takeIf { it > 0 } ?: quick.bitRate,
+            bitsPerSample = old.bitsPerSample.takeIf { it > 0 } ?: quick.bitsPerSample,
+            channelCount = old.channelCount.takeIf { it > 0 } ?: quick.channelCount,
+            format = old.format.ifBlank { quick.format },
+            encodingFormat = old.encodingFormat.ifBlank { quick.encodingFormat },
+            genre = old.genre.ifBlank { quick.genre },
+            composer = old.composer.ifBlank { quick.composer },
+            discNumber = old.discNumber.takeIf { it > 0 } ?: quick.discNumber,
+            bpm = old.bpm.takeIf { it > 0 } ?: quick.bpm,
+            albumArtPath = old.albumArtPath.ifBlank { quick.albumArtPath },
+            trackGain = old.trackGain.takeIf { it != 0f } ?: quick.trackGain,
+            trackPeak = old.trackPeak.takeIf { it != 1.0f } ?: quick.trackPeak,
+            albumGain = old.albumGain.takeIf { it != 0f } ?: quick.albumGain,
+            albumPeak = old.albumPeak.takeIf { it != 1.0f } ?: quick.albumPeak,
+            isFavorite = old.isFavorite
+        )
+    }
+
     fun calculateDelta(oldSongs: List<AudioFile>, newSongs: List<AudioFile>): Delta {
         val oldByKey = oldSongs.associateBy { it.stableLibraryKey() }
         val newByKey = newSongs.associateBy { it.stableLibraryKey() }

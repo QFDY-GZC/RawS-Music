@@ -126,14 +126,28 @@ object ScanDispatcher {
             when (event) {
                 is LibraryScanCoordinator.Event.ScannerEvent -> notifyFromTwoStageEvent(event.event)
                 is LibraryScanCoordinator.Event.DatabaseSyncStarted -> {
-                    ScanStateBus.notifyScanning(0, event.newCount, "同步数据库：旧 ${event.oldCount}，新 ${event.newCount}")
+                    val message = when (event.phase) {
+                        LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> "快速结果写入数据库：${event.newCount} 首"
+                        LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> "后台补全写入数据库：${event.newCount} 首"
+                        LibraryScanCoordinator.SyncPhase.FINAL -> "最终同步数据库：${event.newCount} 首"
+                    }
+                    ScanStateBus.notifyScanning(0, event.newCount, message)
                 }
                 is LibraryScanCoordinator.Event.DatabaseSyncCompleted -> {
+                    val message = when (event.phase) {
+                        LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> "快速结果已显示：新增/变更 ${event.upserted} 首"
+                        LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> "后台补全已写入：${event.upserted} 首"
+                        LibraryScanCoordinator.SyncPhase.FINAL -> "数据库同步完成：更新 ${event.upserted}，删除 ${event.deleted}，未变 ${event.unchanged}"
+                    }
                     ScanStateBus.notifyScanning(
                         event.upserted + event.deleted,
                         event.upserted + event.deleted + event.unchanged,
-                        "数据库同步完成：更新 ${event.upserted}，删除 ${event.deleted}，未变 ${event.unchanged}"
+                        message
                     )
+                }
+                is LibraryScanCoordinator.Event.VisibleCompleted -> {
+                    ScanStateBus.notifyCompleted(event.found, event.timeMs)
+                    AppLogger.d(TAG, "quick visible done: found=${event.found}, elapsed=${event.timeMs}ms; enrichment continues")
                 }
                 is LibraryScanCoordinator.Event.Completed -> {
                     ScanStateBus.notifyCompleted(event.songs.size, System.currentTimeMillis() - startTime)
@@ -155,6 +169,7 @@ object ScanDispatcher {
             is TwoStageMediaScanner.Event.QuickCompleted -> ScanStateBus.notifyScanning(event.found, event.found, "快速扫描完成：${event.found} 首")
             is TwoStageMediaScanner.Event.EnrichProgress -> ScanStateBus.notifyScanning(event.processed, event.total, "补全音频信息：${event.processed}/${event.total}，缓存 ${event.cacheHits}")
             is TwoStageMediaScanner.Event.SongEnriched -> Unit
+            is TwoStageMediaScanner.Event.EnrichBatchCompleted -> Unit
             is TwoStageMediaScanner.Event.FullyCompleted -> ScanStateBus.notifyScanning(event.found, event.found, "准备同步数据库：${event.found} 首")
             is TwoStageMediaScanner.Event.Error -> ScanStateBus.notifyError(event.message)
         }

@@ -25,6 +25,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.module.data.prefs.AppPreferences
+import androidx.compose.ui.res.stringResource
+import com.rawsmusic.R
 
 @Composable
 fun LiquidGlassAudioEffectsScreen(
@@ -43,61 +45,61 @@ fun LiquidGlassAudioEffectsScreen(
 ) {
     var peqEnabled by remember { mutableStateOf(AppPreferences.PEQ.isEnabled) }
     var compressorEnabled by remember { mutableStateOf(AppPreferences.Compressor.isEnabled) }
-    SettingsPage(title = "音效设置", onBack = onBack) {
-        SettingsSection("均衡") {
-            SwitchRow("启用参量均衡器", peqEnabled) { checked ->
+    SettingsPage(title = stringResource(R.string.settings_audio_effects_title), onBack = onBack) {
+        SettingsSection(stringResource(R.string.settings_effects_eq)) {
+            SwitchRow(stringResource(R.string.settings_effects_enable_peq), peqEnabled) { checked ->
                 peqEnabled = checked
                 onTogglePEQ(checked)
             }
             SettingsNavigationEntry(
-                title = "参量均衡器",
-                description = "滤波器、前级增益、AutoEQ 与频响曲线",
+                title = stringResource(R.string.settings_effects_peq_title),
+                description = stringResource(R.string.settings_effects_peq_desc),
                 onClick = onNavigateToPEQ
             )
             SettingsNavigationEntry(
-                title = "图形均衡器",
-                description = "10-40 段固定频率滑块式均衡、内置预设",
+                title = stringResource(R.string.settings_effects_graphic_eq_title),
+                description = stringResource(R.string.settings_effects_graphic_eq_desc),
                 onClick = onNavigateToGraphicEQ
             )
         }
 
-        SettingsSection("动态") {
-            SwitchRow("启用压限器", compressorEnabled) { checked ->
+        SettingsSection(stringResource(R.string.settings_effects_dynamic)) {
+            SwitchRow(stringResource(R.string.settings_effects_enable_compressor), compressorEnabled) { checked ->
                 compressorEnabled = checked
                 onToggleCompressor(checked)
             }
             SettingsNavigationEntry(
-                title = "压限器",
-                description = "阈值、压缩比、启动释放、补偿增益",
+                title = stringResource(R.string.settings_effects_compressor_title),
+                description = stringResource(R.string.settings_effects_compressor_desc),
                 onClick = onNavigateToCompressor
             )
         }
 
-        SettingsSection("频率增强") {
+        SettingsSection(stringResource(R.string.settings_effects_frequency)) {
             SettingsNavigationEntry(
-                title = "低音 / 高音增强",
-                description = "低频架、高频架和转折频率",
+                title = stringResource(R.string.settings_effects_bass_treble_title),
+                description = stringResource(R.string.settings_effects_bass_treble_desc),
                 onClick = onNavigateToBassTreble
             )
         }
 
-        SettingsSection("空间") {
+        SettingsSection(stringResource(R.string.settings_effects_space)) {
             SettingsNavigationEntry(
-                title = "360° 环绕音",
-                description = "水平面双耳渲染、强度和旋转速度",
+                title = stringResource(R.string.settings_effects_surround360_title),
+                description = stringResource(R.string.settings_effects_surround360_desc),
                 onClick = onNavigateToSurround360
             )
             SettingsNavigationEntry(
-                title = "360° 全景音",
-                description = "3D 方位、仰角、反射和空间混响",
+                title = stringResource(R.string.settings_effects_panoramic360_title),
+                description = stringResource(R.string.settings_effects_panoramic360_desc),
                 onClick = onNavigateToPanoramic360
             )
         }
 
-        SettingsSection("立体声") {
+        SettingsSection(stringResource(R.string.settings_effects_stereo)) {
             SettingsNavigationEntry(
-                title = "立体声扩展",
-                description = "声场宽度、虚拟器和互馈 Crossfeed",
+                title = stringResource(R.string.settings_effects_spatial_title),
+                description = stringResource(R.string.settings_effects_spatial_desc),
                 onClick = onNavigateToSpatialSound
             )
         }

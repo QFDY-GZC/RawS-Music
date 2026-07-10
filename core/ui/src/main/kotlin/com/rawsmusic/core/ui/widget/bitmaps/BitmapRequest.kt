@@ -10,8 +10,10 @@ import android.graphics.Bitmap
  *                                  NETWORK
  */
 class BitmapRequest(
-    /** 唯一标识（albumId 或 filePath） */
+    /** Provider/cache identity. In file-identity mode this is usually the same as [decodeKey]. */
     val key: String,
+    /** Actual source/version key used to open/decode the artwork source. */
+    val decodeKey: String = key,
     /** 目标宽度 */
     val targetWidth: Int,
     /** 目标高度 */
@@ -19,7 +21,11 @@ class BitmapRequest(
     /** 优先级（越小越优先） */
     var priority: Priority = Priority.LOADING_LIST,
     /** 加载完成回调 */
-    val callback: ((Bitmap?) -> Unit)? = null
+    val callback: ((Bitmap?) -> Unit)? = null,
+    /** Lifecycle surface: Project-style owner deciding whether source probing is allowed. */
+    val surface: ArtworkSurface = ArtworkSurface.fromPriority(priority),
+    /** Source/version/bucket token used to reject stale async artwork callbacks. */
+    val artworkToken: ArtworkAcceptToken
 ) {
     /** 优先级 */
     enum class Priority(val level: Int) {
@@ -63,6 +69,17 @@ class BitmapRequest(
     @Volatile
     internal var keepAliveOnCancel: Boolean = false
 
+    /**
+     * Power-list viewport guard. Visible list artwork is only useful while its item is still
+     * inside the current viewport. Worker threads check this before decoding so fast scrolls or
+     * page transitions do not keep decoding old covers in the background.
+     */
+    @Volatile
+    internal var viewportRequired: Boolean = false
+
+    @Volatile
+    internal var viewportGeneration: Long = 0L
+
     /** 计算后的 size-slot bucket */
     val bucket: Int by lazy {
         SizeSlotCache.computeBucket(targetWidth, targetHeight)
@@ -72,6 +89,10 @@ class BitmapRequest(
     val cacheKey: String by lazy {
         "${key}_${bucket}"
     }
+
+    /** Queue/in-flight key. Includes record revision so stale decodes cannot share callbacks. */
+    val inFlightKey: String
+        get() = artworkToken.flightKey
 
     /**
      * 状态转换
@@ -94,11 +115,12 @@ class BitmapRequest(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is BitmapRequest) return false
-        return key == other.key && targetWidth == other.targetWidth && targetHeight == other.targetHeight
+        return key == other.key && decodeKey == other.decodeKey && targetWidth == other.targetWidth && targetHeight == other.targetHeight
     }
 
     override fun hashCode(): Int {
         var result = key.hashCode()
+        result = 31 * result + decodeKey.hashCode()
         result = 31 * result + targetWidth
         result = 31 * result + targetHeight
         return result

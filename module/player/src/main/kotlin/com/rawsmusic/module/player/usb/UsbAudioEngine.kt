@@ -10,6 +10,15 @@ object UsbAudioEngine {
 
     internal const val TAG = "UsbAudioEngine"
 
+    @Volatile
+    private var nativeLibraryLoaded: Boolean = false
+
+    @Volatile
+    private var hidNativeAvailable: Boolean = true
+
+    @Volatile
+    private var backgroundPlaybackNativeAvailable: Boolean = true
+
     const val ERR_NOT_INITIALIZED = -1001
     const val ERR_NOT_RUNNING = -1003
     const val ERR_TRANSPORT_LOST = -1004
@@ -63,9 +72,54 @@ object UsbAudioEngine {
     init {
         try {
             System.loadLibrary("rawsmusic_usb")
+            nativeLibraryLoaded = true
             AppLogger.d(TAG, "rawsmusic_usb library loaded")
         } catch (e: UnsatisfiedLinkError) {
+            nativeLibraryLoaded = false
+            hidNativeAvailable = false
+            backgroundPlaybackNativeAvailable = false
             AppLogger.e(TAG, "Failed to load rawsmusic_usb", e)
+        }
+    }
+
+    fun isNativeLibraryLoaded(): Boolean = nativeLibraryLoaded
+
+    fun isHidNativeAvailable(): Boolean = nativeLibraryLoaded && hidNativeAvailable
+
+    fun isBackgroundPlaybackNativeAvailable(): Boolean = nativeLibraryLoaded && backgroundPlaybackNativeAvailable
+
+    private fun markHidNativeUnavailable(api: String, t: Throwable) {
+        hidNativeAvailable = false
+        AppLogger.w(TAG, "USB HID native bridge unavailable at $api; HID remote keys disabled", t)
+    }
+
+    private fun markBackgroundPlaybackNativeUnavailable(api: String, t: Throwable) {
+        backgroundPlaybackNativeAvailable = false
+        AppLogger.w(
+            TAG,
+            "USB background native guard unavailable at $api; native ColorOS/Hans guard disabled, " +
+                "Java foreground service/media identity/wakelock protection remains active",
+            t
+        )
+    }
+
+    /**
+     * Optional native background guard used only for USB-exclusive background hardening.
+     * Missing JNI symbols must never crash Activity lifecycle callbacks.
+     */
+    fun setBackgroundPlaybackActiveSafely(active: Boolean, reason: String = "unspecified"): Boolean {
+        if (!isBackgroundPlaybackNativeAvailable()) {
+            return false
+        }
+        return try {
+            nativeSetBackgroundPlaybackActive(active)
+            true
+        } catch (e: UnsatisfiedLinkError) {
+            markBackgroundPlaybackNativeUnavailable("nativeSetBackgroundPlaybackActive($active,$reason)", e)
+            false
+        } catch (t: Throwable) {
+            AppLogger.w(TAG, "nativeSetBackgroundPlaybackActive($active) failed: reason=$reason", t)
+            false
         }
     }
 
@@ -327,6 +381,12 @@ object UsbAudioEngine {
     external fun nativeStopAndFlush(handle: Long)
 
     external fun nativeClose(handle: Long)
+
+    /**
+     * 配置 native breadcrumb 日志路径，用于突发重启后的崩溃定位。
+     * Kotlin 启动 USB 独占管理器时调用。
+     */
+    external fun nativeSetBreadcrumbPath(path: String)
 
     // ========== 当前状态跟踪 ==========
 
@@ -1207,7 +1267,37 @@ object UsbAudioEngine {
      */
     fun setHidKeyEventListener(listener: HidKeyEventListener?) {
         hidKeyEventListener = listener
-        nativeSetHidCallback(listener?.let { HidCallbackWrapper(it) })
+        if (!isHidNativeAvailable()) {
+            return
+        }
+        try {
+            nativeSetHidCallback(listener?.let { HidCallbackWrapper(it) })
+        } catch (e: UnsatisfiedLinkError) {
+            markHidNativeUnavailable("nativeSetHidCallback", e)
+        } catch (t: Throwable) {
+            AppLogger.w(TAG, "setHidKeyEventListener failed", t)
+        }
+    }
+
+    /**
+     * Initialize HID JNI (call once at startup).
+     * HID is optional; missing JNI symbols must never crash cold app launch.
+     */
+    fun initHidSafely(): Boolean {
+        if (!isHidNativeAvailable()) {
+            AppLogger.w(TAG, "Skipping HID init: rawsmusic_usb/HID bridge unavailable")
+            return false
+        }
+        return try {
+            nativeInitHid()
+            true
+        } catch (e: UnsatisfiedLinkError) {
+            markHidNativeUnavailable("nativeInitHid", e)
+            false
+        } catch (t: Throwable) {
+            AppLogger.w(TAG, "nativeInitHid failed", t)
+            false
+        }
     }
 
     /**
@@ -1250,14 +1340,30 @@ object UsbAudioEngine {
             AppLogger.w(TAG, "Cannot start HID: not initialized")
             return false
         }
-        return nativeStartHidListening(h)
+        if (!isHidNativeAvailable()) return false
+        return try {
+            nativeStartHidListening(h)
+        } catch (e: UnsatisfiedLinkError) {
+            markHidNativeUnavailable("nativeStartHidListening", e)
+            false
+        } catch (t: Throwable) {
+            AppLogger.w(TAG, "nativeStartHidListening failed", t)
+            false
+        }
     }
 
     /**
      * Stop HID listening
      */
     fun stopHidListening() {
-        nativeStopHidListening(currentHandle)
+        if (!isHidNativeAvailable()) return
+        try {
+            nativeStopHidListening(currentHandle)
+        } catch (e: UnsatisfiedLinkError) {
+            markHidNativeUnavailable("nativeStopHidListening", e)
+        } catch (t: Throwable) {
+            AppLogger.w(TAG, "nativeStopHidListening failed", t)
+        }
     }
 
     /**
@@ -1265,8 +1371,29 @@ object UsbAudioEngine {
      */
     fun hasHidInterface(): Boolean {
         val h = currentHandle
-        if (h == 0L || !initialized) return false
-        return nativeHasHidInterface(h)
+        if (h == 0L || !initialized || !isHidNativeAvailable()) return false
+        return try {
+            nativeHasHidInterface(h)
+        } catch (e: UnsatisfiedLinkError) {
+            markHidNativeUnavailable("nativeHasHidInterface", e)
+            false
+        } catch (t: Throwable) {
+            AppLogger.w(TAG, "nativeHasHidInterface failed", t)
+            false
+        }
+    }
+
+    fun isHidListening(): Boolean {
+        if (!isHidNativeAvailable()) return false
+        return try {
+            nativeIsHidListening()
+        } catch (e: UnsatisfiedLinkError) {
+            markHidNativeUnavailable("nativeIsHidListening", e)
+            false
+        } catch (t: Throwable) {
+            AppLogger.w(TAG, "nativeIsHidListening failed", t)
+            false
+        }
     }
 
     /**

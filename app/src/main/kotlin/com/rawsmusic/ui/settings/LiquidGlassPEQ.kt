@@ -49,10 +49,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rawsmusic.R
 import com.rawsmusic.core.ui.widget.PEQCurveColors
 import com.rawsmusic.core.ui.widget.PEQCurveView
 import com.rawsmusic.module.player.dsp.AutoEqCacheManager
@@ -126,10 +128,10 @@ fun LiquidGlassPEQScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = onBack) {
-                Text("← 返回", color = PEQUiColors.Accent, fontSize = 16.sp)
+                Text(stringResource(R.string.settings_back_with_arrow), color = PEQUiColors.Accent, fontSize = 16.sp)
             }
             Text(
-                "参量均衡器",
+                stringResource(R.string.settings_peq_title),
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Medium,
                 color = PEQUiColors.TextPrimary
@@ -139,7 +141,7 @@ fun LiquidGlassPEQScreen(
                 IconButton(onClick = { showAutoEqDialog = true }) {
                     Icon(
                         Icons.Default.List,
-                        contentDescription = "AutoEq",
+                        contentDescription = stringResource(R.string.settings_peq_autoeq),
                         tint = PEQUiColors.Accent,
                         modifier = Modifier.size(20.dp)
                     )
@@ -149,7 +151,7 @@ fun LiquidGlassPEQScreen(
                     IconButton(onClick = { showMoreMenu = true }) {
                         Icon(
                             Icons.Default.MoreVert,
-                            contentDescription = "更多选项",
+                            contentDescription = stringResource(R.string.settings_more_options),
                             tint = PEQUiColors.TextSecondary,
                             modifier = Modifier.size(20.dp)
                         )
@@ -163,7 +165,7 @@ fun LiquidGlassPEQScreen(
                     ) {
                         // 重置选项
                         DropdownMenuItem(
-                            text = { Text("重置默认", color = PEQUiColors.TextPrimary) },
+                            text = { Text(stringResource(R.string.settings_reset_default), color = PEQUiColors.TextPrimary) },
                             onClick = {
                                 peqController.resetToDefault()
                                 showMoreMenu = false
@@ -171,7 +173,7 @@ fun LiquidGlassPEQScreen(
                         )
                         // 导出预设选项
                         DropdownMenuItem(
-                            text = { Text("导出预设", color = PEQUiColors.TextPrimary) },
+                            text = { Text(stringResource(R.string.settings_export_preset), color = PEQUiColors.TextPrimary) },
                             onClick = {
                                 showExportDialog = true
                                 showMoreMenu = false
@@ -179,7 +181,7 @@ fun LiquidGlassPEQScreen(
                         )
                         // 导入预设选项
                         DropdownMenuItem(
-                            text = { Text("导入预设", color = PEQUiColors.TextPrimary) },
+                            text = { Text(stringResource(R.string.settings_import_preset), color = PEQUiColors.TextPrimary) },
                             onClick = {
                                 showImportDialog = true
                                 showMoreMenu = false
@@ -225,7 +227,7 @@ fun LiquidGlassPEQScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "Preamp",
+                stringResource(R.string.settings_peq_preamp),
                 color = PEQUiColors.TextSecondary,
                 fontSize = 13.sp,
                 modifier = Modifier.width(60.dp)
@@ -242,7 +244,7 @@ fun LiquidGlassPEQScreen(
                 )
             )
             Text(
-                String.format("%+.1f dB", preamp),
+                stringResource(R.string.settings_db_value_signed_one_decimal, preamp),
                 color = PEQUiColors.Accent,
                 fontSize = 11.sp,
                 modifier = Modifier.width(56.dp),
@@ -260,7 +262,7 @@ fun LiquidGlassPEQScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "段数",
+                stringResource(R.string.settings_peq_band_count),
                 color = PEQUiColors.TextSecondary,
                 fontSize = 13.sp,
                 modifier = Modifier.width(52.dp)
@@ -288,7 +290,7 @@ fun LiquidGlassPEQScreen(
             )
 
             Text(
-                "${tempBandCount}段",
+                stringResource(R.string.settings_peq_band_count_value, tempBandCount),
                 color = PEQUiColors.Accent,
                 fontSize = 13.sp,
                 modifier = Modifier.width(48.dp)
@@ -310,7 +312,7 @@ fun LiquidGlassPEQScreen(
                     }
                 ) {
                     Text(
-                        "${count}段",
+                        stringResource(R.string.settings_peq_band_count_value, count),
                         color = if (bandCount == count) PEQUiColors.Accent else PEQUiColors.TextSecondary,
                         fontSize = 12.sp
                     )
@@ -325,11 +327,11 @@ fun LiquidGlassPEQScreen(
                 .padding(horizontal = 4.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("#", color = PEQUiColors.TextSecondary, fontSize = 11.sp, modifier = Modifier.width(28.dp))
-            Text("类型", color = PEQUiColors.TextSecondary, fontSize = 11.sp, modifier = Modifier.width(64.dp))
-            Text("频率", color = PEQUiColors.TextSecondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
-            Text("增益", color = PEQUiColors.TextSecondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
-            Text("开关", color = PEQUiColors.TextSecondary, fontSize = 11.sp, modifier = Modifier.width(48.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            Text(stringResource(R.string.settings_peq_band_index), color = PEQUiColors.TextSecondary, fontSize = 11.sp, modifier = Modifier.width(28.dp))
+            Text(stringResource(R.string.settings_peq_type), color = PEQUiColors.TextSecondary, fontSize = 11.sp, modifier = Modifier.width(64.dp))
+            Text(stringResource(R.string.settings_peq_frequency), color = PEQUiColors.TextSecondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+            Text(stringResource(R.string.settings_effect_gain), color = PEQUiColors.TextSecondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+            Text(stringResource(R.string.settings_peq_enabled), color = PEQUiColors.TextSecondary, fontSize = 11.sp, modifier = Modifier.width(48.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
         }
 
         Spacer(Modifier.height(4.dp))
@@ -400,7 +402,7 @@ private fun ExportPresetDialog(
     // 创建预设对象
     val preset = remember(filters, preamp, bandCount) {
         PEQPreset(
-            name = "PEQ预设_${System.currentTimeMillis()}",
+            name = context.getString(R.string.settings_peq_default_preset_name, System.currentTimeMillis()),
             preamp = preamp,
             filters = filters,
             bandCount = bandCount
@@ -413,12 +415,12 @@ private fun ExportPresetDialog(
         onDismissRequest = onDismiss,
         containerColor = PEQUiColors.CardBackground,
         title = {
-            Text("导出预设", color = PEQUiColors.TextPrimary, fontWeight = FontWeight.Medium)
+            Text(stringResource(R.string.settings_export_preset), color = PEQUiColors.TextPrimary, fontWeight = FontWeight.Medium)
         },
         text = {
             Column {
                 Text(
-                    "预设配置已生成，请复制以下JSON文本：",
+                    stringResource(R.string.settings_peq_export_desc),
                     color = PEQUiColors.TextSecondary,
                     fontSize = 14.sp
                 )
@@ -447,7 +449,7 @@ private fun ExportPresetDialog(
                 Spacer(Modifier.height(8.dp))
                 
                 Text(
-                    "包含 ${filters.size} 个滤波器，Preamp: ${String.format("%.1f", preamp)} dB",
+                    stringResource(R.string.settings_peq_export_summary, filters.size, preamp),
                     color = PEQUiColors.TextSecondary,
                     fontSize = 12.sp
                 )
@@ -460,24 +462,24 @@ private fun ExportPresetDialog(
                         onExportToFile(presetJson)
                     }
                 ) {
-                    Text("保存到文件", color = PEQUiColors.Success)
+                    Text(stringResource(R.string.settings_save_to_file), color = PEQUiColors.Success)
                 }
                 TextButton(
                     onClick = {
                         val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                        val clip = android.content.ClipData.newPlainText("PEQ预设", presetJson)
+                        val clip = android.content.ClipData.newPlainText(context.getString(R.string.settings_peq_clip_label), presetJson)
                         clipboard.setPrimaryClip(clip)
-                        android.widget.Toast.makeText(context, "已复制到剪贴板", android.widget.Toast.LENGTH_SHORT).show()
+                        android.widget.Toast.makeText(context, context.getString(R.string.settings_copied_to_clipboard), android.widget.Toast.LENGTH_SHORT).show()
                         onDismiss()
                     }
                 ) {
-                    Text("复制", color = PEQUiColors.Accent)
+                    Text(stringResource(R.string.settings_copy), color = PEQUiColors.Accent)
                 }
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消", color = PEQUiColors.TextSecondary)
+                Text(stringResource(R.string.settings_cancel), color = PEQUiColors.TextSecondary)
             }
         }
     )
@@ -513,12 +515,12 @@ private fun ImportPresetDialog(
         onDismissRequest = onDismiss,
         containerColor = PEQUiColors.CardBackground,
         title = {
-            Text("导入预设", color = PEQUiColors.TextPrimary, fontWeight = FontWeight.Medium)
+            Text(stringResource(R.string.settings_import_preset), color = PEQUiColors.TextPrimary, fontWeight = FontWeight.Medium)
         },
         text = {
             Column {
                 Text(
-                    "请粘贴PEQ预设的JSON文本：",
+                    stringResource(R.string.settings_peq_import_desc),
                     color = PEQUiColors.TextSecondary,
                     fontSize = 14.sp
                 )
@@ -529,7 +531,7 @@ private fun ImportPresetDialog(
                     onClick = { onImportFromFile() },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("从文件导入", color = PEQUiColors.Success, fontSize = 14.sp)
+                    Text(stringResource(R.string.settings_import_from_file), color = PEQUiColors.Success, fontSize = 14.sp)
                 }
 
                 Spacer(Modifier.height(12.dp))
@@ -569,19 +571,19 @@ private fun ImportPresetDialog(
             TextButton(
                 onClick = {
                     if (importText.isBlank()) {
-                        errorMessage = "请输入预设JSON文本"
+                        errorMessage = context.getString(R.string.settings_peq_error_empty_json)
                         return@TextButton
                     }
 
                     try {
                         val preset = PEQPreset.fromJson(importText)
                         if (preset == null) {
-                            errorMessage = "无效的预设格式"
+                            errorMessage = context.getString(R.string.settings_peq_error_invalid_preset)
                             return@TextButton
                         }
 
                         if (preset.filters.isEmpty()) {
-                            errorMessage = "预设中没有滤波器"
+                            errorMessage = context.getString(R.string.settings_peq_error_no_filters)
                             return@TextButton
                         }
 
@@ -601,23 +603,23 @@ private fun ImportPresetDialog(
 
                             android.widget.Toast.makeText(
                                 context,
-                                "预设导入成功：${currentBandCount} 段",
+                                context.getString(R.string.settings_peq_import_success, currentBandCount),
                                 android.widget.Toast.LENGTH_SHORT
                             ).show()
 
                             onDismiss()
                         }
                     } catch (e: Exception) {
-                        errorMessage = "解析失败: ${e.message}"
+                        errorMessage = context.getString(R.string.settings_peq_error_parse_failed, e.message ?: "")
                     }
                 }
             ) {
-                Text("导入", color = PEQUiColors.Accent)
+                Text(stringResource(R.string.settings_import), color = PEQUiColors.Accent)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消", color = PEQUiColors.TextSecondary)
+                Text(stringResource(R.string.settings_cancel), color = PEQUiColors.TextSecondary)
             }
         }
     )
@@ -638,7 +640,7 @@ private fun ImportPresetDialog(
             containerColor = PEQUiColors.CardBackground,
             title = {
                 Text(
-                    "预设段数不同",
+                    stringResource(R.string.settings_peq_band_count_mismatch),
                     color = PEQUiColors.TextPrimary,
                     fontWeight = FontWeight.Medium
                 )
@@ -646,7 +648,7 @@ private fun ImportPresetDialog(
             text = {
                 Column {
                     Text(
-                        "该预设为 ${presetBandCount} 段，当前均衡器为 ${currentBandCount} 段。",
+                        stringResource(R.string.settings_peq_band_count_message, presetBandCount, currentBandCount),
                         color = PEQUiColors.TextSecondary,
                         fontSize = 14.sp
                     )
@@ -654,7 +656,7 @@ private fun ImportPresetDialog(
                     Spacer(Modifier.height(8.dp))
 
                     Text(
-                        "你可以保持当前段数并智能转换，也可以切换到预设原段数。",
+                        stringResource(R.string.settings_peq_band_count_action_desc),
                         color = PEQUiColors.TextSecondary,
                         fontSize = 13.sp
                     )
@@ -670,7 +672,7 @@ private fun ImportPresetDialog(
 
                             android.widget.Toast.makeText(
                                 context,
-                                "已导入并适配为当前 ${currentBandCount} 段",
+                                context.getString(R.string.settings_peq_import_adapted, currentBandCount),
                                 android.widget.Toast.LENGTH_SHORT
                             ).show()
 
@@ -680,7 +682,7 @@ private fun ImportPresetDialog(
                         }
                     ) {
                         Text(
-                            "保持当前 ${currentBandCount} 段并转换",
+                            stringResource(R.string.settings_peq_keep_current_bands, currentBandCount),
                             color = PEQUiColors.Accent
                         )
                     }
@@ -694,7 +696,7 @@ private fun ImportPresetDialog(
 
                             android.widget.Toast.makeText(
                                 context,
-                                "已切换到 ${presetBandCount} 段并导入",
+                                context.getString(R.string.settings_peq_import_switched, presetBandCount),
                                 android.widget.Toast.LENGTH_SHORT
                             ).show()
 
@@ -704,7 +706,7 @@ private fun ImportPresetDialog(
                         }
                     ) {
                         Text(
-                            "切换到预设 ${presetBandCount} 段",
+                            stringResource(R.string.settings_peq_switch_to_preset_bands, presetBandCount),
                             color = PEQUiColors.Success
                         )
                     }
@@ -717,7 +719,7 @@ private fun ImportPresetDialog(
                         pendingPreset = null
                     }
                 ) {
-                    Text("取消", color = PEQUiColors.TextSecondary)
+                    Text(stringResource(R.string.settings_cancel), color = PEQUiColors.TextSecondary)
                 }
             }
         )
@@ -793,7 +795,7 @@ private fun FilterRow(
 
             // 频率
             Text(
-                filter.frequencyText + "Hz",
+                stringResource(R.string.settings_hz_text_value, filter.frequencyText),
                 color = PEQUiColors.TextPrimary,
                 fontSize = 13.sp,
                 textDecoration = TextDecoration.Underline,
@@ -820,7 +822,7 @@ private fun FilterRow(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    if (filter.enabled) "ON" else "OFF",
+                    if (filter.enabled) stringResource(R.string.settings_on) else stringResource(R.string.settings_off),
                     color = Color.White,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Medium
@@ -840,14 +842,17 @@ private fun FilterRow(
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 // 频率滑块
+                val inputFrequencyTitle = stringResource(R.string.settings_peq_input_frequency)
+                val inputGainTitle = stringResource(R.string.settings_peq_input_gain)
+                val inputQTitle = stringResource(R.string.settings_peq_input_q)
                 val freqSliderValue = remember(filter.frequency) {
                     if (filter.frequency <= 20f) 0f
                     else if (filter.frequency >= 20000f) 1f
                     else (Math.log((filter.frequency / 20.0)) / Math.log(1000.0)).toFloat()
                 }
                 CompactSliderRow(
-                    label = "频率",
-                    valueText = filter.frequencyText + "Hz",
+                    label = stringResource(R.string.settings_peq_frequency),
+                    valueText = stringResource(R.string.settings_hz_text_value, filter.frequencyText),
                     value = freqSliderValue,
                     onValueChange = { sliderVal ->
                         val realFreq = (20.0 * Math.pow(1000.0, sliderVal.toDouble())).toFloat()
@@ -857,7 +862,7 @@ private fun FilterRow(
                     valueRange = 0f..1f,
                     onValueClick = {
                         inputDialogType = "freq"
-                        inputDialogTitle = "输入频率 (Hz)"
+                        inputDialogTitle = inputFrequencyTitle
                         inputDialogValue = String.format("%.1f", filter.frequency)
                         showInputDialog = true
                     }
@@ -865,14 +870,14 @@ private fun FilterRow(
 
                 // 增益滑块
                 CompactSliderRow(
-                    label = "增益",
+                    label = stringResource(R.string.settings_effect_gain),
                     valueText = filter.gainText,
                     value = filter.gainDB,
                     onValueChange = { onUpdate(filter.copy(gainDB = String.format("%.1f", it).toFloat())) },
                     valueRange = PEQFilter.GAIN_RANGE,
                     onValueClick = {
                         inputDialogType = "gain"
-                        inputDialogTitle = "输入增益 (dB)"
+                        inputDialogTitle = inputGainTitle
                         inputDialogValue = String.format("%.1f", filter.gainDB)
                         showInputDialog = true
                     }
@@ -880,14 +885,14 @@ private fun FilterRow(
 
                 // Q值滑块
                 CompactSliderRow(
-                    label = "Q值",
+                    label = stringResource(R.string.settings_peq_q_value),
                     valueText = String.format("%.2f", filter.Q),
                     value = filter.Q,
                     onValueChange = { onUpdate(filter.copy(Q = it)) },
                     valueRange = PEQFilter.Q_RANGE,
                     onValueClick = {
                         inputDialogType = "q"
-                        inputDialogTitle = "输入 Q 值"
+                        inputDialogTitle = inputQTitle
                         inputDialogValue = String.format("%.2f", filter.Q)
                         showInputDialog = true
                     }
@@ -1028,7 +1033,7 @@ private fun ValueInputDialog(
                 )
                 if (isError) {
                     Text(
-                        "请输入有效的数值",
+                        stringResource(R.string.settings_peq_error_invalid_number),
                         color = PEQUiColors.Danger,
                         fontSize = 12.sp,
                         modifier = Modifier.padding(top = 4.dp)
@@ -1047,12 +1052,12 @@ private fun ValueInputDialog(
                     }
                 }
             ) {
-                Text("确定", color = PEQUiColors.Accent)
+                Text(stringResource(R.string.settings_confirm), color = PEQUiColors.Accent)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消", color = PEQUiColors.TextSecondary)
+                Text(stringResource(R.string.settings_cancel), color = PEQUiColors.TextSecondary)
             }
         }
     )
@@ -1084,13 +1089,13 @@ fun AutoEqDialog(
 
     fun applyAutoEqPreset(preset: AutoEqPreset) {
         val sourceFilterCount = preset.filters.size
-        val preampText = String.format("%+.1f dB", preset.safePreamp)
+        val preampText = context.getString(R.string.settings_db_value_signed_one_decimal, preset.safePreamp)
 
         peqController.importFromAutoEq(preset)
 
         android.widget.Toast.makeText(
             context,
-            "已导入 AutoEq：${preset.name}\n${sourceFilterCount} 个滤波器 → 当前 ${currentBandCount} 段，Preamp $preampText",
+            context.getString(R.string.settings_autoeq_import_success, preset.name, sourceFilterCount, currentBandCount, preampText),
             android.widget.Toast.LENGTH_LONG
         ).show()
 
@@ -1107,7 +1112,7 @@ fun AutoEqDialog(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "AutoEq 预设",
+                    stringResource(R.string.settings_autoeq_presets),
                     color = PEQUiColors.TextPrimary,
                     fontWeight = FontWeight.Medium
                 )
@@ -1132,8 +1137,8 @@ fun AutoEqDialog(
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        label = { Text("搜索耳机", color = PEQUiColors.TextSecondary) },
-                        placeholder = { Text("例如: HD600", color = PEQUiColors.TextSecondary) },
+                        label = { Text(stringResource(R.string.settings_autoeq_search_headphone), color = PEQUiColors.TextSecondary) },
+                        placeholder = { Text(stringResource(R.string.settings_autoeq_search_hint), color = PEQUiColors.TextSecondary) },
                         singleLine = true,
                         colors = androidx.compose.material3.TextFieldDefaults.colors(
                             focusedTextColor = PEQUiColors.TextPrimary,
@@ -1156,10 +1161,10 @@ fun AutoEqDialog(
                                     try {
                                         searchResults = repository.search(searchQuery)
                                         if (searchResults.isEmpty()) {
-                                            errorMessage = "未找到匹配的耳机"
+                                            errorMessage = context.getString(R.string.settings_autoeq_error_not_found)
                                         }
                                     } catch (e: Exception) {
-                                        errorMessage = "搜索失败: ${e.message}"
+                                        errorMessage = context.getString(R.string.settings_autoeq_error_search_failed, e.message ?: "")
                                     } finally {
                                         isSearching = false
                                     }
@@ -1177,7 +1182,7 @@ fun AutoEqDialog(
                         } else {
                             Icon(
                                 Icons.Default.Search,
-                                contentDescription = "搜索",
+                                contentDescription = stringResource(R.string.settings_search),
                                 tint = if (searchQuery.isNotBlank()) PEQUiColors.Accent else PEQUiColors.TextSecondary
                             )
                         }
@@ -1196,7 +1201,7 @@ fun AutoEqDialog(
                 // 搜索结果
                 if (searchResults.isNotEmpty()) {
                     Text(
-                        "搜索结果",
+                        stringResource(R.string.settings_search_results),
                         color = PEQUiColors.TextSecondary,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium
@@ -1235,10 +1240,10 @@ fun AutoEqDialog(
                                                         cachedPresets = cacheManager.loadAll()
                                                         applyAutoEqPreset(preset)
                                                     } else {
-                                                        errorMessage = "下载失败"
+                                                        errorMessage = context.getString(R.string.settings_autoeq_error_download_failed)
                                                     }
                                                 } catch (e: Exception) {
-                                                    errorMessage = "下载失败: ${e.message}"
+                                                    errorMessage = context.getString(R.string.settings_autoeq_error_download_failed_detail, e.message ?: "")
                                                 } finally {
                                                     downloadingPreset = null
                                                 }
@@ -1255,7 +1260,7 @@ fun AutoEqDialog(
                                         fontSize = 14.sp
                                     )
                                     Text(
-                                        "${result.source} • ${result.deviceType}",
+                                        stringResource(R.string.settings_autoeq_result_source, result.source, result.deviceType),
                                         color = PEQUiColors.TextSecondary,
                                         fontSize = 11.sp
                                     )
@@ -1269,7 +1274,7 @@ fun AutoEqDialog(
                                     )
                                 } else {
                                     Text(
-                                        if (isCached) "已下载" else "下载",
+                                        if (isCached) stringResource(R.string.settings_downloaded) else stringResource(R.string.settings_download),
                                         color = if (isCached) PEQUiColors.Success else PEQUiColors.Accent,
                                         fontSize = 12.sp
                                     )
@@ -1282,7 +1287,7 @@ fun AutoEqDialog(
                 // 已下载列表
                 if (cachedPresets.isNotEmpty()) {
                     Text(
-                        "已下载",
+                        stringResource(R.string.settings_downloaded),
                         color = PEQUiColors.TextSecondary,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium
@@ -1313,8 +1318,8 @@ fun AutoEqDialog(
                                         fontSize = 14.sp
                                     )
                                     Text(
-                                        "${preset.filters.size} 个滤波器" +
-                                            if (preset.source.isNotBlank()) " • ${preset.source}" else "",
+                                        stringResource(R.string.settings_peq_filter_count, preset.filters.size) +
+                                            if (preset.source.isNotBlank()) stringResource(R.string.settings_source_suffix, preset.source) else "",
                                         color = PEQUiColors.TextSecondary,
                                         fontSize = 11.sp
                                     )
@@ -1328,7 +1333,7 @@ fun AutoEqDialog(
                                     modifier = Modifier.size(24.dp)
                                 ) {
                                     Text(
-                                        "×",
+                                        stringResource(R.string.settings_delete_symbol),
                                         color = PEQUiColors.Danger,
                                         fontSize = 16.sp
                                     )
@@ -1341,7 +1346,7 @@ fun AutoEqDialog(
                 // 空状态提示
                 if (searchResults.isEmpty() && cachedPresets.isEmpty() && !isSearching) {
                     Text(
-                        "搜索耳机型号以下载 AutoEq 预设",
+                        stringResource(R.string.settings_autoeq_empty_hint),
                         color = PEQUiColors.TextSecondary,
                         fontSize = 12.sp,
                         modifier = Modifier.padding(vertical = 16.dp)
@@ -1352,7 +1357,7 @@ fun AutoEqDialog(
         confirmButton = {},
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("关闭", color = PEQUiColors.TextSecondary)
+                Text(stringResource(R.string.settings_close), color = PEQUiColors.TextSecondary)
             }
         }
     )

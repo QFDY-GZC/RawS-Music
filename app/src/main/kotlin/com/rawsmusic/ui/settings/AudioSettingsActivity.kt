@@ -6,7 +6,12 @@ class AudioSettingsActivity : BaseSettingsActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            LiquidGlassAudioSettingsScreen(onBack = { finish() })
+            LiquidGlassAudioSettingsScreen(
+                onBack = { finish() },
+                onNavigateToTransitionSettings = {
+                    navigateToSettings(TransitionSettingsActivity::class.java)
+                }
+            )
         }
     }
 }

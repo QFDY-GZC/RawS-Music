@@ -34,6 +34,7 @@ import com.rawsmusic.core.ui.widget.ImmersiveBackgroundCompose
 import com.rawsmusic.core.ui.widget.player.ComposeLyricView
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.PlayerController
+import com.rawsmusic.module.player.PlayerService
 import com.rawsmusic.module.scanner.LyricReader
 import io.github.proify.lyricon.lyric.model.Song
 import kotlinx.coroutines.Dispatchers
@@ -62,8 +63,14 @@ class ImmersiveLyricActivity : ComponentActivity() {
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
-        // 获取 PlayerController
-        playerController = PlayerController.getInstance(this)
+        // 获取当前 runtime controller，优先复用 Service 持有的播放时环境
+        playerController = PlayerService.currentRuntimeController()
+            ?: PlayerController.getInstanceOrNull()
+            ?: PlayerService.obtainRuntimeController(
+                this,
+                "immersive_lyric_activity",
+                ensureService = true
+            )
         displayTranslation = AppPreferences.Lyricon.displayTranslation
         displayRoma = AppPreferences.Lyricon.displayRoma
 
@@ -162,7 +169,7 @@ class ImmersiveLyricActivity : ComponentActivity() {
         // 设置封面背景
         val song = playerController?.currentSong?.value
         if (song != null) {
-            coverPath = if (song.albumArtPath.isNotBlank()) song.albumArtPath else song.path
+            coverPath = song.coverKey
         }
 
         lifecycleScope.launch(Dispatchers.IO) {

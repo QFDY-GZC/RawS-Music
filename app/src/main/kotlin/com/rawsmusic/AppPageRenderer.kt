@@ -33,6 +33,7 @@ import com.rawsmusic.ui.settings.LiquidGlassPanoramic360Screen
 import com.rawsmusic.ui.settings.LiquidGlassSpatialSoundScreen
 import com.rawsmusic.ui.settings.LiquidGlassSurround360Screen
 import com.rawsmusic.ui.settings.LiquidGlassUsbDacSettingsScreen
+import com.rawsmusic.ui.settings.TransitionSettingsActivity
 import com.rawsmusic.ui.albums.AlbumDetailPageCompose
 import com.rawsmusic.ui.webdav.WebDavPageCompose
 import java.io.BufferedReader
@@ -53,6 +54,7 @@ internal val SETTINGS_ACTIVITY_MAP = mapOf<NavScene, Class<*>>(
     NavScene.USB_DAC_SETTINGS to com.rawsmusic.ui.settings.UsbDacSettingsActivity::class.java,
     NavScene.ABOUT to com.rawsmusic.ui.settings.AboutActivity::class.java,
     NavScene.SCAN_SETTINGS to com.rawsmusic.ui.settings.ScanSettingsActivity::class.java,
+    NavScene.TRANSITION_SETTINGS to TransitionSettingsActivity::class.java,
 )
 
 /**

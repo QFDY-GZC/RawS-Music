@@ -223,7 +223,6 @@ private fun <T : PowerListVisualItem> CategoryListPage(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MiuixTheme.colorScheme.background)
     ) {
         ComposeGenericPowerList(
             items = items,
@@ -382,7 +381,7 @@ private fun List<AudioFile>.groupByCategory(
                         .thenBy { it.trackNumber }
                         .thenBy { it.displayName.lowercase() }
                 ),
-                coverKey = coverSong?.albumArtPath?.ifBlank { coverSong.path }.orEmpty(),
+                coverKey = coverSong?.coverKey.orEmpty(),
                 totalDurationMs = categorySongs.sumOf { it.duration.coerceAtLeast(0L) }
             )
         }

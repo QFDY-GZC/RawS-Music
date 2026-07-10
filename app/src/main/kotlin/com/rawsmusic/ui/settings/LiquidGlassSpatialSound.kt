@@ -1,212 +1,159 @@
 package com.rawsmusic.ui.settings
 
-import android.util.Log
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import top.yukonga.miuix.kmp.theme.MiuixTheme
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.stringResource
+import com.rawsmusic.R
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.ui.songs.PlayerHolder
+import kotlin.math.roundToInt
+import top.yukonga.miuix.kmp.basic.SliderDefaults
+import top.yukonga.miuix.kmp.preference.SliderPreference
+
+private const val DEFAULT_STEREO_WIDEN_STRENGTH = 600
+private const val MIN_AUDIBLE_STEREO_WIDEN_STRENGTH = 350
 
 @Composable
 fun LiquidGlassSpatialSoundScreen(
     onBack: () -> Unit
 ) {
-    
-    var spatialEnabled by remember { mutableStateOf(AppPreferences.Equalizer.virtualizer > 0) }
-    var strength by remember { mutableStateOf(AppPreferences.Equalizer.virtualizer.toFloat()) }
-    var savedStrength by remember { mutableStateOf(AppPreferences.Equalizer.virtualizer) }
+    val initialStereoStrength = remember {
+        AppPreferences.Equalizer.virtualizer.coerceIn(0, 1000).let { value ->
+            if (value in 1 until MIN_AUDIBLE_STEREO_WIDEN_STRENGTH) {
+                DEFAULT_STEREO_WIDEN_STRENGTH
+            } else {
+                value
+            }
+        }
+    }
+    var spatialEnabled by remember { mutableStateOf(initialStereoStrength > 0) }
+    var strength by remember { mutableStateOf(initialStereoStrength.toFloat()) }
+    var savedStrength by remember {
+        mutableStateOf(initialStereoStrength.takeIf { it > 0 } ?: DEFAULT_STEREO_WIDEN_STRENGTH)
+    }
 
-    // Crossfeed 状态
+    LaunchedEffect(initialStereoStrength) {
+        if (AppPreferences.Equalizer.virtualizer in 1 until MIN_AUDIBLE_STEREO_WIDEN_STRENGTH) {
+            PlayerHolder.controller?.setStereoWidenFactor(initialStereoStrength / 1000f)
+                ?: run { AppPreferences.Equalizer.virtualizer = initialStereoStrength }
+        }
+    }
+
     var crossfeedEnabled by remember { mutableStateOf(AppPreferences.Equalizer.crossfeedEnabled) }
     var cfLowCut by remember { mutableStateOf(AppPreferences.Equalizer.crossfeedLowCut.toFloat()) }
     var cfHighCut by remember { mutableStateOf(AppPreferences.Equalizer.crossfeedHighCut.toFloat()) }
     var cfAttenuation by remember { mutableStateOf(AppPreferences.Equalizer.crossfeedAttenuation / 10f) }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(MiuixTheme.colorScheme.background)
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 8.dp)
-    ) {
-        Spacer(Modifier.height(16.dp))
+    fun applyStereoStrength(value: Int) {
+        val coerced = value.coerceIn(0, 1000)
+        strength = coerced.toFloat()
+        spatialEnabled = coerced > 0
+        if (coerced > 0) savedStrength = coerced
+        PlayerHolder.controller?.setStereoWidenFactor(coerced / 1000f)
+            ?: run { AppPreferences.Equalizer.virtualizer = coerced }
+    }
 
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TextButton(onClick = onBack) {
-                Text("← 返回", color = MiuixTheme.colorScheme.primary, fontSize = 16.sp, fontFamily = appFontFamily())
-            }
-            Text(
-                "立体声扩展",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Medium,
-                color = MiuixTheme.colorScheme.onBackground,
-                fontFamily = appFontFamily()
-            )
-            Spacer(Modifier.weight(1f))
-        }
+    fun applyCrossfeedParams() {
+        PlayerHolder.controller?.setCrossfeedParams(cfLowCut, cfHighCut, cfAttenuation)
+    }
 
-        Spacer(Modifier.height(24.dp))
-
+    SettingsPage(title = stringResource(R.string.settings_spatial_title), onBack = onBack) {
+        SectionHeader(stringResource(R.string.settings_spatial_expand_section))
         SettingsCard {
-            SectionHeader("立体声扩展")
-            Spacer(Modifier.height(8.dp))
-            SwitchRow("启用立体声扩展", spatialEnabled) { checked ->
-                spatialEnabled = checked
-                if (checked) {
-                    val target = savedStrength.coerceAtLeast(100)
-                    strength = target.toFloat()
-                    PlayerHolder.controller?.setStereoWidenFactor(target / 1000f)
-                } else {
-                    savedStrength = strength.toInt()
-                    strength = 0f
-                    PlayerHolder.controller?.setStereoWidenFactor(0f)
-                }
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        SettingsCard {
-            SectionHeader("强度")
-            Text(
-                "${(strength.toInt() / 10)}%",
-                fontSize = 14.sp, color = MiuixTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-            Slider(
-                value = strength,
-                onValueChange = { value ->
-                    strength = value
-                },
-                valueRange = 0f..1000f,
-                steps = 99,
-                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary),
-                onValueChangeFinished = {
-                    val value = strength.toInt()
-                    Log.d("SpatialSound", "Slider finished: value=$value")
-                    PlayerHolder.controller?.setStereoWidenFactor(value / 1000f)
-                    savedStrength = value
-                    if (value > 0 && !spatialEnabled) {
-                        spatialEnabled = true
+            SwitchRow(
+                label = stringResource(R.string.settings_spatial_expand_enable),
+                checked = spatialEnabled,
+                onCheckedChange = { checked ->
+                    if (checked) {
+                        val target = savedStrength.coerceAtLeast(DEFAULT_STEREO_WIDEN_STRENGTH)
+                        applyStereoStrength(target)
+                    } else {
+                        savedStrength = strength.toInt().takeIf { it > 0 } ?: savedStrength
+                        applyStereoStrength(0)
                     }
                 }
             )
+            SliderPreference(
+                title = stringResource(R.string.settings_spatial_strength_title),
+                summary = stringResource(R.string.settings_spatial_strength_summary),
+                valueText = stringResource(R.string.settings_percent_value, (strength.toInt() / 10)),
+                value = strength,
+                onValueChange = { value ->
+                    val next = value.roundToInt().coerceIn(0, 1000)
+                    strength = next.toFloat()
+                    if (next > 0) spatialEnabled = true
+                    PlayerHolder.controller?.setStereoWidenFactor(next / 1000f)
+                        ?: run { AppPreferences.Equalizer.virtualizer = next }
+                    if (next >= MIN_AUDIBLE_STEREO_WIDEN_STRENGTH) savedStrength = next
+                },
+                onValueChangeFinished = {
+                    val next = strength.roundToInt().coerceIn(0, 1000)
+                    applyStereoStrength(next)
+                },
+                valueRange = 0f..1000f,
+                steps = 99,
+                hapticEffect = SliderDefaults.SliderHapticEffect.Step,
+                showKeyPoints = true,
+                keyPoints = listOf(0f, 350f, 600f, 800f, 1000f)
+            )
         }
 
-        Spacer(Modifier.height(12.dp))
-
+        SectionHeader(stringResource(R.string.settings_spatial_crossfeed_section))
         SettingsCard {
-            SectionHeader("互馈 (Crossfeed)")
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "模拟音箱串音，消除头中效应",
-                fontSize = 13.sp, color = MiuixTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                fontFamily = appFontFamily()
+            SwitchRow(
+                label = stringResource(R.string.settings_spatial_crossfeed_enable),
+                checked = crossfeedEnabled,
+                onCheckedChange = { checked ->
+                    crossfeedEnabled = checked
+                    PlayerHolder.controller?.setCrossfeedEnabled(checked)
+                }
             )
-            Spacer(Modifier.height(8.dp))
-            SwitchRow("启用互馈", crossfeedEnabled) { checked ->
-                crossfeedEnabled = checked
-                PlayerHolder.controller?.setCrossfeedEnabled(checked)
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        SettingsCard {
-            SectionHeader("低切频率")
-            Text(
-                "${cfLowCut.toInt()} Hz",
-                fontSize = 14.sp, color = MiuixTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-            Slider(
+            SliderPreference(
+                title = stringResource(R.string.settings_spatial_crossfeed_low_cut_title),
+                summary = stringResource(R.string.settings_spatial_crossfeed_low_cut_summary),
+                valueText = stringResource(R.string.settings_hz_value, cfLowCut.roundToInt()),
                 value = cfLowCut,
                 onValueChange = { value ->
-                    cfLowCut = value
+                    cfLowCut = value.roundToInt().coerceIn(50, 1000).toFloat()
+                    applyCrossfeedParams()
                 },
                 valueRange = 50f..1000f,
                 steps = 19,
-                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary),
-                onValueChangeFinished = {
-                    PlayerHolder.controller?.setCrossfeedParams(cfLowCut, cfHighCut, cfAttenuation)
-                }
+                enabled = crossfeedEnabled,
+                hapticEffect = SliderDefaults.SliderHapticEffect.Step
             )
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        SettingsCard {
-            SectionHeader("高切频率")
-            Text(
-                "${cfHighCut.toInt()} Hz",
-                fontSize = 14.sp, color = MiuixTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-            Slider(
+            SliderPreference(
+                title = stringResource(R.string.settings_spatial_crossfeed_high_cut_title),
+                summary = stringResource(R.string.settings_spatial_crossfeed_high_cut_summary),
+                valueText = stringResource(R.string.settings_hz_value, cfHighCut.roundToInt()),
                 value = cfHighCut,
                 onValueChange = { value ->
-                    cfHighCut = value
+                    cfHighCut = value.roundToInt().coerceIn(500, 8000).toFloat()
+                    applyCrossfeedParams()
                 },
                 valueRange = 500f..8000f,
                 steps = 15,
-                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary),
-                onValueChangeFinished = {
-                    PlayerHolder.controller?.setCrossfeedParams(cfLowCut, cfHighCut, cfAttenuation)
-                }
+                enabled = crossfeedEnabled,
+                hapticEffect = SliderDefaults.SliderHapticEffect.Step
             )
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        SettingsCard {
-            SectionHeader("衰减量")
-            Text(
-                "%.1f dB".format(cfAttenuation),
-                fontSize = 14.sp, color = MiuixTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-            Slider(
+            SliderPreference(
+                title = stringResource(R.string.settings_spatial_crossfeed_attenuation_title),
+                summary = stringResource(R.string.settings_spatial_crossfeed_attenuation_summary),
+                valueText = stringResource(R.string.settings_db_value_one_decimal, cfAttenuation),
                 value = cfAttenuation,
                 onValueChange = { value ->
-                    cfAttenuation = value
+                    cfAttenuation = (value * 10f).roundToInt().coerceIn(0, 150) / 10f
+                    applyCrossfeedParams()
                 },
                 valueRange = 0f..15f,
                 steps = 29,
-                colors = SliderDefaults.colors(thumbColor = MiuixTheme.colorScheme.primary, activeTrackColor = MiuixTheme.colorScheme.primary),
-                onValueChangeFinished = {
-                    PlayerHolder.controller?.setCrossfeedParams(cfLowCut, cfHighCut, cfAttenuation)
-                }
+                enabled = crossfeedEnabled,
+                hapticEffect = SliderDefaults.SliderHapticEffect.Step
             )
         }
-
-        Spacer(Modifier.height(300.dp))
     }
 }

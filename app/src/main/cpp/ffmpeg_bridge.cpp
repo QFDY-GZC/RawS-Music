@@ -5,8 +5,11 @@
 #include <stdio.h>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <cmath>
 #include <signal.h>
 #include <setjmp.h>
+#include <time.h>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -975,6 +978,16 @@ static int extract_cover(const char *input_path, const char *output_path) {
     return -1;
 }
 
+
+// Poweramp-like offline Waveseek scanner lives in raw_waveform_scan.cpp.
+// Keep the JNI bridge small; do not pile scan/decode policy into this file.
+std::vector<float> rawsmusic_scan_waveform_poweramp_seek(
+    const char *input_path,
+    int64_t start_ms,
+    int64_t end_ms,
+    int sample_count
+);
+
 extern "C" JNIEXPORT jint JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeConvertToWav(
     JNIEnv *env, jobject, jstring input, jstring output, jint sample_rate,
@@ -1043,6 +1056,20 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeExtractCover(
     env->ReleaseStringUTFChars(input, inp);
     env->ReleaseStringUTFChars(output, out);
     return ret;
+}
+
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeScanWaveform(
+    JNIEnv *env, jobject, jstring path, jlong startMs, jlong endMs, jint sampleCount) {
+    const char *p = env->GetStringUTFChars(path, nullptr);
+    std::vector<float> result = rawsmusic_scan_waveform_poweramp_seek(p, (int64_t)startMs, (int64_t)endMs, (int)sampleCount);
+    env->ReleaseStringUTFChars(path, p);
+    jfloatArray array = env->NewFloatArray((jsize)result.size());
+    if (!array) return nullptr;
+    if (!result.empty()) {
+        env->SetFloatArrayRegion(array, 0, (jsize)result.size(), result.data());
+    }
+    return array;
 }
 
 // ==========================
@@ -1754,6 +1781,87 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeCloseDecoder(
     }
 }
 
+
+static bool is_lossy_audio_codec(enum AVCodecID codec_id) {
+    switch (codec_id) {
+        case AV_CODEC_ID_AAC:
+        case AV_CODEC_ID_MP3:
+        case AV_CODEC_ID_VORBIS:
+        case AV_CODEC_ID_OPUS:
+        case AV_CODEC_ID_WMAV1:
+        case AV_CODEC_ID_WMAV2:
+        case AV_CODEC_ID_AMR_NB:
+        case AV_CODEC_ID_AMR_WB:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static int probe_effective_stream_sample_rate(
+    AVFormatContext *fmt_ctx,
+    int stream_index,
+    const AVCodecParameters *codecpar
+) {
+    if (!fmt_ctx || !codecpar) return 0;
+    const int fallback = codecpar->sample_rate;
+    if (!is_lossy_audio_codec(codecpar->codec_id)) return fallback;
+
+    const AVCodec *decoder = avcodec_find_decoder(codecpar->codec_id);
+    if (!decoder) return fallback;
+
+    AVCodecContext *codec_ctx = avcodec_alloc_context3(decoder);
+    if (!codec_ctx) return fallback;
+    if (avcodec_parameters_to_context(codec_ctx, codecpar) < 0) {
+        avcodec_free_context(&codec_ctx);
+        return fallback;
+    }
+    if (avcodec_open2(codec_ctx, decoder, nullptr) < 0) {
+        int rate = codec_ctx->sample_rate > 0 ? codec_ctx->sample_rate : fallback;
+        avcodec_free_context(&codec_ctx);
+        return rate;
+    }
+
+    int effective = codec_ctx->sample_rate > 0 ? codec_ctx->sample_rate : fallback;
+
+    // AAC SBR/HE-AAC can expose a 22.05/24 kHz core rate in codecpar while the
+    // decoder output is 44.1/48 kHz. Decode a tiny prefix to let FFmpeg update
+    // AVFrame/AVCodecContext.sample_rate, then seek back for callers that keep
+    // using the same AVFormatContext.
+    const bool worth_decoding = codecpar->codec_id == AV_CODEC_ID_AAC ||
+        (fallback > 0 && fallback <= 24000);
+    if (worth_decoding) {
+        av_seek_frame(fmt_ctx, stream_index, 0, AVSEEK_FLAG_BACKWARD);
+        avcodec_flush_buffers(codec_ctx);
+        AVPacket *pkt = av_packet_alloc();
+        AVFrame *frame = av_frame_alloc();
+        if (pkt && frame) {
+            int packets = 0;
+            while (packets < 48 && av_read_frame(fmt_ctx, pkt) >= 0) {
+                if (pkt->stream_index == stream_index) {
+                    packets++;
+                    if (avcodec_send_packet(codec_ctx, pkt) == 0) {
+                        while (avcodec_receive_frame(codec_ctx, frame) == 0) {
+                            if (frame->sample_rate > effective) effective = frame->sample_rate;
+                            if (codec_ctx->sample_rate > effective) effective = codec_ctx->sample_rate;
+                            av_frame_unref(frame);
+                            if (fallback > 0 && effective > fallback) break;
+                        }
+                    }
+                }
+                av_packet_unref(pkt);
+                if (fallback > 0 && effective > fallback) break;
+            }
+        }
+        if (frame) av_frame_free(&frame);
+        if (pkt) av_packet_free(&pkt);
+        av_seek_frame(fmt_ctx, -1, 0, AVSEEK_FLAG_BACKWARD);
+    }
+
+    avcodec_free_context(&codec_ctx);
+    return effective > 0 ? effective : fallback;
+}
+
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfo(
     JNIEnv *env, jobject, jstring path) {
@@ -1820,6 +1928,14 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfo(
             snprintf(buf, sizeof(buf), "%d", stream->codecpar->sample_rate);
             putStr((std::string(prefix) + "sample_rate").c_str(), buf);
 
+            {
+                int effective_sr = probe_effective_stream_sample_rate(fmt_ctx, (int)i, stream->codecpar);
+                if (effective_sr > 0) {
+                    snprintf(buf, sizeof(buf), "%d", effective_sr);
+                    putStr((std::string(prefix) + "effective_sample_rate").c_str(), buf);
+                }
+            }
+
             snprintf(buf, sizeof(buf), "%d", stream->codecpar->channels);
             putStr((std::string(prefix) + "channels").c_str(), buf);
 
@@ -1845,6 +1961,10 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfo(
                 putStr((std::string(prefix) + "codec_name").c_str(), codec->name);
                 if (codec->long_name)
                     putStr((std::string(prefix) + "codec_long_name").c_str(), codec->long_name);
+            }
+            if (stream->codecpar->profile != FF_PROFILE_UNKNOWN) {
+                const char *profile = avcodec_profile_name(stream->codecpar->codec_id, stream->codecpar->profile);
+                if (profile) putStr((std::string(prefix) + "codec_profile").c_str(), profile);
             }
 
             putStr((std::string(prefix) + "codec_type").c_str(), "audio");

@@ -2,11 +2,9 @@ package com.rawsmusic.core.ui.widget
 
 import android.graphics.Bitmap
 import android.graphics.RectF
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.withFrameMillis
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -44,9 +42,14 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.rawsmusic.core.ui.R
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
+import com.rawsmusic.core.ui.widget.bitmaps.DefaultAlbumArtwork
+import com.rawsmusic.core.ui.widget.bitmaps.shouldShowDefaultAlbumArtwork
+import com.rawsmusic.core.ui.widget.bitmaps.RawArtworkPolicy
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val MINI_PLAYER_PREFS = "mini_player_prefs"
 private const val KEY_ARTWORK_MODE = "artwork_mode"
@@ -96,46 +99,48 @@ fun MiniPlayerArtwork(
     onCoverBoundsChanged: (RectF?) -> Unit,
     onDoubleTapToggleMode: () -> Unit,
     onSingleTap: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    animateArtwork: Boolean = false
 ) {
     val rememberedCoverPath = rememberMiniPlayerCoverPath(coverPath)
+    val progressColor = MiuixTheme.colorScheme.primary
     val context = LocalContext.current.applicationContext
     var rememberedBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
-    // 迷你播放栏是用户最先看到的封面位置，使用最高优先级预取
+    // P0 省电：迷你播放栏不再用最高优先级主动抽 256 封面。
+    // 先复用 BitmapProvider 里已有的缩略图；缺失时交给 CoverVisual/列表管线按低优先级补齐。
     LaunchedEffect(context, rememberedCoverPath) {
         BitmapProvider.init(context)
-        val key = rememberedCoverPath?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
-        BitmapProvider.load(
-            key = key,
-            targetWidth = 256,
-            targetHeight = 256,
-            priority = BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH
-        ) { loaded ->
-            if (loaded != null && !loaded.isRecycled) {
-                rememberedBitmap = loaded
-            }
+        val key = rememberedCoverPath?.takeIf { it.isNotBlank() }
+        if (key == null) {
+            rememberedBitmap = null
+            return@LaunchedEffect
+        }
+        val cached = BitmapProvider.peekThumbnail(key, 256, 256)
+            ?: BitmapProvider.peekThumbnail(key, 128, 128)
+            ?: BitmapProvider.peekAny(key)
+        if (cached != null && !cached.isRecycled) {
+            rememberedBitmap = cached
         }
     }
 
-    LaunchedEffect(coverBitmap) {
+    LaunchedEffect(coverBitmap, rememberedCoverPath) {
         if (coverBitmap != null && !coverBitmap.isRecycled) {
             rememberedBitmap = coverBitmap
+        } else if (rememberedCoverPath.isNullOrBlank()) {
+            rememberedBitmap = null
         }
     }
-    val visualBitmap = coverBitmap?.takeIf { !it.isRecycled }
-        ?: rememberedBitmap?.takeIf { !it.isRecycled }
+    val visualBitmap = if (rememberedCoverPath.isNullOrBlank()) {
+        null
+    } else {
+        coverBitmap?.takeIf { !it.isRecycled }
+            ?: rememberedBitmap?.takeIf { !it.isRecycled }
+    }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "mini_player_art_rotation")
-    val rotation by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(20_000, easing = LinearEasing)
-        ),
-        label = "mini_player_art_rotation_value"
+    val appliedRotation = rememberMiniArtworkRotation(
+        enabled = animateArtwork && isPlaying && mode == MiniPlayerArtworkMode.Vinyl
     )
-    val appliedRotation = if (isPlaying) rotation else 0f
 
     when (mode) {
         MiniPlayerArtworkMode.Normal -> {
@@ -144,6 +149,7 @@ fun MiniPlayerArtwork(
                 coverBitmap = visualBitmap,
                 rotation = appliedRotation,
                 progress = progress,
+                progressColor = progressColor,
                 contentDescription = contentDescription,
                 onCoverBoundsChanged = onCoverBoundsChanged,
                 onDoubleTapToggleMode = onDoubleTapToggleMode,
@@ -167,11 +173,33 @@ fun MiniPlayerArtwork(
 }
 
 @Composable
+private fun rememberMiniArtworkRotation(enabled: Boolean): Float {
+    var rotation by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(enabled) {
+        if (!enabled) {
+            rotation = 0f
+            return@LaunchedEffect
+        }
+        var lastFrame = withFrameMillis { it }
+        while (true) {
+            val now = withFrameMillis { it }
+            val deltaMs = (now - lastFrame).coerceIn(0L, 250L)
+            lastFrame = now
+            rotation = (rotation + deltaMs * 360f / 20_000f) % 360f
+            delay(83L)
+        }
+    }
+    return rotation
+}
+
+
+@Composable
 private fun NormalMiniArtwork(
     coverPath: String?,
     coverBitmap: Bitmap?,
     rotation: Float,
     progress: Float,
+    progressColor: Color,
     contentDescription: String?,
     onCoverBoundsChanged: (RectF?) -> Unit,
     onDoubleTapToggleMode: () -> Unit,
@@ -197,9 +225,9 @@ private fun NormalMiniArtwork(
                 style = Stroke(width = strokeWidth)
             )
             drawArc(
-                color = Color(0xFFD4B896),
+                color = progressColor,
                 startAngle = -90f,
-                sweepAngle = progress.coerceIn(0f, 1f) * 360f,
+                sweepAngle = (1f - progress.coerceIn(0f, 1f)) * 360f,
                 useCenter = false,
                 style = Stroke(width = strokeWidth)
             )
@@ -315,16 +343,6 @@ private fun CoverVisual(
     targetSize: Int
 ) {
     when {
-        !coverPath.isNullOrBlank() -> {
-            BitmapImage(
-                key = coverPath,
-                contentDescription = contentDescription,
-                modifier = modifier,
-                contentScale = contentScale,
-                targetWidth = targetSize,
-                targetHeight = targetSize
-            )
-        }
         coverBitmap != null && !coverBitmap.isRecycled -> {
             Image(
                 bitmap = coverBitmap.asImageBitmap(),
@@ -333,8 +351,26 @@ private fun CoverVisual(
                 contentScale = contentScale
             )
         }
+        !coverPath.isNullOrBlank() -> {
+            BitmapImage(
+                key = coverPath,
+                contentDescription = contentDescription,
+                modifier = modifier,
+                contentScale = contentScale,
+                targetWidth = targetSize,
+                targetHeight = targetSize,
+                priority = BitmapRequest.Priority.LOADING_LIST,
+                surface = ArtworkSurface.MiniPlayer,
+                fadeInMillis = RawArtworkPolicy.SMALL_SURFACE_FADE_MS
+            )
+        }
         else -> {
-            MiniCoverPlaceholder(modifier = modifier)
+            val showDefault = shouldShowDefaultAlbumArtwork(coverPath, targetSize, targetSize)
+            if (showDefault) {
+                DefaultAlbumArtwork(modifier = modifier)
+            } else {
+                MiniCoverPlaceholder(modifier = modifier)
+            }
         }
     }
 }

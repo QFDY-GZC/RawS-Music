@@ -6,6 +6,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.rawsmusic.module.data.prefs.AppPreferences
+import androidx.compose.ui.res.stringResource
+import com.rawsmusic.R
 
 @Composable
 fun LiquidGlassStatusBarLyricScreen(
@@ -21,28 +23,28 @@ fun LiquidGlassStatusBarLyricScreen(
     var bluetoothLyricEnabled by remember { mutableStateOf(lyricsPrefs.bluetoothLyricEnabled) }
     var bluetoothLyricTranslation by remember { mutableStateOf(lyricsPrefs.bluetoothLyricTranslation) }
 
-    SettingsPage(title = "状态栏歌词", onBack = onBack) {
+    SettingsPage(title = stringResource(R.string.settings_status_bar_lyric_title), onBack = onBack) {
         SettingsSection("Flyme") {
             SettingsInfoEntry(
-                title = "状态栏歌词",
-                description = "通过 Flyme 系统状态栏推送歌词显示"
+                title = stringResource(R.string.settings_status_bar_lyric_title),
+                description = stringResource(R.string.settings_status_bar_flyme_desc)
             )
-            SwitchRow("Flyme 状态栏歌词", tickerEnabled) { checked ->
+            SwitchRow(stringResource(R.string.settings_flyme_status_bar_lyric), tickerEnabled) { checked ->
                 tickerEnabled = checked
                 lyricsPrefs.tickerEnabled = checked
             }
-            SwitchRow("隐藏独立歌词通知", tickerHideNotification, enabled = tickerEnabled) { checked ->
+            SwitchRow(stringResource(R.string.settings_hide_standalone_lyric_notification), tickerHideNotification, enabled = tickerEnabled) { checked ->
                 tickerHideNotification = checked
                 lyricsPrefs.tickerHideNotification = checked
             }
-            SwitchRow("悬浮歌词（非魅族设备）", tickerHeadsUpLyrics, enabled = tickerEnabled) { checked ->
+            SwitchRow(stringResource(R.string.settings_heads_up_lyric), tickerHeadsUpLyrics, enabled = tickerEnabled) { checked ->
                 tickerHeadsUpLyrics = checked
                 lyricsPrefs.tickerHeadsUpLyrics = checked
             }
         }
 
-        SettingsSection("三星") {
-            SwitchRow("三星浮动歌词翻译", samsungFloatingLyricTranslation, enabled = tickerEnabled) { checked ->
+        SettingsSection(stringResource(R.string.settings_samsung)) {
+            SwitchRow(stringResource(R.string.settings_samsung_floating_lyric_translation), samsungFloatingLyricTranslation, enabled = tickerEnabled) { checked ->
                 samsungFloatingLyricTranslation = checked
                 lyricsPrefs.samsungFloatingLyricTranslation = checked
             }
@@ -50,25 +52,25 @@ fun LiquidGlassStatusBarLyricScreen(
 
         SettingsSection("Lyric Getter") {
             SettingsInfoEntry(
-                title = "外部歌词",
-                description = "通过 Lyric Getter 推送歌词到其他应用"
+                title = stringResource(R.string.settings_external_lyrics),
+                description = stringResource(R.string.settings_external_lyrics_desc)
             )
-            SwitchRow("Lyric Getter 歌词", lyricGetterEnabled) { checked ->
+            SwitchRow(stringResource(R.string.settings_lyric_getter_lyrics), lyricGetterEnabled) { checked ->
                 lyricGetterEnabled = checked
                 lyricsPrefs.lyricGetterEnabled = checked
             }
         }
 
-        SettingsSection("蓝牙") {
+        SettingsSection(stringResource(R.string.settings_bluetooth)) {
             SettingsInfoEntry(
-                title = "车载歌词",
-                description = "通过蓝牙将歌词推送到车载系统"
+                title = stringResource(R.string.settings_car_lyrics),
+                description = stringResource(R.string.settings_car_lyrics_desc)
             )
-            SwitchRow("蓝牙车载歌词", bluetoothLyricEnabled) { checked ->
+            SwitchRow(stringResource(R.string.settings_bluetooth_car_lyrics), bluetoothLyricEnabled) { checked ->
                 bluetoothLyricEnabled = checked
                 lyricsPrefs.bluetoothLyricEnabled = checked
             }
-            SwitchRow("车载歌词翻译", bluetoothLyricTranslation, enabled = bluetoothLyricEnabled) { checked ->
+            SwitchRow(stringResource(R.string.settings_car_lyrics_translation), bluetoothLyricTranslation, enabled = bluetoothLyricEnabled) { checked ->
                 bluetoothLyricTranslation = checked
                 lyricsPrefs.bluetoothLyricTranslation = checked
             }

@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
 import kotlin.math.abs
@@ -63,7 +64,8 @@ class ImmersiveBackgroundState : ImmersiveBackgroundHost {
             key = path,
             targetWidth = 1080,
             targetHeight = 1080,
-            priority = BitmapRequest.Priority.LOADING_LIST,
+            priority = BitmapRequest.Priority.LOADING_WIDGET,
+            surface = ArtworkSurface.Playback,
             callback = { bitmap ->
                 if (gen != coverGeneration) return@load
                 if (bitmap != null && !bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0) {

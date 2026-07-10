@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -27,7 +28,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import kotlin.math.abs
 
 /**
@@ -55,6 +58,11 @@ fun FullCoverPage(
         } else {
             offsetX = 0f
             offsetY = 0f
+        }
+    }
+    LaunchedEffect(coverPath) {
+        if (!coverPath.isNullOrBlank()) {
+            BitmapProvider.warmFullCoverArt(coverPath)
         }
     }
     Box(
@@ -127,8 +135,12 @@ fun FullCoverPage(
                     .transformable(transformState)
                     .clip(RoundedCornerShape(16.dp)),
                 contentScale = ContentScale.Crop,
-                targetWidth = 2048,
-                targetHeight = 2048
+                targetWidth = 1440,
+                targetHeight = 1440,
+                surface = ArtworkSurface.Fullscreen,
+                priority = com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
+                fadeInMillis = com.rawsmusic.core.ui.widget.bitmaps.RawArtworkPolicy.HERO_FADE_MS,
+                holdPreviousOnKeyChange = true,
             )
         }
     }

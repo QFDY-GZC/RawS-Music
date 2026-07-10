@@ -2,6 +2,8 @@ package com.rawsmusic.module.scanner
 
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AudioUtils
+import com.rawsmusic.core.common.utils.BitrateNormalizer
+import com.rawsmusic.core.common.utils.SampleRateNormalizer
 import com.rawsmusic.module.scanner.parser.CueParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -21,17 +23,31 @@ object MetadataParser {
             val tags = fullInfo.tags
             val stream = fullInfo.stream
 
+            val encodingFormat = FfmpegMetadataReader.mapCodecToFormat(stream.codecName, filePath)
+            val mimeType = FfmpegMetadataReader.mapFormatToMimeType(encodingFormat, filePath)
+
             // 时长：优先 FFprobeKit，回退计算
             var durationMs = stream.durationMs
-            var bitRate = stream.bitRate
+            var bitRate = BitrateNormalizer.toBps(
+                rawBitrate = stream.bitRate,
+                durationMs = durationMs,
+                fileSizeBytes = file.length(),
+                codecName = stream.codecName,
+                formatName = encodingFormat,
+                filePath = filePath
+            )
             if (durationMs <= 0 && bitRate > 0 && file.length() > 0) {
                 durationMs = (file.length() * 8.0 / bitRate * 1000).toLong()
             } else if (durationMs > 0 && bitRate <= 0) {
-                bitRate = (file.length() * 8.0 / (durationMs / 1000.0)).toInt()
+                bitRate = BitrateNormalizer.toBps(
+                    rawBitrate = (file.length() * 8.0 / (durationMs / 1000.0)).toInt(),
+                    durationMs = durationMs,
+                    fileSizeBytes = file.length(),
+                    codecName = stream.codecName,
+                    formatName = encodingFormat,
+                    filePath = filePath
+                )
             }
-
-            val encodingFormat = FfmpegMetadataReader.mapCodecToFormat(stream.codecName, filePath)
-            val mimeType = FfmpegMetadataReader.mapFormatToMimeType(encodingFormat, filePath)
 
             AudioFile(
                 path = filePath,
@@ -39,7 +55,12 @@ object MetadataParser {
                 artist = tags.artist,
                 album = tags.album,
                 duration = durationMs.coerceAtLeast(0),
-                sampleRate = stream.sampleRate,
+                sampleRate = SampleRateNormalizer.normalize(
+                    rawSampleRate = stream.sampleRate,
+                    codecName = stream.codecName,
+                    formatName = stream.formatName,
+                    filePath = filePath
+                ),
                 bitRate = bitRate,
                 bitsPerSample = stream.bitsPerSample,
                 format = mimeType.substringAfter("/").uppercase(),

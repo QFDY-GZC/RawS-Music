@@ -28,6 +28,8 @@
     <application
         android:name=".RawSMusicApp"
         android:allowBackup="true"
+        android:requestLegacyExternalStorage="true"
+        android:preserveLegacyExternalStorage="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -71,7 +73,7 @@
                 android:resource="@xml/usb_device_filter" />
         </activity-alias>
 
-        <!-- 设置子页面 Activity（对标 Poweramp SettingsActivity + f90 模式） -->
+        <!-- 设置子页面 Activity（SettingsActivity + f90 模式） -->
         <activity android:name=".ui.settings.SettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.AudioSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.AudioEffectsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
@@ -93,6 +95,7 @@
         <activity android:name=".ui.settings.WebDavBackupActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.AboutActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.ScanSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.TransitionSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -129,7 +132,7 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- 存储事件监听，对标 Poweramp StorageBroadcastReceiver -->
+        <!-- 存储事件监听，StorageBroadcastReceiver -->
         <receiver
             android:name="com.rawsmusic.module.scanner.StorageChangeReceiver"
             android:exported="false">

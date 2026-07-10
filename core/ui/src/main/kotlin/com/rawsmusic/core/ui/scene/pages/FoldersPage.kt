@@ -123,7 +123,6 @@ private fun FolderListPage(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MiuixTheme.colorScheme.background)
     ) {
         ComposeGenericPowerList(
             items = items,
@@ -160,7 +159,6 @@ private fun FolderDetailPage(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MiuixTheme.colorScheme.background)
     ) {
         ComposePowerListFull(
             songs = folder.songs,
@@ -526,7 +524,7 @@ private fun List<AudioFile>.toFolderGroups(): List<FolderGroupUi> {
 }
 
 private fun AudioFile.coverKey(): String {
-    return albumArtPath.ifBlank { path }
+    return this.coverKey
 }
 
 private fun AudioFile.displayTitle(): String {

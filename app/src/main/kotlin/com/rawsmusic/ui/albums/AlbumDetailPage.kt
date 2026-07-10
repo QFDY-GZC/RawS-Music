@@ -37,6 +37,7 @@ import com.rawsmusic.core.ui.scene.pages.themeColors
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
 import com.rawsmusic.module.player.PlayerController
+import com.rawsmusic.module.player.PlayerService
 import com.rawsmusic.ui.songs.PlayerHolder
 
 /**
@@ -62,15 +63,12 @@ fun AlbumDetailPageCompose(
 
     fun playSongSafe(song: AudioFile) {
         if (song.path.isBlank()) return
-        if (PlayerHolder.controller == null) {
-            val activity = context as? com.rawsmusic.MainActivity
-            if (activity != null) {
-                activity.playerController ?: PlayerController.getInstance(context).also {
-                    activity.playerController = it
-                    PlayerHolder.controller = it
-                }
-            }
-        }
+        val activity = context as? com.rawsmusic.MainActivity
+        activity?.ensureRuntimeController("album_detail_play")
+            ?: PlayerHolder.controller
+            ?: PlayerService.currentRuntimeController()
+            ?: PlayerController.getInstanceOrNull()
+            ?: PlayerService.obtainRuntimeController(context, "album_detail_play")
         try { viewModel.playSong(song) } catch (_: Exception) {}
     }
 

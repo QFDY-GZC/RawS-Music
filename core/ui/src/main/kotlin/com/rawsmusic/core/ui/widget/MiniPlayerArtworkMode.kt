@@ -10,16 +10,20 @@ enum class MiniPlayerArtworkMode {
 
     companion object {
         fun fromPrefs(value: String?): MiniPlayerArtworkMode {
+            // v14: reverse the display mapping and make the capsule default to vinyl.
+            // Existing users that still have the old "normal" value will now see the vinyl
+            // style by default; double-tap still toggles between the two styles.
             return when (value) {
-                "vinyl" -> Vinyl
-                else -> Normal
+                "vinyl" -> Normal
+                "normal" -> Vinyl
+                else -> Vinyl
             }
         }
 
         fun toPrefs(mode: MiniPlayerArtworkMode): String {
             return when (mode) {
-                Normal -> "normal"
-                Vinyl -> "vinyl"
+                Normal -> "vinyl"
+                Vinyl -> "normal"
             }
         }
     }
