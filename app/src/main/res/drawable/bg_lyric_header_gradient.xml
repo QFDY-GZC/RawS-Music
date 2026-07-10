@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 歌词页顶部遮挡区渐变背景：从不透明深色到透明，实现歌词向上滚动时被遮挡的效果 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient
+        android:angle="90"
+        android:startColor="#FF1A1614"
+        android:centerColor="#E61A1614"
+        android:endColor="#001A1614"
+        android:type="linear" />
+</shape>

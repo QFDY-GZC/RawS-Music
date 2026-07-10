@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 播放界面底部遮罩渐变：从上到下逐渐变暗，确保底部文字在浅色背景上可读 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="270"
+        android:startColor="#00000000"
+        android:centerColor="#33000000"
+        android:centerY="60%"
+        android:endColor="#5C000000"
+        android:type="linear" />
+</shape>

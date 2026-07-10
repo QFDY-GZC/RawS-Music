@@ -1,0 +1,6 @@
+# Hand-authored baseline profile for the app's own startup and first-interaction code.
+# Compose/Media libraries ship their own profiles; this covers RawSMusic classes and
+# the local modules that are touched during cold launch, library entry, and player open.
+HSPLcom/rawsmusic/**->**(**)
+SPLcom/rawsmusic/**->**(**)
+Lcom/rawsmusic/**

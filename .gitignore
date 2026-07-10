@@ -1,0 +1,118 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# Gradle distribution (too large)
+gradle-8.5/
+
+# Android Studio
+.idea/
+*.iml
+*.iws
+*.ipr
+.DS_Store
+
+# NDK/CMake
+.cxx/
+.ccache/
+externalNativeBuild/
+native-debug-info/
+
+# Compiled libraries (too large)
+app/src/main/jniLibs/**/*.so
+*.a
+*.o
+*.obj
+
+# FFmpeg source (too large, use prebuilt)
+tools/ffmpeg_build/ffmpeg-6.0/
+tools/ffmpeg_build/ffmpeg-6.0.tar.bz2
+
+# APK and AAB
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Keystore (security)
+*.jks
+*.keystore
+keystore.properties
+
+# Local config
+local.properties
+secrets.properties
+*.local.json
+
+# Crash logs
+hs_err_pid*.log
+replay_pid*.log
+*.hprof
+
+# Kotlin
+.kotlin/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.zip
+core.zip
+
+# OS
+Thumbs.db
+.DS_Store
+*~
+
+# Claude/Codebuddy
+.claude/
+.codebuddy/
+
+# Backup
+*.bak
+*.backup
+
+# Local research / reverse engineering / temp outputs
+.agents/
+.trae/
+.uploads/
+output/
+reboot_logs/
+tmp_video_compare/
+tmp_video_frames/
+temp_decompiled/
+temp_letter/
+temp_pa/
+jadx/
+poweramp_src/
+kugou_decompiled/
+kugou_lyric_json/
+uapp_decompiled/
+uapp_java_reference/
+uapp_strings/
+radare2-master/
+frida/
+build_log.txt
+cmake_error.txt
+cmake_error2.txt
+app.zip
+reference.zip
+*.patch
+*.bundle.zip
+
+# Local Codex artifacts and unpacked tool sources
+.codex-video-frames/
+.codex-video-frames-new/
+pet-runs/
+tools/ffmpeg-6.0/
+tools/native_refactor/
+app/src/main/cpp/reference/
+app/src/main/cpp/*.diff
+/tools/
+/docs/*
+!/docs/assets/
+!/docs/assets/wechat-donate-qrcode.png
+nul
+trim.ps1

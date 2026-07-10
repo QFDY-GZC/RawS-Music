@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="nav_qq_group" type="id"/>
+    <item name="nav_songs" type="id"/>
+    <item name="nav_albums" type="id"/>
+    <item name="nav_artists" type="id"/>
+    <item name="nav_webdav" type="id"/>
+    <item name="nav_playlist" type="id"/>
+    <item name="nav_playlist_detail" type="id"/>
+    <item name="nav_album_detail" type="id"/>
+    <item name="nav_settings" type="id"/>
+    <item name="nav_lyric_management" type="id"/>
+    <item name="nav_status_bar_lyric" type="id"/>
+    <item name="nav_appearance" type="id"/>
+    <item name="nav_audio_settings" type="id"/>
+    <item name="nav_audio_effects" type="id"/>
+    <item name="nav_player_interface" type="id"/>
+    <item name="nav_usb_dac_settings" type="id"/>
+    <item name="nav_peq" type="id"/>
+    <item name="nav_compressor" type="id"/>
+    <item name="nav_bass_treble_boost" type="id"/>
+    <item name="nav_spatial_sound" type="id"/>
+    <item name="nav_surround_360" type="id"/>
+    <item name="nav_panoramic_360" type="id"/>
+    <item name="nav_lyric_font_settings" type="id"/>
+    <item name="nav_global_font_settings" type="id"/>
+    <item name="nav_webdav_backup" type="id"/>
+    <item name="nav_log_viewer" type="id"/>
+    <item name="nav_analytics" type="id"/>
+    <item name="nav_search" type="id"/>
+    <item name="nav_album_art_settings" type="id"/>
+    <item name="nav_scan_settings" type="id"/>
+    <item name="nav_about" type="id"/>
+    <item name="nav_song_stats" type="id"/>
+    <item name="drawerLayout" type="id"/>
+    <item name="unifiedContainer" type="id"/>
+</resources>
