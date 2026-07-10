@@ -7,98 +7,111 @@
 ![MinSDK](https://img.shields.io/badge/minSdk-23-ff9800?style=flat-square)
 ![Stack](https://img.shields.io/badge/stack-Kotlin%20%2B%20C%2B%2B-7b61ff?style=flat-square)
 ![License](https://img.shields.io/badge/license-Apache--2.0-1677ff?style=flat-square)
+![Release](https://img.shields.io/github/v/release/QFDY-GZC/RawS-Music?include_prereleases&style=flat-square)
+![Downloads](https://img.shields.io/github/downloads/QFDY-GZC/RawS-Music/total?style=flat-square)
 ![Stars](https://img.shields.io/github/stars/QFDY-GZC/RawS-Music?style=flat-square)
-![Views](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FQFDY-GZC%2FRawS-Music&count_bg=%233D7EFF&title_bg=%232C3440&icon=&icon_color=%23FFFFFF&title=views&edge_flat=false)
+![Forks](https://img.shields.io/github/forks/QFDY-GZC/RawS-Music?style=flat-square)
+![Issues](https://img.shields.io/github/issues/QFDY-GZC/RawS-Music?style=flat-square)
 
-面向本地音乐收藏、高音质播放与播放器界面质感持续打磨的 Android 音乐播放器。
+面向本地音乐收藏、高音质播放与细致播放器体验持续打磨的 Android 音乐播放器。
 
-[项目说明](#项目说明) • [主要能力](#主要能力) • [当前开源范围](#当前开源范围) • [模块结构](#模块结构) • [构建方式](#构建方式) • [Star History](#star-history) • [赞赏](#赞赏)
+[项目简述](#项目简述) | [核心功能](#核心功能) | [格式与媒体库支持](#格式与媒体库支持) | [开源范围](#当前开源范围) | [模块结构](#模块结构) | [技术栈](#技术栈) | [构建](#构建方式) | [贡献](#贡献)
 
 </div>
 
-> 当前仓库正在持续整理为公开版本。UI、媒体库、歌词、扫描、常规播放框架和大部分应用层代码已开放；完整的 USB 独占核心暂不包含在本仓库中，后续会拆分为独立仓库并采用 GPLv3。
+> 当前仓库正持续整理为公开版本。UI、媒体库、歌单、歌词、扫描、常规播放框架、DSP 接线及大部分应用层代码均已开放；完整 USB 独占 Native 核心会拆分到独立 GPLv3 仓库维护。
 
-## 项目说明
+## 项目简述
 
-RawS Music 是一个以本地音乐播放为中心的 Android 音乐播放器项目，重点不在流媒体聚合，而在本地媒体库组织、播放器交互体验、歌词系统、专辑视图、外接音频设备支持方向，以及较完整的音频链路可视化表达。
+RawS Music 是面向本地音频收藏的 Android 音乐播放器。它不以流媒体聚合为目标，而是围绕媒体库组织、播放器交互、歌词、专辑封面、技术信息和 Hi-Res / DSD / USB DAC 等高音质播放场景持续完善体验。
 
-这个项目的目标很直接：把“听本地音乐”这件事做得更完整一些。它既关注播放器本身的音质与播放控制，也关注专辑封面、页面过渡、沉浸式播放界面、歌词细节、媒体库浏览效率，以及外部音频设备接入时的使用体验。
+项目主体采用 Kotlin 与 Jetpack Compose，结合 C++、FFmpeg、TagLib 和 AudioTrack 处理解码、元数据读取、技术信息补全及播放链路控制。除音质和播放控制外，项目也着重打磨专辑图加载、页面转场、沉浸式播放、逐字歌词、列表浏览效率和外接音频设备的使用体验。
 
-和很多只做基础播放功能的播放器不同，RawS Music 长期在几个方向上同时推进：
+## 核心功能
 
-- 本地媒体库、文件夹、专辑、艺术家与播放列表的组织效率
-- 高质感播放器界面、沉浸式布局与细节动画
-- 歌词显示、逐字同步、状态栏歌词与相关信息展示
-- Kotlin 与 C++ 混合架构下的音频处理、FFmpeg 桥接与 DSP 能力
-- 面向 Hi-Res、DSD、USB DAC 场景的产品路线
-
-## 主要能力
-
-| 方向 | 说明 |
+| 模块 | 详细能力 |
 | --- | --- |
-| 本地媒体库 | 围绕歌曲、专辑、艺术家、文件夹与列表视图组织本地音频资源，持续优化扫描、索引与浏览效率 |
-| 播放体验 | 提供完整播放器界面、迷你播放栏、沉浸式播放页、队列控制、后台播放与进度同步 |
-| 歌词系统 | 包含歌词模型、Bridge、逐字/逐行显示基础能力，以及面向状态栏歌词与播放器歌词页的接入 |
-| 音频处理 | 项目包含 FFmpeg 桥接、常规播放框架、DSP 接线与部分 Native 音频处理能力 |
-| 界面系统 | 基于 Compose、Miuix 与自定义 backdrop / liquid glass 风格组件持续打磨播放器体验 |
-| 工程结构 | 采用模块化组织，按 UI、数据、扫描、播放、歌词与视觉效果拆分，便于持续演进与后续公开整理 |
+| 媒体库系统 | 歌曲、专辑、艺术家、专辑艺术家、作曲家、流派、年份、文件夹与歌单浏览；包含字母索引、PowerList、多级详情页和选择模式。 |
+| 扫描与入库 | 手动、增量、两阶段与 SAF 文件夹扫描；前台扫描服务、进度反馈、稳定去重、标签补全、技术信息归一化和 ReplayGain 字段持久化。 |
+| CUE 分轨 | 扫描阶段展开 CUE 分轨；播放进度、歌词、入库 key 与显示时间都保留轨道偏移信息。 |
+| 播放与队列 | 完整播放器页、迷你播放栏、后台服务、播放队列、上一首/下一首、定位恢复、跨页状态同步和进度更新。 |
+| 音频处理链 | Kotlin + C++ 组织 FFmpeg 桥接、格式探测、AudioTrack 输出、重采样决策、Gapless / Decoder handoff、Crossfade、PCM 写入和环形缓冲。 |
+| DSP 与音效 | 图形均衡器、参数均衡器、压缩器、低音/高音增强、声场扩展、Stereo Widen、Surround 控制及统一 DSP pipeline。 |
+| 歌词系统 | 歌词模型、Provider Bridge、逐行/逐字时间轴、CUE 整轨歌词裁切、状态栏歌词、蓝牙歌词桥接与播放器歌词页。 |
+| 专辑图 | 内嵌图、外置图与文件夹封面解析；列表/播放器分层缓存、Coil 列表渲染、默认专辑图和 200ms 淡入表现。 |
+| 界面与动画 | Compose、Miuix 与 backdrop 组织主界面、沉浸式播放器、液态玻璃、模糊层、专辑图转场、迷你播放栏和场景切换。 |
+| USB 与 Hi-Res 路线 | 保留 USB 独占上层接入、能力建模、音量控制、恢复策略、DSD 支持判定和设备信息展示；完整底层核心将独立发布。 |
+
+## 格式与媒体库支持
+
+### 音频格式
+
+| 类别 | 说明 |
+| --- | --- |
+| 常规格式 | MP3、FLAC、WAV、AAC、OGG、OPUS、M4A、ALAC、WMA、APE、AIFF。 |
+| DSD / Hi-Res | DSF、DFF，以及围绕 Native DSD、PCM to DSD 与 USB DAC 的持续开发路线。 |
+| 扩展扫描格式 | WV、TTA、TAK、MKA、MPC 与 CUE 已进入现有扫描、识别或解析路径。 |
+| 标签识别 | 组合 MediaStore、TagLib 与 FFmpeg，补全标题、艺术家、专辑、作曲家、流派、年份、轨道号、声道、采样率、位深和码率。 |
+
+### 元数据、封面与歌词
+
+| 能力 | 说明 |
+| --- | --- |
+| 元数据 | 支持技术信息、ReplayGain、峰值、文件大小、编码格式、CUE 偏移和 DSD 判定等字段。 |
+| 专辑图 | 支持内嵌图、外置图、文件夹图与播放器内置默认专辑图，并在列表、专辑页、播放器和迷你栏复用。 |
+| 歌词来源 | 支持外部歌词、内嵌歌词与 Provider Bridge；CUE 专辑整轨歌词可按分轨裁切显示。 |
+| 曲库组织 | 支持歌曲、专辑、艺术家、专辑艺术家、作曲家、流派、年份、文件夹和歌单维度。 |
 
 ## 当前开源范围
 
-目前这个 GitHub 仓库会优先公开适合稳定维护、可单独协作、边界相对清晰的部分。
-
 | 范围 | 状态 | 说明 |
 | --- | --- | --- |
-| `app/` 应用入口与页面层 | 已公开 | 包含主应用入口、主要页面、设置页、服务与上层交互逻辑 |
-| `core/common` | 已公开 | 公共模型、偏好设置、桥接层、工具类等 |
-| `core/ui` | 已公开 | 主题、通用组件、播放器与列表相关 UI、场景组织能力 |
-| `module/data` | 已公开 | 数据库、实体、DAO、仓库等数据层代码 |
-| `module/scanner` | 已公开 | 媒体扫描、元数据整理、索引更新与相关基础设施 |
-| `lyric/` | 已公开 | 歌词模型与 Provider Bridge |
-| `backdrop/` | 已公开 | 与界面玻璃感、模糊、层叠效果有关的可复用实现 |
-| USB 独占上层接入与设置相关代码 | 持续整理 | 公开仓库会保留必要的产品层结构，但不会在当前阶段附带完整底层内核 |
-| USB 独占 Native 核心 | 暂不在本仓库 | 计划拆分为独立仓库，采用 GPLv3 许可证单独维护 |
+| `app/` | 已公开 | 应用入口、主要页面、设置、服务、帮助类与上层交互。 |
+| `core/common` | 已公开 | 公共模型、偏好、工具、FFmpeg / TagLib 桥接与通用数据结构。 |
+| `core/ui` | 已公开 | 主题、通用组件、播放器 UI、PowerList、场景切换和视觉效果。 |
+| `module/data` | 已公开 | Room 数据库、实体、DAO、仓库和参数持久化。 |
+| `module/player` | 已公开 | 常规播放、AudioTrack 输出、DSP、播放状态机与 USB 上层接入。 |
+| `module/scanner` | 已公开 | 媒体扫描、两阶段扫描、SAF、标签整理、CUE 处理和索引更新。 |
+| `lyric/` | 已公开 | 歌词模型、AIDL / Provider Bridge 与时间轴实现。 |
+| `backdrop/` | 已公开 | 模糊、阴影、高光、液态玻璃与 RenderEffect 相关实现。 |
+| USB 独占 Native 核心 | 暂不在本仓库 | 后续拆分为独立 GPLv3 仓库。 |
 
-如果你现在看到公开仓库里只有部分内容，这是预期状态。这个仓库会按模块持续补充、整理和清理历史实验文件，但不会把尚未拆分完成的 USB 独占核心直接混放进 Apache-2.0 主仓库。
+公开仓库会持续清理实验文件和内部分析产物，但不会将尚未拆分完成的 USB 独占底层直接混入 Apache-2.0 主仓库。
 
 ## 许可证说明
 
-当前许可证策略如下：
+- `RawS-Music` 主仓库采用 Apache-2.0。
+- 后续独立发布的 USB 独占核心计划采用 GPLv3。
+- 第三方依赖与引用项目遵循各自许可证。
 
-- 本仓库 `RawS-Music`：采用 Apache-2.0
-- 后续独立发布的 USB 独占核心仓库：计划采用 GPLv3
-- 第三方依赖与引用项目：继续遵循各自原始许可证
-
-这样拆分的目的，是把适合公开协作的通用播放器主体与仍在快速迭代、硬件耦合较强的 USB 独占核心分开维护，方便后续分别演进、审查和发布。
-
-更多说明见根目录 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
+详见根目录 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
 
 ## 模块结构
 
 ```text
 RawS-Music/
-├─ app/                  # 应用入口、页面、设置、服务与上层交互
-├─ core/common/          # 公共模型、桥接、基础工具、偏好设置
-├─ core/ui/              # 主题、组件、播放器 UI、列表与场景相关实现
-├─ module/data/          # 数据库、实体、DAO、仓库
-├─ module/player/        # 播放控制、常规输出、DSP 接线与播放基础设施
-├─ module/scanner/       # 扫描、解析、索引更新、同步相关能力
-├─ lyric/                # 歌词模型与 Provider Bridge
-├─ backdrop/             # 模糊、层叠、液态玻璃风格效果
-└─ docs/                 # 架构分析、设计记录与整理中的文档
+|- app/                  # 应用入口、页面、设置、服务与上层交互
+|- core/common/          # 公共模型、桥接、基础工具和偏好
+|- core/ui/              # 主题、组件、播放器 UI、列表与场景实现
+|- module/data/          # 数据库、实体、DAO、仓库
+|- module/player/        # 播放控制、常规输出、DSP 与播放基础设施
+|- module/scanner/       # 扫描、解析、索引更新和同步
+|- lyric/                # 歌词模型与 Provider Bridge
+|- backdrop/             # 模糊、层叠和液态玻璃效果
+`- docs/                 # 架构与设计文档
 ```
 
 ## 技术栈
 
-| 类别 | 技术 |
-| --- | --- |
-| 语言 | Kotlin, C++17 |
-| UI | Jetpack Compose, Miuix |
-| Native / 音频桥接 | CMake, NDK, FFmpeg |
-| 数据层 | Room, LitePal |
-| 异步 | Kotlin Coroutines, Flow |
-| 图形与视觉 | RenderEffect, Canvas, backdrop |
-| 工程形态 | 多模块 Android 工程 |
+| 类别 | 库 / 框架 | 用途 |
+| --- | --- | --- |
+| 语言与构建 | Kotlin、C++17、Gradle、CMake、Android NDK | Android 工程与 Native 音频桥接。 |
+| UI | Jetpack Compose、Material 3、Miuix | 主界面、播放器、列表、设置和主题。 |
+| 图形与视觉 | backdrop、RenderEffect、Canvas、Palette | 模糊、高光、液态玻璃和动态取色。 |
+| 数据层 | Room、MMKV、Gson | 媒体库数据库、设置与对象序列化。 |
+| 异步与状态 | Kotlin Coroutines、Flow、Lifecycle | 扫描、播放、页面状态与后台服务协作。 |
+| 音频处理 | FFmpeg、AudioTrack、TagLib | 解码、标签读取、重采样和技术信息。 |
+| 网络与歌词 | OkHttp、WebDAV 基础实现、Lyric Provider Bridge | 远程目录、后续同步与歌词桥接。 |
 
 ## 构建方式
 
@@ -106,7 +119,7 @@ RawS-Music/
 
 - Android Studio 最新稳定版
 - JDK 21
-- Android SDK
+- Android SDK，`compileSdk 37`，`minSdk 23`，`targetSdk 34`
 - Android NDK
 - CMake 3.22.1
 
@@ -118,61 +131,61 @@ cd RawS-Music
 .\gradlew.bat installRelease
 ```
 
-如果你只想先验证能否编译，也可以使用：
+仅验证编译可使用：
 
 ```powershell
 .\gradlew.bat assembleDebug
 ```
 
-说明：
-
-- 部分 Native 相关能力依赖本地 NDK / CMake 环境
-- 当前公开仓库处于持续整理阶段，个别目录、脚本与文档仍会继续调整
-- 与 USB 独占完整底层相关的发布内容不在当前仓库内
+部分 Native 能力依赖正确配置的 NDK 与 CMake。完整 USB 独占 Native 核心不在当前公开仓库中。
 
 ## 开发路线
 
-接下来会继续推进几件事情：
-
-1. 继续整理公开仓库的目录结构、文档和构建说明
-2. 补充公开版本下更完整的页面说明、截图与模块边界文档
-3. 将 USB 独占核心抽离为单独仓库，并按 GPLv3 发布
-4. 逐步把实验性质较强、仅用于内部分析的内容与主仓库维护边界分开
+1. 继续整理公开仓库目录、文档、构建说明与模块边界。
+2. 持续改进媒体库扫描、CUE、专辑图、歌词和播放器交互。
+3. 补充页面说明、截图和面向贡献者的技术文档。
+4. 将 USB 独占核心拆分到单独的 GPLv3 仓库。
 
 ## 贡献
 
-欢迎通过 Issue 或 Pull Request 参与改进。当前阶段尤其欢迎以下方向的反馈：
+欢迎通过 Issue 或 Pull Request 参与改进。尤其欢迎以下方向的反馈：
 
-- 媒体库、扫描与封面加载体验
-- 播放器界面、交互细节与动画表现
-- 歌词系统、信息展示与本地化
-- 项目文档、构建流程与模块边界说明
-
-在 USB 独占核心尚未拆分完成之前，相关底层问题会优先以设计说明、日志、接口边界和文档形式整理。
+- 媒体库、扫描、CUE 与专辑图加载体验。
+- 播放器交互、动画、歌词和信息展示。
+- 音频格式兼容、技术信息、DSP 与外接设备支持。
+- 文档、本地化、构建流程与模块边界。
 
 ## 社群
 
 - QQ 群：`1093312333`
-- 点击加入群聊：[RawS Music 交流群](https://qm.qq.com/q/P6Qxx7XzC8)
+- [RawS Music 交流群](https://qm.qq.com/q/P6Qxx7XzC8)
 
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=QFDY-GZC/RawS-Music&type=Date)](https://star-history.com/#QFDY-GZC/RawS-Music&Date)
 
-## 赞赏
-
-如果这个项目对你有帮助，或者你愿意支持它继续往下打磨，可以通过下面的赞赏码支持开发。
+## 访问统计
 
 <div align="center">
-  <img src="docs/assets/wechat-donate-qrcode.png" alt="RawS Music 赞赏码" width="320" />
+  <img src="https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FQFDY-GZC%2FRawS-Music&count_bg=%233D7EFF&title_bg=%232C3440&icon=&icon_color=%23FFFFFF&title=views&edge_flat=false" alt="RawS Music 仓库访问统计" />
+</div>
+
+## 赞赏
+
+如果项目对你有帮助，欢迎通过微信赞赏支持后续开发。
+
+<div align="center">
+  <img src="docs/assets/wechat-donate-qrcode.png" alt="RawS Music 微信赞赏码" width="320" />
 </div>
 
 ## 致谢
 
 - [FFmpeg](https://ffmpeg.org/)
+- [TagLib](https://taglib.org/)
 - [Coil](https://coil-kt.github.io/coil/)
 - [Jetpack Compose](https://developer.android.com/jetpack/compose)
 - [Miuix](https://github.com/YunZiA/HyperStar)
 - [backdrop](https://github.com/nickkimk/backdrop)
+- [OkHttp](https://square.github.io/okhttp/)
 
-如果这个项目刚好对你有帮助，欢迎在 GitHub 上点一个 Star。这会比一句“做得不错”更能让我知道它确实帮到了人。
+如果 RawS Music 对你有帮助，欢迎在 GitHub 上点一个 Star。
