@@ -1,7 +1,7 @@
 /**
  * TagLib 全格式元数据读取桥接（优化版）。
  *
- * 优化策略（对标 Poweramp）：
+ * 优化策略：
  * 1. 根据文件扩展名预分发到专用 reader，避免 FileRef 格式检测开销
  * 2. 只读取必要标签字段 + 基础音频属性
  * 3. JNI 异常安全检查
@@ -199,7 +199,7 @@ static TagLib::ByteVector extractArtworkBytes(const char *filePath) {
 }
 
 /**
- * 根据扩展名使用专用 reader 读取标签（对标 Poweramp scan_file_by_type）。
+ * 根据扩展名使用专用 reader 读取标签，避免通用探测带来的额外开销。
  */
 static std::map<std::string, std::string> readMetadata(const char *filePath) {
     std::map<std::string, std::string> result;

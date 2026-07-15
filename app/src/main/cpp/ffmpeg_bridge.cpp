@@ -10,6 +10,10 @@
 #include <signal.h>
 #include <setjmp.h>
 #include <time.h>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -30,6 +34,7 @@ extern "C" {
 
 static thread_local sigjmp_buf s_abort_jmp_buf;
 static thread_local volatile sig_atomic_t s_abort_caught = 0;
+static std::mutex s_send_packet_signal_mutex;
 
 static jstring newJStringFromUtf8Lenient(JNIEnv *env, const char *text) {
     if (!text) {
@@ -114,6 +119,11 @@ static void abort_signal_handler(int sig) {
  * Returns the normal avcodec_send_packet result, or -100 if SIGABRT was caught.
  */
 static int sendPacketSafe(AVCodecContext *ctx, AVPacket *pkt) {
+    // sigaction() changes a process-wide handler. During rapid switching the old and
+    // new decoder can overlap, so serialize this compatibility guard across sessions.
+    // Use explicit lock/unlock because siglongjmp does not run C++ destructors.
+    s_send_packet_signal_mutex.lock();
+
     struct sigaction sa_old, sa_new;
     sa_new.sa_handler = abort_signal_handler;
     sigemptyset(&sa_new.sa_mask);
@@ -124,10 +134,11 @@ static int sendPacketSafe(AVCodecContext *ctx, AVPacket *pkt) {
     if (sigsetjmp(s_abort_jmp_buf, 1) == 0) {
         int ret = avcodec_send_packet(ctx, pkt);
         sigaction(SIGABRT, &sa_old, nullptr);
+        s_send_packet_signal_mutex.unlock();
         return ret;
     } else {
-        // SIGABRT was caught — restore old handler
         sigaction(SIGABRT, &sa_old, nullptr);
+        s_send_packet_signal_mutex.unlock();
         LOGE("sendPacketSafe: caught SIGABRT from avcodec_send_packet, returning error");
         return -100;
     }
@@ -979,9 +990,9 @@ static int extract_cover(const char *input_path, const char *output_path) {
 }
 
 
-// Poweramp-like offline Waveseek scanner lives in raw_waveform_scan.cpp.
+// Offline waveform seek scanner lives in raw_waveform_scan.cpp.
 // Keep the JNI bridge small; do not pile scan/decode policy into this file.
-std::vector<float> rawsmusic_scan_waveform_poweramp_seek(
+std::vector<float> rawsmusic_scan_waveform_precise_seek(
     const char *input_path,
     int64_t start_ms,
     int64_t end_ms,
@@ -1062,7 +1073,7 @@ extern "C" JNIEXPORT jfloatArray JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeScanWaveform(
     JNIEnv *env, jobject, jstring path, jlong startMs, jlong endMs, jint sampleCount) {
     const char *p = env->GetStringUTFChars(path, nullptr);
-    std::vector<float> result = rawsmusic_scan_waveform_poweramp_seek(p, (int64_t)startMs, (int64_t)endMs, (int)sampleCount);
+    std::vector<float> result = rawsmusic_scan_waveform_precise_seek(p, (int64_t)startMs, (int64_t)endMs, (int)sampleCount);
     env->ReleaseStringUTFChars(path, p);
     jfloatArray array = env->NewFloatArray((jsize)result.size());
     if (!array) return nullptr;
@@ -1159,11 +1170,60 @@ struct StreamDecoder {
     bool raw_dsd_planar;
     int raw_dsd_bytes_per_channel_frame;
 
+    // DSD source fallback for PCM-only output devices. Trimmed FFmpeg builds do
+    // not necessarily include the DSD decoder, so decimate demuxed DSD bytes to
+    // PCM here instead of failing the whole track.
+    bool raw_dsd_to_pcm;
+    int dsd_pcm_decimation;
+    int dsd_pcm_phase;
+    int dsd_pcm_taps;
+    int dsd_pcm_history_pos;
+    float *dsd_pcm_coeffs;
+    float *dsd_pcm_history;
+
     // State
     bool eof_reached;
     bool flushed_decoder;
     bool flushed_swr;
 };
+
+
+struct StreamDecoderSession {
+    std::mutex mutex;
+    StreamDecoder* decoder;
+
+    explicit StreamDecoderSession(StreamDecoder* value) : decoder(value) {}
+};
+
+static std::mutex g_stream_decoder_registry_mutex;
+static std::unordered_map<jlong, std::shared_ptr<StreamDecoderSession>> g_stream_decoder_registry;
+static std::atomic<jlong> g_next_stream_decoder_handle{1};
+
+static jlong registerStreamDecoder(StreamDecoder* decoder) {
+    if (!decoder) return 0;
+    const jlong handle = g_next_stream_decoder_handle.fetch_add(1, std::memory_order_relaxed);
+    auto session = std::make_shared<StreamDecoderSession>(decoder);
+    std::lock_guard<std::mutex> lock(g_stream_decoder_registry_mutex);
+    g_stream_decoder_registry.emplace(handle, std::move(session));
+    return handle;
+}
+
+static std::shared_ptr<StreamDecoderSession> acquireStreamDecoderSession(jlong handle) {
+    if (handle == 0) return nullptr;
+    std::lock_guard<std::mutex> lock(g_stream_decoder_registry_mutex);
+    auto it = g_stream_decoder_registry.find(handle);
+    return it == g_stream_decoder_registry.end() ? nullptr : it->second;
+}
+
+static std::shared_ptr<StreamDecoderSession> detachStreamDecoderSession(jlong handle) {
+    if (handle == 0) return nullptr;
+    std::lock_guard<std::mutex> lock(g_stream_decoder_registry_mutex);
+    auto it = g_stream_decoder_registry.find(handle);
+    if (it == g_stream_decoder_registry.end()) return nullptr;
+    auto session = it->second;
+    g_stream_decoder_registry.erase(it);
+    return session;
+}
 
 static int streamCopyResidual(StreamDecoder* sd, uint8_t* out_buf, int out_max_bytes, int* bytes_written) {
     if (!sd || !out_buf || !bytes_written) return 0;
@@ -1256,9 +1316,20 @@ static StreamDecoder* stream_decoder_open(
     sd->raw_dsd_lsbf = false;
     sd->raw_dsd_planar = false;
     sd->raw_dsd_bytes_per_channel_frame = 0;
+    sd->raw_dsd_to_pcm = false;
+    sd->dsd_pcm_decimation = 0;
+    sd->dsd_pcm_phase = 0;
+    sd->dsd_pcm_taps = 0;
+    sd->dsd_pcm_history_pos = 0;
+    sd->dsd_pcm_coeffs = nullptr;
+    sd->dsd_pcm_history = nullptr;
 
-    if (avformat_open_input(&sd->fmt_ctx, path, nullptr, nullptr) < 0) {
-        LOGE("stream_decoder_open: Could not open input: %s", path);
+    const int openResult = avformat_open_input(&sd->fmt_ctx, path, nullptr, nullptr);
+    if (openResult < 0) {
+        char errorText[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(openResult, errorText, sizeof(errorText));
+        LOGE("stream_decoder_open: Could not open input: %s error=%d (%s)",
+             path, openResult, errorText);
         free(sd);
         return nullptr;
     }
@@ -1330,6 +1401,90 @@ static StreamDecoder* stream_decoder_open(
                  sd->out_channels,
                  avcodec_get_name(codecpar->codec_id));
             return sd;
+        }
+
+        // Prefer FFmpeg's production DSD decoder whenever it is available. The
+        // lightweight bit-domain decimator below is only an emergency fallback
+        // for custom builds that omit DSD decoders; using it in normal builds
+        // leaks too much shaped ultrasonic noise into low-rate PCM output.
+        if (is_dsd_codec(codecpar->codec_id) &&
+            avcodec_find_decoder(codecpar->codec_id) == nullptr) {
+            const int codecRate = codecpar->sample_rate > 0 ? codecpar->sample_rate : 352800;
+            const int sourceDsdRate = codecRate >= 2822400 ? codecRate : codecRate * 8;
+            const int requestedPcmRate = target_sample_rate > 0 ? target_sample_rate : 176400;
+            sd->raw_dsd_to_pcm = true;
+            sd->raw_dsd_lsbf =
+                codecpar->codec_id == AV_CODEC_ID_DSD_LSBF ||
+                codecpar->codec_id == AV_CODEC_ID_DSD_LSBF_PLANAR;
+            sd->raw_dsd_planar =
+                codecpar->codec_id == AV_CODEC_ID_DSD_LSBF_PLANAR ||
+                codecpar->codec_id == AV_CODEC_ID_DSD_MSBF_PLANAR;
+            sd->src_sample_rate = sourceDsdRate;
+            sd->src_channels = codecpar->channels > 0 ? codecpar->channels : (channels > 0 ? channels : 2);
+            sd->duration_us = (sd->fmt_ctx->duration == AV_NOPTS_VALUE || sd->fmt_ctx->duration < 0)
+                ? 0 : sd->fmt_ctx->duration;
+            sd->out_sample_rate = requestedPcmRate;
+            sd->out_channels = channels > 0 ? channels : sd->src_channels;
+            sd->out_bits = normalize_bits_per_sample(bits_per_sample);
+            sd->out_bytes_per_sample = sd->out_bits == 16 ? 2 : 4;
+            sd->file_bytes_per_sample = bytes_per_sample_for_bits(sd->out_bits);
+            sd->out_fmt = swr_output_format_for_bits(sd->out_bits);
+            sd->dsd_pcm_decimation = std::max(1, (int)llround(
+                (double)sourceDsdRate / (double)sd->out_sample_rate));
+            sd->dsd_pcm_taps = 63;
+            sd->dsd_pcm_coeffs = (float *)av_mallocz(sizeof(float) * sd->dsd_pcm_taps);
+            sd->dsd_pcm_history = (float *)av_mallocz(
+                sizeof(float) * sd->dsd_pcm_taps * sd->src_channels);
+            if (!sd->dsd_pcm_coeffs || !sd->dsd_pcm_history) {
+                LOGE("stream_decoder_open: Could not allocate DSD-to-PCM FIR state");
+                goto fail;
+            }
+
+            // Windowed-sinc low-pass before decimation. Keep the cutoff below
+            // the audible/noise-shaping band while retaining normal music bandwidth.
+            const double cutoffHz = std::min(40000.0, sd->out_sample_rate * 0.42);
+            const double fc = cutoffHz / (double)sourceDsdRate;
+            const int middle = (sd->dsd_pcm_taps - 1) / 2;
+            double coeffSum = 0.0;
+            for (int i = 0; i < sd->dsd_pcm_taps; ++i) {
+                const int x = i - middle;
+                const double sinc = x == 0
+                    ? 2.0 * fc
+                    : sin(2.0 * M_PI * fc * x) / (M_PI * x);
+                const double window = 0.42
+                    - 0.5 * cos(2.0 * M_PI * i / (sd->dsd_pcm_taps - 1))
+                    + 0.08 * cos(4.0 * M_PI * i / (sd->dsd_pcm_taps - 1));
+                sd->dsd_pcm_coeffs[i] = (float)(sinc * window);
+                coeffSum += sd->dsd_pcm_coeffs[i];
+            }
+            if (fabs(coeffSum) > 1e-12) {
+                for (int i = 0; i < sd->dsd_pcm_taps; ++i) {
+                    sd->dsd_pcm_coeffs[i] = (float)(sd->dsd_pcm_coeffs[i] / coeffSum);
+                }
+            }
+
+            sd->residual_buf_capacity = sd->out_sample_rate * sd->out_channels * sd->out_bytes_per_sample;
+            sd->residual_buf = (uint8_t *)av_malloc(sd->residual_buf_capacity);
+            sd->pkt = av_packet_alloc();
+            if (!sd->residual_buf || !sd->pkt) {
+                LOGE("stream_decoder_open: Could not allocate DSD-to-PCM buffers");
+                goto fail;
+            }
+            sd->residual_buf_size = 0;
+            sd->residual_buf_pos = 0;
+            sd->eof_reached = false;
+            sd->flushed_decoder = false;
+            sd->flushed_swr = true;
+            LOGI("stream_decoder_open: DSD-to-PCM fallback %s dsdRate=%d pcmRate=%d decimation=%d ch=%d bits=%d",
+                 path, sourceDsdRate, sd->out_sample_rate, sd->dsd_pcm_decimation,
+                 sd->out_channels, sd->out_bits);
+            return sd;
+        }
+
+        if (is_dsd_codec(codecpar->codec_id)) {
+            LOGI("stream_decoder_open: using FFmpeg DSD decoder for PCM output codec=%s target=%dHz/%dbit/%dch",
+                 avcodec_get_name(codecpar->codec_id), target_sample_rate,
+                 bits_per_sample, channels);
         }
 
         const AVCodec *codec = avcodec_find_decoder(codecpar->codec_id);
@@ -1444,11 +1599,66 @@ fail:
     if (sd->pkt) av_packet_free(&sd->pkt);
     if (sd->frame) av_frame_free(&sd->frame);
     if (sd->residual_buf) av_free(sd->residual_buf);
+    if (sd->dsd_pcm_coeffs) av_free(sd->dsd_pcm_coeffs);
+    if (sd->dsd_pcm_history) av_free(sd->dsd_pcm_history);
     if (sd->swr_ctx) swr_free(&sd->swr_ctx);
     if (sd->codec_ctx) avcodec_free_context(&sd->codec_ctx);
     if (sd->fmt_ctx) avformat_close_input(&sd->fmt_ctx);
     free(sd);
     return nullptr;
+}
+
+static int convertRawDsdPacketToPcm(StreamDecoder *sd, const AVPacket *pkt) {
+    if (!sd || !pkt || !pkt->data || pkt->size <= 0 || !sd->raw_dsd_to_pcm) return 0;
+    const int sourceChannels = std::max(1, sd->src_channels);
+    const int bytesPerChannel = pkt->size / sourceChannels;
+    if (bytesPerChannel <= 0) return 0;
+    const int maxFrames = (bytesPerChannel * 8 + sd->dsd_pcm_phase) /
+        std::max(1, sd->dsd_pcm_decimation) + 2;
+    const int required = maxFrames * sd->out_channels * sd->out_bytes_per_sample;
+    if (!streamEnsureResidualCapacity(sd, required)) return -1;
+
+    int outputFrames = 0;
+    for (int byteIndex = 0; byteIndex < bytesPerChannel; ++byteIndex) {
+        for (int bitIndex = 0; bitIndex < 8; ++bitIndex) {
+            for (int ch = 0; ch < sourceChannels; ++ch) {
+                const int sourceIndex = sd->raw_dsd_planar
+                    ? ch * bytesPerChannel + byteIndex
+                    : byteIndex * sourceChannels + ch;
+                if (sourceIndex >= pkt->size) continue;
+                const int shift = sd->raw_dsd_lsbf ? bitIndex : (7 - bitIndex);
+                const float value = ((pkt->data[sourceIndex] >> shift) & 1u) ? 1.0f : -1.0f;
+                sd->dsd_pcm_history[ch * sd->dsd_pcm_taps + sd->dsd_pcm_history_pos] = value;
+            }
+
+            sd->dsd_pcm_history_pos = (sd->dsd_pcm_history_pos + 1) % sd->dsd_pcm_taps;
+            if (++sd->dsd_pcm_phase < sd->dsd_pcm_decimation) continue;
+            sd->dsd_pcm_phase = 0;
+
+            for (int outCh = 0; outCh < sd->out_channels; ++outCh) {
+                const int sourceCh = std::min(outCh, sourceChannels - 1);
+                double sample = 0.0;
+                int historyIndex = sd->dsd_pcm_history_pos - 1;
+                if (historyIndex < 0) historyIndex += sd->dsd_pcm_taps;
+                for (int tap = 0; tap < sd->dsd_pcm_taps; ++tap) {
+                    sample += sd->dsd_pcm_history[sourceCh * sd->dsd_pcm_taps + historyIndex] *
+                        sd->dsd_pcm_coeffs[tap];
+                    if (--historyIndex < 0) historyIndex += sd->dsd_pcm_taps;
+                }
+                sample = std::max(-1.0, std::min(1.0, sample * 0.90));
+                const int outputIndex = outputFrames * sd->out_channels + outCh;
+                if (sd->out_bits == 16) {
+                    reinterpret_cast<int16_t *>(sd->residual_buf)[outputIndex] =
+                        (int16_t)llround(sample * 32767.0);
+                } else {
+                    reinterpret_cast<int32_t *>(sd->residual_buf)[outputIndex] =
+                        (int32_t)llround(sample * 2147483647.0);
+                }
+            }
+            ++outputFrames;
+        }
+    }
+    return outputFrames * sd->out_channels * sd->out_bytes_per_sample;
 }
 
 /**
@@ -1488,6 +1698,32 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
             }
 
             sd->residual_buf_size = normalizedBytes;
+            sd->residual_buf_pos = 0;
+            streamCopyResidual(sd, out_buf, out_max_bytes, &bytes_written);
+        }
+        return bytes_written > 0 ? bytes_written : -1;
+    }
+
+    if (sd->raw_dsd_to_pcm) {
+        while (bytes_written < out_max_bytes && !sd->eof_reached) {
+            const int ret = av_read_frame(sd->fmt_ctx, sd->pkt);
+            if (ret < 0) {
+                sd->eof_reached = true;
+                break;
+            }
+            if (sd->pkt->stream_index != sd->audio_stream_idx) {
+                av_packet_unref(sd->pkt);
+                continue;
+            }
+            const int pcmBytes = convertRawDsdPacketToPcm(sd, sd->pkt);
+            av_packet_unref(sd->pkt);
+            if (pcmBytes < 0) {
+                LOGE("stream_decoder_read: DSD-to-PCM conversion failed");
+                sd->eof_reached = true;
+                break;
+            }
+            if (pcmBytes == 0) continue;
+            sd->residual_buf_size = pcmBytes;
             sd->residual_buf_pos = 0;
             streamCopyResidual(sd, out_buf, out_max_bytes, &bytes_written);
         }
@@ -1677,6 +1913,15 @@ static bool stream_decoder_seek(StreamDecoder *sd, int64_t position_us) {
     sd->eof_reached = false;
     sd->flushed_decoder = false;
     sd->flushed_swr = false;
+    if (sd->raw_dsd_to_pcm) {
+        sd->dsd_pcm_phase = 0;
+        sd->dsd_pcm_history_pos = 0;
+        if (sd->dsd_pcm_history) {
+            memset(sd->dsd_pcm_history, 0,
+                   sizeof(float) * sd->dsd_pcm_taps * sd->src_channels);
+        }
+        sd->flushed_swr = true;
+    }
     if (sd->codec_ctx) {
         avcodec_flush_buffers(sd->codec_ctx);
     }
@@ -1696,6 +1941,8 @@ static void stream_decoder_close(StreamDecoder *sd) {
     if (sd->pkt) av_packet_free(&sd->pkt);
     if (sd->frame) av_frame_free(&sd->frame);
     if (sd->residual_buf) av_free(sd->residual_buf);
+    if (sd->dsd_pcm_coeffs) av_free(sd->dsd_pcm_coeffs);
+    if (sd->dsd_pcm_history) av_free(sd->dsd_pcm_history);
     if (sd->swr_ctx) swr_free(&sd->swr_ctx);
     if (sd->codec_ctx) avcodec_free_context(&sd->codec_ctx);
     if (sd->fmt_ctx) avformat_close_input(&sd->fmt_ctx);
@@ -1710,76 +1957,94 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoder(
     const char *p = env->GetStringUTFChars(path, nullptr);
     StreamDecoder *sd = stream_decoder_open(p, targetRate, targetBits, channels);
     env->ReleaseStringUTFChars(path, p);
-    return static_cast<jlong>(reinterpret_cast<uintptr_t>(sd));
+    return registerStreamDecoder(sd);
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeDecodeChunk(
     JNIEnv *env, jobject, jlong handle, jbyteArray buffer, jint offset, jint maxBytes) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (!sd) return -2;
+    auto session = acquireStreamDecoderSession(handle);
+    if (!session) return -2;
 
-    // Get direct pointer to Java byte array
     jbyte *buf = env->GetByteArrayElements(buffer, nullptr);
     if (!buf) return -2;
 
-    int ret = stream_decoder_read(sd, (uint8_t *)(buf + offset), maxBytes);
+    int ret = -2;
+    {
+        std::lock_guard<std::mutex> lock(session->mutex);
+        if (session->decoder) {
+            ret = stream_decoder_read(session->decoder, reinterpret_cast<uint8_t *>(buf + offset), maxBytes);
+        }
+    }
 
-    // Release without copying back (JNI_ABORT) since we wrote to it
     env->ReleaseByteArrayElements(buffer, buf, 0);
     return ret;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeSeekDecoder(
-    JNIEnv *env, jobject, jlong handle, jlong positionMs) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (!sd) return JNI_FALSE;
-    int64_t position_us = positionMs * 1000;
-    return stream_decoder_seek(sd, position_us) ? JNI_TRUE : JNI_FALSE;
+    JNIEnv *, jobject, jlong handle, jlong positionMs) {
+    auto session = acquireStreamDecoderSession(handle);
+    if (!session) return JNI_FALSE;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (!session->decoder) return JNI_FALSE;
+    return stream_decoder_seek(session->decoder, positionMs * 1000) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderSampleRate(
     JNIEnv *, jobject, jlong handle) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (!sd) return 0;
-    return sd->out_sample_rate;
+    auto session = acquireStreamDecoderSession(handle);
+    if (!session) return 0;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    return session->decoder ? session->decoder->out_sample_rate : 0;
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderChannels(
     JNIEnv *, jobject, jlong handle) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (!sd) return 0;
-    return sd->out_channels;
+    auto session = acquireStreamDecoderSession(handle);
+    if (!session) return 0;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    return session->decoder ? session->decoder->out_channels : 0;
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderBitsPerSample(
     JNIEnv *, jobject, jlong handle) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (!sd) return 0;
-    return sd->out_bits;
+    auto session = acquireStreamDecoderSession(handle);
+    if (!session) return 0;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    return session->decoder ? session->decoder->out_bits : 0;
 }
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderDuration(
     JNIEnv *, jobject, jlong handle) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (!sd) return 0;
-    return sd->duration_us / 1000; // microseconds to milliseconds
+    auto session = acquireStreamDecoderSession(handle);
+    if (!session) return 0;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    return session->decoder ? session->decoder->duration_us / 1000 : 0;
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeCloseDecoder(
     JNIEnv *, jobject, jlong handle) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (sd) {
-        stream_decoder_close(sd);
-        LOGI("stream_decoder closed");
+    auto session = detachStreamDecoderSession(handle);
+    if (!session) return;
+
+    StreamDecoder* decoder = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(session->mutex);
+        decoder = session->decoder;
+        session->decoder = nullptr;
+        if (decoder) {
+            stream_decoder_close(decoder);
+        }
     }
+    LOGI("stream_decoder closed handle=%lld", static_cast<long long>(handle));
 }
+
 
 
 static bool is_lossy_audio_codec(enum AVCodecID codec_id) {

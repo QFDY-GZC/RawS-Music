@@ -3,6 +3,19 @@ project("rawsmusic_native")
 
 set(FFMPEG_DIR ${CMAKE_SOURCE_DIR}/ffmpeg_include)
 
+# Keep hot-path optimization levels target-specific while allowing the linker to
+# discard unreachable native code and merge identical functions in release APKs.
+add_compile_options(
+    -ffunction-sections
+    -fdata-sections
+    -fvisibility=hidden
+    $<$<COMPILE_LANGUAGE:CXX>:-fvisibility-inlines-hidden>
+)
+add_link_options(
+    -Wl,--gc-sections
+    -Wl,--icf=safe
+)
+
 # ==========================================
 # DSP 引擎
 # ==========================================
@@ -10,6 +23,10 @@ add_library(
     rawsmusic_dsp
     SHARED
     dsp_engine.cpp
+    stereo_width_processor.cpp
+    speaker_output_effect.cpp
+    raw_fft_convolver.cpp
+    raw_fft_convolver_jni.cpp
 )
 
 target_include_directories(
@@ -26,14 +43,108 @@ target_link_libraries(
     log
 )
 
-# The complete USB-exclusive native stack is maintained outside this repository.
-# Keep the public build focused on the standard Android playback pipeline.
+# ==========================================
+# libusb 静态库
+# ==========================================
+set(LIBUSB_DIR ${CMAKE_SOURCE_DIR}/libusb)
+
+add_library(
+    usb
+    STATIC
+    ${LIBUSB_DIR}/core.c
+    ${LIBUSB_DIR}/descriptor.c
+    ${LIBUSB_DIR}/hotplug.c
+    ${LIBUSB_DIR}/io.c
+    ${LIBUSB_DIR}/strerror.c
+    ${LIBUSB_DIR}/sync.c
+    ${LIBUSB_DIR}/os/linux_usbfs.c
+    ${LIBUSB_DIR}/os/linux_netlink.c
+    ${LIBUSB_DIR}/os/events_posix.c
+    ${LIBUSB_DIR}/os/threads_posix.c
+)
+
+target_include_directories(
+    usb
+    PRIVATE
+    ${LIBUSB_DIR}
+    ${LIBUSB_DIR}/os
+)
+
+target_compile_definitions(usb PRIVATE HAVE_CONFIG_H)
+
+target_compile_options(usb PRIVATE -O2 -fomit-frame-pointer -w)
+
+# ==========================================
+# USB 音频引擎 (libusb 异步 I/O)
+# ==========================================
+add_library(
+    rawsmusic_usb
+    SHARED
+    usb_audio_engine.cpp
+    raw_audio_safety.cpp
+    raw_usb_background_scheduler.cpp
+    raw_usb_native_guardian.cpp
+    raw_usb_submit_scheduler.cpp
+    raw_audio_format_policy.cpp
+    raw_pcm_pipeline.cpp
+    raw_uac20_stream.cpp
+    raw_uac20_stream_builder.cpp
+    raw_uac20_format_matcher.cpp
+    raw_uac20_device.cpp
+    usb_uac20_session.cpp
+    usb_uac20_descriptors.cpp
+    usb_uac20_clock.cpp
+    usb_uac20_feedback.cpp
+    usb_uac20_event_loop.cpp
+    usb_uac20_policy.cpp
+    usb_uac20_recovery_policy.cpp
+    usb_uac20_recovery_attempt.cpp
+    usb_uac20_recovery_candidates.cpp
+    usb_uac20_recovery_execution.cpp
+    usb_uac20_diagnostics.cpp
+    usb_uac20_transfers.cpp
+    usb_uac20_write_ring.cpp
+    usb_uac20_out_feeder.cpp
+    usb_uac20_packet_scheduler.cpp
+    usb_uac20_pcm_adapter.cpp
+    usb_uac20_phase.cpp
+    usb_uac20_real_out_ring.cpp
+    usb_uac20_real_out_submitter.cpp
+    usb_uac20_playback_guard.cpp
+    usb_uac20_recovery_executor.cpp
+    usb_uac20_format_fallback.cpp
+    usb_uac20_volume.cpp
+    usb_uac20_jni_bridge.cpp
+    pcm_to_dsd_converter.cpp
+    usb_hid.cpp
+    raw_usb_crash_guard.cpp
+)
+
+target_include_directories(
+    rawsmusic_usb
+    PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${LIBUSB_DIR}
+    ${FFMPEG_DIR}
+)
+
+target_compile_options(rawsmusic_usb PRIVATE -O2 -fomit-frame-pointer -std=c++17)
+
+target_link_libraries(
+    rawsmusic_usb
+    usb
+    swresample
+    avutil
+    android
+    log
+)
 
 add_library(
     rawsmusic_ffmpeg
     SHARED
     ffmpeg_bridge.cpp
     raw_waveform_scan.cpp
+    raw_fft_analyzer.cpp
 )
 
 target_include_directories(
@@ -77,6 +188,7 @@ add_library(
     rawsmusic_native_audio
     SHARED
     native_audio_engine.cpp
+    raw_android_audio_identity.cpp
 )
 
 target_include_directories(
@@ -93,29 +205,6 @@ target_link_libraries(
     log
     OpenSLES
     dl
-)
-
-# ==========================================
-# TagLib-inspired WAV 元数据解析桥接
-# ==========================================
-add_library(
-    rawsmusic_taglib
-    SHARED
-    taglib_bridge.cpp
-)
-
-target_include_directories(
-    rawsmusic_taglib
-    PRIVATE
-    ${CMAKE_SOURCE_DIR}
-)
-
-target_compile_options(rawsmusic_taglib PRIVATE -O3 -fomit-frame-pointer)
-
-target_link_libraries(
-    rawsmusic_taglib
-    android
-    log
 )
 
 # ==========================================
@@ -303,3 +392,26 @@ target_include_directories(rawsmusic_taglib_full PRIVATE
 target_compile_options(rawsmusic_taglib_full PRIVATE -O3 -fomit-frame-pointer -std=c++17)
 
 target_link_libraries(rawsmusic_taglib_full taglib_static android log z)
+
+# ==========================================
+# Player artwork transition state machine
+# ==========================================
+add_library(
+    rawsmusic_artwork_transition
+    SHARED
+    raw_player_artwork_transition.cpp
+)
+
+target_compile_options(
+    rawsmusic_artwork_transition
+    PRIVATE
+    -O3
+    -fomit-frame-pointer
+    -std=c++17
+)
+
+target_link_libraries(
+    rawsmusic_artwork_transition
+    android
+    log
+)

@@ -8,6 +8,9 @@
 #include <cstring>
 #include <cmath>
 #include <math.h>
+#include "raw_fft_convolver.h"
+#include "speaker_output_effect.h"
+#include "stereo_width_processor.h"
 
 using namespace std;
 
@@ -689,208 +692,6 @@ private:
         }
         m_attenuationDB = attenuation;
         m_crossGainLinear = powf(10.0f, -attenuation / 20.0f);
-    }
-};
-
-class StereoExpander {
-    float m_factor = 0.0f;
-    float m_smoothedFactor = 0.0f;
-    bool m_enabled = false;
-    int m_sampleRate = 44100;
-
-    // Side 一阶高通：把 side 拆成低频/中高频
-    float m_sideHpX1 = 0.0f;
-    float m_sideHpY1 = 0.0f;
-    float m_sideHpAlpha = 0.0f;
-
-    // 高频 side 轻微 all-pass 去相关状态
-    // 不做 Haas 延迟，避免 mono 兼容性太差
-    float m_apX1 = 0.0f;
-    float m_apY1 = 0.0f;
-    float m_apA = 0.0f;
-
-    // 立体声联动 limiter
-    float m_limGain = 1.0f;
-    float m_limAttack = 0.0f;
-    float m_limRelease = 0.0f;
-    float m_limThreshold = 0.97f;
-
-    std::atomic<float> m_pendingFactor{0.0f};
-    std::atomic<bool> m_paramsDirty{false};
-
-    static inline float clampf(float v, float lo, float hi) {
-        return v < lo ? lo : (v > hi ? hi : v);
-    }
-
-    static inline float sanitize(float x) {
-        return std::isfinite(x) ? x : 0.0f;
-    }
-
-    void updateCoeffs() {
-        // 420Hz: keep bass, warmth and vocal fundamentals centered. The expander only
-        // opens upper ambience, which is more comfortable than widening low-mids.
-        float fcSide = 420.0f;
-        float rc = 1.0f / (2.0f * (float)M_PI * fcSide);
-        float dt = 1.0f / (float)m_sampleRate;
-        m_sideHpAlpha = rc / (rc + dt);
-
-        // One-pole all-pass above the vocal presence band. Kept very subtle to avoid
-        // metallic/phasey coloration on cymbals and vocals.
-        float fcAp = 2400.0f;
-        float t = tanf((float)M_PI * fcAp / (float)m_sampleRate);
-        m_apA = (t - 1.0f) / (t + 1.0f);
-
-        // limiter：attack 快一点，避免宽度增强后瞬态爆
-        m_limAttack = 1.0f - expf(-1.0f / (0.0007f * m_sampleRate));  // 0.7ms
-        m_limRelease = 1.0f - expf(-1.0f / (0.160f * m_sampleRate));  // 160ms
-    }
-
-    inline float processAllPass(float x) {
-        // y[n] = a*x[n] + x[n-1] - a*y[n-1]
-        float y = m_apA * x + m_apX1 - m_apA * m_apY1;
-        m_apX1 = x;
-        m_apY1 = y;
-        return y;
-    }
-
-public:
-    StereoExpander() {
-        updateCoeffs();
-    }
-
-    void process(float* samples, int numFrames, int channels) {
-        applyPendingParams();
-        if (channels != 2 || !m_enabled) return;
-
-        for (int i = 0; i < numFrames; ++i) {
-            m_smoothedFactor += (m_factor - m_smoothedFactor) * 0.006f;
-
-            // Perceptual curve: old linear 10% felt almost inaudible. sqrt() gives low and
-            // medium UI values enough movement while keeping 100% bounded by the limiter.
-            float amount = sqrtf(clampf(m_smoothedFactor, 0.0f, 1.0f));
-
-            float L = sanitize(samples[i * 2]);
-            float R = sanitize(samples[i * 2 + 1]);
-
-            // M/S
-            float mid  = 0.5f * (L + R);
-            float side = 0.5f * (L - R);
-
-            // Side 高通拆分
-            float sideHp = m_sideHpAlpha * (m_sideHpY1 + side - m_sideHpX1);
-            m_sideHpX1 = side;
-            m_sideHpY1 = sideHp;
-            float sideLp = side - sideHp;
-
-            // 轻微 all-pass 去相关，只混入高频 side，不碰 mid
-            float decorSideHp = processAllPass(sideHp);
-
-            // Natural widen profile: less low-mid widening, less decorrelation, and a
-            // smoother high-side lift. This avoids the "pulled apart / hollow" feeling.
-            float lowGain  = 1.0f;
-            float highGain = 1.0f + amount * 1.05f;
-            float decorMix = amount * 0.08f;
-
-            float widenedHp = sideHp * (1.0f - decorMix) + decorSideHp * decorMix;
-            float outSide = sideLp * lowGain + widenedHp * highGain;
-
-            // Dynamic side guard: keep extreme side-only passages from becoming harsh or
-            // phasey, but do not collapse normal ambience.
-            float sideLimit = (fabsf(mid) + 0.12f) * (1.20f + amount * 0.38f);
-            float sideAbs = fabsf(outSide);
-            if (sideAbs > sideLimit) {
-                float excess = sideAbs - sideLimit;
-                float soft = sideLimit + excess * 0.35f;
-                outSide *= soft / (sideAbs + 1e-12f);
-            }
-
-            float outMid = mid;
-
-            float wetL = outMid + outSide;
-            float wetR = outMid - outSide;
-
-            // Dry/wet blend keeps transients comfortable and stops the center image from
-            // suddenly changing character at medium/high values.
-            float wetMix = 0.62f + amount * 0.22f;
-            float outL = L * (1.0f - wetMix) + wetL * wetMix;
-            float outR = R * (1.0f - wetMix) + wetR * wetMix;
-
-            float compensateGain = 1.0f / (1.0f + amount * 0.025f);
-            outL *= compensateGain;
-            outR *= compensateGain;
-
-            // 立体声联动 limiter
-            float maxAbs = std::max(fabsf(outL), fabsf(outR));
-            float targetGain = 1.0f;
-            if (maxAbs > m_limThreshold) {
-                targetGain = m_limThreshold / (maxAbs + 1e-12f);
-            }
-
-            if (targetGain < m_limGain) {
-                m_limGain += (targetGain - m_limGain) * m_limAttack;
-            } else {
-                m_limGain += (targetGain - m_limGain) * m_limRelease;
-            }
-
-            outL *= m_limGain;
-            outR *= m_limGain;
-
-            // 最后一层软保护，避免硬削波声音发毛
-            outL = clampf(outL, -0.999f, 0.999f);
-            outR = clampf(outR, -0.999f, 0.999f);
-
-            samples[i * 2]     = outL;
-            samples[i * 2 + 1] = outR;
-        }
-    }
-
-    void setParameter(int paramId, float value) {
-        if (paramId == 0) {
-            value = clampf(value, 0.0f, 1.0f);
-            m_pendingFactor.store(value, std::memory_order_relaxed);
-            m_paramsDirty.store(true, std::memory_order_release);
-        }
-    }
-
-    void setSampleRate(int sampleRate) {
-        if (sampleRate != m_sampleRate && sampleRate > 0) {
-            m_sampleRate = sampleRate;
-            m_sideHpX1 = m_sideHpY1 = 0.0f;
-            m_apX1 = m_apY1 = 0.0f;
-            m_limGain = 1.0f;
-            updateCoeffs();
-        }
-    }
-
-    bool isEnabled() const {
-        return m_pendingFactor.load(std::memory_order_acquire) > 0.01f;
-    }
-
-private:
-    void applyPendingParams() {
-        if (!m_paramsDirty.exchange(false, std::memory_order_acq_rel)) return;
-
-        const float factor = clampf(
-                m_pendingFactor.load(std::memory_order_relaxed),
-                0.0f,
-                1.0f
-        );
-
-        const bool wasEnabled = m_enabled;
-        m_factor = factor;
-        m_enabled = factor > 0.01f;
-
-        if (!wasEnabled && m_enabled) {
-            m_sideHpX1 = m_sideHpY1 = 0.0f;
-            m_apX1 = m_apY1 = 0.0f;
-            m_limGain = 1.0f;
-            // 不重置 m_smoothedFactor 到 factor，避免开关瞬间跳变爆音
-        }
-
-        if (!m_enabled) {
-            // 关闭时让下次开启从当前状态平滑进入
-            m_factor = 0.0f;
-        }
     }
 };
 
@@ -1887,7 +1688,7 @@ private:
 // JNI 引擎框架 (预分配内存)
 // ==========================================
 class DSPChain {
-    std::unique_ptr<StereoExpander> m_expander;
+    std::unique_ptr<StereoWidthProcessor> m_expander;
     std::unique_ptr<ParametricEQ> m_peq;
     std::unique_ptr<Crossfeed> m_crossfeed;
     std::unique_ptr<Compressor> m_compressor;
@@ -1895,19 +1696,23 @@ class DSPChain {
     std::unique_ptr<TrebleBoost> m_trebleBoost;
     std::unique_ptr<Surround360> m_surround360;
     std::unique_ptr<Panoramic360> m_panoramic360;
+    std::unique_ptr<RawFftConvolver> m_convolver;
+    std::unique_ptr<SpeakerOutputEffect> m_speakerOutputEffect;
     std::vector<float> m_floatBuf;
     int m_sampleRate = 44100;
     int m_channels = 2;
 
 public:
-    DSPChain() : m_expander(std::make_unique<StereoExpander>()),
+    DSPChain() : m_expander(std::make_unique<StereoWidthProcessor>()),
                  m_peq(std::make_unique<ParametricEQ>()),
                  m_crossfeed(std::make_unique<Crossfeed>()),
                  m_compressor(std::make_unique<Compressor>()),
                  m_bassBoost(std::make_unique<BassBoost>()),
                  m_trebleBoost(std::make_unique<TrebleBoost>()),
                  m_surround360(std::make_unique<Surround360>()),
-                 m_panoramic360(std::make_unique<Panoramic360>()) {}
+                 m_panoramic360(std::make_unique<Panoramic360>()),
+                 m_convolver(std::make_unique<RawFftConvolver>()),
+                 m_speakerOutputEffect(std::make_unique<SpeakerOutputEffect>()) {}
 
     void init(int sampleRate, int channels) {
         m_sampleRate = sampleRate;
@@ -1920,11 +1725,13 @@ public:
         m_trebleBoost->setSampleRate(sampleRate);
         m_surround360->setSampleRate(sampleRate);
         m_panoramic360->setSampleRate(sampleRate);
+        m_convolver->setFormat(sampleRate, channels);
+        m_speakerOutputEffect->setSampleRate(sampleRate);
         m_floatBuf.resize(48000 * 2);
     }
 
     void process(float* samples, int numFrames, int channels) {
-        // 处理链顺序: BassBoost → TrebleBoost → PEQ → Compressor → Surround360 → Panoramic360 → StereoExpander → Crossfeed
+        // 处理链顺序: BassBoost → TrebleBoost → PEQ → FFT Convolver → Compressor → Surround360 → Panoramic360 → Crossfeed → StereoWidth → SpeakerOutput
 
         // 1. 低音增强
         if (m_bassBoost->isEnabled()) {
@@ -1941,29 +1748,42 @@ public:
             m_peq->process(samples, numFrames, channels);
         }
 
-        // 4. 压限器
+        // 4. FFT 卷积器：用于耳机/音箱校正 IR 或轻量空间 IR
+        if (m_convolver->isEnabled() && m_convolver->isReady()) {
+            m_convolver->process(samples, numFrames, channels);
+        }
+
+        // 5. 压限器
         if (m_compressor->isEnabled()) {
             m_compressor->process(samples, numFrames, channels);
         }
 
-        // 5. 360° 环绕音 (2D 水平面双耳渲染)
+        // 6. 360° 环绕音 (2D 水平面双耳渲染)
         if (m_surround360->isEnabled()) {
             m_surround360->process(samples, numFrames, channels);
         }
 
-        // 6. 360° 全景音 (3D 球面双耳渲染)
+        // 7. 360° 全景音 (3D 球面双耳渲染)
         if (m_panoramic360->isEnabled()) {
             m_panoramic360->process(samples, numFrames, channels);
         }
 
-        // 7. 立体声扩展
+        // 8. 互馈 (Crossfeed)：先完成耳机串音模拟，再由立体声扩展
+        // 对最终左右差异执行连续 Mid/Side 展宽。
+        if (m_crossfeed->isEnabled()) {
+            m_crossfeed->process(samples, numFrames, channels);
+        }
+
+        // 9. 立体声扩展：0–100% 连续映射到 1–3 倍 Side，
+        // 随后使用双声道联动峰值控制保持声像稳定。
         if (m_expander->isEnabled()) {
             m_expander->process(samples, numFrames, channels);
         }
 
-        // 8. 互馈 (Crossfeed)
-        if (m_crossfeed->isEnabled()) {
-            m_crossfeed->process(samples, numFrames, channels);
+        // 10. 扬声器外放效果：在最终混合信号上识别低中频瞬态，
+        // 只施加短促联动增益，之后仍由统一输出安全限幅器兜底。
+        if (m_speakerOutputEffect->isEnabled()) {
+            m_speakerOutputEffect->process(samples, numFrames, channels);
         }
     }
 
@@ -1971,15 +1791,17 @@ public:
         return m_bassBoost->isEnabled() ||
                m_trebleBoost->isEnabled() ||
                m_peq->isEnabled() ||
+               (m_convolver->isEnabled() && m_convolver->isReady()) ||
                m_compressor->isEnabled() ||
                m_surround360->isEnabled() ||
                m_panoramic360->isEnabled() ||
                m_expander->isEnabled() ||
-               m_crossfeed->isEnabled();
+               m_crossfeed->isEnabled() ||
+               m_speakerOutputEffect->isEnabled();
     }
 
     float* getFloatBuffer() { return m_floatBuf.data(); }
-    StereoExpander* getExpander() { return m_expander.get(); }
+    StereoWidthProcessor* getExpander() { return m_expander.get(); }
     ParametricEQ* getPEQ() { return m_peq.get(); }
     Crossfeed* getCrossfeed() { return m_crossfeed.get(); }
     Compressor* getCompressor() { return m_compressor.get(); }
@@ -1987,7 +1809,19 @@ public:
     TrebleBoost* getTrebleBoost() { return m_trebleBoost.get(); }
     Surround360* getSurround360() { return m_surround360.get(); }
     Panoramic360* getPanoramic360() { return m_panoramic360.get(); }
+    RawFftConvolver* getConvolver() { return m_convolver.get(); }
+    SpeakerOutputEffect* getSpeakerOutputEffect() { return m_speakerOutputEffect.get(); }
 };
+
+extern "C" SpeakerOutputEffect* rawsmusic_dsp_get_speaker_output_effect(jlong handle) {
+    if (handle == 0) return nullptr;
+    return reinterpret_cast<DSPChain*>(handle)->getSpeakerOutputEffect();
+}
+
+extern "C" RawFftConvolver* rawsmusic_dsp_get_fft_convolver(jlong handle) {
+    if (handle == 0) return nullptr;
+    return reinterpret_cast<DSPChain*>(handle)->getConvolver();
+}
 
 extern "C"
 JNIEXPORT jlong JNICALL
@@ -2184,6 +2018,7 @@ Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetCrossfeedParams(
     cf->setHighCutFreq(highCutFreq);
     cf->setAttenuationDB(attenuationDB);
 }
+
 
 // ==========================================
 // 压限器 (Compressor) JNI 接口

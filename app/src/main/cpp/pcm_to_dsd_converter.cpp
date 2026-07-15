@@ -211,7 +211,7 @@ uint32_t PcmToDsdConverter::convertLowLatencyFast(const void* pcm_data, uint32_t
 }
 
 const PcmToDsdConverter::P2dKernelSpec& PcmToDsdConverter::kernelSpec() const {
-    // Reference-shaped SDM profiles. Keep the stage order from the Poweramp
+    // Tuned SDM profiles. Keep the established stage order so output characteristics remain stable.
     // CIFB family and pull the input gains back toward the reference envelope.
     // The feedback taps remain intentionally conservative because this
     // converter runs block-realtime in our USB write path.
