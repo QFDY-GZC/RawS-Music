@@ -467,8 +467,23 @@ class UsbExclusiveManager(private val context: Context) {
             AppLogger.w(TAG, "prepareForPlayback: strict bit-perfect disabled for >32-bit source")
         }
         UsbAudioEngine.setPcmOutputMode(pcmMode)
+        val dsdPcmFallbackRate = if (sourceIsDsd && dsdMode == null) {
+            caps?.supportedSampleRates
+                ?.filter { it > 0 }
+                ?.minByOrNull { kotlin.math.abs(it.toLong() - sampleRate.toLong()) }
+                ?: sampleRate
+        } else {
+            sampleRate
+        }
+        if (sourceIsDsd && dsdMode == null && dsdPcmFallbackRate != sampleRate) {
+            AppLogger.w(
+                TAG,
+                "DSD unsupported by device; PCM fallback sourceRate=$sampleRate deviceRate=$dsdPcmFallbackRate"
+            )
+        }
         val deviceSampleRate = when {
             dsdMode != null -> dsdMode.deviceSampleRate
+            sourceIsDsd -> dsdPcmFallbackRate
             strictBitPerfectForUsb || dsdTransportActive || requestedTargetRate <= 0 -> sampleRate
             else -> requestedTargetRate
         }

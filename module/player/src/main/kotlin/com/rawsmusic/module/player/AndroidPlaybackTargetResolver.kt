@@ -6,6 +6,7 @@ import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.player.usb.isLikelyDsdSource
 
 /**
  * Resolves the decoder target format for normal Android playback.
@@ -29,7 +30,8 @@ internal class AndroidPlaybackTargetResolver(
         val rawEncoding: Int,
         val useSco: Boolean,
         val outputMode: AudioOutputMode,
-        val sharedMixerMode: Boolean
+        val sharedMixerMode: Boolean,
+        val sourceIsDsd: Boolean
     )
 
     fun resolve(sourcePath: String): Target {
@@ -38,10 +40,15 @@ internal class AndroidPlaybackTargetResolver(
         val channelConfig = AudioFormat.CHANNEL_OUT_STEREO
         val outputMode = AudioOutputManager.getCurrentOutputMode(context)
         val sharedMixerMode = outputMode != AudioOutputMode.DIRECT
-        val sourceRate = FFmpegBridge.probeSampleRate(sourcePath).let { if (it > 0) it else 44100 }
-        val preferredRate = if (userTargetRate > 0) userTargetRate else sourceRate
-        // v6d: 不再把 AAudio/OpenSL 共享输出统一压到 48kHz
-        // OpenSL 按 96kHz 上限，AAudio 按 384kHz 上限，DIRECT 按 384kHz 上限
+        val rawSourceRate = FFmpegBridge.probeSampleRate(sourcePath)
+        val sourceBits = FFmpegBridge.probeBitsPerSample(sourcePath)
+        val sourceIsDsd = isLikelyDsdSource(sourcePath, sourceBits, rawSourceRate)
+        val sourceRate = rawSourceRate.takeIf { it > 0 } ?: 44_100
+        val minRate = AudioOutputManager.getMinSampleRateForMode(outputMode)
+        val preferredRate = (if (userTargetRate > 0) userTargetRate else sourceRate)
+            .coerceAtLeast(minRate)
+        // v6d: 不再把 AAudio/OpenSL 共享输出统一压到 48kHz。
+        // AudioTrack 普通模式固定为系统混音高兼容 lane，限制到 48kHz/24bit/stereo。
         val maxRate = AudioOutputManager.getMaxSampleRateForMode(outputMode)
         val cappedTargetRate = if (preferredRate > maxRate) maxRate else preferredRate
         val (probedRate, rawEncoding) = AudioOutputManager.probeRateAndEncoding(
@@ -55,6 +62,10 @@ internal class AndroidPlaybackTargetResolver(
             aaudioPacked24 && android.os.Build.VERSION.SDK_INT >= 26 -> AudioFormat.ENCODING_PCM_FLOAT
             aaudioPacked24 -> AudioFormat.ENCODING_PCM_16BIT
             outputMode == AudioOutputMode.OPENSL_ES -> AudioFormat.ENCODING_PCM_16BIT
+            outputMode == AudioOutputMode.AUDIO_TRACK -> when (rawEncoding) {
+                AudioFormat.ENCODING_PCM_16BIT -> AudioFormat.ENCODING_PCM_16BIT
+                else -> if (android.os.Build.VERSION.SDK_INT >= 26) AudioFormat.ENCODING_PCM_FLOAT else AudioFormat.ENCODING_PCM_16BIT
+            }
             else -> rawEncoding
         }
         if (aaudioPacked24) {
@@ -86,7 +97,7 @@ internal class AndroidPlaybackTargetResolver(
             "Device capability: sourceRate=$sourceRate userTargetRate=$userTargetRate " +
                 "preferredRate=$preferredRate effectiveRate=$cappedTargetRate " +
                 "verifiedRate=$targetRate rawEncoding=$rawEncoding encoding=$targetEncoding " +
-                "-> bits=$targetBits, sco=$useSco, mode=$outputMode, shared=$sharedMixerMode"
+                "-> bits=$targetBits, sco=$useSco, mode=$outputMode, shared=$sharedMixerMode, sourceDsd=$sourceIsDsd"
         )
 
         return Target(
@@ -101,7 +112,8 @@ internal class AndroidPlaybackTargetResolver(
             rawEncoding = rawEncoding,
             useSco = useSco,
             outputMode = outputMode,
-            sharedMixerMode = sharedMixerMode
+            sharedMixerMode = sharedMixerMode,
+            sourceIsDsd = sourceIsDsd
         )
     }
 }

@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 object LyriconProviderManager {
 
     private const val TAG = "LyriconProvider"
+    private const val POSITION_SYNC_INTERVAL_MS = 50
 
     private var provider: LyriconProvider? = null
     private var positionJob: Job? = null
@@ -71,12 +72,14 @@ object LyriconProviderManager {
                 onConnected { _ ->
                     Log.d(TAG, "Connected to Lyricon")
                     connectionStatus = ConnectionStatus.CONNECTED
+                    provider?.player?.setPositionUpdateInterval(POSITION_SYNC_INTERVAL_MS)
                     onConnectionStatusChanged?.invoke(connectionStatus)
                     onProviderConnected?.invoke()
                 }
                 onReconnected { _ ->
                     Log.d(TAG, "Reconnected to Lyricon")
                     connectionStatus = ConnectionStatus.CONNECTED
+                    provider?.player?.setPositionUpdateInterval(POSITION_SYNC_INTERVAL_MS)
                     onConnectionStatusChanged?.invoke(connectionStatus)
                     onProviderConnected?.invoke()
                 }
@@ -200,7 +203,6 @@ object LyriconProviderManager {
 
     fun setPosition(positionMs: Long) {
         lastPositionMs = positionMs.coerceAtLeast(0L)
-        Log.d(TAG, "setPosition: $lastPositionMs")
         provider?.player?.setPosition(lastPositionMs)
     }
 
@@ -220,19 +222,19 @@ object LyriconProviderManager {
 
     fun startPositionSync(playerController: PlayerController) {
         stopPositionSync()
+        // Lyricon 从共享内存读取位置；不设置间隔时部分实现只读取初始值。
+        provider?.player?.setPositionUpdateInterval(POSITION_SYNC_INTERVAL_MS)
         positionJob = scope.launch {
             while (isActive) {
                 try {
                     val pos = playerController.position.value
-                    val lyricOffset = playerController.lyricManualOffsetMs.toLong()
                     val state = playerController.playState.value
-                    val lyricPos = (pos - lyricOffset).coerceAtLeast(0L)
 
                     // 不只在播放时同步；暂停、拖动、seek 后也让外部端拿到当前位置
-                    setPosition(lyricPos)
+                    setPosition(pos.coerceAtLeast(0L))
                     setPlaybackState(state == PlayState.PLAYING)
                 } catch (_: Exception) {}
-                delay(200)
+                delay(POSITION_SYNC_INTERVAL_MS.toLong())
             }
         }
     }

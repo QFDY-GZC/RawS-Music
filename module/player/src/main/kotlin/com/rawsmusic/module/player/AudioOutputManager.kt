@@ -80,23 +80,32 @@ object AudioOutputManager {
     /** Direct Hi-Res 上限：16–32(8.24) bit · 44.1–384 kHz */
     const val DIRECT_MAX_SAMPLE_RATE = 384_000
 
+    /** AudioTrack 普通输出上限：系统混音，高兼容，PCM ≤ 48 kHz / 24 bit / Stereo */
+    const val AUDIO_TRACK_MAX_SAMPLE_RATE = 48_000
+
     fun getMaxSampleRateForMode(mode: AudioOutputMode): Int = when (mode) {
         AudioOutputMode.OPENSL_ES -> OPENSL_MAX_SAMPLE_RATE
         AudioOutputMode.AAUDIO -> AAUDIO_MAX_SAMPLE_RATE
         AudioOutputMode.DIRECT -> DIRECT_MAX_SAMPLE_RATE
+        AudioOutputMode.AUDIO_TRACK -> AUDIO_TRACK_MAX_SAMPLE_RATE
     }
+
+    /** Regular Android PCM backends are opened at 44.1 kHz or above. */
+    fun getMinSampleRateForMode(mode: AudioOutputMode): Int = 44_100
 
     /** 位深选项按输出引擎过滤 */
     fun getBitDepthOptionsForMode(mode: AudioOutputMode): IntArray = when (mode) {
         AudioOutputMode.OPENSL_ES -> intArrayOf(BIT_DEPTH_AUTO, BIT_DEPTH_16)
         AudioOutputMode.AAUDIO -> intArrayOf(BIT_DEPTH_AUTO, BIT_DEPTH_16, BIT_DEPTH_24, BIT_DEPTH_32, BIT_DEPTH_FLOAT32)
         AudioOutputMode.DIRECT -> intArrayOf(BIT_DEPTH_AUTO, BIT_DEPTH_16, BIT_DEPTH_24, BIT_DEPTH_32, BIT_DEPTH_FLOAT32, BIT_DEPTH_32_8_24)
+        AudioOutputMode.AUDIO_TRACK -> intArrayOf(BIT_DEPTH_AUTO, BIT_DEPTH_16, BIT_DEPTH_24, BIT_DEPTH_FLOAT32)
     }
 
     /** 采样率选项按输出引擎过滤（含 0=自动） */
     fun getSampleRateOptionsForMode(mode: AudioOutputMode): IntArray {
+        val minRate = getMinSampleRateForMode(mode)
         val maxRate = getMaxSampleRateForMode(mode)
-        return intArrayOf(0) + STANDARD_SAMPLE_RATES.filter { it <= maxRate }.toIntArray()
+        return intArrayOf(0) + STANDARD_SAMPLE_RATES.filter { it in minRate..maxRate }.toIntArray()
     }
 
     fun normalizeTargetBitDepth(depth: Int): Int {
@@ -292,18 +301,27 @@ object AudioOutputManager {
      * @return Pair(采样率, AudioFormat.ENCODING_*) — 若完全失败返回 Pair(44100, ENCODING_PCM_16BIT)
      */
     fun probeRateAndEncoding(preferredRate: Int, channelConfig: Int, context: Context): Pair<Int, Int> {
-        // 获取与实际播放相同的首选设备，确保探测路径和播放路径一致
-        val preferredDevice = getPreferredDeviceForDirect(context)
+        val currentMode = getCurrentOutputMode(context)
+        // Direct 才绑定首选硬件设备；AudioTrack 普通模式保持系统 mixer/route 自己选择。
+        val preferredDevice = if (currentMode == AudioOutputMode.DIRECT) getPreferredDeviceForDirect(context) else null
+        val maxRateForMode = getMaxSampleRateForMode(currentMode)
 
-        // 构建尝试顺序：用户设定优先，然后从高到低
+        // 构建尝试顺序：用户设定优先，然后从高到低。
+        // AudioTrack 普通模式固定为系统混音高兼容 lane，不探测 96k/192k/DSD/DoP。
         val tryRates = mutableListOf<Int>()
-        if (preferredRate > 0) tryRates.add(preferredRate)
+        val minRateForMode = getMinSampleRateForMode(currentMode)
+        val preferred = if (preferredRate > 0) {
+            preferredRate.coerceIn(minRateForMode, maxRateForMode)
+        } else {
+            0
+        }
+        if (preferred > 0) tryRates.add(preferred)
         // 按降序添加其他标准采样率（排除已添加的）
         for (r in STANDARD_SAMPLE_RATES.reversedArray()) {
-            if (r != preferredRate) tryRates.add(r)
+            if (r in minRateForMode..maxRateForMode && r != preferred) tryRates.add(r)
         }
 
-        val encodingCandidates = targetEncodingCandidates()
+        val encodingCandidates = targetEncodingCandidates(currentMode)
 
         // 先用 getMinBufferSize 快速过滤：框架直接拒绝的采样率不必尝试
         // 对于 getMinBufferSize 返回负值的，仍尝试创建（可能框架不报告但硬件支持）
@@ -539,13 +557,33 @@ object AudioOutputManager {
         }
     }
 
-    private fun targetEncodingCandidates(): List<Int> {
+    private fun targetEncodingCandidates(mode: AudioOutputMode = AppPreferences.Player.audioOutputMode): List<Int> {
         val depth = normalizeTargetBitDepth(getTargetBitDepth())
         val candidates = mutableListOf<Int>()
         fun add(encoding: Int?) {
             if (encoding != null && !candidates.contains(encoding)) {
                 candidates.add(encoding)
             }
+        }
+        if (mode == AudioOutputMode.AUDIO_TRACK) {
+            when (depth) {
+                BIT_DEPTH_16 -> add(AudioFormat.ENCODING_PCM_16BIT)
+                BIT_DEPTH_24 -> {
+                    if (Build.VERSION.SDK_INT >= 26) add(AudioFormat.ENCODING_PCM_FLOAT)
+                    add(pcm24PackedEncodingOrNull())
+                    add(AudioFormat.ENCODING_PCM_16BIT)
+                }
+                BIT_DEPTH_FLOAT32,
+                BIT_DEPTH_AUTO -> {
+                    if (Build.VERSION.SDK_INT >= 26) add(AudioFormat.ENCODING_PCM_FLOAT)
+                    add(AudioFormat.ENCODING_PCM_16BIT)
+                }
+                else -> {
+                    if (Build.VERSION.SDK_INT >= 26) add(AudioFormat.ENCODING_PCM_FLOAT)
+                    add(AudioFormat.ENCODING_PCM_16BIT)
+                }
+            }
+            return candidates
         }
         when (depth) {
             BIT_DEPTH_16 -> add(AudioFormat.ENCODING_PCM_16BIT)
@@ -620,6 +658,8 @@ object AudioOutputManager {
             }
             AudioOutputMode.AAUDIO -> {
             }
+            AudioOutputMode.AUDIO_TRACK -> {
+            }
             AudioOutputMode.OPENSL_ES -> {
             }
         }
@@ -642,6 +682,7 @@ object AudioOutputManager {
             AudioOutputMode.OPENSL_ES -> "OpenSL ES"
             AudioOutputMode.AAUDIO -> "AAudio"
             AudioOutputMode.DIRECT -> "Direct (HiRes)"
+            AudioOutputMode.AUDIO_TRACK -> "AudioTrack"
         }
     }
 
@@ -653,6 +694,7 @@ object AudioOutputManager {
             AudioOutputMode.OPENSL_ES -> "传统输出，兼容性最佳"
             AudioOutputMode.AAUDIO -> "低延迟输出，推荐 (Android 8.1+)"
             AudioOutputMode.DIRECT -> "绕过系统混音，高采样率直出"
+            AudioOutputMode.AUDIO_TRACK -> "系统混音，高兼容，PCM ≤ 48kHz / 24bit / Stereo"
         }
     }
 
@@ -664,6 +706,7 @@ object AudioOutputManager {
             AudioOutputMode.OPENSL_ES -> true
             AudioOutputMode.AAUDIO -> Build.VERSION.SDK_INT >= 27
             AudioOutputMode.DIRECT -> isDirectOutputAvailable(context)
+            AudioOutputMode.AUDIO_TRACK -> true
         }
     }
 

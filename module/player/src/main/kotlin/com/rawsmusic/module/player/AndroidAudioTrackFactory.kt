@@ -159,6 +159,7 @@ internal class AndroidAudioTrackFactory(private val context: Context) {
                                     AudioOutputMode.AAUDIO -> AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
                                     AudioOutputMode.DIRECT -> AudioTrack.PERFORMANCE_MODE_NONE
                                     AudioOutputMode.OPENSL_ES -> AudioTrack.PERFORMANCE_MODE_POWER_SAVING
+                                    AudioOutputMode.AUDIO_TRACK -> AudioTrack.PERFORMANCE_MODE_POWER_SAVING
                                 }
                                 setPerformanceMode(performanceMode)
                             }

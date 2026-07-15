@@ -29,7 +29,6 @@ import com.rawsmusic.core.common.model.RepeatMode
 import com.rawsmusic.core.common.model.ShuffleMode
 import com.rawsmusic.core.common.model.isDsdSourceFile
 import com.rawsmusic.module.data.prefs.AppPreferences
-import com.rawsmusic.module.data.prefs.PlaybackStatsStore
 import com.rawsmusic.module.data.prefs.TransitionPreferences
 import com.rawsmusic.module.player.dsp.NativeDSPEngine
 import com.rawsmusic.module.player.dsp.ParametricEQController
@@ -38,6 +37,8 @@ import com.rawsmusic.module.player.dsp.BassBoostController
 import com.rawsmusic.module.player.dsp.TrebleBoostController
 import com.rawsmusic.module.player.dsp.Surround360Controller
 import com.rawsmusic.module.player.dsp.Panoramic360Controller
+import com.rawsmusic.module.player.dsp.FftConvolverController
+import com.rawsmusic.module.player.dsp.SpeakerOutputElasticityController
 import com.rawsmusic.module.player.usb.UsbAudioEngine
 import com.rawsmusic.module.player.usb.UsbDsdModeConfig
 import com.rawsmusic.module.player.usb.UsbDsdTransport
@@ -201,30 +202,35 @@ class PlayerController private constructor(context: Context) {
         private const val TAG = "PlayerController"
         private const val ACTION_VOLUME_CHANGED = "android.media.VOLUME_CHANGED_ACTION"
         private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
-        // USB exclusive software volume receives UI percent/index values, not
-        // amplitude.  A cubic taper keeps the first few system volume steps very
-        // quiet instead of mapping 1/15 to -23.5 dB.
-        private const val USB_SOFTWARE_VOLUME_TAPER = 3.0f
-        // v7i diagnostic policy: go back before TP55 learned/safe fallback loop.
-        // Keep transport behavior explicit so root causes surface in logs instead
-        // of being hidden by learned no-feedback/safe-alt profiles.
-        private const val USB_EXPOSE_PRE_TP55_POLICY = true
-
         @Volatile
         private var instance: PlayerController? = null
 
         fun getInstance(context: Context): PlayerController {
-            return instance ?: synchronized(this) {
-                instance ?: PlayerController(context.applicationContext).also {
+            instance?.takeIf { it.isOperational() }?.let { return it }
+            return synchronized(this) {
+                instance?.takeIf { it.isOperational() } ?: PlayerController(context.applicationContext).also {
+                    val stale = instance
                     instance = it
                     PlayerRuntimeRegistry.attachController(it, "controller_singleton_create")
-                    Log.i(TAG, "PlayerController singleton created: ${System.identityHashCode(it)}")
+                    Log.i(
+                        TAG,
+                        "PlayerController singleton created: ${System.identityHashCode(it)} " +
+                            "replaced=${stale?.let(System::identityHashCode) ?: -1}"
+                    )
                 }
             }
         }
 
         @JvmStatic
-        fun getInstanceOrNull(): PlayerController? = instance
+        fun getInstanceOrNull(): PlayerController? = instance?.takeIf { it.isOperational() }
+
+        private fun clearReleasedInstance(controller: PlayerController) {
+            synchronized(this) {
+                if (instance === controller) {
+                    instance = null
+                }
+            }
+        }
     }
 
     // ======================== USB critical startup window ========================
@@ -377,6 +383,8 @@ class PlayerController private constructor(context: Context) {
             ensureTrebleBoostConnected()
             ensureSurround360Connected()
             ensurePanoramic360Connected()
+            ensureFftConvolverConnected()
+            ensureSpeakerOutputElasticityConnected()
             restoreCrossfeedSettings()
         }
     }
@@ -408,6 +416,46 @@ class PlayerController private constructor(context: Context) {
                 _peqController = it
             }
             controller.connectEngine(engine)
+        }
+    }
+
+    // ========== FFT 卷积控制器 ==========
+    private var _fftConvolverController: FftConvolverController? = null
+    private var fftConvolverRestoreJob: Job? = null
+
+    val fftConvolverController: FftConvolverController
+        get() {
+            if (_fftConvolverController == null) {
+                val engine = ffmpegPlayer.dspEngine
+                _fftConvolverController = if (engine != null) {
+                    FftConvolverController(engine)
+                } else {
+                    Log.w(TAG, "DSP engine not available for FFT convolver, creating stub")
+                    FftConvolverController(NativeDSPEngine())
+                }
+            }
+            return _fftConvolverController!!
+        }
+
+    /**
+     * Rebind the standalone convolver controller to the current native DSP engine.
+     * A saved SAF document is restored on Dispatchers.IO and never decoded on the
+     * audio callback thread.
+     */
+    fun ensureFftConvolverConnected() {
+        val engine = ffmpegPlayer.dspEngine
+        if (engine == null || !engine.isInitialized()) return
+
+        val controller = _fftConvolverController ?: FftConvolverController(engine).also {
+            _fftConvolverController = it
+        }
+        controller.connectEngine(engine)
+
+        if (controller.needsPersistedIrRestore()) {
+            fftConvolverRestoreJob?.cancel()
+            fftConvolverRestoreJob = scope.launch(Dispatchers.IO) {
+                controller.restorePersistedIr(context)
+            }
         }
     }
 
@@ -488,6 +536,36 @@ class PlayerController private constructor(context: Context) {
                 _trebleBoostController = TrebleBoostController(engine)
             } else {
                 _trebleBoostController!!.connectEngine(engine)
+            }
+        }
+    }
+
+    // ========== 扬声器外放：弹性控制器 ==========
+    // UI、偏好持久化与 DSP 重建恢复统一使用这一实例，避免两套控制器
+    // 先后向同一个 Native 效果写入不同状态。
+    private var _speakerOutputElasticityController: SpeakerOutputElasticityController? = null
+
+    val speakerOutputElasticityController: SpeakerOutputElasticityController
+        get() {
+            if (_speakerOutputElasticityController == null) {
+                val engine = ffmpegPlayer.dspEngine
+                _speakerOutputElasticityController = if (engine != null) {
+                    SpeakerOutputElasticityController(engine)
+                } else {
+                    Log.w(TAG, "DSP engine not available for SpeakerOutputElasticity, creating stub")
+                    SpeakerOutputElasticityController(NativeDSPEngine())
+                }
+            }
+            return _speakerOutputElasticityController!!
+        }
+
+    fun ensureSpeakerOutputElasticityConnected() {
+        val engine = ffmpegPlayer.dspEngine
+        if (engine != null && engine.isInitialized()) {
+            if (_speakerOutputElasticityController == null) {
+                _speakerOutputElasticityController = SpeakerOutputElasticityController(engine)
+            } else {
+                _speakerOutputElasticityController!!.connectEngine(engine)
             }
         }
     }
@@ -730,9 +808,6 @@ class PlayerController private constructor(context: Context) {
     val outputLatencyMs: Int
         get() = ffmpegPlayer.latencyMs
 
-    val lyricManualOffsetMs: Int
-        get() = AppPreferences.Lyrics.latencyOffset
-
     @Volatile
     var isBluetoothOutput: Boolean = false
         private set
@@ -743,13 +818,6 @@ class PlayerController private constructor(context: Context) {
     // 蓝牙 HFP-only 设备检测状态
     private val _hfpOnlyDeviceDetected = MutableStateFlow(false)
     val hfpOnlyDeviceDetected: StateFlow<Boolean> = _hfpOnlyDeviceDetected.asStateFlow()
-
-    private var sleepTimerJob: Job? = null
-    private val _sleepTimerRemaining = MutableStateFlow(0L)
-    val sleepTimerRemaining: StateFlow<Long> = _sleepTimerRemaining.asStateFlow()
-    private var sleepTimerEndTime: Long = 0L
-    private var stopAfterCurrentSong: Boolean = false
-    private var songsUntilStop: Int = 0
 
     // 缓存 A2DP 代理，避免重复获取
     private var cachedA2dpProxy: android.bluetooth.BluetoothProfile? = null
@@ -963,6 +1031,11 @@ class PlayerController private constructor(context: Context) {
     @Volatile
     private var explicitUsbExclusiveSoftwareMuteThisProcess = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val statePersistence = PlayerStatePersistence()
+    private val shuffleQueueController = ShuffleQueueController(statePersistence)
+    private val sleepTimerController = SleepTimerController(scope) { pause() }
+    private val playbackStatsTracker = PlaybackStatsTracker(context, scope)
+    val sleepTimerRemaining: StateFlow<Long> = sleepTimerController.remainingMs
 
     /** Serialized playback event queue (PlayOpEventHandlerThread). */
     private val eventQueue = PlaybackEventQueue()
@@ -974,7 +1047,10 @@ class PlayerController private constructor(context: Context) {
         }
     }
 
+    @Volatile
     private var isReleased = false
+
+    fun isOperational(): Boolean = !isReleased
     private var consecutiveFailures = 0
     private var enrichJob: Job? = null
     @Volatile
@@ -990,16 +1066,7 @@ class PlayerController private constructor(context: Context) {
     /** 优先播放队列 — 队列歌曲优先于"下一首播放" */
     private val priorityQueue = ArrayDeque<AudioFile>()
 
-    /** shuffle 前保存原始队列顺序，关闭 shuffle 时恢复 */
-    private var queueBeforeShuffle: List<AudioFile> = emptyList()
-    /** 当前随机播放队列（仅包含参与 shuffle 的索引，排除自动播放内容） */
-    private val shuffleIndices = mutableListOf<Int>()
-    /** 已播放的随机索引历史，用于"上一首"回退 */
-    private val shuffleHistory = ArrayDeque<Int>()
-    /** 随机数生成器 */
-    private val shuffleRandom = java.util.Random()
-
-    /** 回放增益音量系数 — 由 applyReplayGain() 计算后与用户音量合成 */
+    /** 回放增益音量系数 — 普通 Android 输出中只与 duck 等播放器内部增益合成 */
     private var replayGainVolumeModifier = 1.0f
     private val recoveringUsb = java.util.concurrent.atomic.AtomicBoolean(false)
     private val usbExclusiveFullRecoveryAttemptsMs = java.util.ArrayDeque<Long>()
@@ -1093,6 +1160,7 @@ class PlayerController private constructor(context: Context) {
     private var lastPlayRequestTime = 0L
     private val latestPlayRequestToken = AtomicLong(0L)
     private var seekJustPerformed = false
+    private var previousRestartBypassUntilMs = 0L
 
     /** 切歌/暂停进行中，禁止 applyUsbVolume 写入 */
     @Volatile
@@ -1110,6 +1178,7 @@ class PlayerController private constructor(context: Context) {
     private var pendingSeekPosition: Long = -1L
     private var pendingSeekPath: String? = null
     private var pendingRestoreSeekJob: kotlinx.coroutines.Job? = null
+    private var restoreSeekVerificationJob: kotlinx.coroutines.Job? = null
 
     // USB policy restart deferral: self-test/learned-policy should not hard-stop
     // playback while streaming.  Mark dirty and apply on next legitimate restart.
@@ -1157,6 +1226,48 @@ class PlayerController private constructor(context: Context) {
             TAG,
             "queueRendererRestartSeek: reason=$reason song=${song.title} display=$displayPositionMs real=$realPositionMs cue=${song.cueOffsetMs}"
         )
+    }
+
+    private fun verifyRestoreStartSeek(song: AudioFile, displayPositionMs: Long) {
+        restoreSeekVerificationJob?.cancel()
+        restoreSeekVerificationJob = scope.launch {
+            val realPositionMs = if (song.cueOffsetMs > 0L) {
+                song.cueOffsetMs + displayPositionMs
+            } else {
+                displayPositionMs
+            }
+            repeat(12) { attempt ->
+                delay(120L)
+                val current = _currentSong.value
+                if (!isSameSongIdentity(current, song)) return@launch
+                val enginePosition = ffmpegPlayer.positionMs
+                AppLogger.i(
+                    TAG,
+                    "RESTORE_TRACE verify attempt=${attempt + 1} engine=$enginePosition target=$realPositionMs state=${ffmpegPlayer.state}"
+                )
+                if (kotlin.math.abs(enginePosition - realPositionMs) <= 1_500L) {
+                    AppLogger.i(TAG, "restore start seek verified: attempt=${attempt + 1} pos=$enginePosition")
+                    return@launch
+                }
+                if (ffmpegPlayer.state == FfmpegAudioPlayer.State.PLAYING ||
+                    ffmpegPlayer.state == FfmpegAudioPlayer.State.PREPARING
+                ) {
+                    AppLogger.w(
+                        TAG,
+                        "restore start seek retry: attempt=${attempt + 1} engine=$enginePosition target=$realPositionMs"
+                    )
+                    ffmpegPlayer.seekTo(realPositionMs)
+                    _position.value = displayPositionMs.coerceAtLeast(0L)
+                    seekJustPerformed = true
+                    return@launch
+                }
+            }
+        }
+    }
+
+    private fun persistSelectedSongForColdStart(song: AudioFile) {
+        statePersistence.saveSongSnapshot(song)
+        AppPreferences.Player.currentQueueIndex = _queue.value.currentIndex
     }
 
     private fun clearPlayRequestDedup(reason: String) {
@@ -1210,9 +1321,6 @@ class PlayerController private constructor(context: Context) {
         )
         return ok
     }
-
-    private var playCountRecordedKey: String = ""
-    private var currentTrackMaxPositionMs: Long = 0L
 
     data class UsbDeviceStatus(
         val deviceName: String,
@@ -1296,8 +1404,7 @@ class PlayerController private constructor(context: Context) {
                             cueOffsetMs = songs[newIndex].cueOffsetMs
                         )
                         FFmpegBridge.resetDebugLog("gapless_playback_report_start:${songs[newIndex].path}")
-                        playCountRecordedKey = ""
-                        currentTrackMaxPositionMs = 0L
+                        playbackStatsTracker.reset()
                         setupNextSongForGapless()
                     }
                 }
@@ -1715,32 +1822,23 @@ class PlayerController private constructor(context: Context) {
             (modeledFormat.profileRiskFlags and (1 shl 2)) != 0 -> true // PROFILE_RISK_FEEDBACK_NONSTANDARD
             else -> false
         }
-
-        if (USB_EXPOSE_PRE_TP55_POLICY &&
-            (learned?.noFeedback == true ||
-                learned?.preferSafeAlt == true ||
-                learned?.lastGoodNoFeedback == true ||
-                pendingPlan?.disableFeedback == true ||
-                pendingPlan?.preferSafeAlt == true ||
-                pendingPlan?.preferLastGoodProfile == true)
-        ) {
-            AppLogger.w(
-                TAG,
-                "USB_EXPOSE_PRE_TP55: ignoring learned/pending feedback fallback " +
-                    "learnedNoFb=${learned?.noFeedback} learnedSafeAlt=${learned?.preferSafeAlt} " +
-                    "lastGoodAlt=${learned?.lastGoodAlt} lastGoodNoFb=${learned?.lastGoodNoFeedback} " +
-                    "pendingDisableFb=${pendingPlan?.disableFeedback} pendingSafeAlt=${pendingPlan?.preferSafeAlt} " +
-                    "pendingLastGood=${pendingPlan?.preferLastGoodProfile}"
-            )
-        }
-
+        val transportKey = currentUsbTransportKeyOrNull()
+        val rejectedInCurrentSession = transportKey != null && transportKey == usbFeedbackRejectedTransportKey
+        val pendingNoFeedback = pendingPlan?.disableFeedback == true ||
+            (pendingPlan?.preferLastGoodProfile == true && learned?.lastGoodNoFeedback == true)
+        val learnedNoFeedback = learned?.noFeedback == true ||
+            (learned?.successCount ?: 0) > 0 && learned?.lastGoodNoFeedback == true
+        val noFeedback = descriptorNoFeedback || rejectedInCurrentSession || pendingNoFeedback || learnedNoFeedback
         val reason = when {
+            pendingNoFeedback -> "runtime recovery disabled an unstable feedback endpoint"
+            rejectedInCurrentSession -> "feedback endpoint rejected for the current transport: $usbFeedbackRejectedReason"
+            learnedNoFeedback -> "accepted last-good profile uses fixed no-feedback pacing"
             descriptorNoFeedback && modeledFormat?.feedbackEndpoint == 0 -> "descriptor has no feedback endpoint"
             descriptorNoFeedback -> "descriptor feedback is not explicit/eligible"
-            else -> "descriptor explicit feedback eligible; learned/pending TP55 fallback ignored"
+            else -> "descriptor explicit feedback eligible"
         }
         return UsbFeedbackModelDecision(
-            noFeedback = descriptorNoFeedback,
+            noFeedback = noFeedback,
             reason = reason,
             format = modeledFormat
         )
@@ -1793,7 +1891,7 @@ class PlayerController private constructor(context: Context) {
 
     // ======================== 音量路由（Volume Route）========================
     // 三条明确路径：
-    // 1. 非独占 → Android 系统音量，native gain = 1.0
+    // 1. 非独占 → 用户音量只由 Android STREAM_MUSIC 管理；播放器增益仅承载 ReplayGain/duck
     // 2. 独占 + 无硬件音量 → 系统媒体音量映射成 USB 软件增益
     // 3. 独占 + 硬件音量 → USB Feature Unit，PCM gain = 1.0
 
@@ -1877,7 +1975,7 @@ class PlayerController private constructor(context: Context) {
 
     private fun applyUsbExclusiveSoftwareUserVolume(linear: Float, reason: String) {
         val target = linear.coerceIn(0f, 1f)
-        val pcmGain = usbSoftwareUiVolumeToPcmGain(target)
+        val pcmGain = PlaybackVolumePlanner.usbSoftwarePcmGain(target)
         AppPreferences.Player.volume = target
         explicitUsbExclusiveSoftwareMuteThisProcess = target <= 0.0001f
         AppLogger.i(TAG, "applyUsbExclusiveSoftwareUserVolume: ui=$target pcmGain=$pcmGain reason=$reason")
@@ -2054,6 +2152,9 @@ class PlayerController private constructor(context: Context) {
                 if (systemLinear > 0.0001f) {
                     explicitUsbExclusiveSoftwareMuteThisProcess = false
                 }
+                // 离开独占路径时立即恢复普通 Android 流增益。用户音量仍由
+                // STREAM_MUSIC 管理，AudioTrack/AAudio/OpenSL 只接收播放器内部增益。
+                applyComposedVolume()
                 AppLogger.i(TAG, "Non-exclusive playback uses Android system volume directly")
             }
             volumePath == UsbVolumePath.HardwareUserVolume -> {
@@ -2098,7 +2199,9 @@ class PlayerController private constructor(context: Context) {
                     sharedUsbAudioEngine.setSessionVolumeScale(handle, 1.0f, 0)
                     applyUsbVolume(profile, "applyVolumeRoute:$reason")
                 } else {
-                    sharedUsbAudioEngine.nativeSetUsbSoftwareGain(usbSoftwareUiVolumeToPcmGain(userLinear))
+                    sharedUsbAudioEngine.nativeSetUsbSoftwareGain(
+                        PlaybackVolumePlanner.usbSoftwarePcmGain(userLinear)
+                    )
                 }
                 AppLogger.i(TAG, "USB exclusive software gain follows app volume: linear=$userLinear")
                 mirrorUsbExclusiveSoftwareVolumeToSystem("applyVolumeRoute:$reason")
@@ -3518,7 +3621,7 @@ class PlayerController private constructor(context: Context) {
             AppLogger.w(TAG, "USB profile: PCM→DSD/DSD transport overrides PCM bit-perfect for this session")
         }
         val fmt = resolveUsbPcmFormatRequest()
-        val rawLearned = runCatching {
+        val learned = runCatching {
             val device = currentUsbDevice
             if (device != null) {
                 UsbLearnedPolicyStore.readForPlayback(
@@ -3529,23 +3632,21 @@ class PlayerController private constructor(context: Context) {
                 )
             } else null
         }.getOrNull()
-        val rawPendingPlan = pendingUsbRecoveryPlan?.takeIf { it.requiresProfileRestart }
-        val learned = if (USB_EXPOSE_PRE_TP55_POLICY) null else rawLearned
-        val pendingPlan = if (USB_EXPOSE_PRE_TP55_POLICY) null else rawPendingPlan
-        if (USB_EXPOSE_PRE_TP55_POLICY && (rawLearned != null || rawPendingPlan != null)) {
-            AppLogger.w(
-                TAG,
-                "USB_EXPOSE_PRE_TP55: build profile ignores learned/pending fallback " +
-                    "learned=$rawLearned pending=$rawPendingPlan"
-            )
-        }
-        val effectiveLastGoodAlt = 0
-        val effectiveLastGoodSampleRate = 0
-        val effectiveLastGoodBitDepth = 0
-        val effectiveLastGoodSubslot = 0
-        val effectiveLastGoodFeedbackEndpoint = 0
+        val pendingPlan = pendingUsbRecoveryPlan?.takeIf { it.requiresProfileRestart }
+        val effectiveLastGoodAlt = learned?.lastGoodAlt ?: 0
+        val effectiveLastGoodSampleRate = learned?.lastGoodSampleRate ?: 0
+        val effectiveLastGoodBitDepth = learned?.lastGoodBitDepth ?: 0
+        val effectiveLastGoodSubslot = learned?.lastGoodSubslot ?: 0
+        val effectiveLastGoodFeedbackEndpoint = learned?.lastGoodFeedbackEndpoint ?: 0
         val caps = _usbCapabilities.value ?: sharedUsbAudioEngine.getDeviceCapabilities()
-        val feedbackModel = decideUsbFeedbackModel(caps, fmt, rawLearned, rawPendingPlan)
+        val feedbackModel = decideUsbFeedbackModel(caps, fmt, learned, pendingPlan)
+        val useLastGoodFallback = pendingPlan?.preferLastGoodProfile == true
+        val learnedNoClockSet = learned?.noClockSet == true ||
+            (useLastGoodFallback && learned?.lastGoodNoClockSet == true)
+        val learnedNoFeatureUnit = learned?.noFeatureUnit == true ||
+            (useLastGoodFallback && learned?.lastGoodNoFeatureUnit == true)
+        val learnedSafeAlt = learned?.preferSafeAlt == true ||
+            (useLastGoodFallback && learned?.lastGoodPreferSafeAlt == true)
         if (exclusive && feedbackModel.noFeedback) {
             val f = feedbackModel.format
             AppLogger.w(
@@ -3583,11 +3684,14 @@ class PlayerController private constructor(context: Context) {
             dsdDoPEnabled = effectiveDsdMode?.transport == UsbDsdTransport.DOP,
             dsdSourceDirect = currentSongIsDsdSource() && effectiveDsdActive,
             safeMode = AppPreferences.Player.usbSafeExclusiveMode,
-            noClockSet = AppPreferences.Player.usbDisableDacClockInfo,
+            noClockSet = AppPreferences.Player.usbDisableDacClockInfo ||
+                learnedNoClockSet || pendingPlan?.disableClockSet == true,
             noFeedback = feedbackModel.noFeedback,
-            noFeatureUnit = false,
-            force1msPacket = AppPreferences.Player.usbForce1MsPacket,
-            preferSafeAlt = AppPreferences.Player.usbSafeExclusiveMode,
+            noFeatureUnit = learnedNoFeatureUnit || pendingPlan?.disableFeatureUnit == true,
+            force1msPacket = AppPreferences.Player.usbForce1MsPacket ||
+                learned?.force1msPacket == true || pendingPlan?.force1msPacket == true,
+            preferSafeAlt = AppPreferences.Player.usbSafeExclusiveMode ||
+                learnedSafeAlt || pendingPlan?.preferSafeAlt == true,
             forceSoftwareVolume = false,
             fixedDigitalVolume = fixedDigitalVolume,
             lastGoodAlt = effectiveLastGoodAlt,
@@ -3712,16 +3816,6 @@ class PlayerController private constructor(context: Context) {
         if (!runtime.isValid) return
         val profile = buildUsbOutputProfile(exclusive = true)
         val deviceKey = usbLearnedPolicyKeyFor(device)
-        if (USB_EXPOSE_PRE_TP55_POLICY) {
-            AppLogger.w(
-                TAG,
-                "USB_EXPOSE_PRE_TP55: last-good profile NOT recorded: reason=$reason " +
-                    "key=$deviceKey iface=${runtime.iface} alt=${runtime.alt} " +
-                    "sr=${runtime.sampleRate} bits=${runtime.validBits} subslot=${runtime.subslotBytes} " +
-                    "fb=0x${runtime.feedbackEndpoint.toString(16)} profile=$profile"
-            )
-            return
-        }
         UsbLearnedPolicyStore.recordSuccess(
             deviceKey = deviceKey,
             alt = runtime.alt,
@@ -3762,7 +3856,7 @@ class PlayerController private constructor(context: Context) {
         // output, clock/profile and volume policy are coherent, do not keep a
         // stale recovery plan around. Manual/user-initiated policy changes can
         // still restart explicitly.
-        if (pendingUsbPolicyRestart && pendingUsbRecoveryPlan?.forceFullReopen != true) {
+        if (pendingUsbRecoveryPlan != null) {
             AppLogger.i(TAG, "USB runtime acceptance clears deferred recovery: oldPlan=$pendingUsbRecoveryPlan")
             pendingUsbPolicyRestart = false
             pendingUsbRecoveryPlan = null
@@ -3936,17 +4030,6 @@ class PlayerController private constructor(context: Context) {
                         "message=${result.message} stats=$stats"
                 )
                 val plan = UsbStreamRecoveryPlanner.plan(result.kind, stats, profile, result.message)
-                if (USB_EXPOSE_PRE_TP55_POLICY) {
-                    pendingUsbRecoveryPlan = null
-                    pendingUsbPolicyRestart = false
-                    AppLogger.e(
-                        TAG,
-                        "USB_EXPOSE_FAILURE: self-test confirmed failure, no learned fallback/no forced recovery. " +
-                            "kind=${result.kind} action=${plan.action} reason=$reason message=${result.message} " +
-                            "stats=$stats profile=$profile playState=${_playState.value} ffmpeg=${ffmpegPlayer.state}"
-                    )
-                    return@launch
-                }
                 if (plan.disableFeedback || result.kind == UsbSilentKind.FeedbackInvalid || stats.isFeedbackDegradedFixedPacer) {
                     rememberUsbFeedbackRejected("self_test:$reason:${result.message}")
                 }
@@ -3971,6 +4054,20 @@ class PlayerController private constructor(context: Context) {
                     "USB self-test recovery planned, DEFERRED: kind=${result.kind} action=${plan.action} reason=$reason " +
                         "playing=${_playState.value == PlayState.PLAYING} message=${plan.message}"
                 )
+                if (plan.action == UsbRecoveryAction.RetryWithoutFeedback) {
+                    AppLogger.w(TAG, "USB feedback recovery: rebuilding stream immediately with fixed pacing")
+                    scope.launch(Dispatchers.Main.immediate) {
+                        var waitedMs = 0L
+                        while (_isRenderSwitching.value && waitedMs < 3_000L) {
+                            delay(100L)
+                            waitedMs += 100L
+                        }
+                        if (pendingUsbRecoveryPlan?.action != UsbRecoveryAction.RetryWithoutFeedback) {
+                            return@launch
+                        }
+                        applyUsbOutputSettingsChanged(userInitiated = true)
+                    }
+                }
                 return@launch
             }
         }
@@ -4108,6 +4205,7 @@ class PlayerController private constructor(context: Context) {
     fun applyUsbOutputSettingsChanged(userInitiated: Boolean = false): Int {
         if (!_usbExclusiveActive.value) return 0
         reconcileUsbOutputSettingsWithCapabilities(_usbCapabilities.value)
+        val recoveryPlan = pendingUsbRecoveryPlan?.takeIf { it.requiresProfileRestart }
 
         // Reentrancy guard: prevent overlapping stop/release/play cycles when
         // user rapidly changes sample rate or bit depth in the settings UI.
@@ -4166,7 +4264,7 @@ class PlayerController private constructor(context: Context) {
                 "bitPerfect=$bitPerfect dsd=$dsdActive"
         )
 
-        if (bitPerfect && !dsdActive) {
+        if (bitPerfect && !dsdActive && recoveryPlan == null) {
             AppLogger.i(TAG, "applyUsbOutputSettingsChanged: bit-perfect is ON, resample settings saved but not applied")
             return 0
         }
@@ -5521,21 +5619,10 @@ class PlayerController private constructor(context: Context) {
                 if (next >= size) -1 else next
             }
             PlayMode.SHUFFLE_ALL -> {
-                val shuffleIdx = shuffleIndices.indexOf(currentIdx)
-                if (shuffleIdx >= 0 && shuffleIdx + 1 < shuffleIndices.size) {
-                    shuffleIndices[shuffleIdx + 1]
-                } else if (shuffleIndices.isNotEmpty()) {
-                    shuffleIndices[0]
-                } else {
-                    val next = currentIdx + 1
-                    if (next >= size) 0 else next
-                }
+                shuffleQueueController.nextIndexForGapless(currentIdx, size, wrap = true)
             }
             PlayMode.SHUFFLE_ONCE -> {
-                val shuffleIdx = shuffleIndices.indexOf(currentIdx)
-                if (shuffleIdx >= 0 && shuffleIdx + 1 < shuffleIndices.size) {
-                    shuffleIndices[shuffleIdx + 1]
-                } else -1
+                shuffleQueueController.nextIndexForGapless(currentIdx, size, wrap = false)
             }
         }
     }
@@ -5765,21 +5852,12 @@ class PlayerController private constructor(context: Context) {
         }
         if (_usbExclusiveActive.value) {
             invalidateUsbSelfTest("play_request:${song.path}", clearSessionKey = true)
-            // A previous warm-pause/self-test may have left an in-memory retry
-            // plan.  User-initiated playback/track switch should start from the
-            // modeled default/last-good profile, not from a stale unaccepted
-            // failure symptom.
-            if (pendingUsbRecoveryPlan?.forceFullReopen != true) {
-                pendingUsbRecoveryPlan = null
-                pendingUsbPolicyRestart = false
-            }
         }
-        // Consume deferred USB policy restart before starting fresh playback.
+        // Fresh playback already rebuilds the stream, so retain the recovery
+        // profile until the runtime acceptance gate verifies and persists it.
         if (pendingUsbPolicyRestart) {
-            AppLogger.i(TAG, "playInternal: consuming pendingUsbPolicyRestart before new track plan=$pendingUsbRecoveryPlan")
+            AppLogger.i(TAG, "playInternal: applying pending USB profile on fresh stream plan=$pendingUsbRecoveryPlan")
             pendingUsbPolicyRestart = false
-            // Force-apply with userInitiated to bypass the playing-deferral guard.
-            applyUsbOutputSettingsChanged(userInitiated = true)
         }
         // USB recovery 进行中，等待完成后再播放
         if (recoveringUsb.get()) {
@@ -5875,6 +5953,9 @@ class PlayerController private constructor(context: Context) {
             }
 
             _currentSong.value = song
+            // Persist the new identity before decoder startup so process death during
+            // preparation cannot resurrect the previously playing song.
+            persistSelectedSongForColdStart(song)
             AppLogger.markPlaybackReportStart(
                 title = song.title,
                 artist = song.artist,
@@ -5884,8 +5965,7 @@ class PlayerController private constructor(context: Context) {
             )
             FFmpegBridge.resetDebugLog("playback_report_start:${song.path}")
             _position.value = 0L
-            playCountRecordedKey = ""
-            currentTrackMaxPositionMs = 0L
+            playbackStatsTracker.reset()
             cachedCueOffsetMs = song.cueOffsetMs
             cachedCueEndMs = song.cueEndMs
             cachedSongDuration = song.duration
@@ -6031,6 +6111,14 @@ class PlayerController private constructor(context: Context) {
                     reason = "play_internal_start"
                 )
             }
+            // Cold restore must reach the decoder before it starts. Delaying this seek lets
+            // the UI briefly show the remembered position while audio actually begins at zero.
+            if (pendingSeekPosition > 0L && pendingSeekPath == song.path) {
+                val restoredPosition = pendingSeekPosition
+                queueRendererRestartSeek(song, restoredPosition, "cold_restore_before_play")
+                _position.value = restoredPosition
+                verifyRestoreStartSeek(song, restoredPosition)
+            }
             ffmpegPlayer.play(song.path)
 
             // AndroidAudioIdentity 不能早于 native USB claim/streaming 启动。
@@ -6054,33 +6142,7 @@ class PlayerController private constructor(context: Context) {
                 checkBluetoothOutput()
             }
 
-            if (pendingSeekPosition > 0 && pendingSeekPath == song.path) {
-                val seekPos = pendingSeekPosition
-                val seekPath = pendingSeekPath
-                pendingSeekPosition = -1L
-                pendingSeekPath = null
-                Log.d(TAG, "Restoring playback position: ${seekPos}ms for ${song.title}")
-                pendingRestoreSeekJob?.cancel()
-                pendingRestoreSeekJob = scope.launch {
-                    delay(300)
-                    // 安全检查：确保 300ms 后还是同一首歌
-                    val cur = _currentSong.value
-                    if (cur == null || cur.path != seekPath || cur.cueOffsetMs != song.cueOffsetMs) {
-                        AppLogger.w(TAG, "restore seek ignored: song changed during delay")
-                        return@launch
-                    }
-                    if (ffmpegPlayer.state == FfmpegAudioPlayer.State.PLAYING ||
-                        ffmpegPlayer.state == FfmpegAudioPlayer.State.PREPARING) {
-                        if (song.cueOffsetMs > 0) {
-                            ffmpegPlayer.seekTo(seekPos)
-                            _position.value = (seekPos - song.cueOffsetMs).coerceAtLeast(0L)
-                            seekJustPerformed = true
-                        } else {
-                            seekTo(seekPos)
-                        }
-                    }
-                }
-            } else if (song.cueOffsetMs > 0) {
+            if (song.cueOffsetMs > 0) {
                 val cueOffset = song.cueOffsetMs
                 Log.d(TAG, "CUE track: seeking to ${cueOffset}ms for ${song.title}")
                 pendingRestoreSeekJob?.cancel()
@@ -6209,8 +6271,23 @@ class PlayerController private constructor(context: Context) {
                 resume()
             }
             FfmpegAudioPlayer.State.PREPARING -> {
-                Log.w(TAG, "=== playPause: already PREPARING, ignoring duplicate tap ===")
-                smTransition(PlayState.PREPARING, "play_pause_preparing")
+                val preparingAgeMs = ffmpegPlayer.stateAgeMs
+                if (preparingAgeMs < 3_500L) {
+                    Log.w(TAG, "=== playPause: already PREPARING (${preparingAgeMs}ms), ignoring duplicate tap ===")
+                    smTransition(PlayState.PREPARING, "play_pause_preparing")
+                } else {
+                    val seedSong = resolvePlayPauseSeedSong()
+                    Log.w(TAG, "=== playPause: stale PREPARING (${preparingAgeMs}ms), forcing restart song=${seedSong?.path} ===")
+                    if (seedSong != null) {
+                        val now = SystemClock.elapsedRealtime()
+                        userPlayStartFocusGuardUntilMs = now + 2_800L
+                        audioFocusStartupGraceUntilMs = maxOf(audioFocusStartupGraceUntilMs, now + 2_800L)
+                        smForceTransition(PlayState.PREPARING, "play_pause_stale_preparing_retry")
+                        play(seedSong)
+                    } else {
+                        smForceTransition(PlayState.ERROR, "play_pause_stale_preparing_no_seed")
+                    }
+                }
             }
             else -> {
                 Log.w(TAG, "=== playPause: state=$state, falling back to play() ===")
@@ -6677,9 +6754,14 @@ class PlayerController private constructor(context: Context) {
         android.util.Log.d("PlayerController", "applyTransitionSettingsChanged: transition settings updated")
     }
 
-    fun seekTo(positionMs: Long) {
+    fun seekTo(positionMs: Long, userInitiated: Boolean = true) {
         if (isReleased) return
         val song = _currentSong.value ?: return
+        if (userInitiated) {
+            // A seek followed by Previous is an explicit navigation gesture, not a request to
+            // restart the newly sought position. Keep this short-lived and consume it once.
+            previousRestartBypassUntilMs = SystemClock.uptimeMillis() + 6_000L
+        }
         val keepPaused = _playState.value == PlayState.PAUSED ||
             ffmpegPlayer.state == FfmpegAudioPlayer.State.PAUSED
 
@@ -6811,6 +6893,7 @@ class PlayerController private constructor(context: Context) {
         reason: String
     ) {
         val oldPos = _position.value
+        previousRestartBypassUntilMs = 0L
         AppLogger.w(
             TAG,
             "MANUAL_SWITCH_START oldPos=$oldPos newSong=${song.title} start=0 reason=$reason"
@@ -6870,6 +6953,10 @@ class PlayerController private constructor(context: Context) {
             _currentSong.value = song
             _position.value = 0L
             _duration.value = song.duration
+            // The inline crossfade branch does not enter playInternal(), so persist
+            // the selected track here as well before a cold process death can restore old media.
+            persistSelectedSongForColdStart(song)
+            AppPreferences.Player.lastPosition = 0L
             smForceTransition(if (playInternalAfterSwitch) PlayState.PREPARING else PlayState.PLAYING, "manual_switch_preparing")
         } finally {
             transportTransitioning = false
@@ -6891,8 +6978,8 @@ class PlayerController private constructor(context: Context) {
         }
     }
 
-    fun next() {
-        if (isReleased) return
+    fun next(): AudioFile? {
+        if (isReleased) return null
 
         if (priorityQueue.isNotEmpty()) {
             val nextSong = priorityQueue.removeFirst()
@@ -6903,38 +6990,47 @@ class PlayerController private constructor(context: Context) {
             _queue.value = _queue.value.copy(songs = currentQueue, currentIndex = newIndex)
             savePosition()
             play(nextSong, currentQueue, newIndex)
-            return
+            return nextSong
         }
 
         val q = _queue.value
-        if (q.songs.isEmpty()) return
+        if (q.songs.isEmpty()) return null
 
         val nextIndex = when (_playMode.value) {
             PlayMode.SEQUENTIAL -> (q.currentIndex + 1) % q.songs.size
             PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> {
-                getNextShuffledIndex()
+                shuffleQueueController.nextIndex(q)
             }
             PlayMode.REPEAT_ONE -> {
                 q.currentIndex
             }
         }
 
-        if (nextIndex < 0 || nextIndex !in q.songs.indices) return
+        if (nextIndex < 0 || nextIndex !in q.songs.indices) return null
         savePosition()
         val nextSong = q.songs[nextIndex]
         _queue.value = q.copy(currentIndex = nextIndex)
 
         playManualSwitchFromStart(nextSong, q.songs, nextIndex, "manual_next")
+        return nextSong
     }
 
-    fun previous() {
-        if (isReleased) return
-        val q = _queue.value
-        if (q.songs.isEmpty()) return
+    fun previous() = previousInternal(restartCurrentAfterThreshold = true)
 
-        if (ffmpegPlayer.positionMs > 3000) {
-            seekTo(0)
-            return
+    /** Artwork swipes always mean changing tracks; transport buttons keep restart-at-3s behavior. */
+    fun previousTrackFromArtworkGesture() = previousInternal(restartCurrentAfterThreshold = false)
+
+    private fun previousInternal(restartCurrentAfterThreshold: Boolean): AudioFile? {
+        if (isReleased) return null
+        val q = _queue.value
+        if (q.songs.isEmpty()) return null
+
+        val bypassRestart = restartCurrentAfterThreshold &&
+            SystemClock.uptimeMillis() <= previousRestartBypassUntilMs
+        previousRestartBypassUntilMs = 0L
+        if (restartCurrentAfterThreshold && !bypassRestart && ffmpegPlayer.positionMs > 3000) {
+            seekTo(0, userInitiated = false)
+            return _currentSong.value
         }
 
         if (playHistory.isNotEmpty()) {
@@ -6943,7 +7039,7 @@ class PlayerController private constructor(context: Context) {
             _queue.value = q.copy(currentIndex = prevIdx)
             _currentSong.value = null
             playManualSwitchFromStart(prev, q.songs, prevIdx, "manual_previous_history")
-            return
+            return prev
         }
 
         val prevIndex = when (_playMode.value) {
@@ -6951,20 +7047,45 @@ class PlayerController private constructor(context: Context) {
                 if (q.currentIndex > 0) q.currentIndex - 1 else q.songs.size - 1
             }
             PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> {
-                getPreviousShuffledIndex()
+                shuffleQueueController.previousIndex(q)
             }
             PlayMode.REPEAT_ONE -> {
                 q.currentIndex
             }
         }
 
-        if (prevIndex < 0 || prevIndex !in q.songs.indices) return
+        if (prevIndex < 0 || prevIndex !in q.songs.indices) return null
         savePosition()
         val prevSong = q.songs[prevIndex]
         _queue.value = q.copy(currentIndex = prevIndex)
         _currentSong.value = null
 
         playManualSwitchFromStart(prevSong, q.songs, prevIndex, "manual_previous")
+        return prevSong
+    }
+
+    fun previewNextSong(): AudioFile? {
+        priorityQueue.firstOrNull()?.let { return it }
+        val q = _queue.value
+        if (q.songs.isEmpty()) return null
+        val index = when (_playMode.value) {
+            PlayMode.SEQUENTIAL -> (q.currentIndex + 1) % q.songs.size
+            PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> shuffleQueueController.peekNextIndex(q)
+            PlayMode.REPEAT_ONE -> q.currentIndex
+        }
+        return q.songs.getOrNull(index)
+    }
+
+    fun previewPreviousSong(): AudioFile? {
+        playHistory.lastOrNull()?.let { return it }
+        val q = _queue.value
+        if (q.songs.isEmpty()) return null
+        val index = when (_playMode.value) {
+            PlayMode.SEQUENTIAL -> if (q.currentIndex > 0) q.currentIndex - 1 else q.songs.lastIndex
+            PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> shuffleQueueController.peekPreviousIndex(q)
+            PlayMode.REPEAT_ONE -> q.currentIndex
+        }
+        return q.songs.getOrNull(index)
     }
 
     fun toggleRepeatMode() {
@@ -7155,20 +7276,9 @@ class PlayerController private constructor(context: Context) {
 
     private fun handlePlaybackComplete() {
         if (isReleased) return
-        if (stopAfterCurrentSong) {
-            stopAfterCurrentSong = false
-            AppPreferences.Player.stopAfterCurrent = false
-            AppPreferences.Player.sleepTimerMode = 0
+        if (sleepTimerController.consumePlaybackCompletion()) {
             pause()
             return
-        }
-        if (songsUntilStop > 0) {
-            songsUntilStop--
-            if (songsUntilStop <= 0) {
-                AppPreferences.Player.sleepTimerMode = 0
-                pause()
-                return
-            }
         }
         when (_repeatMode.value) {
             RepeatMode.ONE -> {
@@ -7187,56 +7297,28 @@ class PlayerController private constructor(context: Context) {
     }
 
     fun startSleepTimer(minutes: Int) {
-        sleepTimerJob?.cancel()
-        sleepTimerEndTime = SystemClock.elapsedRealtime() + minutes * 60_000L
-        _sleepTimerRemaining.value = minutes * 60_000L
-        AppPreferences.Player.sleepTimerMode = 1
-        AppPreferences.Player.sleepTimerMinutes = minutes
-        sleepTimerJob = scope.launch {
-            while (isActive) {
-                val remaining = sleepTimerEndTime - SystemClock.elapsedRealtime()
-                if (remaining <= 0) {
-                    _sleepTimerRemaining.value = 0
-                    pause()
-                    cancelSleepTimer()
-                    break
-                }
-                _sleepTimerRemaining.value = remaining
-                delay(1000)
-            }
-        }
+        sleepTimerController.startMinutes(minutes)
     }
 
     fun startSleepTimerSongs(count: Int) {
-        cancelSleepTimer()
-        songsUntilStop = count
-        AppPreferences.Player.sleepTimerMode = 2
-        stopAfterCurrentSong = false
+        sleepTimerController.startSongCount(count)
     }
 
     fun enableStopAfterCurrent() {
-        cancelSleepTimer()
-        stopAfterCurrentSong = true
-        AppPreferences.Player.sleepTimerMode = 3
-        AppPreferences.Player.stopAfterCurrent = true
+        sleepTimerController.stopAfterCurrent()
     }
 
     fun cancelSleepTimer() {
-        sleepTimerJob?.cancel()
-        sleepTimerJob = null
-        sleepTimerEndTime = 0L
-        _sleepTimerRemaining.value = 0L
-        stopAfterCurrentSong = false
-        songsUntilStop = 0
-        AppPreferences.Player.sleepTimerMode = 0
-        AppPreferences.Player.stopAfterCurrent = false
+        sleepTimerController.cancel()
     }
 
-    fun isSleepTimerActive(): Boolean {
-        return sleepTimerJob?.isActive == true || stopAfterCurrentSong || songsUntilStop > 0
-    }
+    fun getSleepTimerSongsRemaining(): Int = sleepTimerController.songsRemaining()
 
-    fun getSleepTimerMode(): Int = AppPreferences.Player.sleepTimerMode
+    fun isStopAfterCurrentEnabled(): Boolean = sleepTimerController.isStopAfterCurrentEnabled()
+
+    fun isSleepTimerActive(): Boolean = sleepTimerController.isActive()
+
+    fun getSleepTimerMode(): Int = sleepTimerController.mode()
 
     /**
      * 开启 Shuffle
@@ -7246,36 +7328,8 @@ class PlayerController private constructor(context: Context) {
      * 4. 初始化 shuffle 索引历史
      */
     private fun enableShuffle() {
-        val q = _queue.value
-        if (q.songs.size <= 1) return
-
-        // 保存原始顺序（用于关闭 shuffle 时恢复）
-        queueBeforeShuffle = q.songs.toList()
-        AppPreferences.Player.originalQueueSongsJson = serializeSongList(queueBeforeShuffle)
-
-        val currentSong = q.currentSong ?: return
-        val currentId = currentSong.id
-        val remaining = q.songs.filter { it.id != currentId }
-
-        // BitSet + Random 无放回采样
-        val shuffledRemaining = bitSetShuffle(remaining)
-
-        val newSongs = mutableListOf(currentSong)
-        newSongs.addAll(shuffledRemaining)
-
-        _queue.value = PlayQueue(
-            songs = newSongs,
-            currentIndex = 0,
-            repeatMode = _repeatMode.value,
-            isShuffle = true,
-            originalSongs = queueBeforeShuffle
-        )
-
-        // 初始化 shuffle 索引：当前歌曲已在首位，记录到历史
-        shuffleIndices.clear()
-        shuffleHistory.clear()
-        shuffleHistory.addLast(0)
-
+        val shuffledQueue = shuffleQueueController.enable(_queue.value, _repeatMode.value) ?: return
+        _queue.value = shuffledQueue
         saveState()
     }
 
@@ -7283,216 +7337,40 @@ class PlayerController private constructor(context: Context) {
      * 关闭 Shuffle — 恢复原始队列顺序
      */
     private fun disableShuffle() {
-        val q = _queue.value
-        val currentSong = q.currentSong
-
-        // 优先从内存恢复，其次从持久化恢复
-        val original = queueBeforeShuffle.ifEmpty {
-            deserializeSongList(AppPreferences.Player.originalQueueSongsJson)
+        shuffleQueueController.disable(_queue.value, _repeatMode.value)?.let { restoredQueue ->
+            _queue.value = restoredQueue
         }
-
-        if (original.isNotEmpty() && currentSong != null) {
-            // 在原始顺序中找到当前歌曲的位置
-            val newIndex = original.indexOfFirst { it.id == currentId(currentSong) }
-                .coerceAtLeast(0)
-
-            _queue.value = PlayQueue(
-                songs = original,
-                currentIndex = newIndex,
-                repeatMode = _repeatMode.value,
-                isShuffle = false,
-                originalSongs = emptyList()
-            )
-        }
-
-        // 清理 shuffle 状态
-        queueBeforeShuffle = emptyList()
-        shuffleIndices.clear()
-        shuffleHistory.clear()
-        AppPreferences.Player.originalQueueSongsJson = ""
-
         saveState()
     }
-
-    /**
-     * BitSet+Random 无放回采样算法
-     * 对应 ShuffledPlaybackQueueIndexGenerator.nextIndex()
-     */
-    private fun <T> bitSetShuffle(items: List<T>): List<T> {
-        if (items.size <= 1) return items.toList()
-        val result = mutableListOf<T>()
-        val used = java.util.BitSet(items.size)
-        var remaining = items.size
-        while (remaining > 0) {
-            var idx = shuffleRandom.nextInt(items.size)
-            while (used.get(idx)) {
-                idx = shuffleRandom.nextInt(items.size)
-            }
-            used.set(idx)
-            result.add(items[idx])
-            remaining--
-        }
-        return result
-    }
-
-    /**
-     * 从随机索引中取下一首
-     * 对应 ShuffledPlaybackQueueIndexGenerator.nextIndex()
-     */
-    private fun getNextShuffledIndex(): Int {
-        val size = _queue.value.songs.size
-        if (size <= 1) return if (size == 1) 0 else -1
-
-        // 本循环所有歌曲都已播放，重新生成随机顺序
-        if (shuffleIndices.isEmpty()) {
-            val currentIdx = _queue.value.currentIndex
-            val unplayed = (0 until size).filter { it != currentIdx }.toMutableList()
-
-            // BitSet+Random 无放回采样
-            val used = java.util.BitSet(unplayed.size)
-            val shuffled = mutableListOf<Int>()
-            var remaining = unplayed.size
-            while (remaining > 0) {
-                var r = shuffleRandom.nextInt(unplayed.size)
-                while (used.get(r)) {
-                    r = shuffleRandom.nextInt(unplayed.size)
-                }
-                used.set(r)
-                shuffled.add(unplayed[r])
-                remaining--
-            }
-            shuffleIndices.addAll(shuffled)
-        }
-
-        val nextIdx = shuffleIndices.removeFirst()
-        shuffleHistory.addLast(nextIdx)
-
-        // 限制历史长度，避免内存膨胀
-        if (shuffleHistory.size > size * 2) {
-            repeat(size / 2) { shuffleHistory.removeFirst() }
-        }
-        return nextIdx
-    }
-
-    /**
-     * 从随机历史中取上一首索引
-     */
-    private fun getPreviousShuffledIndex(): Int {
-        val size = _queue.value.songs.size
-        if (size <= 1) return if (size == 1) 0 else -1
-
-        val currentIdx = _queue.value.currentIndex
-        // 当前歌曲放回待播队列头部（下次优先播放）
-        if (currentIdx >= 0) shuffleIndices.add(0, currentIdx)
-
-        if (shuffleHistory.size >= 2) {
-            shuffleHistory.removeLast()
-            return shuffleHistory.last()
-        }
-        // 历史为空，随机选一个
-        return (0 until size).filter { it != currentIdx }.random()
-    }
-
-    private fun currentId(song: AudioFile): Long = song.id
 
     /** 根据歌曲 ReplayGain 标签和用户设置，计算并应用增益因子 */
     private fun applyReplayGain(song: AudioFile) {
         val prefs = AppPreferences.Player
-        val normalizationOn = prefs.volumeNormalizationEnabled || prefs.replayGainEnabled
-        if (normalizationOn) {
-            val gainDB = when {
-                prefs.replayGainEnabled -> when (prefs.replayGainMode) {
-                    1 -> song.trackGain
-                    2 -> song.albumGain
-                    else -> 0f
-                }
-                song.trackGain != 0f -> song.trackGain
-                else -> 0f
-            }
-            val peak = when {
-                prefs.replayGainEnabled -> when (prefs.replayGainMode) {
-                    1 -> song.trackPeak
-                    2 -> song.albumPeak
-                    else -> 1.0f
-                }
-                else -> song.trackPeak.takeIf { it > 0f } ?: 1.0f
-            }
-            var linearGain = safeReplayGainLinear(gainDB)
-            if (peak > 0f && linearGain * peak > 1.0f) {
-                linearGain = 1.0f / peak
-            }
-            replayGainVolumeModifier = linearGain
-            Log.d(TAG, "ReplayGain: mode=${prefs.replayGainMode}, gainDB=$gainDB, peak=$peak, linear=$linearGain")
-        } else {
-            replayGainVolumeModifier = 1.0f
+        val decision = PlaybackVolumePlanner.replayGain(
+            song = song,
+            normalizationEnabled = prefs.volumeNormalizationEnabled,
+            replayGainEnabled = prefs.replayGainEnabled,
+            replayGainMode = prefs.replayGainMode
+        )
+        replayGainVolumeModifier = decision.linearGain
+        if (decision.active) {
+            Log.d(
+                TAG,
+                "ReplayGain: mode=${prefs.replayGainMode}, gainDB=${decision.gainDb}, " +
+                    "peak=${decision.peak}, linear=${decision.linearGain}"
+            )
         }
         applyComposedVolume()
     }
 
-    /** 安全的 dB → linear 转换，防止极端 ReplayGain 值导致静音 */
-    private fun safeReplayGainLinear(db: Float): Float {
-        if (db == 0f || db.isNaN() || db.isInfinite()) return 1f
-        val clampedDb = db.coerceIn(-24f, 12f)
-        return Math.pow(10.0, clampedDb / 20.0).toFloat().coerceIn(0.063f, 3.981f)
-    }
-
-    /** 合成用户音量和 ReplayGain 系数 */
-    private fun currentComposedVolume(): Float {
-        val baseVolume = AppPreferences.Player.volume
-        return (baseVolume * replayGainVolumeModifier * duckVolumeFactor).coerceIn(0f, 1f)
-    }
-
-    /**
-     * USB 独占的软件音量不能把 UI 百分比直接当作 PCM 振幅。
-     * Android 的 STREAM_MUSIC 音量键是“档位/感知响度”，直接 linear 映射会导致
-     * 1/15 档仍有约 -23.5 dB，听起来过大；这里使用三次 taper：
-     * 1/15 -> 0.0003，2/15 -> 0.0024，50% -> 0.125，100% -> 1。
-     */
-    private fun usbSoftwareUiVolumeToPcmGain(uiVolume: Float): Float {
-        val v = uiVolume.coerceIn(0f, 1f)
-        if (v <= 0.0001f) return 0f
-        if (v >= 0.9999f) return 1f
-        return v.toDouble().pow(USB_SOFTWARE_VOLUME_TAPER.toDouble())
-            .toFloat()
-            .coerceIn(0f, 1f)
-    }
-
     private fun computeUsbVolumePlan(profile: com.rawsmusic.module.player.usb.UsbOutputProfile, reason: String): com.rawsmusic.module.player.usb.UsbVolumePlan {
-        val userVolume = AppPreferences.Player.volume.coerceIn(0f, 1f)
-        val replayGain = if (profile.bitPerfect) 1f else replayGainVolumeModifier.coerceIn(0f, 4f)
-        val duck = if (profile.bitPerfect) 1f else duckVolumeFactor.coerceIn(0f, 1f)
-
-        return when (profile.volumePath) {
-            com.rawsmusic.module.player.usb.UsbVolumePath.HardwareUserVolume -> {
-                // 用户音量走硬件 dB，不进 PCM。bit-perfect + HW volume still keeps
-                // PCM unity; processed mode may keep replay/duck in PCM.
-                com.rawsmusic.module.player.usb.UsbVolumePlan(
-                    pcmGain = if (profile.bitPerfect) 1f else (replayGain * duck).coerceIn(0f, 1f),
-                    hardwareDb = com.rawsmusic.module.player.usb.userVolumeToHardwareDb(userVolume),
-                    useHardwareVolume = true,
-                    fixedOutput = profile.bitPerfect,
-                    reason = reason
-                )
-            }
-            com.rawsmusic.module.player.usb.UsbVolumePath.Fixed -> {
-                com.rawsmusic.module.player.usb.UsbVolumePlan(
-                    pcmGain = 1f,
-                    hardwareDb = 0,
-                    useHardwareVolume = false,
-                    fixedOutput = true,
-                    reason = reason
-                )
-            }
-            else -> {
-                com.rawsmusic.module.player.usb.UsbVolumePlan(
-                    pcmGain = (usbSoftwareUiVolumeToPcmGain(userVolume) * replayGain * duck).coerceIn(0f, 1f),
-                    hardwareDb = 0,
-                    useHardwareVolume = false,
-                    fixedOutput = false,
-                    reason = reason
-                )
-            }
-        }
+        return PlaybackVolumePlanner.usbVolumePlan(
+            profile = profile,
+            userVolume = AppPreferences.Player.volume,
+            replayGain = replayGainVolumeModifier,
+            duck = duckVolumeFactor,
+            reason = reason
+        )
     }
 
     private fun applyUsbVolume(profile: com.rawsmusic.module.player.usb.UsbOutputProfile, reason: String) {
@@ -7538,11 +7416,13 @@ class PlayerController private constructor(context: Context) {
             return
         }
 
-        // 非 USB 独占：传统合成
-        val userVolume = AppPreferences.Player.volume.coerceIn(0f, 1f)
-        val rgLinear = replayGainVolumeModifier.coerceIn(0f, 4f)
-        val duckLinear = duckVolumeFactor.coerceIn(0f, 1f)
-        val composed = (userVolume * rgLinear * duckLinear).coerceIn(0f, 1f)
+        // 普通 Android 输出：系统媒体音量已经由 AudioFlinger 应用一次。
+        // AudioTrack/AAudio/OpenSL 的流增益只承载播放器内部修饰，不能再次乘
+        // AppPreferences.Player.volume，否则会形成 systemVolume² 式重复衰减。
+        val composed = PlaybackVolumePlanner.androidSoftwareGain(
+            replayGain = replayGainVolumeModifier,
+            duck = duckVolumeFactor
+        )
 
         if (!isReleased) {
             ffmpegPlayer.setVolume(composed)
@@ -7606,7 +7486,7 @@ class PlayerController private constructor(context: Context) {
                         }
                     }
 
-                    maybeRecordPlayCount(displayPos, _duration.value)
+                    playbackStatsTracker.onProgress(_currentSong.value, displayPos, _duration.value)
 
                     logCounter++
                     if (logCounter >= 4 || kotlin.math.abs(playerPos - lastLoggedPos) > 2000) {
@@ -7643,35 +7523,6 @@ class PlayerController private constructor(context: Context) {
         }
     }
 
-    private fun maybeRecordPlayCount(positionMs: Long, durationMs: Long) {
-        if (!AppPreferences.Player.playCountEnabled) return
-        val song = _currentSong.value ?: return
-        if (durationMs <= 0L || positionMs <= 0L) return
-
-        val key = buildPlaybackStatsKey(song)
-        if (playCountRecordedKey == key) return
-
-        currentTrackMaxPositionMs = maxOf(currentTrackMaxPositionMs, positionMs)
-        val threshold = AppPreferences.Player.playCountThresholdPercent.coerceIn(1, 100)
-        val percent = (currentTrackMaxPositionMs.toDouble() / durationMs.toDouble()) * 100.0
-
-        if (percent >= threshold) {
-            playCountRecordedKey = key
-            scope.launch(Dispatchers.IO) {
-                try {
-                    PlaybackStatsStore.getInstance(context).recordPlay(song)
-                    AppLogger.d(TAG, "play count recorded: ${song.title}, percent=${percent.toInt()} threshold=$threshold")
-                } catch (e: Exception) {
-                    AppLogger.w(TAG, "record play count failed: ${e.message}")
-                }
-            }
-        }
-    }
-
-    private fun buildPlaybackStatsKey(song: AudioFile): String {
-        return "${song.id}|${song.path}|${song.cueOffsetMs}|${song.cueTrackIndex}"
-    }
-
     private fun stopProgressUpdate() {
         progressJob?.cancel()
         progressJob = null
@@ -7680,21 +7531,11 @@ class PlayerController private constructor(context: Context) {
     private var saveStateJob: Job? = null
 
     private fun saveState() {
-        _currentSong.value?.let {
-            AppPreferences.Player.lastSongId = it.id
-            AppPreferences.Player.lastSongPath = it.path
-            AppPreferences.Player.lastSongTitle = it.title
-            AppPreferences.Player.lastSongArtist = it.artist
-            AppPreferences.Player.lastSongAlbum = it.album
-            AppPreferences.Player.lastSongAlbumArtPath = it.albumArtPath
-            AppPreferences.Player.lastSongDuration = it.duration
-            AppPreferences.Player.lastSongAlbumId = it.albumId
-        }
-        AppPreferences.Player.lastPlayStateOrdinal = _playState.value.ordinal
-        AppPreferences.Player.lastUsbExclusiveActive =
-            AppPreferences.Player.lastUsbExclusiveActive ||
-                _usbExclusiveActive.value ||
-                ffmpegPlayer.usbExclusiveMode
+        _currentSong.value?.let(statePersistence::saveSongSnapshot)
+        statePersistence.saveRuntime(
+            playStateOrdinal = _playState.value.ordinal,
+            keepUsbExclusive = _usbExclusiveActive.value || ffmpegPlayer.usbExclusiveMode
+        )
         savePosition()
         val q = _queue.value
         val songsSnapshot = q.songs.toList()
@@ -7702,84 +7543,15 @@ class PlayerController private constructor(context: Context) {
         saveStateJob?.cancel()
         saveStateJob = scope.launch(Dispatchers.IO) {
             try {
-                AppPreferences.Player.currentQueueIndex = currentIndex
-                val arr = org.json.JSONArray()
-                for (s in songsSnapshot) {
-                    val obj = org.json.JSONObject().apply {
-                        put("id", s.id)
-                        put("path", s.path)
-                        put("title", s.title)
-                        put("artist", s.artist)
-                        put("album", s.album)
-                        put("albumId", s.albumId)
-                        put("duration", s.duration)
-                        put("albumArtPath", s.albumArtPath ?: "")
-                        put("cueOffsetMs", s.cueOffsetMs)
-                        put("cueEndMs", s.cueEndMs)
-                        put("cueTrackIndex", s.cueTrackIndex)
-                    }
-                    arr.put(obj)
-                }
-                AppPreferences.Player.playQueueSongsJson = arr.toString()
+                statePersistence.saveQueue(songsSnapshot, currentIndex)
             } catch (_: Exception) {}
         }
     }
 
     private fun savePosition() {
         try {
-            if (!AppPreferences.Player.trackProgressMemoryEnabled) {
-                AppPreferences.Player.lastPosition = 0L
-                return
-            }
-            val pos = ffmpegPlayer.positionMs
-            AppPreferences.Player.lastPosition = pos
+            statePersistence.savePosition(ffmpegPlayer.positionMs)
         } catch (_: Exception) {}
-    }
-
-    private fun serializeSongList(songs: List<AudioFile>): String {
-        val arr = org.json.JSONArray()
-        for (s in songs) {
-            val obj = org.json.JSONObject().apply {
-                put("id", s.id)
-                put("path", s.path)
-                put("title", s.title)
-                put("artist", s.artist)
-                put("album", s.album)
-                put("albumId", s.albumId)
-                put("duration", s.duration)
-                put("albumArtPath", s.albumArtPath ?: "")
-                put("cueOffsetMs", s.cueOffsetMs)
-                put("cueEndMs", s.cueEndMs)
-                put("cueTrackIndex", s.cueTrackIndex)
-            }
-            arr.put(obj)
-        }
-        return arr.toString()
-    }
-
-    private fun deserializeSongList(json: String): List<AudioFile> {
-        if (json.isBlank()) return emptyList()
-        return try {
-            val arr = org.json.JSONArray(json)
-            val songs = mutableListOf<AudioFile>()
-            for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                songs.add(AudioFile(
-                    id = obj.optLong("id", -1),
-                    path = obj.optString("path", ""),
-                    title = obj.optString("title", ""),
-                    artist = obj.optString("artist", ""),
-                    album = obj.optString("album", ""),
-                    albumId = obj.optLong("albumId", -1),
-                    duration = obj.optLong("duration", 0),
-                    albumArtPath = obj.optString("albumArtPath", ""),
-                    cueOffsetMs = obj.optLong("cueOffsetMs", 0),
-                    cueEndMs = obj.optLong("cueEndMs", 0),
-                    cueTrackIndex = obj.optInt("cueTrackIndex", 0)
-                ))
-            }
-            songs
-        } catch (_: Exception) { emptyList() }
     }
 
     private fun restoreState() {
@@ -7795,8 +7567,8 @@ class PlayerController private constructor(context: Context) {
      */
     fun restoreLastSong(): AudioFile? {
         val restoreStartMs = SystemClock.elapsedRealtime()
-        val lastPath = AppPreferences.Player.lastSongPath
-        if (lastPath.isBlank()) {
+        val restored = statePersistence.restore()
+        if (restored == null) {
             PowerTraceLogger.playerStartup(
                 stage = "restore_last_song_empty",
                 detail = "lastPath=blank",
@@ -7804,96 +7576,25 @@ class PlayerController private constructor(context: Context) {
             )
             return null
         }
-
-        // Cold restore: do not synchronously hydrate the whole library here.
-        // A large collection can make the main capsule/miniplayer appear late and burn IO/CPU on launch.
-        // Use the already-published repository snapshot when it exists; otherwise restore from the
-        // compact last-song preferences and let MusicRepository reconcile the real library later.
-        val repoSongs = com.rawsmusic.module.data.repository.MusicRepository.songs.value
-        val repoSongById = if (repoSongs.isNotEmpty()) repoSongs.associateBy { it.id } else emptyMap()
-        val repoSongMap = if (repoSongs.isNotEmpty()) repoSongs.associateBy { it.path } else emptyMap()
-
-        val lastId = AppPreferences.Player.lastSongId
-        val repoSong = (if (lastId != -1L) repoSongById[lastId] else null) ?: repoSongMap[lastPath]
-        val restoreSource = if (repoSong != null) "repository_state" else "preference_snapshot"
-
-        val song = repoSong ?: AudioFile(
-            id = lastId,
-            path = lastPath,
-            title = AppPreferences.Player.lastSongTitle,
-            artist = AppPreferences.Player.lastSongArtist,
-            album = AppPreferences.Player.lastSongAlbum,
-            albumId = AppPreferences.Player.lastSongAlbumId,
-            duration = AppPreferences.Player.lastSongDuration,
-            albumArtPath = AppPreferences.Player.lastSongAlbumArtPath
-        )
+        val song = restored.song
 
         _currentSong.value = song
         _duration.value = song.duration
-
-        // 恢复上次播放位置
-        val savedPosition = if (AppPreferences.Player.trackProgressMemoryEnabled) {
-            AppPreferences.Player.lastPosition
-        } else {
-            0L
-        }
+        val savedPosition = restored.positionMs
         if (savedPosition > 0) {
             _position.value = savedPosition
             pendingSeekPosition = savedPosition
             pendingSeekPath = song.path
         }
-
-        try {
-            val queueJson = AppPreferences.Player.playQueueSongsJson
-            if (queueJson.isNotBlank()) {
-                val arr = org.json.JSONArray(queueJson)
-                val savedSongs = mutableListOf<AudioFile>()
-                for (i in 0 until arr.length()) {
-                    try {
-                        val obj = arr.getJSONObject(i)
-                        val path = obj.optString("path", "")
-                        if (path.isBlank()) continue
-                        val cueOff = obj.optLong("cueOffsetMs", 0)
-                        val cueIdx = obj.optInt("cueTrackIndex", 0)
-                        val savedId = obj.optLong("id", -1)
-                        val repoQueueSong = (if (savedId != -1L) repoSongById[savedId] else null)
-                            ?: repoSongMap[path]
-                        if (repoQueueSong != null) {
-                            savedSongs.add(repoQueueSong)
-                        } else {
-                            savedSongs.add(AudioFile(
-                                id = savedId,
-                                path = path,
-                                title = obj.getString("title"),
-                                artist = obj.getString("artist"),
-                                album = obj.getString("album"),
-                                albumId = obj.getLong("albumId"),
-                                duration = obj.getLong("duration"),
-                                albumArtPath = obj.optString("albumArtPath", ""),
-                                cueOffsetMs = cueOff,
-                                cueEndMs = obj.optLong("cueEndMs", 0),
-                                cueTrackIndex = cueIdx
-                            ))
-                        }
-                    } catch (_: Exception) { continue }
-                }
-                if (savedSongs.isNotEmpty()) {
-                    val savedIndex = AppPreferences.Player.currentQueueIndex
-                        .coerceIn(0, savedSongs.size - 1)
-                    _queue.value = PlayQueue(songs = savedSongs, currentIndex = savedIndex)
-                } else {
-                    _queue.value = PlayQueue(songs = listOf(song), currentIndex = 0)
-                }
-            } else {
-                _queue.value = PlayQueue(songs = listOf(song), currentIndex = 0)
-            }
-        } catch (_: Exception) {
-            _queue.value = PlayQueue(songs = listOf(song), currentIndex = 0)
-        }
+        AppLogger.i(
+            TAG,
+            "RESTORE_TRACE restore_song path=${song.path} saved=$savedPosition pending=$pendingSeekPosition source=${restored.source}"
+        )
+        _queue.value = PlayQueue(songs = restored.queue, currentIndex = restored.queueIndex)
 
         PowerTraceLogger.playerStartup(
             stage = "restore_last_song_done",
-            detail = "source=$restoreSource repoSongs=${repoSongs.size} queue=${_queue.value.songs.size} pos=$savedPosition title=${song.title.take(48)}",
+            detail = "source=${restored.source} repoSongs=${restored.repositorySongCount} queue=${restored.queue.size} pos=$savedPosition title=${song.title.take(48)}",
             elapsedMs = SystemClock.elapsedRealtime() - restoreStartMs
         )
         return song
@@ -7904,6 +7605,7 @@ class PlayerController private constructor(context: Context) {
         if (isReleased) return
         isReleased = true
         PlayerRuntimeRegistry.detachController(this, "controller_release")
+        clearReleasedInstance(this)
         saveState()
         stopProgressUpdate()
         unregisterNoisyReceiver()

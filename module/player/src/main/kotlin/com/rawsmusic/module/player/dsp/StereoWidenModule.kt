@@ -7,187 +7,186 @@ import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sqrt
 
+/**
+ * Kotlin fallback for the native continuous full-band stereo expander.
+ *
+ * The public amount is 0f..1f and maps linearly to a Side multiplier of
+ * 1x..3x. A linked stereo peak controller follows the matrix so both channels
+ * always receive the same gain and the image does not shift on peaks.
+ */
 class StereoWidenModule : DspModule {
     override val id: Int = MODULE_ID
-    override val name: String = "StereoWide"
+    override val name: String = "StereoWidth"
 
     companion object {
         const val MODULE_ID = 2
-        private const val FACTOR_SMOOTH = 0.003f
-        private const val SIDE_HP_FREQ = 420f       // 保护低频/人声，只展开中高频空间线索
-        private const val ALLPASS_FREQ = 2400f      // 高频极轻微去相关中心频率
+
+        private const val PEAK_CEILING = 0.999f
+        private const val AMOUNT_IDLE_THRESHOLD = 1.0e-5f
+        private const val GAIN_IDLE_THRESHOLD = 1.0e-5f
+        private const val LIMITER_ATTACK_SECONDS = 128f / 48000f
+        private const val LIMITER_RELEASE_SECONDS = 8192f / 48000f
     }
 
-    private var _isEnabled = AppPreferences.Equalizer.virtualizer > 0
-    override val isEnabled: Boolean get() = _isEnabled
+    private var enabled = AppPreferences.Equalizer.virtualizer > 0
+    override val isEnabled: Boolean
+        get() = enabled ||
+            currentAmount > 5.0e-4f ||
+            limiterGain < 1f - GAIN_IDLE_THRESHOLD
 
     var factor: Float = AppPreferences.Equalizer.virtualizer / 1000f
         set(value) {
-            field = value.coerceIn(0f, 1f)
-            _isEnabled = field > 0.01f
-            AppPreferences.Equalizer.virtualizer = (field * 1000f).toInt().coerceIn(0, 1000)
+            field = value.takeIf(Float::isFinite)?.coerceIn(0f, 1f) ?: 0f
+            enabled = field > AMOUNT_IDLE_THRESHOLD || isEnabled
+            AppPreferences.Equalizer.virtualizer =
+                (field * 1000f).toInt().coerceIn(0, 1000)
         }
 
-    private var smoothedFactor = 0f
     private var currentSampleRate = 44100
+    private var currentAmount = 0f
+    private var limiterTargetGain = 1f
+    private var limiterGain = 1f
 
-    // === Side 通道滤波器 (仅高频展宽，避免低频膨胀) ===
-    private var sideHpX1 = 0f
-    private var sideHpY1 = 0f
-    private var sideHpAlpha = 0f
+    private var amountSmoothing = 0f
+    private var limiterAttackStep = 0f
+    private var limiterReleaseStep = 0f
 
-    // === 高频 side 轻微 all-pass 去相关 ===
-    private var apX1 = 0f
-    private var apY1 = 0f
-    private var apA = 0f
+    private var sampleScratch = ShortArray(0)
 
-    // === 立体声联动压限器 ===
-    private var limGain = 1.0f
-    private var limAttack = 0.0f
-    private var limRelease = 0.0f
-    private val limThreshold = 0.95f  // 阈值放宽，不压瞬态
+    init {
+        updateCoefficients()
+    }
 
-    private fun updateCoeffs() {
-        val dt = 1.0f / currentSampleRate.toFloat()
+    private fun exponentialCoefficient(milliseconds: Float): Float {
+        val safeRate = currentSampleRate.coerceAtLeast(8000).toFloat()
+        val seconds = milliseconds.coerceAtLeast(0.05f) * 0.001f
+        return 1f - exp(-1.0 / (seconds.toDouble() * safeRate)).toFloat()
+    }
 
-        // Side 高通：保护低频和人声基音，主要展开中高频空间线索
-        val rcSide = 1.0f / (2.0f * Math.PI.toFloat() * SIDE_HP_FREQ)
-        sideHpAlpha = rcSide / (rcSide + dt)
+    private fun updateCoefficients() {
+        val safeRate = currentSampleRate.coerceAtLeast(8000).toFloat()
+        amountSmoothing = exponentialCoefficient(8f)
+        limiterAttackStep = (1f / (safeRate * LIMITER_ATTACK_SECONDS))
+            .coerceIn(1.0e-6f, 1f)
+        limiterReleaseStep = (1f / (safeRate * LIMITER_RELEASE_SECONDS))
+            .coerceIn(1.0e-7f, 1f)
+    }
 
-        val t = kotlin.math.tan(Math.PI.toFloat() * ALLPASS_FREQ / currentSampleRate.toFloat())
-        apA = (t - 1.0f) / (t + 1.0f)
-
-        // 压限器：attack 1ms（保留瞬态），release 200ms（平滑恢复）
-        limAttack = (1.0f - exp(-1.0 / (0.001 * currentSampleRate)).toFloat())
-        limRelease = (1.0f - exp(-1.0 / (0.200 * currentSampleRate)).toFloat())
+    private fun resetState(resetAmount: Boolean) {
+        limiterTargetGain = 1f
+        limiterGain = 1f
+        if (resetAmount) currentAmount = 0f
     }
 
     override fun setEnabled(enabled: Boolean) {
-        _isEnabled = enabled
+        this.enabled = enabled
         if (!enabled) {
             factor = 0f
-            smoothedFactor = 0f
-            sideHpX1 = 0f
-            sideHpY1 = 0f
-            apX1 = 0f
-            apY1 = 0f
-            limGain = 1.0f
         }
     }
 
-    private fun processAllPass(x: Float): Float {
-        val y = apA * x + apX1 - apA * apY1
-        apX1 = x
-        apY1 = y
-        return y
-    }
+    override fun process(
+        buffer: ByteArray,
+        byteCount: Int,
+        channels: Int,
+        sampleRate: Int,
+        bitsPerSample: Int
+    ) {
+        if (channels != 2 || bitsPerSample != 16 || byteCount <= 0) return
+        if (!enabled &&
+            factor <= AMOUNT_IDLE_THRESHOLD &&
+            currentAmount <= 5.0e-4f &&
+            limiterGain >= 1f - GAIN_IDLE_THRESHOLD
+        ) {
+            return
+        }
 
-    override fun process(buffer: ByteArray, byteCount: Int, channels: Int, sampleRate: Int, bitsPerSample: Int) {
-        if (channels != 2 || factor <= 0.01f) return
-        if (bitsPerSample != 16) return
-
-        if (currentSampleRate != sampleRate) {
+        if (currentSampleRate != sampleRate && sampleRate > 0) {
             currentSampleRate = sampleRate
-            updateCoeffs()
+            updateCoefficients()
+            resetState(resetAmount = true)
         }
 
         val shortCount = byteCount / 2
+        if (shortCount < 2) return
+        if (sampleScratch.size < shortCount) {
+            sampleScratch = ShortArray(shortCount)
+        }
+
         val shortBuffer = ByteBuffer.wrap(buffer, 0, byteCount)
             .order(ByteOrder.LITTLE_ENDIAN)
             .asShortBuffer()
-        val samples = ShortArray(shortCount)
-        shortBuffer.get(samples)
+        shortBuffer.get(sampleScratch, 0, shortCount)
 
-        for (i in 0 until shortCount step 2) {
-            smoothedFactor += (factor - smoothedFactor) * FACTOR_SMOOTH
+        var index = 0
+        while (index + 1 < shortCount) {
+            currentAmount += (factor - currentAmount) * amountSmoothing
+            currentAmount = currentAmount.coerceIn(0f, 1f)
 
-            val L = samples[i].toFloat() / 32768f
-            val R = samples[i + 1].toFloat() / 32768f
+            val left = sampleScratch[index] / 32768f
+            val right = sampleScratch[index + 1] / 32768f
 
-            // 1. M/S 变换（mid 原样通过，只放大 side）
-            val mid = (L + R) * 0.5f
-            val side = (L - R) * 0.5f
+            val difference = left - right
+            val expandedLeft = left + currentAmount * difference
+            val expandedRight = right - currentAmount * difference
 
-            // ==========================================
-            // 2. Side 通道：自然展宽
-            //    低频/人声基音保护，中高频轻微去相关，避免空洞和金属感。
-            // ==========================================
-            val sideHp = sideHpAlpha * (sideHpY1 + side - sideHpX1)
-            sideHpX1 = side
-            sideHpY1 = sideHp
-            val sideLp = side - sideHp
-
-            val amount = sqrt(smoothedFactor.coerceIn(0f, 1f))
-            val decorSideHp = processAllPass(sideHp)
-            val decorMix = amount * 0.08f
-            val widenedHp = sideHp * (1.0f - decorMix) + decorSideHp * decorMix
-            val highFreqGain = 1.0f + amount * 1.05f
-            val lowFreqGain = 1.0f
-            var outSide = sideLp * lowFreqGain + widenedHp * highFreqGain
-
-            val sideLimit = (abs(mid) + 0.12f) * (1.20f + amount * 0.38f)
-            val sideAbs = abs(outSide)
-            if (sideAbs > sideLimit) {
-                val soft = sideLimit + (sideAbs - sideLimit) * 0.35f
-                outSide *= soft / (sideAbs + 1e-12f)
-            }
-
-            // ==========================================
-            // 3. 重组并做 dry/wet 混合，避免中心声像突变
-            // ==========================================
-            val outMid = mid
-            val wetL = outMid + outSide
-            val wetR = outMid - outSide
-            val wetMix = 0.62f + amount * 0.22f
-            var outL = L * (1.0f - wetMix) + wetL * wetMix
-            var outR = R * (1.0f - wetMix) + wetR * wetMix
-
-            val compensateGain = 1.0f / (1.0f + amount * 0.025f)
-            outL *= compensateGain
-            outR *= compensateGain
-
-            // ==========================================
-            // 5. 立体声联动压限器（安全网）
-            //    阈值 0.95，attack 1ms，release 200ms
-            //    不压瞬态，不泵浦，只截极端峰值
-            // ==========================================
-            val maxAbs = max(abs(outL), abs(outR))
-            val targetGain = if (maxAbs > limThreshold) {
-                limThreshold / maxAbs
+            val peak = max(abs(expandedLeft), abs(expandedRight))
+            val immediateSafeGain = if (peak > PEAK_CEILING) {
+                PEAK_CEILING / peak
             } else {
-                1.0f
+                1f
             }
 
-            if (targetGain < limGain) {
-                limGain += (targetGain - limGain) * limAttack
+            if (immediateSafeGain < limiterTargetGain) {
+                limiterTargetGain = immediateSafeGain
             } else {
-                limGain += (targetGain - limGain) * limRelease
+                limiterTargetGain = min(1f, limiterTargetGain + limiterReleaseStep)
             }
 
-            outL *= limGain
-            outR *= limGain
+            if (limiterTargetGain < limiterGain) {
+                limiterGain = max(limiterTargetGain, limiterGain - limiterAttackStep)
+            } else if (limiterTargetGain > limiterGain) {
+                limiterGain = min(limiterTargetGain, limiterGain + limiterReleaseStep)
+            }
 
-            outL = max(-1f, min(1f, outL))
-            outR = max(-1f, min(1f, outR))
+            val appliedGain = min(limiterGain, immediateSafeGain)
+            val outputLeft = (expandedLeft * appliedGain).takeIf(Float::isFinite) ?: 0f
+            val outputRight = (expandedRight * appliedGain).takeIf(Float::isFinite) ?: 0f
 
-            samples[i] = (outL * 32768f).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-            samples[i + 1] = (outR * 32768f).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+            sampleScratch[index] = if (outputLeft < 0f) {
+                (outputLeft * 32768f).toInt()
+            } else {
+                (outputLeft * 32767f).toInt()
+            }.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+
+            sampleScratch[index + 1] = if (outputRight < 0f) {
+                (outputRight * 32768f).toInt()
+            } else {
+                (outputRight * 32767f).toInt()
+            }.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+
+            index += 2
         }
 
         shortBuffer.position(0)
-        shortBuffer.put(samples)
+        shortBuffer.put(sampleScratch, 0, shortCount)
+
+        if (factor <= AMOUNT_IDLE_THRESHOLD &&
+            currentAmount <= 5.0e-4f &&
+            limiterTargetGain >= 1f - GAIN_IDLE_THRESHOLD &&
+            limiterGain >= 1f - GAIN_IDLE_THRESHOLD
+        ) {
+            currentAmount = 0f
+            limiterTargetGain = 1f
+            limiterGain = 1f
+            enabled = false
+        }
     }
 
     override fun reset() {
         factor = 0f
-        _isEnabled = false
-        smoothedFactor = 0f
-        sideHpX1 = 0f
-        sideHpY1 = 0f
-        apX1 = 0f
-        apY1 = 0f
-        limGain = 1.0f
+        enabled = false
+        resetState(resetAmount = true)
     }
 }

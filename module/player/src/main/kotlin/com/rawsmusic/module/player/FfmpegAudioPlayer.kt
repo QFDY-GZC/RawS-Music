@@ -94,6 +94,10 @@ class FfmpegAudioPlayer(private val context: Context) {
 
     private var _state = State.IDLE
     val state: State get() = _state
+    @Volatile
+    private var stateChangedAtElapsedMs = SystemClock.elapsedRealtime()
+    val stateAgeMs: Long
+        get() = (SystemClock.elapsedRealtime() - stateChangedAtElapsedMs).coerceAtLeast(0L)
 
     private var _durationMs = 0L
     val durationMs: Long get() = _durationMs
@@ -135,6 +139,7 @@ class FfmpegAudioPlayer(private val context: Context) {
 
     @Volatile private var _positionMs = 0L
     val positionMs: Long get() = _positionMs
+    @Volatile private var hardwarePositionOffsetMs = 0L
 
     private var _audioSessionId = AudioManager.AUDIO_SESSION_ID_GENERATE
     val audioSessionId: Int get() = _audioSessionId
@@ -183,6 +188,7 @@ class FfmpegAudioPlayer(private val context: Context) {
     private val isPlaying = AtomicBoolean(false)
     private val isPaused = AtomicBoolean(false)
     private val isReleased = AtomicBoolean(false)
+    @Volatile
     private var seekPositionMs = -1L
     @Volatile
     private var queuedStartSeekMs = -1L
@@ -421,11 +427,14 @@ class FfmpegAudioPlayer(private val context: Context) {
      * 获取硬件级精确播放位置（毫秒），委托给 AudioTrackPositionTracker
      * 返回 -1 表示 timestamp 不可用
      */
-    private fun getHardwarePositionMs(sampleRate: Int): Long =
-        audioTrackPositionTracker.hardwarePositionMs(audioTrack, sampleRate)
+    private fun getHardwarePositionMs(sampleRate: Int): Long {
+        val rawPosition = audioTrackPositionTracker.hardwarePositionMs(audioTrack, sampleRate)
+        return if (rawPosition >= 0L) rawPosition + hardwarePositionOffsetMs else rawPosition
+    }
 
     private fun resetAudioTrackPositionTracker() {
         audioTrackPositionTracker.reset()
+        audioTrackPositionUpdater.reset()
     }
 
     private fun enableHardwarePositionTracking() {
@@ -439,10 +448,6 @@ class FfmpegAudioPlayer(private val context: Context) {
     }
 
     private var volume = 1.0f
-    @Volatile private var normalOutputTransitionGain = 1.0f
-    @Volatile private var pendingNormalOutputFadeInMs = 0
-    @Volatile private var pendingNormalOutputFadeInReason = ""
-    private val normalOutputGainFadeSerial = java.util.concurrent.atomic.AtomicLong(0L)
 
     private val androidAudioRouteController = AndroidAudioRouteController(
         context = context,
@@ -649,14 +654,6 @@ class FfmpegAudioPlayer(private val context: Context) {
     private fun isStrictUsbBitPerfectPath(): Boolean =
         usbExclusiveMode && usbBitPerfectMode && usbStrictBitPerfectForCurrentTrack
 
-    /**
-     * UI transition fades are PCM envelopes for the normal Android output path only.
-     * USB exclusive already owns fades at the native/session/hardware-volume layer;
-     * applying this PCM envelope there creates the audible "double fade-in" reported
-     * on resume/manual transitions.
-     */
-    private fun canUsePcmPlaybackFade(): Boolean = !usbExclusiveMode && !isStrictUsbBitPerfectPath()
-
     private fun logUsbBitPerfectBypassOnce(bit: Long, reason: String) {
         val old = usbBitPerfectPolicyBypassMask
         if ((old and bit) != 0L) return
@@ -774,21 +771,8 @@ class FfmpegAudioPlayer(private val context: Context) {
     }
 
     fun armNextStartFadeIn(durationMs: Int, reason: String) {
-        val safeMs = durationMs.coerceAtLeast(0)
-        if (safeMs <= 0) {
-            nextStartFadeOverrideMs = 0
-            AppLogger.d(TAG, "PlaybackFade: clear next start fade-in reason=$reason")
-            return
-        }
-        nextStartFadeOverrideMs = safeMs
-        AppLogger.d(TAG, "PlaybackFade: arm next start fade-in durationMs=$safeMs reason=$reason")
-    }
-
-    fun armDefaultStartFadeIn(durationMs: Int, reason: String) {
-        val safeMs = durationMs.coerceAtLeast(0)
-        if (safeMs <= 0 || nextStartFadeOverrideMs > 0 || suppressNextStartFadeIn) return
-        nextStartFadeOverrideMs = safeMs
-        AppLogger.d(TAG, "PlaybackFade: arm default start fade-in durationMs=$safeMs reason=$reason")
+        nextStartFadeOverrideMs = durationMs
+        AppLogger.d(TAG, "PlaybackFade: arm next start fade-in durationMs=$durationMs reason=$reason")
     }
 
     fun requestManualCrossfadeTo(nextPath: String, durationMs: Int, reason: String): Boolean {
@@ -821,20 +805,21 @@ class FfmpegAudioPlayer(private val context: Context) {
 
     fun fadeOutForTransitionBlocking(durationMs: Int, reason: String): Boolean {
         if (durationMs <= 0 || _state != State.PLAYING || !isPlaying.get() || isReleased.get()) return false
-        if (!canUsePcmPlaybackFade()) {
-            if (isStrictUsbBitPerfectPath()) {
-                logUsbBitPerfectBypassOnce(1L shl 9, "transition fade-out $reason")
-            }
+        if (isStrictUsbBitPerfectPath()) {
+            logUsbBitPerfectBypassOnce(1L shl 9, "transition fade-out $reason")
             return false
         }
-        return fadeNormalOutputGainBlocking(0f, durationMs, reason)
-    }
-
-    fun pauseWithFadeBlocking(durationMs: Int, reason: String) {
-        if (durationMs > 0 && _state == State.PLAYING && isPlaying.get() && canUsePcmPlaybackFade()) {
-            fadeOutForTransitionBlocking(durationMs, reason)
+        playbackFadeController.startFadeOut(durationMs, reason)
+        val deadline = SystemClock.elapsedRealtime() + durationMs.coerceAtLeast(1) + 80L
+        while (SystemClock.elapsedRealtime() < deadline && playbackFadeController.isActive && isPlaying.get() && !isReleased.get()) {
+            try {
+                Thread.sleep(8L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
         }
-        pause()
+        return true
     }
 
     private fun armConfiguredStartFade(reason: String) {
@@ -842,24 +827,49 @@ class FfmpegAudioPlayer(private val context: Context) {
             suppressNextStartFadeIn = false
             nextStartFadeOverrideMs = 0
             AppLogger.d(TAG, "PlaybackFade: start fade suppressed reason=$reason")
-            setNormalOutputTransitionGain(1f, "${reason}_suppressed")
             return
         }
-        val duration = nextStartFadeOverrideMs.coerceAtLeast(0)
+        val duration = nextStartFadeOverrideMs.takeIf { it > 0 } ?: PlaybackTransitionRuntime.transportFadeMs
         nextStartFadeOverrideMs = 0
-        if (duration > 0 && canUsePcmPlaybackFade()) {
-            armPendingNormalOutputFadeIn(duration, reason)
-        } else {
-            setNormalOutputTransitionGain(1f, "${reason}_no_fade")
+        if (duration > 0 && !isStrictUsbBitPerfectPath()) {
+            playbackFadeController.startFadeIn(duration, reason)
         }
     }
 
     private fun armSeekFadeIn(durationMs: Int, reason: String) {
-        if (durationMs > 0 && canUsePcmPlaybackFade()) {
-            armPendingNormalOutputFadeIn(durationMs, reason)
-        } else {
-            setNormalOutputTransitionGain(1f, "${reason}_no_fade")
+        if (durationMs > 0 && !isStrictUsbBitPerfectPath()) {
+            playbackFadeController.startFadeIn(durationMs, reason)
         }
+    }
+
+    fun armDefaultStartFadeIn(durationMs: Int, reason: String) {
+        if (durationMs <= 0) {
+            suppressNextStartFadeIn = true
+            nextStartFadeOverrideMs = 0
+            AppLogger.d(TAG, "PlaybackFade: default start fade suppressed (durationMs=0) reason=$reason")
+            return
+        }
+        nextStartFadeOverrideMs = durationMs
+        AppLogger.d(TAG, "PlaybackFade: default start fade armed durationMs=$durationMs reason=$reason")
+    }
+
+    fun pauseWithFadeBlocking(durationMs: Int, reason: String) {
+        if (_state != State.PLAYING) {
+            AppLogger.w(TAG, "pauseWithFadeBlocking: state=$_state NOT PLAYING, skipping reason=$reason")
+            return
+        }
+        if (durationMs > 0 && !isStrictUsbBitPerfectPath()) {
+            playbackFadeController.startFadeOut(durationMs, "$reason:fade_out")
+            val deadline = System.currentTimeMillis() + durationMs + 50
+            while (playbackFadeController.isActive && System.currentTimeMillis() < deadline) {
+                try { Thread.sleep(4L) } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+            }
+        }
+        pause()
+        AppLogger.d(TAG, "pauseWithFadeBlocking: done reason=$reason durationMs=$durationMs")
     }
 
     private fun applyPlaybackFade(
@@ -872,169 +882,17 @@ class FfmpegAudioPlayer(private val context: Context) {
         outputIsFloat: Boolean = useFloatOutput,
         outputIsPacked24: Boolean = usePacked24Output
     ) {
-        if (!playbackFadeController.isActive || !canUsePcmPlaybackFade()) return
-        val alignedLength = PcmFrameAligner.alignDown(length, frameSize)
-        if (alignedLength <= 0) return
+        if (!playbackFadeController.isActive || isStrictUsbBitPerfectPath()) return
         playbackFadeController.processInPlace(
             buffer = buffer,
             offset = offset,
-            length = alignedLength,
+            length = PcmFrameAligner.alignDown(length, frameSize),
             sampleRate = sampleRate,
             frameSize = frameSize,
             bitsPerSample = bitsPerSample,
             outputIsFloat = outputIsFloat,
             outputIsPacked24 = outputIsPacked24
         )
-    }
-
-    private fun applyPlaybackFadeForNativeEngine(
-        buffer: ByteArray,
-        offset: Int,
-        length: Int,
-        sampleRate: Int,
-        channels: Int,
-        engineEncoding: Int,
-        sourceBitsPerSample: Int
-    ) {
-        val bytesPerSample = if (engineEncoding == AudioFormat.ENCODING_PCM_16BIT) 2 else 4
-        val frameSize = channels.coerceAtLeast(1) * bytesPerSample
-        val bitsPerSample = if (engineEncoding == AudioFormat.ENCODING_PCM_16BIT) 16 else sourceBitsPerSample
-        applyPlaybackFade(
-            buffer = buffer,
-            offset = offset,
-            length = length,
-            sampleRate = sampleRate,
-            frameSize = frameSize,
-            bitsPerSample = bitsPerSample,
-            outputIsFloat = engineEncoding == AudioFormat.ENCODING_PCM_FLOAT,
-            outputIsPacked24 = false
-        )
-    }
-
-    /**
-     * Transport fades for normal Android output must be applied at the output
-     * backend volume, not only by mutating PCM before write.  AudioTrack,
-     * OpenSL ES, AAudio and Direct all have backend buffers; a PCM fade-out can
-     * be queued and then immediately hidden by pause/flush/stop before it ever
-     * reaches the DAC.  This transient gain is layered on top of the user volume
-     * and works for all non-exclusive backends.
-     */
-    private fun applyNormalOutputVolumeNow(reason: String) {
-        val effective = (volume * normalOutputTransitionGain).coerceIn(0f, 1f)
-        nativeAudioEngineLifecycle.setVolumeCurrent(effective, reason)
-        try {
-            val track = audioTrack
-            if (android.os.Build.VERSION.SDK_INT >= 28) {
-                track?.setVolume(effective)
-            } else {
-                @Suppress("DEPRECATION")
-                track?.setStereoVolume(effective, effective)
-            }
-        } catch (_: Exception) {}
-    }
-
-    private fun setNormalOutputTransitionGain(gain: Float, reason: String) {
-        normalOutputTransitionGain = gain.coerceIn(0f, 1f)
-        applyNormalOutputVolumeNow(reason)
-    }
-
-    private fun fadeNormalOutputGainBlocking(
-        targetGain: Float,
-        durationMs: Int,
-        reason: String
-    ): Boolean {
-        if (!canUsePcmPlaybackFade()) return false
-        val safeMs = durationMs.coerceAtLeast(0)
-        val from = normalOutputTransitionGain.coerceIn(0f, 1f)
-        val to = targetGain.coerceIn(0f, 1f)
-        val serial = normalOutputGainFadeSerial.incrementAndGet()
-        playbackFadeController.clear("normal_output_gain_$reason")
-        if (safeMs <= 0 || kotlin.math.abs(from - to) < 0.001f) {
-            setNormalOutputTransitionGain(to, reason)
-            return true
-        }
-        val stepCount = (safeMs / 12).coerceIn(8, 96)
-        val sleepMs = (safeMs.toLong() / stepCount.toLong()).coerceAtLeast(4L)
-        AppLogger.d(TAG, "PlaybackFade: normal output gain blocking from=$from to=$to durationMs=$safeMs steps=$stepCount reason=$reason")
-        for (step in 0..stepCount) {
-            if (normalOutputGainFadeSerial.get() != serial || isReleased.get()) return false
-            val t = step.toFloat() / stepCount.toFloat()
-            val shaped = t * t * (3f - 2f * t)
-            setNormalOutputTransitionGain(from + (to - from) * shaped, reason)
-            if (step < stepCount) {
-                try {
-                    Thread.sleep(sleepMs)
-                } catch (_: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    break
-                }
-            }
-        }
-        setNormalOutputTransitionGain(to, reason)
-        return true
-    }
-
-    private fun startNormalOutputFadeIn(durationMs: Int, reason: String, forceFromZero: Boolean = false) {
-        if (!canUsePcmPlaybackFade()) return
-        val safeMs = durationMs.coerceAtLeast(0)
-        val serial = normalOutputGainFadeSerial.incrementAndGet()
-        playbackFadeController.clear("normal_output_fade_in_$reason")
-        if (forceFromZero || normalOutputTransitionGain < 0.001f) {
-            setNormalOutputTransitionGain(0f, reason)
-        }
-        if (safeMs <= 0) {
-            setNormalOutputTransitionGain(1f, reason)
-            return
-        }
-        thread(start = true, isDaemon = true, name = "NormalOutputFadeIn") {
-            val from = normalOutputTransitionGain.coerceIn(0f, 1f)
-            val stepCount = (safeMs / 12).coerceIn(8, 96)
-            val sleepMs = (safeMs.toLong() / stepCount.toLong()).coerceAtLeast(4L)
-            AppLogger.d(TAG, "PlaybackFade: normal output fade-in from=$from to=1.0 durationMs=$safeMs steps=$stepCount reason=$reason")
-            for (step in 0..stepCount) {
-                if (normalOutputGainFadeSerial.get() != serial || isReleased.get()) return@thread
-                val t = step.toFloat() / stepCount.toFloat()
-                val shaped = t * t * (3f - 2f * t)
-                setNormalOutputTransitionGain(from + (1f - from) * shaped, reason)
-                if (step < stepCount) {
-                    try {
-                        Thread.sleep(sleepMs)
-                    } catch (_: InterruptedException) {
-                        Thread.currentThread().interrupt()
-                        return@thread
-                    }
-                }
-            }
-            setNormalOutputTransitionGain(1f, reason)
-        }
-    }
-
-    private fun armPendingNormalOutputFadeIn(durationMs: Int, reason: String) {
-        if (!canUsePcmPlaybackFade()) return
-        val safeMs = durationMs.coerceAtLeast(0)
-        if (safeMs <= 0) {
-            pendingNormalOutputFadeInMs = 0
-            pendingNormalOutputFadeInReason = ""
-            setNormalOutputTransitionGain(1f, "${reason}_no_pending_fade")
-            return
-        }
-        // Cancel any running output gain ramp, park the backend at silence,
-        // then start the fade only when the backend is actually playing/writing.
-        normalOutputGainFadeSerial.incrementAndGet()
-        playbackFadeController.clear("arm_pending_normal_output_fade_in_$reason")
-        pendingNormalOutputFadeInMs = safeMs
-        pendingNormalOutputFadeInReason = reason
-        setNormalOutputTransitionGain(0f, "${reason}_pending_fade_in")
-        AppLogger.d(TAG, "PlaybackFade: pending normal output fade-in durationMs=$safeMs reason=$reason")
-    }
-
-    private fun startPendingNormalOutputFadeInIfNeeded(trigger: String) {
-        val ms = pendingNormalOutputFadeInMs
-        if (ms <= 0 || !canUsePcmPlaybackFade()) return
-        val reason = pendingNormalOutputFadeInReason.ifBlank { trigger }
-        pendingNormalOutputFadeInMs = 0
-        pendingNormalOutputFadeInReason = ""
-        startNormalOutputFadeIn(ms, "$reason/$trigger", forceFromZero = false)
     }
 
     fun play(path: String) {
@@ -1053,16 +911,16 @@ class FfmpegAudioPlayer(private val context: Context) {
 
         registerAudioDeviceCallback()
 
-        // Stop the old worker first so it cannot publish a fresh decoder handle
-        // while the new request is detaching the current one.
+        // Signal the old playback loop before cancelling its Future. Native USB calls may ignore
+        // thread interruption, so Future.isDone alone cannot prove the single worker is available.
+        isPlaying.set(false)
+        isPaused.set(false)
         playbackWorker.cancelCurrent("play_new_request", interrupt = true)
 
         // Retire any previous decoder before changing the playback session token.
         // This covers both the active-thread case and the EOF case where a decoder
         // handle is kept alive for seek; dropping decoderHandle to 0 without this
         // step would leak the native handle.
-        isPlaying.set(false)
-        isPaused.set(false)
         val oldDecoderTarget = detachActiveDecoderForRetire("play_new_request")
         retireDetachedDecoder(oldDecoderTarget, "play_new_request", joinTimeoutMs = 1L)
 
@@ -1076,6 +934,8 @@ class FfmpegAudioPlayer(private val context: Context) {
         seekPositionMs = queuedStartSeekMs
         queuedStartSeekMs = -1L
         _positionMs = if (seekPositionMs > 0L) seekPositionMs else 0L
+        hardwarePositionOffsetMs = _positionMs
+        AppLogger.i(TAG, "RESTORE_TRACE play_session generation=$generation queuedSeek=$seekPositionMs initialPosition=$_positionMs hwOffset=$hardwarePositionOffsetMs")
         _durationMs = 0L
 
         audioTrackLifecycle.detachAndRelease(
@@ -1084,8 +944,9 @@ class FfmpegAudioPlayer(private val context: Context) {
             flush = true
         )
 
-        // 检测 executor 是否卡死：如果上一个任务还在运行（未完成），重建 executor
-        playbackWorker.ensureActive("play_new_request")
+        // A cancelled Future can still be executing inside uninterruptible native code. If so,
+        // move the replacement track onto a fresh worker instead of queueing behind it forever.
+        playbackWorker.ensureAvailableForReplacement("play_new_request")
 
         sourcePath = path
         currentPath = path
@@ -1122,6 +983,8 @@ class FfmpegAudioPlayer(private val context: Context) {
 
         var usbTargetSr = 0; var usbTargetBits = 0; var usbTargetCh = 0
         var usbPcmToDsdActive = false
+        var usbSourceIsDsd = false
+        var androidSourceIsDsd = false
         var atTargetRate = 0; var atTargetBits = 0; var atTargetCh = 0
         var sourceDsdMode: com.rawsmusic.module.player.usb.UsbDsdModeConfig? = null
 
@@ -1134,6 +997,7 @@ class FfmpegAudioPlayer(private val context: Context) {
             usbStrictBitPerfectForCurrentTrack = target.strictBitPerfect
             sourceDsdMode = target.sourceDsdMode
             usbPcmToDsdActive = target.pcmToDsdMode != null
+            usbSourceIsDsd = target.sourceIsDsd
             usbTargetSr = target.sampleRate
             usbTargetBits = target.bitsPerSample
             usbTargetCh = target.channels
@@ -1143,6 +1007,7 @@ class FfmpegAudioPlayer(private val context: Context) {
             atTargetBits = target.bitsPerSample
             atTargetCh = target.channels
             probedEncoding = target.encoding
+            androidSourceIsDsd = target.sourceIsDsd
         }
 
         if (usbExclusiveMode) {
@@ -1160,6 +1025,15 @@ class FfmpegAudioPlayer(private val context: Context) {
             )
             val handle = if (useRawDsdDirectDecoder) {
                 FFmpegBridge.openDecoder(decoderPathResolver.resolve(sourcePath), 0, 1, usbTargetCh)
+            } else if (usbSourceIsDsd) {
+                // A PCM-only DAC still needs the raw DSD demuxer. Bypass generic safe-mode
+                // fallbacks so the native DSD-to-PCM decimator receives its intended rate.
+                FFmpegBridge.openDecoder(
+                    decoderPathResolver.resolve(sourcePath),
+                    usbTargetSr,
+                    usbTargetBits.coerceAtLeast(32),
+                    usbTargetCh
+                )
             } else {
                 decoderOpenHelper.openWithFallback(sourcePath, usbTargetSr, usbTargetBits, usbTargetCh)
             }
@@ -1230,7 +1104,8 @@ class FfmpegAudioPlayer(private val context: Context) {
             if (seekPositionMs > 0) {
                 val seekMs = seekPositionMs
                 seekPositionMs = -1L
-                FFmpegBridge.seekDecoder(handle, seekMs)
+                val seekOk = FFmpegBridge.seekDecoder(handle, seekMs)
+                AppLogger.i(TAG, "RESTORE_TRACE usb_decoder_seek target=$seekMs ok=$seekOk")
                 rb.clear()
                 _positionMs = seekMs
             }
@@ -1249,10 +1124,23 @@ class FfmpegAudioPlayer(private val context: Context) {
 
             initDspEngine()
             armConfiguredStartFade("play_start_usb")
-            startUsbStreamingPlayback(sourcePath, generation, usbChunkSize)
+            startUsbStreamingPlayback(sourcePath, generation, handle, rb, usbChunkSize)
         } else {
             AppLogger.i(TAG, "Streaming decoder: opening $sourcePath, targetRate=$atTargetRate, targetBits=$atTargetBits, targetCh=$atTargetCh")
-            val handle = decoderOpenHelper.openWithFallback(sourcePath, atTargetRate, atTargetBits, atTargetCh)
+            val handle = if (androidSourceIsDsd) {
+                AppLogger.i(
+                    TAG,
+                    "Android DSD-to-PCM decoder: source=$sourcePath target=${atTargetRate}Hz/${atTargetBits}bit/${atTargetCh}ch"
+                )
+                FFmpegBridge.openDecoder(
+                    decoderPathResolver.resolve(sourcePath),
+                    atTargetRate,
+                    atTargetBits.coerceIn(16, 32),
+                    atTargetCh
+                )
+            } else {
+                decoderOpenHelper.openWithFallback(sourcePath, atTargetRate, atTargetBits, atTargetCh)
+            }
             if (handle == 0L) {
                 AppLogger.e(TAG, "Streaming decoder: openDecoder failed (all fallbacks)")
                 if (isStillCurrentPlayback(sourcePath, generation)) {
@@ -1289,7 +1177,8 @@ class FfmpegAudioPlayer(private val context: Context) {
             if (seekPositionMs > 0) {
                 val seekMs = seekPositionMs
                 seekPositionMs = -1L
-                FFmpegBridge.seekDecoder(handle, seekMs)
+                val seekOk = FFmpegBridge.seekDecoder(handle, seekMs)
+                AppLogger.i(TAG, "RESTORE_TRACE decoder_seek target=$seekMs ok=$seekOk")
                 rb.clear()
                 _positionMs = seekMs
             }
@@ -1297,7 +1186,10 @@ class FfmpegAudioPlayer(private val context: Context) {
             decoderDone = false  // 重置解码完成标志
             decoderHandleTransferred.set(false)
 
-            startDecoderThread(sourcePath, generation)
+            val startToken = decoderStopToken
+            if (!startDecoderThread(sourcePath, generation, handle, rb, startToken)) {
+                return
+            }
 
             initDspEngine()
             armConfiguredStartFade("play_start")
@@ -1321,7 +1213,6 @@ class FfmpegAudioPlayer(private val context: Context) {
             AppLogger.w(TAG, "pause(): USB exclusive direct pause ignored; use PlayerController.pause for user pause")
             return
         }
-        playbackFadeController.clear("pause_immediate")
         isPaused.set(true)
         nativeAudioEngineLifecycle.pauseCurrent("pause")
         try { audioTrack?.pause() } catch (_: Exception) {}
@@ -1609,10 +1500,6 @@ class FfmpegAudioPlayer(private val context: Context) {
     fun stop() {
         AppLogger.w(TAG, "=== stop() called")
         playbackFadeController.clear("stop")
-        normalOutputGainFadeSerial.incrementAndGet()
-        pendingNormalOutputFadeInMs = 0
-        pendingNormalOutputFadeInReason = ""
-        setNormalOutputTransitionGain(1f, "stop")
         invalidateUsbPlaybackSerial("stop")
         resetUsbHardRecoveryFuse("stop")
 
@@ -1666,14 +1553,9 @@ class FfmpegAudioPlayer(private val context: Context) {
     }
 
     fun seekTo(positionMs: Long, usbPrepareAlreadyDone: Boolean = false, keepPaused: Boolean = false) {
-        AppLogger.w(TAG, "=== seekTo($positionMs), decoderHandle=$decoderHandle, decoderDone=$decoderDone, usbPrepareAlreadyDone=$usbPrepareAlreadyDone keepPaused=$keepPaused")
+        AppLogger.w(TAG, "=== seekTo($positionMs), decoderHandle=$decoderHandle, decoderDone=$decoderDone, usbPrepareAlreadyDone=$usbPrepareAlreadyDone, keepPaused=$keepPaused")
 
         seekPositionMs = -1L
-
-        val seekFadeMs = PlaybackTransitionRuntime.seekFadeMs
-        if (!keepPaused && seekFadeMs > 0 && _state == State.PLAYING && canUsePcmPlaybackFade()) {
-            fadeOutForTransitionBlocking(seekFadeMs, "seek_fade_out")
-        }
 
         if (_state == State.PLAYING || _state == State.PAUSED) {
             if (decoderHandle != 0L) {
@@ -1699,11 +1581,25 @@ class FfmpegAudioPlayer(private val context: Context) {
                         val serial = ++pendingSeekSerial
                         thread(start = true, isDaemon = true, name = "FfmpegDecoder-SeekResume") {
                             try {
-                                FFmpegBridge.seekDecoder(handle, positionMs)
-                                if (serial != pendingSeekSerial || !isStillCurrentPlayback(src, gen)) return@thread
+                                val token = decoderStopToken
+                                if (
+                                    serial != pendingSeekSerial ||
+                                    !playbackSession.isCurrent(src, gen) ||
+                                    decoderHandle != handle ||
+                                    ringBuffer !== rb ||
+                                    token.isStopRequested
+                                ) return@thread
+                                if (!FFmpegBridge.seekDecoder(handle, positionMs)) return@thread
+                                if (
+                                    serial != pendingSeekSerial ||
+                                    !playbackSession.isCurrent(src, gen) ||
+                                    decoderHandle != handle ||
+                                    ringBuffer !== rb ||
+                                    token.isStopRequested
+                                ) return@thread
                                 decoderDone = false
                                 decoderThread = Thread.currentThread()
-                                decoderLoop(handle, gen, src, decoderStopToken)
+                                decoderLoop(handle, rb, gen, src, token)
                             } catch (t: Throwable) {
                                 if (isStillCurrentPlayback(src, gen) && !isReleased.get()) {
                                     AppLogger.e(TAG, "seek resume after EOF failed", t)
@@ -1711,7 +1607,6 @@ class FfmpegAudioPlayer(private val context: Context) {
                                 }
                             }
                         }
-                        if (!keepPaused) armSeekFadeIn(seekFadeMs, "seek_after_eof")
                         return
                     }
                     // 解码线程仍在运行：Non-blocking seek，decoder 线程会处理实际 seek
@@ -1742,17 +1637,31 @@ class FfmpegAudioPlayer(private val context: Context) {
                         flushNativePcmBufferForSeek("seek_race_after_eof")
                         _positionMs = positionMs
                         needsAudioTrackFlush.set(true)
-                        if (!keepPaused) armSeekFadeIn(seekFadeMs, "seek_race_after_eof")
+                        armSeekFadeIn(PlaybackTransitionRuntime.seekFadeMs, "seek_race_after_eof")
                         val gen = playbackSession.generation
                         val src = playbackSession.sessionSourcePath ?: sourcePath ?: return
                         val serial = ++pendingSeekSerial
                         thread(start = true, isDaemon = true, name = "FfmpegDecoder-SeekResume") {
                             try {
-                                FFmpegBridge.seekDecoder(handle, positionMs)
-                                if (serial != pendingSeekSerial || !isStillCurrentPlayback(src, gen)) return@thread
+                                val token = decoderStopToken
+                                if (
+                                    serial != pendingSeekSerial ||
+                                    !playbackSession.isCurrent(src, gen) ||
+                                    decoderHandle != handle ||
+                                    ringBuffer !== rb ||
+                                    token.isStopRequested
+                                ) return@thread
+                                if (!FFmpegBridge.seekDecoder(handle, positionMs)) return@thread
+                                if (
+                                    serial != pendingSeekSerial ||
+                                    !playbackSession.isCurrent(src, gen) ||
+                                    decoderHandle != handle ||
+                                    ringBuffer !== rb ||
+                                    token.isStopRequested
+                                ) return@thread
                                 decoderDone = false
                                 decoderThread = Thread.currentThread()
-                                decoderLoop(handle, gen, src, decoderStopToken)
+                                decoderLoop(handle, rb, gen, src, token)
                             } catch (t: Throwable) {
                                 if (isStillCurrentPlayback(src, gen) && !isReleased.get()) {
                                     AppLogger.e(TAG, "seek resume after EOF race failed", t)
@@ -1761,7 +1670,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                             }
                         }
                     }
-                    if (!keepPaused) armSeekFadeIn(seekFadeMs, "seek_after_eof")
+                    armSeekFadeIn(PlaybackTransitionRuntime.seekFadeMs, "seek_after_eof")
                     return
                 }
             }
@@ -1804,18 +1713,26 @@ class FfmpegAudioPlayer(private val context: Context) {
         } else {
             seekPositionMs = positionMs
         }
-        if (!keepPaused) armSeekFadeIn(seekFadeMs, "seek_pending")
+        armSeekFadeIn(PlaybackTransitionRuntime.seekFadeMs, "seek_pending")
     }
 
     fun setVolume(vol: Float) {
         volume = vol.coerceIn(0f, 1f)
+        nativeAudioEngineLifecycle.setVolumeCurrent(volume, "setVolume")
         // USB 独占音量由 PlayerController 的 UsbVolumePlan 统一下发。
         // 这里不能再把 FfmpegAudioPlayer.volume 直接写到 UsbAudioEngine，
         // 否则切歌/恢复时会出现 legacy 1.0 -> 真实音量的短暂脉冲。
         if (usbExclusiveMode) {
             AppLogger.d(TAG, "USB exclusive: store ffmpeg volume=$volume only; native volume is controlled by UsbVolumePlan")
         }
-        applyNormalOutputVolumeNow("setVolume")
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                audioTrack?.setVolume(volume)
+            } else {
+                @Suppress("DEPRECATION")
+                audioTrack?.setStereoVolume(volume, volume)
+            }
+        } catch (_: Exception) {}
     }
 
     // ==================== Gapless / Crossfade API ====================
@@ -1980,7 +1897,8 @@ class FfmpegAudioPlayer(private val context: Context) {
             bytesPerSample = outputBytesPerSample,
             minCapacity = PCM_BUFFER_SIZE * 8
         )
-        ringBuffer = RingBuffer(bufferSize)
+        val newRingBuffer = RingBuffer(bufferSize)
+        ringBuffer = newRingBuffer
         lap("after-new-ringbuffer")
 
         val handle = decoderHandle
@@ -1994,7 +1912,7 @@ class FfmpegAudioPlayer(private val context: Context) {
             generation = gen,
             sourcePath = src,
             stopToken = newStopToken
-        ) { h, g, s, token -> decoderLoop(h, g, s, token) }
+        ) { h, g, s, token -> decoderLoop(h, newRingBuffer, g, s, token) }
         lap("after-start-decoder-thread")
 
         playbackTrackCommitter.commit(
@@ -2022,10 +1940,6 @@ class FfmpegAudioPlayer(private val context: Context) {
         if (isReleased.getAndSet(true)) return
 
         playbackFadeController.clear("release")
-        normalOutputGainFadeSerial.incrementAndGet()
-        pendingNormalOutputFadeInMs = 0
-        pendingNormalOutputFadeInReason = ""
-        setNormalOutputTransitionGain(1f, "release")
 
         // 关闭 SAF 文件描述符
         decoderPathResolver.close("release")
@@ -2477,6 +2391,7 @@ class FfmpegAudioPlayer(private val context: Context) {
         val oldState = _state
         if (oldState != state) {
             AppLogger.w(TAG, "=== setState: $oldState -> $state, isPlaying=${isPlaying.get()}, audioTrack=${audioTrack != null} ===")
+            stateChangedAtElapsedMs = SystemClock.elapsedRealtime()
         }
         _state = state
         listener?.onStateChanged(state)
@@ -2514,26 +2429,46 @@ class FfmpegAudioPlayer(private val context: Context) {
         startPlaybackFromOffset(startOffset, playPath, generation, sourcePath = sourcePath)
     }
 
-    private fun startDecoderThread(sourcePath: String, generation: Int, decodeChunkSize: Int = 16384) {
-        val handle = decoderHandle
-        val rb = ringBuffer
-        if (handle == 0L || rb == null) return
-
-        val stopToken = decoderStopToken
-
-        decoderThread = thread(name = "FfmpegDecoder", isDaemon = true) {
-            decoderLoop(handle, generation, sourcePath, stopToken, decodeChunkSize)
+    private fun startDecoderThread(
+        sourcePath: String,
+        generation: Int,
+        handle: Long,
+        rb: RingBuffer,
+        stopToken: DecoderStopToken,
+        decodeChunkSize: Int = 16384
+    ): Boolean {
+        val ownsDecoder =
+            playbackSession.isCurrent(sourcePath, generation) &&
+                decoderHandle == handle &&
+                ringBuffer === rb &&
+                decoderStopToken === stopToken &&
+                !stopToken.isStopRequested
+        if (!ownsDecoder) {
+            AppLogger.w(
+                TAG,
+                "Decoder start rejected: stale ownership source=$sourcePath gen=$generation " +
+                    "handle=$handle currentHandle=$decoderHandle sameRing=${ringBuffer === rb} " +
+                    "sameToken=${decoderStopToken === stopToken} stop=${stopToken.isStopRequested}"
+            )
+            return false
         }
+
+        val thread = thread(start = false, name = "FfmpegDecoder", isDaemon = true) {
+            decoderLoop(handle, rb, generation, sourcePath, stopToken, decodeChunkSize)
+        }
+        decoderThread = thread
+        thread.start()
+        return true
     }
 
     private fun decoderLoop(
         handle: Long,
+        rb: RingBuffer,
         generation: Int,
         sourcePath: String,
-        stopToken: DecoderStopToken = decoderStopToken,
+        stopToken: DecoderStopToken,
         decodeChunkSize: Int = 16384
     ) {
-        val rb = ringBuffer ?: return
         val rbStartup = System.nanoTime()
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
         val decodeBuffer = ByteArray(decodeChunkSize)
@@ -2809,7 +2744,6 @@ class FfmpegAudioPlayer(private val context: Context) {
                         if (!isPlaying.get() || isReleased.get() || !isStillCurrentPlayback(sourcePath, generation)) break
                         track.play()
                         trackStarted = true
-                        startPendingNormalOutputFadeInIfNeeded("audiotrack_prefill_start")
                         AppLogger.i(TAG, "AudioTrack.play() invoked (after first write): playState=${audioTrack?.playState}, bufferSizeInFrames=${audioTrack?.bufferSizeInFrames}, audioSessionId=${audioTrack?.audioSessionId}")
                     }
                 } else if (written == 0) {
@@ -2817,7 +2751,6 @@ class FfmpegAudioPlayer(private val context: Context) {
                         if (!isPlaying.get() || isReleased.get() || !isStillCurrentPlayback(sourcePath, generation)) break
                         track.play()
                         trackStarted = true
-                        startPendingNormalOutputFadeInIfNeeded("audiotrack_prefill_unblock")
                         AppLogger.w(TAG, "AudioTrack.play() invoked to unblock prefill after non-blocking write=0")
                     } else {
                         Thread.sleep(2)
@@ -2835,7 +2768,6 @@ class FfmpegAudioPlayer(private val context: Context) {
             if (!trackStarted) {
                 track.play()
                 trackStarted = true
-                startPendingNormalOutputFadeInIfNeeded("audiotrack_no_prefill_start")
                 AppLogger.i(TAG, "AudioTrack.play() invoked (no prefill data): audioSessionId=${audioTrack?.audioSessionId}")
             }
             val prefillElapsed = System.currentTimeMillis() - prefillStart
@@ -2905,7 +2837,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                     }
                 }
 
-                // Gapless pre-open: do not wait for EOF to open the next decoder.
+                // Gapless pre-open: prepare the next decoder before the current stream reaches EOF.
                 // Opening at EOF is audible on slower devices because it blocks the handoff path.
                 if (!crossfadeTransition.active && crossfadeDurationMs <= 0 && nextSongPath != null && _durationMs > 0 && !gaplessNextDecoder.isPreparedFor(generation)) {
                     val remainingMs = _durationMs - _positionMs
@@ -3053,7 +2985,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                                 generation = g,
                                 sourcePath = s,
                                 stopToken = newStopToken
-                            ) { handle, gen, src, token -> decoderLoop(handle, gen, src, token) }
+                            ) { handle, gen, src, token -> decoderLoop(handle, rb, gen, src, token) }
                             xlap("after-start-decoder-thread")
                             val commit = playbackTrackCommitter.commit(
                                 reason = "crossfade",
@@ -3188,7 +3120,6 @@ class FfmpegAudioPlayer(private val context: Context) {
                 }
 
                 val alignedWriteLen = PcmFrameAligner.alignDown(read, frameSize)
-                startPendingNormalOutputFadeInIfNeeded("audiotrack_stream_write")
                 applyPlaybackFade(buffer, 0, alignedWriteLen, actualSampleRate, frameSize, wavBitsPerSample)
                 var writeResult = audioTrackPcmWriter.write(track2, buffer, 0, alignedWriteLen)
                 if (writeResult < 0) {
@@ -3261,6 +3192,7 @@ class FfmpegAudioPlayer(private val context: Context) {
     private fun startNativeStreamingPlayback(sourcePath: String, generation: Int): Boolean {
         var rb = ringBuffer ?: return false
         val mode = AudioOutputManager.getCurrentOutputMode(context)
+        if (mode == AudioOutputMode.AUDIO_TRACK) return false
         if (!NativeAudioEngine.isSupported(mode)) return false
 
         disableHardwarePositionTracking()
@@ -3305,13 +3237,14 @@ class FfmpegAudioPlayer(private val context: Context) {
             flush = true
         )
         _audioSessionId = AudioManager.AUDIO_SESSION_ID_GENERATE
-        applyNormalOutputVolumeNow("native_pcm_output_start")
+        engine.setVolume(volume)
 
         val buffer = ByteArray(PCM_BUFFER_SIZE)
         val writeBuffer = ByteArray(PCM_BUFFER_SIZE)
         val readLimit = PcmFrameAligner.readLimit(buffer.size, frameSize)
         var totalBytesWritten = 0L
         var started = false
+        val positionAccumulator = FractionalPlaybackPositionAccumulator()
 
         fun writeToEngine(src: ByteArray, read: Int): Int {
             val data: ByteArray
@@ -3323,16 +3256,6 @@ class FfmpegAudioPlayer(private val context: Context) {
                 data = src
                 len = read
             }
-            val alignedLen = PcmFrameAligner.alignDown(len, frameSize)
-            applyPlaybackFadeForNativeEngine(
-                buffer = data,
-                offset = 0,
-                length = alignedLen,
-                sampleRate = actualSampleRate,
-                channels = actualChannels,
-                engineEncoding = engine.encoding,
-                sourceBitsPerSample = nativeBitsPerSample
-            )
             if (!started) {
                 if (!engine.start()) {
                     AppLogger.e(TAG, "Native streaming: start failed for ${engine.actualMode}")
@@ -3340,8 +3263,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                 }
                 started = true
             }
-            startPendingNormalOutputFadeInIfNeeded("native_write_${engine.actualMode}")
-            return engine.write(data, 0, alignedLen)
+            return engine.write(data, 0, len)
         }
 
         try {
@@ -3396,6 +3318,7 @@ class FfmpegAudioPlayer(private val context: Context) {
 
                 if (read <= 0) {
                     if (switchToNextSong()) {
+                        positionAccumulator.reset()
                         rb = ringBuffer!!
                         AppLogger.d(TAG, "Native gapless: switched to next song, continuing write loop")
                         continue
@@ -3425,6 +3348,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                 if (needsAudioTrackFlush.compareAndSet(true, false)) {
                     engine.flush()
                     disableHardwarePositionTracking()
+                    positionAccumulator.reset()
                     totalBytesWritten = 0L
                     AppLogger.w(TAG, ">>> FLUSH Native PCM done, _positionMs=$_positionMs")
                 }
@@ -3445,7 +3369,12 @@ class FfmpegAudioPlayer(private val context: Context) {
                 val prevPosMs = _positionMs
                 val flushPending = needsAudioTrackFlush.get()
                 if (!flushPending) {
-                    _positionMs = ((_positionMs + (written.toDouble() / bytesPerMs))).toLong().coerceToDuration()
+                    _positionMs = positionAccumulator.advance(
+                        currentPositionMs = _positionMs,
+                        bytesAdvanced = written,
+                        bytesPerMs = bytesPerMs,
+                        durationMs = _durationMs
+                    )
                 }
                 if (kotlin.math.abs(_positionMs - prevPosMs) > 2000) {
                     AppLogger.w(TAG, ">>> NATIVE pos JUMP: $prevPosMs -> $_positionMs (written=$written)")
@@ -3482,20 +3411,28 @@ class FfmpegAudioPlayer(private val context: Context) {
         return true
     }
 
-    private fun startUsbStreamingPlayback(sourcePath: String, generation: Int, decodeChunkSize: Int = 16384) {
+    private fun startUsbStreamingPlayback(
+        sourcePath: String,
+        generation: Int,
+        sessionDecoderHandle: Long,
+        sessionRingBuffer: RingBuffer,
+        decodeChunkSize: Int = 16384
+    ) {
+        val rb = sessionRingBuffer
         if (
-            abortPlaybackStageIfObsolete(
-                sourcePath,
-                generation,
-                stage = "usb_streaming_before_prepare",
-                closeRingBuffer = true,
-                closeDecoderHandle = true
-            )
+            !playbackSession.isCurrent(sourcePath, generation) ||
+            decoderHandle != sessionDecoderHandle ||
+            ringBuffer !== rb ||
+            decoderStopToken.isStopRequested
         ) {
+            AppLogger.w(
+                TAG,
+                "USB streaming start rejected: stale ownership source=$sourcePath gen=$generation " +
+                    "handle=$sessionDecoderHandle currentHandle=$decoderHandle sameRing=${ringBuffer === rb}"
+            )
             return
         }
 
-        val rb = ringBuffer ?: return
         val engine = UsbAudioEngine
 
         val actualSampleRate = wavSampleRate.coerceAtLeast(44100)
@@ -3567,7 +3504,11 @@ class FfmpegAudioPlayer(private val context: Context) {
         decoderDone = false
         decoderHandleTransferred.set(false)
         if (decoderThread?.isAlive != true) {
-            startDecoderThread(sourcePath, generation, decodeChunkSize)
+            val startToken = decoderStopToken
+            if (!startDecoderThread(sourcePath, generation, sessionDecoderHandle, rb, startToken, decodeChunkSize)) {
+                AppLogger.w(TAG, "USB streaming: decoder start rejected as stale")
+                return
+            }
         }
 
         val prefillTargetMs = 120L
@@ -3704,13 +3645,12 @@ class FfmpegAudioPlayer(private val context: Context) {
         }
 
         if (
-            abortPlaybackStageIfObsolete(
-                sourcePath,
-                generation,
-                stage = "usb_streaming_before_native_start",
-                closeRingBuffer = true
-            )
+            !playbackSession.isCurrent(sourcePath, generation) ||
+            decoderHandle != sessionDecoderHandle ||
+            ringBuffer !== rb ||
+            decoderStopToken.isStopRequested
         ) {
+            AppLogger.w(TAG, "USB streaming native start rejected: decoder ownership changed")
             return
         }
 
@@ -5119,7 +5059,6 @@ class FfmpegAudioPlayer(private val context: Context) {
 
             setVolume(volume)
             track.play()
-            startPendingNormalOutputFadeInIfNeeded("file_audiotrack_start")
 
             if (startByteOffset > 0) {
                 try { track.flush() } catch (_: Exception) {}
@@ -5230,10 +5169,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                     try { track.play() } catch (_: Exception) {}
                 }
 
-                val alignedWriteLen = PcmFrameAligner.alignDown(read, frameSize)
-                startPendingNormalOutputFadeInIfNeeded("file_audiotrack_write")
-                applyPlaybackFade(buffer, 0, alignedWriteLen, actualSampleRate, frameSize, wavBitsPerSample)
-                val result = audioTrackPcmWriter.write(track, buffer, 0, alignedWriteLen)
+                val result = audioTrackPcmWriter.write(track, buffer, 0, PcmFrameAligner.alignDown(read, frameSize))
                 if (result < 0) {
                     AppLogger.w(TAG, "=== play: write failed=$result, breaking")
                     break

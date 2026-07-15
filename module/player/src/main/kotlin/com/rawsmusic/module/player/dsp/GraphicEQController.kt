@@ -13,6 +13,7 @@ class GraphicEQController(private val peqController: ParametricEQController) {
 
     companion object {
         private const val TAG = "GraphicEQController"
+        private const val CUSTOM_PRESET_NAME = "Custom"
     }
 
     // 段数（与 PEQ 共享）
@@ -42,6 +43,17 @@ class GraphicEQController(private val peqController: ParametricEQController) {
         refreshPresets()
     }
 
+
+    /**
+     * Refresh the graphic facade after the shared PEQ was edited from the
+     * parametric workspace, AutoEq import or file import.
+     */
+    fun refreshFromParametricState() {
+        syncGainsFromPEQ()
+        refreshPresets()
+        resolvePresetNameFromCurrentState()
+    }
+
     /**
      * 切换启用/禁用
      */
@@ -66,6 +78,7 @@ class GraphicEQController(private val peqController: ParametricEQController) {
         peqController.setBandCount(target)
         syncGainsFromPEQ()
         refreshPresets()
+        _presetName.value = CUSTOM_PRESET_NAME
 
         Log.d(TAG, "Band count changed to $target")
     }
@@ -79,6 +92,7 @@ class GraphicEQController(private val peqController: ParametricEQController) {
 
         current[index] = gainDB.coerceIn(-12f, 12f)
         _gains.value = current
+        _presetName.value = CUSTOM_PRESET_NAME
 
         // 转换为 PEQ 滤波器写入
         val freqs = PEQFilter.defaultFreqsForCount(bandCount.value)
@@ -179,5 +193,38 @@ class GraphicEQController(private val peqController: ParametricEQController) {
      */
     private fun refreshPresets() {
         _presets.value = GraphicEQPreset.builtInPresetsForCount(bandCount.value)
+    }
+
+
+    private fun resolvePresetNameFromCurrentState() {
+        val count = bandCount.value
+        val filters = peqController.filters.value.take(count)
+        val expectedFreqs = PEQFilter.defaultFreqsForCount(count)
+        val expectedQ = PEQFilter.qForGraphicBand(count)
+        val isGraphicLayout = filters.size == count && filters.indices.all { index ->
+            val filter = filters[index]
+            filter.type == FilterType.PEAK &&
+                kotlin.math.abs(filter.frequency - expectedFreqs[index]) <=
+                    (expectedFreqs[index] * 0.01f).coerceAtLeast(1f) &&
+                kotlin.math.abs(filter.Q - expectedQ) <= 0.12f
+        }
+
+        if (!isGraphicLayout) {
+            _presetName.value = CUSTOM_PRESET_NAME
+            return
+        }
+
+        val match = _presets.value.firstOrNull { preset ->
+            val candidate = if (preset.bandCount == count) {
+                preset
+            } else {
+                GraphicEQPreset.resamplePreset(preset, count)
+            }
+            candidate.gains.size == _gains.value.size &&
+                candidate.gains.indices.all { index ->
+                    kotlin.math.abs(candidate.gains[index] - _gains.value[index]) <= 0.05f
+                }
+        }
+        _presetName.value = match?.name ?: CUSTOM_PRESET_NAME
     }
 }

@@ -191,6 +191,8 @@ class NativeDSPEngine {
 
     fun isInitialized(): Boolean = nativeHandle != 0L
 
+    internal fun nativeHandleForBridge(): Long = nativeHandle
+
     private external fun nativeCreate(sampleRate: Int, channels: Int): Long
     private external fun nativeSetStereoWiden(handle: Long, factor: Float)
     private external fun nativeProcess(handle: Long, buffer: ShortArray, length: Int, channels: Int): Int
@@ -314,6 +316,218 @@ class NativeDSPEngine {
     // TrebleBoost JNI 方法
     private external fun nativeSetTrebleBoostEnabled(handle: Long, enabled: Boolean)
     private external fun nativeSetTrebleBoostParams(handle: Long, gainDB: Float, frequency: Float)
+
+
+
+    // ==========================================
+    // 扬声器外放 API（统一入口）
+    // ==========================================
+
+    /**
+     * 启用或禁用扬声器外放处理。
+     *
+     * 这是当前 C++ 实现对应的唯一真实 Native 开关入口。旧控制器使用的
+     * setSpeakerOutputElasticityEnabled() 会在 Kotlin 层委托到这里，不再声明第二套 JNI。
+     */
+    fun setSpeakerOutputEnabled(enabled: Boolean) {
+        if (nativeHandle == 0L) return
+        nativeSetSpeakerOutputEnabled(nativeHandle, enabled)
+    }
+
+    /** 选择扬声器外放模式：0=弹性，1=澎湃，2=宽广。 */
+    fun setSpeakerOutputMode(mode: SpeakerOutputEffectController.Mode) {
+        if (nativeHandle == 0L) return
+        nativeSetSpeakerOutputMode(nativeHandle, mode.nativeCode)
+    }
+
+    /**
+     * 提交“弹性”模式的完整参数快照。
+     *
+     * 参数模型与 SpeakerOutputEffectController 保持一致；校验会在 Kotlin 和 C++
+     * 两层分别执行。音频线程只在处理块边界应用新参数。
+     */
+    fun setSpeakerElasticityParameters(
+        parameters: SpeakerOutputEffectController.ElasticityParameters
+    ) {
+        if (nativeHandle == 0L) return
+        val safe = parameters.sanitized()
+        nativeSetSpeakerElasticityParameters(
+            nativeHandle,
+            safe.strengthPercent,
+            safe.detectorLowHz,
+            safe.detectorHighHz,
+            safe.fastAttackMs,
+            safe.fastReleaseMs,
+            safe.slowAttackMs,
+            safe.slowReleaseMs,
+            safe.gainAttackMs,
+            safe.gainReleaseMs,
+            safe.maxBoostDb,
+            safe.noiseGateDb,
+            safe.headroomCeiling,
+            safe.peakReleaseMs,
+            safe.sensitivity
+        )
+    }
+
+    /** 提交“澎湃”模式的完整参数快照。 */
+    fun setSpeakerPowerfulParameters(
+        parameters: SpeakerOutputEffectController.PowerfulParameters
+    ) {
+        if (nativeHandle == 0L) return
+        val safe = parameters.sanitized()
+        nativeSetSpeakerPowerfulParameters(
+            nativeHandle,
+            safe.strengthPercent,
+            safe.bodyLowHz,
+            safe.bodyHighHz,
+            safe.bassBoostDb,
+            safe.harmonicPercent,
+            safe.compressorThresholdDb,
+            safe.compressorRatio,
+            safe.compressorAttackMs,
+            safe.compressorReleaseMs,
+            safe.parallelMixPercent,
+            safe.makeupGainDb,
+            safe.presenceBoostDb,
+            safe.headroomCeiling
+        )
+    }
+
+    /** 提交“宽广”模式的完整参数快照。 */
+    fun setSpeakerWideParameters(
+        parameters: SpeakerOutputEffectController.WideParameters
+    ) {
+        if (nativeHandle == 0L) return
+        val safe = parameters.sanitized()
+        nativeSetSpeakerWideParameters(
+            nativeHandle,
+            safe.strengthPercent,
+            safe.crossoverHz,
+            safe.widthDb,
+            safe.decorrelationPercent,
+            safe.bassCenterPercent,
+            safe.centerProtectionPercent,
+            safe.headroomCeiling
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // 旧版控制器兼容层
+    // ------------------------------------------------------------------
+
+    /**
+     * 兼容 SpeakerOutputElasticityController 的旧方法名。
+     *
+     * 仅做 Kotlin 委托，不对应独立 JNI，避免出现 UnsatisfiedLinkError。
+     */
+    fun setSpeakerOutputElasticityEnabled(enabled: Boolean) {
+        setSpeakerOutputEnabled(enabled)
+    }
+
+    /**
+     * 将旧控制器的参数格式转换为当前统一参数模型。
+     *
+     * sensitivityPercent 使用指数映射：0%=0.25、约82%=1.92、100%=3.0；
+     * peakCeilingDb 从 dBFS 转换为线性峰值；旧接口没有 peakReleaseMs，使用70ms。
+     */
+    fun setSpeakerOutputElasticityParams(
+        strengthPercent: Float,
+        detectorLowHz: Float,
+        detectorHighHz: Float,
+        sensitivityPercent: Float,
+        gateThresholdDb: Float,
+        fastAttackMs: Float,
+        fastReleaseMs: Float,
+        slowAttackMs: Float,
+        slowReleaseMs: Float,
+        gainAttackMs: Float,
+        gainReleaseMs: Float,
+        maxBoostDb: Float,
+        peakCeilingDb: Float
+    ) {
+        val safeSensitivityPercent = finiteOr(sensitivityPercent, 82f).coerceIn(0f, 100f)
+        val normalizedSensitivity = safeSensitivityPercent / 100f
+        val mappedSensitivity = (
+            0.25 * Math.pow(12.0, normalizedSensitivity.toDouble())
+        ).toFloat().coerceIn(0.25f, 3f)
+
+        val safePeakCeilingDb = finiteOr(peakCeilingDb, -0.2f).coerceIn(-6f, -0.1f)
+        val linearPeakCeiling = Math.pow(
+            10.0,
+            safePeakCeilingDb.toDouble() / 20.0
+        ).toFloat().coerceIn(0.70f, 0.995f)
+
+        setSpeakerElasticityParameters(
+            SpeakerOutputEffectController.ElasticityParameters(
+                strengthPercent = strengthPercent,
+                detectorLowHz = detectorLowHz,
+                detectorHighHz = detectorHighHz,
+                fastAttackMs = fastAttackMs,
+                fastReleaseMs = fastReleaseMs,
+                slowAttackMs = slowAttackMs,
+                slowReleaseMs = slowReleaseMs,
+                gainAttackMs = gainAttackMs,
+                gainReleaseMs = gainReleaseMs,
+                maxBoostDb = maxBoostDb,
+                noiseGateDb = gateThresholdDb,
+                headroomCeiling = linearPeakCeiling,
+                peakReleaseMs = 70f,
+                sensitivity = mappedSensitivity
+            )
+        )
+    }
+
+    private fun finiteOr(value: Float, fallback: Float): Float =
+        if (value.isFinite()) value else fallback
+
+    // 与 speaker_output_effect.cpp 保持一一对应的 JNI 声明。
+    private external fun nativeSetSpeakerOutputEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetSpeakerOutputMode(handle: Long, mode: Int)
+    private external fun nativeSetSpeakerElasticityParameters(
+        handle: Long,
+        strengthPercent: Float,
+        detectorLowHz: Float,
+        detectorHighHz: Float,
+        fastAttackMs: Float,
+        fastReleaseMs: Float,
+        slowAttackMs: Float,
+        slowReleaseMs: Float,
+        gainAttackMs: Float,
+        gainReleaseMs: Float,
+        maxBoostDb: Float,
+        noiseGateDb: Float,
+        headroomCeiling: Float,
+        peakReleaseMs: Float,
+        sensitivity: Float
+    )
+    private external fun nativeSetSpeakerPowerfulParameters(
+        handle: Long,
+        strengthPercent: Float,
+        bodyLowHz: Float,
+        bodyHighHz: Float,
+        bassBoostDb: Float,
+        harmonicPercent: Float,
+        compressorThresholdDb: Float,
+        compressorRatio: Float,
+        compressorAttackMs: Float,
+        compressorReleaseMs: Float,
+        parallelMixPercent: Float,
+        makeupGainDb: Float,
+        presenceBoostDb: Float,
+        headroomCeiling: Float
+    )
+
+    private external fun nativeSetSpeakerWideParameters(
+        handle: Long,
+        strengthPercent: Float,
+        crossoverHz: Float,
+        widthDb: Float,
+        decorrelationPercent: Float,
+        bassCenterPercent: Float,
+        centerProtectionPercent: Float,
+        headroomCeiling: Float
+    )
 
     // ==========================================
     // 360° 环绕音 (Surround360) API

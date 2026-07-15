@@ -41,6 +41,7 @@ class NativeAudioEngine private constructor(
                 AudioOutputMode.OPENSL_ES -> true
                 AudioOutputMode.AAUDIO,
                 AudioOutputMode.DIRECT -> Build.VERSION.SDK_INT >= 27
+                AudioOutputMode.AUDIO_TRACK -> false
             }
         }
 
@@ -101,6 +102,7 @@ class NativeAudioEngine private constructor(
                 AudioOutputMode.DIRECT -> listOf(AudioOutputMode.DIRECT)
                 AudioOutputMode.AAUDIO -> listOf(AudioOutputMode.AAUDIO, AudioOutputMode.OPENSL_ES)
                 AudioOutputMode.OPENSL_ES -> listOf(AudioOutputMode.OPENSL_ES)
+                AudioOutputMode.AUDIO_TRACK -> emptyList()
             }
         }
 
@@ -109,6 +111,7 @@ class NativeAudioEngine private constructor(
                 AudioOutputMode.OPENSL_ES -> MODE_OPENSL_ES
                 AudioOutputMode.AAUDIO -> MODE_AAUDIO
                 AudioOutputMode.DIRECT -> MODE_DIRECT
+                AudioOutputMode.AUDIO_TRACK -> MODE_OPENSL_ES
             }
         }
 

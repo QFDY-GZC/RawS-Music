@@ -54,8 +54,8 @@ internal class AndroidAudioIdentityTrack(context: Context) {
                 if (log) lastDisabledLogElapsedMs = now
                 log
             }
-            if (AndroidAudioIdentityNativeBridge.nativeIsRunning()) {
-                AndroidAudioIdentityNativeBridge.nativeStop("disabled_no_external_speaker:$reason")
+            if (AndroidAudioIdentityNativeBridge.isRunning()) {
+                AndroidAudioIdentityNativeBridge.stop("disabled_no_external_speaker:$reason")
             }
             if (shouldLog) {
                 AppLogger.i(TAG, "Android audio identity AudioTrack disabled: reason=$reason; USB zero-fill/MediaSession handle keepalive, avoid speaker fallback")
@@ -65,8 +65,8 @@ internal class AndroidAudioIdentityTrack(context: Context) {
 
         synchronized(lock) {
             startReason = reason
-            if (running && AndroidAudioIdentityNativeBridge.nativeIsRunning()) {
-                AndroidAudioIdentityNativeBridge.nativePulse(reason)
+            if (running && AndroidAudioIdentityNativeBridge.isRunning()) {
+                AndroidAudioIdentityNativeBridge.pulse(reason)
                 return
             }
             running = true
@@ -77,7 +77,7 @@ internal class AndroidAudioIdentityTrack(context: Context) {
         }
 
         val ok = runCatching {
-            AndroidAudioIdentityNativeBridge.nativeStart(
+            AndroidAudioIdentityNativeBridge.start(
                 callback = callback,
                 sampleRate = DEFAULT_SAMPLE_RATE,
                 channelCount = DEFAULT_CHANNEL_COUNT,
@@ -100,13 +100,13 @@ internal class AndroidAudioIdentityTrack(context: Context) {
 
     fun stop(reason: String) {
         val shouldStop = synchronized(lock) {
-            val active = running || audioTrack != null || AndroidAudioIdentityNativeBridge.nativeIsRunning()
+            val active = running || audioTrack != null || AndroidAudioIdentityNativeBridge.isRunning()
             running = false
             startReason = ""
             active
         }
         if (!shouldStop) return
-        AndroidAudioIdentityNativeBridge.nativeStop(reason)
+        AndroidAudioIdentityNativeBridge.stop(reason)
     }
 
     fun pause(reason: String) {
@@ -121,14 +121,14 @@ internal class AndroidAudioIdentityTrack(context: Context) {
         synchronized(lock) {
             runCatching { audioTrack?.play() }
         }
-        AndroidAudioIdentityNativeBridge.nativePulse("resume:$reason")
+        AndroidAudioIdentityNativeBridge.pulse("resume:$reason")
     }
 
     fun isRunning(): Boolean = synchronized(lock) {
-        running && AndroidAudioIdentityNativeBridge.nativeIsRunning()
+        running && AndroidAudioIdentityNativeBridge.isRunning()
     }
 
-    fun statsString(): String = AndroidAudioIdentityNativeBridge.nativeStats()
+    fun statsString(): String = AndroidAudioIdentityNativeBridge.stats()
 
     private fun createAudioTrack(
         requestedSampleRate: Int,
@@ -258,7 +258,7 @@ internal class AndroidAudioIdentityTrack(context: Context) {
         }
 
         // v7c: 后台保活仍然需要 Android 音频身份轨。v7b 完全禁用身份轨后，
-        // ColorOS/OPlus 在后台会再次停止/降级 USB 独占播放。这里恢复 UAPP 式
+        // ColorOS/OPlus 在后台可能再次停止或降级 USB 独占播放。这里恢复稳定的
         // "在 Android 音频上播放静音"：AudioTrack 可以路由到内置扬声器/听筒，
         // 但 buffer 永远填 0，且不再使用 19kHz carrier，因此不会外放真实声音。
         // 仍然严禁路由到 USB DAC 或蓝牙，避免抢占 native USB 独占链路。
@@ -399,7 +399,7 @@ internal class AndroidAudioIdentityTrack(context: Context) {
 
     private fun fillIdentityBuffer(buffer: ByteArray) {
         // v7c: 保留 Android AudioTrack 媒体身份，但永远只写全 0 PCM。
-        // 这对应 UAPP 的"在 Android 音频上播放静音"，不是 v6y 的 19kHz carrier。
+        // 这里使用 Android 音频静音身份轨道，而不是旧版的 19kHz carrier。
         // 因此即使系统把这条身份轨路由到内置扬声器，也不会外放；真实声音只走 native USB。
         buffer.fill(0)
     }
@@ -410,7 +410,7 @@ internal class AndroidAudioIdentityTrack(context: Context) {
         lastHeartbeatElapsedMs = now
         AppLogger.i(
             TAG,
-            "Android audio identity heartbeat: playState=${track.playState} written=$written total=$totalWrittenBytes errors=$writeErrors stats=${AndroidAudioIdentityNativeBridge.nativeStats()}"
+            "Android audio identity heartbeat: playState=${track.playState} written=$written total=$totalWrittenBytes errors=$writeErrors stats=${AndroidAudioIdentityNativeBridge.stats()}"
         )
     }
 
@@ -469,12 +469,85 @@ internal class AndroidAudioIdentityTrack(context: Context) {
 
 @Keep
 internal object AndroidAudioIdentityNativeBridge {
-    init {
-        runCatching { System.loadLibrary("rawsmusic_usb") }
+    private const val TAG = "AndroidAudioIdentityBridge"
+
+    @Volatile
+    private var nativeAvailable: Boolean = loadNativeLibrary()
+
+    @Volatile
+    private var linkageFailureLogged: Boolean = false
+
+    private fun loadNativeLibrary(): Boolean {
+        return runCatching {
+            // Android Audio identity is an Android AudioTrack keepalive helper, not USB I/O.
+            // Keep it in rawsmusic_native_audio so USB packaging failures cannot crash normal playback.
+            System.loadLibrary("rawsmusic_native_audio")
+            AppLogger.i(TAG, "Loaded rawsmusic_native_audio identity bridge")
+            true
+        }.getOrElse { throwable ->
+            AppLogger.e(
+                TAG,
+                "Unable to load rawsmusic_native_audio; Android audio identity disabled for this process",
+                throwable
+            )
+            false
+        }
+    }
+
+    private inline fun <T> callNative(fallback: T, operation: () -> T): T {
+        if (!nativeAvailable) return fallback
+        return try {
+            operation()
+        } catch (error: LinkageError) {
+            nativeAvailable = false
+            if (!linkageFailureLogged) {
+                linkageFailureLogged = true
+                AppLogger.e(
+                    TAG,
+                    "Android audio identity JNI ABI unavailable; disabling identity without stopping playback",
+                    error
+                )
+            }
+            fallback
+        }
+    }
+
+    fun start(
+        callback: Any,
+        sampleRate: Int,
+        channelCount: Int,
+        bitsPerSample: Int,
+        framesPerTick: Int,
+        reason: String
+    ): Boolean = callNative(false) {
+        nativeStart(
+            callback = callback,
+            sampleRate = sampleRate,
+            channelCount = channelCount,
+            bitsPerSample = bitsPerSample,
+            framesPerTick = framesPerTick,
+            reason = reason
+        )
+    }
+
+    fun stop(reason: String) {
+        callNative(Unit) { nativeStop(reason) }
+    }
+
+    fun pulse(reason: String): Boolean = callNative(false) {
+        nativePulse(reason)
+    }
+
+    fun isRunning(): Boolean = callNative(false) {
+        nativeIsRunning()
+    }
+
+    fun stats(): String = callNative("native=unavailable") {
+        nativeStats()
     }
 
     @Keep
-    external fun nativeStart(
+    private external fun nativeStart(
         callback: Any,
         sampleRate: Int,
         channelCount: Int,
@@ -484,11 +557,14 @@ internal object AndroidAudioIdentityNativeBridge {
     ): Boolean
 
     @Keep
-    external fun nativeStop(reason: String)
+    private external fun nativeStop(reason: String)
+
     @Keep
-    external fun nativePulse(reason: String): Boolean
+    private external fun nativePulse(reason: String): Boolean
+
     @Keep
-    external fun nativeIsRunning(): Boolean
+    private external fun nativeIsRunning(): Boolean
+
     @Keep
-    external fun nativeStats(): String
+    private external fun nativeStats(): String
 }

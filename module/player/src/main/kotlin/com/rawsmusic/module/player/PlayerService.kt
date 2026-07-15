@@ -354,6 +354,8 @@ class PlayerService : LifecycleService() {
     private var coverBitmap: Bitmap? = null
     /** 记录当前正在加载封面的 albumArtPath，防止竞态 */
     private var loadingArtPath: String? = null
+    /** Monotonic artwork request id; path equality alone cannot distinguish rapid song changes. */
+    private var artworkRequestGeneration: Long = 0L
     /** 上次收到的播放位置，用于通知栏进度条更新 */
     private var lastKnownPosition: Long = 0L
     /** 上次收到精确位置时的系统时间，用于估算当前播放位置 */
@@ -1137,7 +1139,12 @@ class PlayerService : LifecycleService() {
      */
     private fun updateMediaSessionMetadata(title: String, artist: String, album: String, albumArtPath: String, duration: Long) {
         coverBitmap = null
-        val serviceArtworkPath = albumArtPath.ifBlank { currentSong?.path.orEmpty() }
+        val songSnapshot = currentSong
+        val serviceArtworkPath = albumArtPath.ifBlank { songSnapshot?.path.orEmpty() }
+        val songIdentity = songSnapshot?.mediaArtworkIdentity().orEmpty()
+        val audioFallbackPath = songSnapshot?.path.orEmpty()
+        val requestGeneration = ++artworkRequestGeneration
+        loadingArtPath = serviceArtworkPath
 
         val lrcText = _currentLyrics.value?.let { lyrics ->
             if (!lyrics.isEmpty) buildLrcText(lyrics) else null
@@ -1160,8 +1167,13 @@ class PlayerService : LifecycleService() {
         updateNotification()
 
         // 异步加载新封面
-        if (serviceArtworkPath.isNotBlank()) {
-            loadCoverBitmap(serviceArtworkPath)
+        if (songSnapshot != null) {
+            loadCoverBitmap(
+                albumArtPath = serviceArtworkPath,
+                expectedSongIdentity = songIdentity,
+                audioFallbackPath = audioFallbackPath,
+                requestGeneration = requestGeneration
+            )
         }
 
         // 强制更新播放状态，触发系统通知栏刷新元数据（尤其是封面）
@@ -1185,7 +1197,7 @@ class PlayerService : LifecycleService() {
             putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
             putString(MediaMetadataCompat.METADATA_KEY_ALBUM, song.album)
             putLong(MediaMetadataCompat.METADATA_KEY_DURATION, song.duration)
-            coverBitmap?.let { putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, it) }
+            coverBitmap?.let { putCompatibleArtwork(it) }
             if (!lrcText.isNullOrBlank()) {
                 putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
             }
@@ -1232,7 +1244,7 @@ class PlayerService : LifecycleService() {
             putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
             putString(MediaMetadataCompat.METADATA_KEY_ALBUM, song.album)
             putLong(MediaMetadataCompat.METADATA_KEY_DURATION, song.duration)
-            coverBitmap?.let { putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, it) }
+            coverBitmap?.let { putCompatibleArtwork(it) }
             if (!lrcText.isNullOrBlank()) {
                 putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
             }
@@ -1281,15 +1293,22 @@ class PlayerService : LifecycleService() {
      * 异步加载封面Bitmap
      * 支持：content:// URI（含 albumart 高清提取）、文件路径
      */
-    private fun loadCoverBitmap(albumArtPath: String) {
-        loadingArtPath = albumArtPath
+    private fun loadCoverBitmap(
+        albumArtPath: String,
+        expectedSongIdentity: String,
+        audioFallbackPath: String,
+        requestGeneration: Long
+    ) {
         lifecycleScope.launch(Dispatchers.IO) {
+            var bitmap: Bitmap? = null
+            var usedDefaultArtwork = false
             try {
                 val rawPath = try { URLDecoder.decode(albumArtPath, "UTF-8") } catch (_: Exception) { albumArtPath }
                 val path = normalizeServiceArtworkPath(rawPath)
-                var bitmap: Bitmap? = null
 
-                if (path.startsWith("file://")) {
+                if (path.isBlank()) {
+                    // Continue to the configured built-in fallback below.
+                } else if (path.startsWith("file://")) {
                     val filePath = path.removePrefix("file://")
                     val file = File(filePath)
                     if (file.exists()) {
@@ -1318,18 +1337,32 @@ class PlayerService : LifecycleService() {
                 }
 
                 if (bitmap == null) {
-                    val audioFallback = currentSong?.path.orEmpty()
-                    if (audioFallback.isNotBlank() && audioFallback != path && File(audioFallback).exists()) {
-                        bitmap = extractEmbeddedFromAudioFile(audioFallback)
+                    if (audioFallbackPath.isNotBlank() && audioFallbackPath != path && File(audioFallbackPath).exists()) {
+                        bitmap = extractEmbeddedFromAudioFile(audioFallbackPath)
                     }
                 }
 
-                // 防竞态：如果歌曲已切换，丢弃旧封面的加载结果
-                if (loadingArtPath != albumArtPath) return@launch
+                if (bitmap == null && AppPreferences.AlbumArt.useDefaultArtwork) {
+                    bitmap = decodeDefaultServiceArtwork(512)
+                    usedDefaultArtwork = bitmap != null
+                    Log.i(
+                        "StatusArtwork",
+                        "default_fallback song=$expectedSongIdentity decoded=$usedDefaultArtwork"
+                    )
+                }
 
-                if (bitmap != null) {
-                    coverBitmap = bitmap
-                    val song = currentSong ?: return@launch
+                withContext(Dispatchers.Main.immediate) {
+                    val song = currentSong
+                    val requestIsCurrent = requestGeneration == artworkRequestGeneration &&
+                        loadingArtPath == albumArtPath &&
+                        song?.mediaArtworkIdentity() == expectedSongIdentity
+                    if (!requestIsCurrent) {
+                        bitmap?.takeIf { it !== coverBitmap && !it.isRecycled }?.recycle()
+                        return@withContext
+                    }
+
+                    val resolvedBitmap = bitmap ?: return@withContext
+                    coverBitmap = resolvedBitmap
                     val lrcText = _currentLyrics.value?.let { lyrics ->
                         if (!lyrics.isEmpty) buildLrcText(lyrics) else null
                     }
@@ -1339,23 +1372,46 @@ class PlayerService : LifecycleService() {
                         putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
                         putString(MediaMetadataCompat.METADATA_KEY_ALBUM, song.album)
                         putLong(MediaMetadataCompat.METADATA_KEY_DURATION, song.duration)
-                        putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
+                        putCompatibleArtwork(resolvedBitmap)
                         if (!lrcText.isNullOrBlank()) {
                             putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
                         }
                     }.build()
                     mediaSessionCompat?.setMetadata(metadata)
-                    // 强制使用startForeground更新通知（确保封面图显示）
-                    launch(Dispatchers.Main) {
-                        try {
-                            startForegroundCompat(NOTIFICATION_ID, buildNotification())
-                        } catch (_: Exception) {
-                            try { updateNotification() } catch (_: Exception) {}
-                        }
+                    Log.i(
+                        "StatusArtwork",
+                        "apply song=$expectedSongIdentity default=$usedDefaultArtwork size=${resolvedBitmap.width}x${resolvedBitmap.height}"
+                    )
+                    try {
+                        startForegroundCompat(NOTIFICATION_ID, buildNotification())
+                    } catch (_: Exception) {
+                        try { updateNotification() } catch (_: Exception) {}
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+                bitmap?.takeIf { it !== coverBitmap && !it.isRecycled }?.recycle()
+            }
         }
+    }
+
+    private fun AudioFile.mediaArtworkIdentity(): String =
+        "$id|$path|$cueOffsetMs|$cueEndMs|$cueTrackIndex"
+
+    private fun MediaMetadataCompat.Builder.putCompatibleArtwork(bitmap: Bitmap) {
+        putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
+        putBitmap(MediaMetadataCompat.METADATA_KEY_ART, bitmap)
+        putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bitmap)
+    }
+
+    private fun decodeDefaultServiceArtwork(targetSide: Int): Bitmap? {
+        val source = BitmapFactory.decodeResource(
+            resources,
+            com.rawsmusic.core.common.R.drawable.default_album_art
+        ) ?: return null
+        if (source.width == targetSide && source.height == targetSide) return source
+        val scaled = Bitmap.createScaledBitmap(source, targetSide, targetSide, true)
+        if (scaled !== source && !source.isRecycled) source.recycle()
+        return scaled
     }
 
     /**
@@ -2266,4 +2322,5 @@ class PlayerService : LifecycleService() {
             }
         }
     }
+
 }

@@ -5,6 +5,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Owns the single playback worker used by FfmpegAudioPlayer.
@@ -22,6 +23,9 @@ internal class PlaybackWorkerController(
     @Volatile
     private var currentTask: Future<*>? = null
 
+    @Volatile
+    private var runningTaskCount = AtomicInteger(0)
+
     private fun newExecutor(): ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, threadName).apply { isDaemon = true }
     }
@@ -33,9 +37,23 @@ internal class PlaybackWorkerController(
         rebuild(reason)
     }
 
+    /**
+     * Future.cancel(true) marks a task as cancelled immediately, even when native code ignores the
+     * interrupt and still occupies our single worker thread. Replace that executor before queuing a
+     * new track so a stuck old USB task cannot leave the player in PREPARING forever.
+     */
+    fun ensureAvailableForReplacement(reason: String) {
+        if (runningTaskCount.get() > 0) {
+            rebuild("busy_$reason")
+        } else {
+            ensureActive(reason)
+        }
+    }
+
     fun rebuild(reason: String) {
         val oldExecutor = executor
         executor = newExecutor()
+        runningTaskCount = AtomicInteger(0)
         runCatching { oldExecutor.shutdownNow() }
             .onFailure { AppLogger.w(tag, "Playback worker old executor shutdown failed: reason=$reason", it) }
         AppLogger.w(tag, "Playback worker rebuilt: reason=$reason")
@@ -53,7 +71,17 @@ internal class PlaybackWorkerController(
 
     fun submit(reason: String, block: () -> Unit): Future<*> {
         ensureActive(reason)
-        val task = executor.submit(Runnable { block() })
+        val taskCounter = runningTaskCount
+        val task = executor.submit(Runnable {
+            taskCounter.incrementAndGet()
+            AppLogger.d(tag, "Playback worker task started: reason=$reason running=${taskCounter.get()}")
+            try {
+                block()
+            } finally {
+                val remaining = taskCounter.decrementAndGet()
+                AppLogger.d(tag, "Playback worker task finished: reason=$reason running=$remaining")
+            }
+        })
         currentTask = task
         return task
     }
@@ -61,11 +89,24 @@ internal class PlaybackWorkerController(
     fun execute(reason: String, block: () -> Unit) {
         try {
             ensureActive(reason)
-            executor.execute(Runnable { block() })
+            executor.execute(trackedRunnable(reason, block))
         } catch (e: RejectedExecutionException) {
             AppLogger.w(tag, "Playback worker rejected execute: reason=$reason; rebuilding once", e)
             rebuild("rejected_$reason")
-            executor.execute(Runnable { block() })
+            executor.execute(trackedRunnable(reason, block))
+        }
+    }
+
+    private fun trackedRunnable(reason: String, block: () -> Unit): Runnable {
+        val taskCounter = runningTaskCount
+        return Runnable {
+            taskCounter.incrementAndGet()
+            try {
+                block()
+            } finally {
+                val remaining = taskCounter.decrementAndGet()
+                AppLogger.d(tag, "Playback worker execute finished: reason=$reason running=$remaining")
+            }
         }
     }
 
