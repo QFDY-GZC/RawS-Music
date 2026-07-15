@@ -1,6 +1,8 @@
 package com.rawsmusic.helper
 
 import android.content.Context
+import android.widget.Toast
+import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.repository.MusicRepository
@@ -25,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 统一扫描调度器。
@@ -185,6 +188,7 @@ class StartupScanHelper(
 
         _scanUiState.value = ScanUiState.starting(reason)
         val coordinator = scanCoordinator ?: resolvedRepository?.let { LibraryScanCoordinator(it).also { c -> scanCoordinator = c } } ?: return
+        var finalSync: LibraryScanCoordinator.Event.DatabaseSyncCompleted? = null
 
         coordinator.scanAndSync(
             context = context,
@@ -207,6 +211,7 @@ class StartupScanHelper(
                     )
                 }
                 is LibraryScanCoordinator.Event.DatabaseSyncCompleted -> {
+                    if (event.phase == LibraryScanCoordinator.SyncPhase.FINAL) finalSync = event
                     val message = when (event.phase) {
                         LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> "$reason：快速结果已显示，新增/变更 ${event.upserted} 首"
                         LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> "$reason：后台补全已写入 ${event.upserted} 首"
@@ -235,6 +240,30 @@ class StartupScanHelper(
                         stage = "完成", progress = 1f, found = event.songs.size, timeMs = event.timeMs,
                         message = "$reason：完成 ${event.songs.size} 首，用时 ${event.timeMs}ms"
                     )
+                    val stats = finalSync
+                    val elapsedSeconds = event.timeMs / 1000.0
+                    val toastText = if (stats == null ||
+                        (stats.added == 0 && stats.updated == 0 && stats.deleted == 0)
+                    ) {
+                        context.getString(
+                            R.string.scan_complete_no_changes,
+                            event.songs.size,
+                            elapsedSeconds
+                        )
+                    } else {
+                        context.getString(
+                            R.string.scan_complete_summary,
+                            stats.added,
+                            stats.updated,
+                            stats.deleted,
+                            stats.unchanged,
+                            event.songs.size,
+                            elapsedSeconds
+                        )
+                    }
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context.applicationContext, toastText, Toast.LENGTH_LONG).show()
+                    }
                 }
                 is LibraryScanCoordinator.Event.Error -> {
                     _scanUiState.value = _scanUiState.value.copy(

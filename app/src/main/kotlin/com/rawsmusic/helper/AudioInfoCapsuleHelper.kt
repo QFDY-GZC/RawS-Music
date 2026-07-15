@@ -60,6 +60,8 @@ import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.core.common.model.isDsdSourceFile
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.core.ui.widget.predictiveDialogMotion
+import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.PlayerController
@@ -161,24 +163,9 @@ class AudioInfoCapsuleHelper(
             song != null && com.rawsmusic.module.scanner.AudioBitDepthResolver.isLossyDisplayFormat(song.format) -> "LOSSY"
             else -> null
         }
-        val sampleRate = song?.sampleRate?.takeIf { it > 0 }?.let {
-            com.rawsmusic.core.common.utils.SampleRateNormalizer.formatKhz(
-                sampleRate = it,
-                codecName = song.encodingFormat,
-                formatName = song.format,
-                filePath = song.path,
-                uppercase = true
-            )
-        }
+        val sampleRate = song?.sampleRate?.takeIf { it > 0 }?.let { formatSampleRate(it).uppercase() }
         val bitRate = song?.bitRate?.takeIf { it > 0 }?.let {
-            com.rawsmusic.core.common.utils.BitrateNormalizer.formatKbps(
-                rawBitrate = it,
-                durationMs = song.duration,
-                fileSizeBytes = song.fileSize,
-                codecName = song.encodingFormat,
-                formatName = song.format,
-                filePath = song.path
-            ).uppercase()
+            com.rawsmusic.core.common.utils.BitrateNormalizer.formatKbps(it, song.duration, song.fileSize).uppercase()
         }
         val format = when {
             song?.isDsdSourceFile() == true -> "DSD"
@@ -585,6 +572,7 @@ class AudioInfoCapsuleHelper(
             AudioOutputMode.OPENSL_ES -> TimelineIcon(R.drawable.ic_audio_opensl_png, tintIcon = false, sizeDp = 34)
             AudioOutputMode.AAUDIO -> TimelineIcon(R.drawable.ic_audio_aaudio_png, tintIcon = false, sizeDp = 34)
             AudioOutputMode.DIRECT -> TimelineIcon(R.drawable.ic_audio_hires_png, tintIcon = false, sizeDp = 34)
+            AudioOutputMode.AUDIO_TRACK -> TimelineIcon(R.drawable.ic_audio_track_png, tintIcon = false, sizeDp = 34)
         }
     }
 
@@ -885,6 +873,7 @@ fun AudioInfoCapsuleOverlay(
     modifier: Modifier = Modifier
 ) {
     val data = helper.popupDataForCompose() ?: return
+    val dismissProgress = rememberPredictiveDialogProgress(helper.isPopupShowing, helper::dismissPopup)
     AnimatedVisibility(
         visible = helper.isPopupShowing,
         enter = fadeIn(tween(200)),
@@ -905,7 +894,8 @@ fun AudioInfoCapsuleOverlay(
             AnimatedVisibility(
                 visible = helper.isPopupShowing,
                 enter = fadeIn(tween(250)) + slideInVertically(tween(300), initialOffsetY = { it / 8 }) + scaleIn(tween(300), initialScale = 0.9f),
-                exit = fadeOut(tween(180)) + slideOutVertically(tween(200), targetOffsetY = { it / 10 }) + scaleOut(tween(200), targetScale = 0.95f)
+                exit = fadeOut(tween(180)) + slideOutVertically(tween(200), targetOffsetY = { it / 10 }) + scaleOut(tween(200), targetScale = 0.95f),
+                modifier = Modifier.predictiveDialogMotion(dismissProgress)
             ) {
                 Column(
                     modifier = Modifier

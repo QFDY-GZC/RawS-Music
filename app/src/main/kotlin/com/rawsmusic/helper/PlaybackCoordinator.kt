@@ -26,8 +26,6 @@ class PlaybackCoordinator(
     private var lastSyncPositionTime = 0L
     private var lastMiniProgressUiTime = 0L
     private var lastMiniProgressPositionMs = Long.MIN_VALUE
-    private var lastLyricUiTime = 0L
-    private var lastLyricPositionMs = Long.MIN_VALUE
 
     fun onPlaybackStateChanged(state: PlayState) {
         val isPlaying = state == PlayState.PLAYING
@@ -47,8 +45,11 @@ class PlaybackCoordinator(
 
     fun onCurrentSongChanged(song: AudioFile) {
         miniPlayer.updateSong(song)
-        lyrics.loadLyricsForSong(song)
+
+        // 先切换通知 / MediaSession 的歌曲身份，再清空并加载该歌曲歌词。
+        // 这样词幕出口不会在旧歌曲 metadata 下继续显示上一首歌词。
         playerServiceBridgeHelper.pushSongUpdate(song)
+        lyrics.loadLyricsForSong(song)
         onCurrentSongChangedExtra(song)
     }
 
@@ -62,13 +63,10 @@ class PlaybackCoordinator(
         }
 
         val playerUiVisible = isPlayerUiVisible()
-        val lyricInterval = if (playerUiVisible) LYRIC_PLAYER_UI_INTERVAL_MS else LYRIC_BACKGROUND_INTERVAL_MS
-        val lyricJumped = kotlin.math.abs(positionMs - lastLyricPositionMs) > 1500L
-        if (now - lastLyricUiTime >= lyricInterval || lyricJumped) {
-            lastLyricUiTime = now
-            lastLyricPositionMs = positionMs
-            lyrics.onPositionChanged(positionMs, updateUiPosition = playerUiVisible)
-        }
+        // Position already arrives on the player's 50 ms clock. Do not add another
+        // lyric throttle: it delayed line changes (especially background/Lyricon) by
+        // up to 500 ms and made correctly timestamped lyrics visibly trail the audio.
+        lyrics.onPositionChanged(positionMs, updateUiPosition = playerUiVisible)
 
         if (now - lastSyncPositionTime >= 1000 && PlayerService.isRunning) {
             lastSyncPositionTime = now
@@ -80,7 +78,5 @@ class PlaybackCoordinator(
 
     private companion object {
         const val MINI_PROGRESS_UI_INTERVAL_MS = 1000L
-        const val LYRIC_PLAYER_UI_INTERVAL_MS = 100L
-        const val LYRIC_BACKGROUND_INTERVAL_MS = 500L
     }
 }

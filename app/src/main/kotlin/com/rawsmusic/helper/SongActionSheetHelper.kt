@@ -96,7 +96,6 @@ class SongActionSheetHelper(
 
     var onEditMetadata: (() -> Unit)? = null
     var onOpenMetadataDetail: (() -> Unit)? = null
-    var onShowSleepTimer: (() -> Unit)? = null
     var onDeleteCurrentSong: (() -> Unit)? = null
     var onPickCoverImage: (() -> Unit)? = null
     var onRestoreCover: (() -> Unit)? = null
@@ -223,92 +222,9 @@ fun SongActionSheetOverlay(
     isImmersiveEnabled: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val visible = helper.isSongActionSheetShowing
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn(tween(180)),
-        exit = fadeOut(tween(180)),
-        modifier = modifier.fillMaxSize()
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0x99000000))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = { helper.hide() }
-                )
-        ) {
-            AnimatedVisibility(
-                visible = visible,
-                enter = slideInVertically(
-                    animationSpec = tween(280, easing = FastOutSlowInEasing),
-                    initialOffsetY = { it }
-                ),
-                exit = slideOutVertically(
-                    animationSpec = tween(180),
-                    targetOffsetY = { it }
-                ),
-                modifier = Modifier.align(Alignment.BottomCenter)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-                        .background(Color(0xFF1C1A18))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = {}
-                        )
-                        .padding(start = 20.dp, end = 20.dp, top = 12.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(width = 40.dp, height = 4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(Color.White.copy(alpha = 0.2f))
-                            .align(Alignment.CenterHorizontally)
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    SongActionRow(R.drawable.ic_play_list_fill, "将此曲添加至歌单") {
-                        helper.hide()
-                        helper.addToPlaylist()
-                    }
-                    SongActionRow(R.drawable.ic_play_list_add_fill, "添加至队列") {
-                        helper.hide()
-                        helper.addToQueue()
-                    }
-                    SongActionRow(R.drawable.ic_file_edit_fill, "编辑元数据") {
-                        helper.hide()
-                        helper.onEditMetadata?.invoke()
-                    }
-                    SongActionRow(R.drawable.ic_album_fill, "专辑所属") {
-                        helper.hide()
-                        helper.showAlbumList()
-                    }
-                    SongActionRow(R.drawable.ic_file_info_fill, "元数据") {
-                        helper.hide()
-                        helper.onOpenMetadataDetail?.invoke()
-                    }
-                    SongActionRow(R.drawable.ic_moon_fill, "睡眠定时") {
-                        helper.hide()
-                        helper.onShowSleepTimer?.invoke()
-                    }
-                    SongActionRow(R.drawable.ic_delete_bin_6_fill, "删除此曲", Color(0xFFFF5252)) {
-                        helper.hide()
-                        helper.onDeleteCurrentSong?.invoke()
-                    }
-                    if (!isImmersiveEnabled) {
-                        CoverActionRow(helper)
-                    }
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
-                }
-            }
-        }
-    }
+    // The old player/lyric action sheet has been retired.  This helper remains responsible only
+    // for the multi-song playlist picker used by selection mode; lyric actions now live in the
+    // isolated MIUIX LyricMoreSheet and player settings live in ImmersiveMoreSheet.
     PlaylistPickerOverlay(helper = helper)
 }
 

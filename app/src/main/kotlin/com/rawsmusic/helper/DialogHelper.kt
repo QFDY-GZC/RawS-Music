@@ -37,6 +37,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.PlayerController
+import com.rawsmusic.core.ui.widget.predictiveDialogMotion
+import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 
 class DialogHelper(
     private val onVisibilityChanged: (Boolean) -> Unit = {}
@@ -149,6 +151,7 @@ fun DialogOverlay(
     modifier: Modifier = Modifier
 ) {
     val visible = helper.activeDialog != null
+    val dismissProgress = rememberPredictiveDialogProgress(visible, helper::dismiss)
     AnimatedVisibility(
         visible = visible,
         enter = fadeIn(tween(130)),
@@ -169,7 +172,8 @@ fun DialogOverlay(
             AnimatedVisibility(
                 visible = visible,
                 enter = fadeIn(tween(140)) + scaleIn(tween(180), initialScale = 0.94f),
-                exit = fadeOut(tween(100)) + scaleOut(tween(120), targetScale = 0.96f)
+                exit = fadeOut(tween(100)) + scaleOut(tween(120), targetScale = 0.96f),
+                modifier = Modifier.predictiveDialogMotion(dismissProgress)
             ) {
                 when (helper.activeDialog) {
                     DialogHelper.DialogKind.QQ_GROUP -> QqGroupDialog(helper)

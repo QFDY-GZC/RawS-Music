@@ -41,6 +41,10 @@ class LyricsCoordinator(
     var lyricPositionMs by mutableLongStateOf(0L)
         private set
 
+    /** 当前歌曲是否包含真实逐字时间轴。仅逐字歌词需要 60 fps 羽化/高亮刷新。 */
+    val hasWordTimedLyrics: Boolean
+        get() = lyricSong?.lyrics.orEmpty().any { !it.words.isNullOrEmpty() }
+
     var displayTranslation by mutableStateOf(AppPreferences.Lyricon.displayTranslation)
         private set
 
@@ -49,6 +53,9 @@ class LyricsCoordinator(
 
     /** 当前行歌词文本，供胶囊/通知使用 */
     var currentLyricText by mutableStateOf("")
+        private set
+
+    var currentLyricTranslation by mutableStateOf("")
         private set
 
     private var currentLyricData by mutableStateOf(LyricData())
@@ -60,7 +67,6 @@ class LyricsCoordinator(
 
     private val publisher = LyricsPublisher(
         getCurrentPositionMs = { getController()?.position?.value ?: 0L },
-        getLyricOffsetMs = { getController()?.lyricManualOffsetMs?.toLong() ?: 0L },
         isPlaying = { getController()?.playState?.value == PlayState.PLAYING },
         pushServiceLyrics = { serviceBridge.pushLyricsUpdate() }
     )
@@ -70,7 +76,7 @@ class LyricsCoordinator(
         scope = lifecycleScope,
         setLyricEnabled = onLyricEnabledChanged,
         getCurrentSong = { getController()?.currentSong?.value },
-        setComposeLyricData = { setLyrics(it) },
+        setComposeLyricData = { requestSong, data -> setLyrics(requestSong, data) },
         setMiniLyricData = { },
         clearCurrentLyricText = { currentLyricText = "" },
         updateLyricAnchor = { },
@@ -90,25 +96,40 @@ class LyricsCoordinator(
         if (isNewSong) {
             lyricPositionMs = 0L
             currentLyricText = ""
+            currentLyricTranslation = ""
             currentLyricData = LyricData()
             lyricSong = null
             clearExternalLyrics()
-            LyriconProviderManager.setPosition(0L)
+            onLyricEnabledChanged(false)
+            publisher.beginSong(song)
         }
 
-        // 不先发 metadata-only，等歌词加载完一次性发完整 Song
-        // 避免 Lyricon fork 缓存空歌词状态
         loader.load(song)
     }
 
     /**
      * 歌词加载完成后由 LyricLoadHelper 回调。
      */
-    fun setLyrics(data: LyricData) {
-        val song = getController()?.currentSong?.value ?: lastSong
+    fun setLyrics(requestSong: AudioFile, data: LyricData) {
+        val currentSong = getController()?.currentSong?.value
+        val expectedKey = lastSongKey
+        val requestKey = requestSong.lyricKey()
+        val currentKey = currentSong?.lyricKey()
+
+        // LyricLoadHelper 自身已有 generation gate；这里再做一次发布边界校验，
+        // 防止取消/切歌交界处的旧读取结果污染当前词幕。
+        if (expectedKey == null || requestKey != expectedKey || currentKey != expectedKey) {
+            android.util.Log.d(
+                "LyricsCoordinator",
+                "drop stale lyrics: request=$requestKey expected=$expectedKey current=$currentKey"
+            )
+            return
+        }
+
+        val song = currentSong ?: return
         currentLyricData = data
 
-        lyricSong = if (song != null && !data.isEmpty) {
+        lyricSong = if (!data.isEmpty) {
             data.toLyriconSong(
                 name = song.title.ifBlank { song.displayName },
                 artist = song.artist,
@@ -122,9 +143,7 @@ class LyricsCoordinator(
         displayRoma = AppPreferences.Lyricon.displayRoma
 
         // 发布到所有出口（PlayerService + Lyricon）
-        if (song != null) {
-            publisher.publish(song, data)
-        }
+        publisher.publish(song, data)
 
         onApplyLyricColors()
 
@@ -137,12 +156,24 @@ class LyricsCoordinator(
      * 播放位置变化时调用。
      */
     fun onPositionChanged(positionMs: Long, updateUiPosition: Boolean = true) {
-        val lyricOffset = getController()?.lyricManualOffsetMs?.toLong() ?: 0L
-        val lyricPos = (positionMs - lyricOffset).coerceAtLeast(0L)
+        val lyricPos = playbackToLyricPosition(positionMs)
         if (updateUiPosition) {
             lyricPositionMs = lyricPos
         }
         updateExternalCurrentLine(lyricPos)
+    }
+
+    /** Lyrics use the exact playback timeline; no app-side delay or advance is applied. */
+    fun playbackToLyricPosition(positionMs: Long): Long {
+        return positionMs.coerceAtLeast(0L)
+    }
+
+    /** A lyric timestamp maps directly back to the same playback timestamp. */
+    fun lyricToPlaybackPosition(positionMs: Long): Long {
+        val controller = getController()
+        val durationMs = controller?.duration?.value ?: 0L
+        val playbackPosition = positionMs.coerceAtLeast(0L)
+        return if (durationMs > 0L) playbackPosition.coerceAtMost(durationMs) else playbackPosition
     }
 
     fun markNeedSeekTo() {
@@ -166,6 +197,7 @@ class LyricsCoordinator(
         if (currentLyricData.isEmpty) {
             if (currentLyricText.isNotEmpty()) {
                 currentLyricText = ""
+                currentLyricTranslation = ""
                 TickerBridge.clearLyric(context)
                 LyricGetterBridge.clearLyric(context)
                 BluetoothLyricBridge.clearLyric()
@@ -181,9 +213,10 @@ class LyricsCoordinator(
         val lineText = line.text
         val translation = line.translation.orEmpty()
 
-        if (lineText == currentLyricText) return
+        if (lineText == currentLyricText && translation == currentLyricTranslation) return
 
         currentLyricText = lineText
+        currentLyricTranslation = translation
         onCapsuleTextNeedRefresh()
 
         android.util.Log.d("StatusLyric", "line: pos=$lyricPos, idx=$lineIdx, text=$lineText")

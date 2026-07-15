@@ -30,11 +30,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,11 +44,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
+import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.repository.MusicRepository
@@ -55,8 +63,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
+
+enum class MetadataEditField {
+    TITLE,
+    ARTIST,
+    ALBUM,
+    ALBUM_ARTIST,
+    GENRE,
+    COMPOSER,
+    YEAR,
+    TRACK,
+    DISC,
+    BPM
+}
 
 class MetadataEditorHelper(
     private val activity: Activity,
@@ -74,15 +94,14 @@ class MetadataEditorHelper(
     private var pendingFfmpegMeta: Map<String, String>? = null
     private var pendingFfmpegFilePath: String? = null
     private var pendingFfmpegUri: android.net.Uri? = null
-    private var pendingFfmpegTitle: String? = null
-    private var pendingFfmpegArtist: String? = null
-    private var pendingFfmpegAlbum: String? = null
+    private var pendingUpdatedSong: AudioFile? = null
     private var pendingDeleteSong: AudioFile? = null
     private var editingSong: AudioFile? = null
 
     var isDeleteConfirmShowing by mutableStateOf(false)
         private set
 
+    // Legacy state is kept private to this helper until the old form code is fully removed.
     var isMetadataEditorShowing by mutableStateOf(false)
         private set
 
@@ -92,9 +111,18 @@ class MetadataEditorHelper(
     var editTitle by mutableStateOf("")
     var editArtist by mutableStateOf("")
     var editAlbum by mutableStateOf("")
+    var editAlbumArtist by mutableStateOf("")
     var editGenre by mutableStateOf("")
+    var editComposer by mutableStateOf("")
     var editYear by mutableStateOf("")
     var editTrack by mutableStateOf("")
+    var editDisc by mutableStateOf("")
+    var editBpm by mutableStateOf("")
+
+    var requestedFocusField by mutableStateOf<MetadataEditField?>(null)
+        private set
+
+    var onMetadataSaved: ((AudioFile) -> Unit)? = null
 
     val metadataWriteLauncher: ActivityResultLauncher<IntentSenderRequest> =
         (activity as androidx.activity.ComponentActivity).registerForActivityResult(
@@ -104,27 +132,25 @@ class MetadataEditorHelper(
                 val ffmpegMeta = pendingFfmpegMeta
                 val ffmpegPath = pendingFfmpegFilePath
                 val ffmpegUri = pendingFfmpegUri
-                if (ffmpegMeta != null && ffmpegPath != null && ffmpegUri != null) {
-                    doFfmpegWrite(ffmpegPath, ffmpegMeta, ffmpegUri,
-                        pendingFfmpegTitle ?: "", pendingFfmpegArtist ?: "",
-                        pendingFfmpegAlbum ?: "")
+                val updatedSong = pendingUpdatedSong
+                if (ffmpegMeta != null && ffmpegPath != null && ffmpegUri != null && updatedSong != null) {
+                    doFfmpegWrite(ffmpegPath, ffmpegMeta, ffmpegUri, updatedSong)
                 } else {
-                    val uri = pendingMetadataUri ?: return@registerForActivityResult
-                    val values = pendingMetadataValues ?: return@registerForActivityResult
-                    performMetadataUpdate(uri, values)
+                    val uri = pendingMetadataUri
+                    val values = pendingMetadataValues
+                    if (uri != null && values != null) {
+                        performMetadataUpdate(uri, values)
+                    } else {
+                        AppLogger.e("EditMetadata", "Write permission returned without pending metadata")
+                        Toast.makeText(activity, "保存状态已失效，请重试", Toast.LENGTH_SHORT).show()
+                        isMetadataSaving = false
+                    }
                 }
             } else {
                 Toast.makeText(activity, "写入权限被拒绝", Toast.LENGTH_SHORT).show()
                 isMetadataSaving = false
             }
-            pendingMetadataUri = null
-            pendingMetadataValues = null
-            pendingFfmpegMeta = null
-            pendingFfmpegFilePath = null
-            pendingFfmpegUri = null
-            pendingFfmpegTitle = null
-            pendingFfmpegArtist = null
-            pendingFfmpegAlbum = null
+            clearPendingMetadataWrite()
         }
 
     val coverImageLauncher: ActivityResultLauncher<Intent> =
@@ -152,44 +178,102 @@ class MetadataEditorHelper(
             }
         }
 
-    fun editMetadata() {
+    fun prepareInlineEdit(@Suppress("UNUSED_PARAMETER") initialFocus: MetadataEditField? = null) {
         val song = getPlayerController()?.currentSong?.value ?: return
         editingSong = song
         editTitle = song.title
         editArtist = song.artist
         editAlbum = song.album
+        editAlbumArtist = song.albumArtist
         editGenre = song.genre
+        editComposer = song.composer
         editYear = if (song.year > 0) song.year.toString() else ""
         editTrack = if (song.trackNumber > 0) song.trackNumber.toString() else ""
+        editDisc = if (song.discNumber > 0) song.discNumber.toString() else ""
+        editBpm = if (song.bpm > 0) song.bpm.toString() else ""
         isMetadataSaving = false
-        isMetadataEditorShowing = true
-        onVisibilityChanged(true)
+    }
+
+    fun cancelInlineEdit() {
+        if (isMetadataSaving) return
+        editingSong = null
+    }
+
+    fun valueFor(field: MetadataEditField): String = when (field) {
+        MetadataEditField.TITLE -> editTitle
+        MetadataEditField.ARTIST -> editArtist
+        MetadataEditField.ALBUM -> editAlbum
+        MetadataEditField.ALBUM_ARTIST -> editAlbumArtist
+        MetadataEditField.GENRE -> editGenre
+        MetadataEditField.COMPOSER -> editComposer
+        MetadataEditField.YEAR -> editYear
+        MetadataEditField.TRACK -> editTrack
+        MetadataEditField.DISC -> editDisc
+        MetadataEditField.BPM -> editBpm
+    }
+
+    fun updateValue(field: MetadataEditField, value: String) {
+        when (field) {
+            MetadataEditField.TITLE -> editTitle = value
+            MetadataEditField.ARTIST -> editArtist = value
+            MetadataEditField.ALBUM -> editAlbum = value
+            MetadataEditField.ALBUM_ARTIST -> editAlbumArtist = value
+            MetadataEditField.GENRE -> editGenre = value
+            MetadataEditField.COMPOSER -> editComposer = value
+            MetadataEditField.YEAR -> editYear = value
+            MetadataEditField.TRACK -> editTrack = value
+            MetadataEditField.DISC -> editDisc = value
+            MetadataEditField.BPM -> editBpm = value
+        }
     }
 
     fun dismissMetadataEditor() {
-        if (isMetadataSaving) return
-        if (!isMetadataEditorShowing) return
         isMetadataEditorShowing = false
-        editingSong = null
-        onVisibilityChanged(false)
+    }
+
+    fun markFocusHandled(field: MetadataEditField) {
+        if (requestedFocusField == field) requestedFocusField = null
     }
 
     fun saveMetadata() {
+        if (isMetadataSaving) return
         val song = editingSong ?: getPlayerController()?.currentSong?.value ?: return
         val newTitle = editTitle.trim()
         val newArtist = editArtist.trim()
         val newAlbum = editAlbum.trim()
+        val newAlbumArtist = editAlbumArtist.trim()
         val newGenre = editGenre.trim()
+        val newComposer = editComposer.trim()
         val newYear = editYear.trim().toIntOrNull() ?: 0
         val newTrack = editTrack.trim().toIntOrNull() ?: 0
+        val newDisc = editDisc.trim().toIntOrNull() ?: 0
+        val newBpm = editBpm.trim().toIntOrNull() ?: 0
 
-        val ffmpegMeta = mutableMapOf<String, String>()
-        if (newTitle.isNotBlank()) ffmpegMeta["title"] = newTitle
-        if (newArtist.isNotBlank()) ffmpegMeta["artist"] = newArtist
-        if (newAlbum.isNotBlank()) ffmpegMeta["album"] = newAlbum
-        if (newGenre.isNotBlank()) ffmpegMeta["genre"] = newGenre
-        if (newYear > 0) ffmpegMeta["date"] = newYear.toString()
-        if (newTrack > 0) ffmpegMeta["track"] = newTrack.toString()
+        // Blank values are deliberately included so users can remove an existing tag.
+        val ffmpegMeta = linkedMapOf(
+            "title" to newTitle,
+            "artist" to newArtist,
+            "album" to newAlbum,
+            "album_artist" to newAlbumArtist,
+            "genre" to newGenre,
+            "composer" to newComposer,
+            "date" to newYear.takeIf { it > 0 }?.toString().orEmpty(),
+            "track" to newTrack.takeIf { it > 0 }?.toString().orEmpty(),
+            "disc" to newDisc.takeIf { it > 0 }?.toString().orEmpty(),
+            "bpm" to newBpm.takeIf { it > 0 }?.toString().orEmpty()
+        )
+        val updatedSong = song.copy(
+            title = newTitle,
+            artist = newArtist,
+            album = newAlbum,
+            albumArtist = newAlbumArtist,
+            genre = newGenre,
+            composer = newComposer,
+            year = newYear,
+            trackNumber = newTrack,
+            discNumber = newDisc,
+            bpm = newBpm
+        )
 
         val filePath = song.path
         AppLogger.d("EditMetadata", "Save clicked. FFmpeg write to: $filePath, meta=$ffmpegMeta")
@@ -200,9 +284,10 @@ class MetadataEditorHelper(
         }
 
         isMetadataSaving = true
-        val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, song.id)
+        clearPendingMetadataWrite()
+        val uri = resolveMediaStoreAudioUri(filePath)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && uri != null) {
             try {
                 val pendingIntent = MediaStore.createWriteRequest(
                     activity.contentResolver, listOf(uri)
@@ -210,20 +295,59 @@ class MetadataEditorHelper(
                 pendingFfmpegMeta = ffmpegMeta
                 pendingFfmpegFilePath = filePath
                 pendingFfmpegUri = uri
-                pendingFfmpegTitle = newTitle
-                pendingFfmpegArtist = newArtist
-                pendingFfmpegAlbum = newAlbum
+                pendingUpdatedSong = updatedSong
                 metadataWriteLauncher.launch(
                     IntentSenderRequest.Builder(pendingIntent.intentSender).build()
                 )
             } catch (e: Exception) {
                 AppLogger.e("EditMetadata", "createWriteRequest failed", e)
-                Toast.makeText(activity, "权限请求失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                clearPendingMetadataWrite()
+                Toast.makeText(activity, "权限请求失败: ${e.message}", Toast.LENGTH_LONG).show()
                 isMetadataSaving = false
             }
         } else {
-            doFfmpegWrite(filePath, ffmpegMeta, uri, newTitle, newArtist, newAlbum)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !File(filePath).canWrite()) {
+                AppLogger.e("EditMetadata", "No MediaStore item and source is not directly writable: $filePath")
+                Toast.makeText(activity, "未在系统媒体库中找到该歌曲，无法获取写入权限", Toast.LENGTH_LONG).show()
+                isMetadataSaving = false
+                return
+            }
+            doFfmpegWrite(filePath, ffmpegMeta, uri, updatedSong)
         }
+    }
+
+    private fun resolveMediaStoreAudioUri(filePath: String): android.net.Uri? {
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        } else {
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        }
+        return try {
+            activity.contentResolver.query(
+                collection,
+                arrayOf(MediaStore.Audio.Media._ID),
+                "${MediaStore.Audio.Media.DATA} = ?",
+                arrayOf(filePath),
+                null
+            )?.use { cursor ->
+                if (!cursor.moveToFirst()) return@use null
+                ContentUris.withAppendedId(collection, cursor.getLong(0))
+            }.also { uri ->
+                AppLogger.d("EditMetadata", "Resolved MediaStore URI path=$filePath uri=$uri")
+            }
+        } catch (error: Exception) {
+            AppLogger.w("EditMetadata", "Could not resolve MediaStore URI for $filePath", error)
+            null
+        }
+    }
+
+    private fun clearPendingMetadataWrite() {
+        pendingMetadataUri = null
+        pendingMetadataValues = null
+        pendingFfmpegMeta = null
+        pendingFfmpegFilePath = null
+        pendingFfmpegUri = null
+        pendingUpdatedSong = null
     }
 
     private fun performMetadataUpdate(uri: android.net.Uri, values: ContentValues) {
@@ -261,12 +385,8 @@ class MetadataEditorHelper(
             AppLogger.d("EditMetadata", "Updated rows: $rows")
 
             if (rows > 0) {
-                val song = getPlayerController()?.currentSong?.value ?: return
                 Toast.makeText(activity, "已保存", Toast.LENGTH_SHORT).show()
-                isMetadataSaving = false
-                isMetadataEditorShowing = false
-                editingSong = null
-                onVisibilityChanged(false)
+                finishMetadataSave(editingSong ?: getPlayerController()?.currentSong?.value)
             } else {
                 Toast.makeText(activity, "保存失败，MediaStore 更新返回 0", Toast.LENGTH_SHORT).show()
                 isMetadataSaving = false
@@ -281,17 +401,30 @@ class MetadataEditorHelper(
     private fun doFfmpegWrite(
         filePath: String,
         ffmpegMeta: Map<String, String>,
-        uri: android.net.Uri,
-        newTitle: String,
-        newArtist: String,
-        newAlbum: String
+        uri: android.net.Uri?,
+        updatedSong: AudioFile
     ) {
         (activity as androidx.lifecycle.LifecycleOwner).lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val cacheDir = activity.cacheDir.absolutePath
-                val ret = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.writeMetadata(filePath, ffmpegMeta, cacheDir)
+                val originalFile = File(filePath)
+                val parentDir = originalFile.parentFile
+                    ?: throw IllegalStateException("音频文件没有可写父目录")
+                val extension = originalFile.extension.lowercase()
+                val tempFile = File(parentDir, "rawsmeta_tmp${if (extension.isBlank()) "" else ".$extension"}")
+                if (tempFile.exists() && !tempFile.delete()) {
+                    throw IllegalStateException("无法清理旧的元数据临时文件")
+                }
+
+                // Keep the temporary output beside the source. The final rename then stays on the
+                // same filesystem and can be rolled back without ever truncating the audio file.
+                val ret = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.writeMetadata(
+                    filePath,
+                    ffmpegMeta,
+                    parentDir.absolutePath
+                )
 
                 if (ret != 0) {
+                    tempFile.delete()
                     withContext(Dispatchers.Main) {
                         Toast.makeText(activity, "元数据写入失败 (错误码: $ret)", Toast.LENGTH_SHORT).show()
                         isMetadataSaving = false
@@ -299,10 +432,8 @@ class MetadataEditorHelper(
                     return@launch
                 }
 
-                val ext = filePath.substringAfterLast(".", "").lowercase()
-                val tmpFile = File(activity.cacheDir, "rawsmeta_tmp.$ext")
-                if (!tmpFile.exists() || tmpFile.length() == 0L) {
-                    AppLogger.e("EditMetadata", "Temp file missing or empty: ${tmpFile.absolutePath}, exists=${tmpFile.exists()}, size=${tmpFile.length()}")
+                if (!tempFile.exists() || tempFile.length() == 0L) {
+                    AppLogger.e("EditMetadata", "Temp file missing or empty: ${tempFile.absolutePath}")
                     withContext(Dispatchers.Main) {
                         Toast.makeText(activity, "临时文件不存在或为空", Toast.LENGTH_SHORT).show()
                         isMetadataSaving = false
@@ -310,96 +441,68 @@ class MetadataEditorHelper(
                     return@launch
                 }
 
-                val tmpSize = tmpFile.length()
-                val origFile = File(filePath)
-                val origSize = origFile.length()
-                AppLogger.d("EditMetadata", "Temp file: ${tmpFile.absolutePath}, size=$tmpSize bytes, origSize=$origSize bytes")
+                val tempSize = tempFile.length()
+                val originalSize = originalFile.length()
+                val tempDuration = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.probeDuration(tempFile.absolutePath)
+                val durationLooksValid = updatedSong.duration <= 0L ||
+                    (tempDuration > 0L && kotlin.math.abs(tempDuration - updatedSong.duration) <= 2_000L)
+                AppLogger.d(
+                    "EditMetadata",
+                    "Prepared temp=${tempFile.absolutePath} size=$tempSize original=$originalSize duration=$tempDuration"
+                )
 
-                if (tmpSize < origSize / 2) {
-                    AppLogger.e("EditMetadata", "Temp file too small ($tmpSize) vs original ($origSize), aborting")
-                    tmpFile.delete()
+                if (tempSize < originalSize / 2 || !durationLooksValid) {
+                    AppLogger.e("EditMetadata", "Temp verification failed size=$tempSize duration=$tempDuration")
+                    tempFile.delete()
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(activity, "临时文件异常，中止写入", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(activity, "临时文件校验失败，原音频未改动", Toast.LENGTH_SHORT).show()
                         isMetadataSaving = false
                     }
                     return@launch
                 }
 
-                var copySuccess = false
-                var writtenSize = 0L
-
-                try {
-                    FileInputStream(tmpFile).use { input ->
-                        FileOutputStream(origFile).use { output ->
-                            val buf = ByteArray(65536)
-                            var bytesRead: Int
-                            while (input.read(buf).also { bytesRead = it } != -1) {
-                                output.write(buf, 0, bytesRead)
-                            }
-                            output.flush()
-                            output.fd.sync()
-                            writtenSize = origFile.length()
-                        }
-                    }
-                    AppLogger.d("EditMetadata", "Direct file write: written=$writtenSize bytes")
-                    copySuccess = writtenSize == tmpSize
-                } catch (e: Exception) {
-                    AppLogger.e("EditMetadata", "Direct file write failed", e)
-                }
-
-                if (!copySuccess) {
-                    try {
-                        activity.contentResolver.openFileDescriptor(uri, "rw")?.use { pfd ->
-                            FileOutputStream(pfd.fileDescriptor).use { output ->
-                                FileInputStream(tmpFile).use { input ->
-                                    val buf = ByteArray(65536)
-                                    var bytesRead: Int
-                                    while (input.read(buf).also { bytesRead = it } != -1) {
-                                        output.write(buf, 0, bytesRead)
-                                    }
-                                    output.flush()
-                                    output.fd.sync()
-                                }
-                            }
-                        }
-                        writtenSize = origFile.length()
-                        AppLogger.d("EditMetadata", "ParcelFileDescriptor write: written=$writtenSize bytes")
-                        copySuccess = writtenSize == tmpSize
-                    } catch (e2: Exception) {
-                        AppLogger.e("EditMetadata", "ParcelFileDescriptor write failed", e2)
-                    }
-                }
-
-                tmpFile.delete()
-
-                if (!copySuccess) {
+                if (!replaceAudioFileAtomically(originalFile, tempFile)) {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(activity, "文件写回失败", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(activity, "文件替换失败，已恢复原音频", Toast.LENGTH_SHORT).show()
                         isMetadataSaving = false
                     }
                     return@launch
                 }
 
                 val safeValues = ContentValues()
-                if (newTitle.isNotBlank()) safeValues.put(MediaStore.Audio.Media.TITLE, newTitle)
-                if (newArtist.isNotBlank()) safeValues.put(MediaStore.Audio.Media.ARTIST, newArtist)
-                if (newAlbum.isNotBlank()) safeValues.put(MediaStore.Audio.Media.ALBUM, newAlbum)
-                try {
-                    activity.contentResolver.update(uri, safeValues, null, null)
-                } catch (e: Exception) {
-                    AppLogger.w("EditMetadata", "MediaStore update after FFmpeg write failed", e)
+                safeValues.put(MediaStore.Audio.Media.TITLE, updatedSong.title)
+                safeValues.put(MediaStore.Audio.Media.ARTIST, updatedSong.artist)
+                safeValues.put(MediaStore.Audio.Media.ALBUM, updatedSong.album)
+                safeValues.put(MediaStore.Audio.Media.YEAR, updatedSong.year)
+                safeValues.put(MediaStore.Audio.Media.TRACK, updatedSong.trackNumber)
+                safeValues.put(MediaStore.Audio.Media.COMPOSER, updatedSong.composer)
+                if (uri != null) {
+                    try {
+                        activity.contentResolver.update(uri, safeValues, null, null)
+                    } catch (e: Exception) {
+                        AppLogger.w("EditMetadata", "MediaStore update after FFmpeg write failed", e)
+                    }
                 }
 
                 try {
-                    activity.sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, uri))
+                    android.media.MediaScannerConnection.scanFile(
+                        activity,
+                        arrayOf(filePath),
+                        null,
+                        null
+                    )
                 } catch (_: Exception) {}
+
+                val committedSong = updatedSong.copy(
+                    fileSize = originalFile.length(),
+                    dateModified = originalFile.lastModified()
+                )
+                MusicRepository.updateSong(committedSong)
+                getPlayerController()?.updateCurrentSongIfSamePath(committedSong)
 
                 withContext(Dispatchers.Main) {
                     Toast.makeText(activity, "已保存", Toast.LENGTH_SHORT).show()
-                    isMetadataSaving = false
-                    isMetadataEditorShowing = false
-                    editingSong = null
-                    onVisibilityChanged(false)
+                    finishMetadataSave(committedSong)
                 }
             } catch (e: Exception) {
                 AppLogger.e("EditMetadata", "doFfmpegWrite failed", e)
@@ -409,6 +512,52 @@ class MetadataEditorHelper(
                 }
             }
         }
+    }
+
+    private fun replaceAudioFileAtomically(original: File, temp: File): Boolean {
+        val backup = File(
+            original.parentFile,
+            ".${original.name}.rawsmeta-${System.nanoTime()}.bak"
+        )
+        val expectedSize = temp.length()
+        val readable = original.canRead()
+        val writable = original.canWrite()
+        var originalMoved = false
+        var replacementMoved = false
+        return try {
+            originalMoved = original.renameTo(backup)
+            if (!originalMoved) {
+                AppLogger.e("EditMetadata", "Could not move original to backup: ${original.absolutePath}")
+                false
+            } else {
+                replacementMoved = temp.renameTo(original)
+                if (!replacementMoved || !original.exists() || original.length() != expectedSize) {
+                    if (replacementMoved) original.delete()
+                    val restored = backup.renameTo(original)
+                    AppLogger.e("EditMetadata", "Replacement failed; restored=$restored")
+                    false
+                } else {
+                    if (readable) original.setReadable(true, false)
+                    if (writable) original.setWritable(true, false)
+                    if (!backup.delete()) backup.deleteOnExit()
+                    AppLogger.d("EditMetadata", "Atomic metadata replacement committed: ${original.absolutePath}")
+                    true
+                }
+            }
+        } catch (error: Throwable) {
+            AppLogger.e("EditMetadata", "Atomic replacement crashed", error)
+            if (replacementMoved) original.delete()
+            if (originalMoved && backup.exists() && !original.exists()) backup.renameTo(original)
+            false
+        } finally {
+            if (temp.exists()) temp.delete()
+        }
+    }
+
+    private fun finishMetadataSave(song: AudioFile?) {
+        isMetadataSaving = false
+        editingSong = null
+        song?.let { onMetadataSaved?.invoke(it) }
     }
 
     fun pickCoverImage() {
@@ -459,7 +608,6 @@ fun MetadataEditorOverlay(
     helper: MetadataEditorHelper,
     modifier: Modifier = Modifier
 ) {
-    MetadataEditorFormOverlay(helper = helper, modifier = modifier)
     DeleteConfirmOverlay(helper = helper, modifier = modifier)
 }
 
@@ -503,7 +651,7 @@ private fun MetadataEditorFormOverlay(
                         .padding(horizontal = 20.dp, vertical = 18.dp)
                 ) {
                     Text(
-                        text = "编辑元数据",
+                        text = stringResource(R.string.metadata_editor_title),
                         color = Color.White,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold
@@ -515,12 +663,16 @@ private fun MetadataEditorFormOverlay(
                             .height(390.dp)
                             .verticalScroll(rememberScrollState())
                     ) {
-                        MetadataField("标题", helper.editTitle, helper.isMetadataSaving) { helper.editTitle = it }
-                        MetadataField("艺术家", helper.editArtist, helper.isMetadataSaving) { helper.editArtist = it }
-                        MetadataField("专辑", helper.editAlbum, helper.isMetadataSaving) { helper.editAlbum = it }
-                        MetadataField("流派", helper.editGenre, helper.isMetadataSaving) { helper.editGenre = it }
-                        MetadataField("年份", helper.editYear, helper.isMetadataSaving) { helper.editYear = it }
-                        MetadataField("音轨", helper.editTrack, helper.isMetadataSaving) { helper.editTrack = it }
+                        MetadataField(helper, MetadataEditField.TITLE, stringResource(R.string.metadata_field_title), helper.editTitle) { helper.editTitle = it }
+                        MetadataField(helper, MetadataEditField.ARTIST, stringResource(R.string.metadata_field_artist), helper.editArtist) { helper.editArtist = it }
+                        MetadataField(helper, MetadataEditField.ALBUM, stringResource(R.string.metadata_field_album), helper.editAlbum) { helper.editAlbum = it }
+                        MetadataField(helper, MetadataEditField.ALBUM_ARTIST, stringResource(R.string.metadata_field_album_artist), helper.editAlbumArtist) { helper.editAlbumArtist = it }
+                        MetadataField(helper, MetadataEditField.GENRE, stringResource(R.string.metadata_field_genre), helper.editGenre) { helper.editGenre = it }
+                        MetadataField(helper, MetadataEditField.COMPOSER, stringResource(R.string.metadata_field_composer), helper.editComposer) { helper.editComposer = it }
+                        MetadataField(helper, MetadataEditField.YEAR, stringResource(R.string.metadata_field_year), helper.editYear, numeric = true) { helper.editYear = it }
+                        MetadataField(helper, MetadataEditField.TRACK, stringResource(R.string.metadata_field_track), helper.editTrack, numeric = true) { helper.editTrack = it }
+                        MetadataField(helper, MetadataEditField.DISC, stringResource(R.string.metadata_field_disc), helper.editDisc, numeric = true) { helper.editDisc = it }
+                        MetadataField(helper, MetadataEditField.BPM, stringResource(R.string.metadata_field_bpm), helper.editBpm, numeric = true) { helper.editBpm = it }
                     }
                     Spacer(modifier = Modifier.height(14.dp))
                     Row(
@@ -529,14 +681,14 @@ private fun MetadataEditorFormOverlay(
                     ) {
                         if (helper.isMetadataSaving) {
                             Text(
-                                text = "正在保存...",
+                                text = stringResource(R.string.metadata_saving),
                                 color = Color.White.copy(alpha = 0.58f),
                                 fontSize = 13.sp
                             )
                         }
                         Spacer(modifier = Modifier.weight(1f))
                         Text(
-                            text = "取消",
+                            text = stringResource(R.string.metadata_cancel),
                             color = Color.White.copy(alpha = if (helper.isMetadataSaving) 0.35f else 0.65f),
                             fontSize = 14.sp,
                             modifier = Modifier
@@ -545,7 +697,7 @@ private fun MetadataEditorFormOverlay(
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            text = "保存",
+                            text = stringResource(R.string.metadata_save),
                             color = if (helper.isMetadataSaving) Color.White.copy(alpha = 0.35f) else Color(0xFF4CAF50),
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
@@ -562,17 +714,32 @@ private fun MetadataEditorFormOverlay(
 
 @Composable
 private fun MetadataField(
+    helper: MetadataEditorHelper,
+    field: MetadataEditField,
     label: String,
     value: String,
-    saving: Boolean,
+    numeric: Boolean = false,
     onValueChange: (String) -> Unit
 ) {
+    val focusRequester = remember(field) { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val autoFocus = helper.requestedFocusField == field
+    LaunchedEffect(autoFocus) {
+        if (autoFocus) {
+            focusRequester.requestFocus()
+            keyboardController?.show()
+            helper.markFocusHandled(field)
+        }
+    }
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        enabled = !saving,
+        enabled = !helper.isMetadataSaving,
         label = { Text(label) },
         singleLine = true,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = if (numeric) KeyboardType.Number else KeyboardType.Text
+        ),
         shape = RoundedCornerShape(12.dp),
         colors = TextFieldDefaults.colors(
             focusedTextColor = Color.White,
@@ -591,6 +758,7 @@ private fun MetadataField(
         ),
         modifier = Modifier
             .fillMaxWidth()
+            .focusRequester(focusRequester)
             .padding(bottom = 10.dp)
     )
 }
