@@ -59,6 +59,8 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons.core)
     implementation(project(":backdrop"))
+    implementation("dev.chrisbanes.haze:haze:2.0.0-alpha03")
+    implementation("dev.chrisbanes.haze:haze-blur:2.0.0-alpha03")
 
     // Miuix UI 库
     implementation(libs.miuix.ui)
@@ -66,4 +68,5 @@ dependencies {
     implementation(libs.miuix.blur)
     implementation(libs.miuix.preference)
     implementation(libs.miuix.squircle)
+    implementation("androidx.navigationevent:navigationevent-compose:1.1.1")
 }
