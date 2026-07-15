@@ -182,6 +182,10 @@ object AppPreferences {
             get() = kv.decodeInt("player_sleep_timer_minutes", 30)
             set(value) { kv.encode("player_sleep_timer_minutes", value) }
 
+        var sleepTimerSongs: Int
+            get() = kv.decodeInt("player_sleep_timer_songs", 3).coerceIn(1, 99)
+            set(value) { kv.encode("player_sleep_timer_songs", value.coerceIn(1, 99)) }
+
         var stopAfterCurrent: Boolean
             get() = kv.decodeBool("player_stop_after_current", false)
             set(value) { kv.encode("player_stop_after_current", value) }
@@ -417,6 +421,10 @@ object AppPreferences {
             get() = kv.decodeString("ui_app_version", "") ?: ""
             set(value) { kv.encode("ui_app_version", value) }
 
+        var lastUpdateNotesVersionCode: Long
+            get() = kv.decodeLong("ui_update_notes_version_code", -1L)
+            set(value) { kv.encode("ui_update_notes_version_code", value) }
+
         var customFontPath: String
             get() = kv.decodeString("ui_custom_font_path", "") ?: ""
             set(value) { kv.encode("ui_custom_font_path", value) }
@@ -449,6 +457,36 @@ object AppPreferences {
         var isAudioVisualizerEnabled: Boolean
             get() = kv.decodeBool("ui_audio_visualizer_enabled", false)
             set(value) { kv.encode("ui_audio_visualizer_enabled", value) }
+
+        /** 普通播放页专辑图切换动画：0=透视切换，1=内倾轮播，2=平移。 */
+        var playerArtworkAnimationStyle: Int
+            get() = kv.decodeInt("ui_player_artwork_animation_style", 0).coerceIn(0, 2)
+            set(value) { kv.encode("ui_player_artwork_animation_style", value.coerceIn(0, 2)) }
+
+        /** 歌词页主歌词字号（sp）。 */
+        var lyricFontSizeSp: Int
+            get() = kv.decodeInt("ui_lyric_font_size_sp", 28).let { value ->
+                if (value in listOf(24, 28, 32, 36, 40)) value else 28
+            }
+            set(value) {
+                val normalized = if (value in listOf(24, 28, 32, 36, 40)) value else 28
+                kv.encode("ui_lyric_font_size_sp", normalized)
+            }
+
+        /** 歌词页位置：0=靠左，1=居中，2=靠右。 */
+        var lyricTextPosition: Int
+            get() = kv.decodeInt("ui_lyric_text_position", 0).coerceIn(0, 2)
+            set(value) { kv.encode("ui_lyric_text_position", value.coerceIn(0, 2)) }
+
+        /** 歌词页是否启用远近层级模糊。 */
+        var lyricBlurEnabled: Boolean
+            get() = kv.decodeBool("ui_lyric_blur_enabled", true)
+            set(value) { kv.encode("ui_lyric_blur_enabled", value) }
+
+        /** 歌词页是否让非当前歌词也使用完整高亮色与不透明度。 */
+        var lyricHighlightAllEnabled: Boolean
+            get() = kv.decodeBool("ui_lyric_highlight_all_enabled", false)
+            set(value) { kv.encode("ui_lyric_highlight_all_enabled", value) }
 
         /** 沉浸播放页进度条样式：0=普通，1=可视化波形，2=秒级柱状 */
         var immersiveProgressStyle: Int
@@ -682,9 +720,6 @@ object AppPreferences {
             get() = kv.decodeBool("lyrics_bluetooth_translation", false)
             set(value) { kv.encode("lyrics_bluetooth_translation", value) }
 
-        var latencyOffset: Int
-            get() = kv.decodeInt("lyrics_latency_offset", 0)
-            set(value) { kv.encode("lyrics_latency_offset", value) }
     }
 
     object Lyricon {
@@ -814,6 +849,196 @@ object AppPreferences {
             set(value) { kv.encode("treble_boost_freq", value.coerceIn(2000f, 16000f)) }
     }
 
+    object SpeakerOutputElasticity {
+        /** 内部参数配置版本。 */
+        var profileVersion: Int
+            get() = kv.decodeInt("speaker_output_elasticity_profile_version", 1)
+            set(value) { kv.encode("speaker_output_elasticity_profile_version", value.coerceAtLeast(1)) }
+
+        /** 当前扬声器外放模式：0=弹性，1=澎湃，2=宽广。 */
+        var modeCode: Int
+            get() = kv.decodeInt("speaker_output_mode", 0).coerceIn(0, 2)
+            set(value) { kv.encode("speaker_output_mode", value.coerceIn(0, 2)) }
+
+        var isEnabled: Boolean
+            get() = kv.decodeBool("speaker_output_elasticity_enabled", false)
+            set(value) { kv.encode("speaker_output_elasticity_enabled", value) }
+
+        /** 总体强度，0..100%。控制并行冲击、主体回收与峰值余量预留。 */
+        var strengthPercent: Float
+            get() = kv.decodeFloat("speaker_output_elasticity_strength", 82f).coerceIn(0f, 100f)
+            set(value) { kv.encode("speaker_output_elasticity_strength", value.coerceIn(0f, 100f)) }
+
+        /** 检测器高通截止，50..250Hz。用于排除超低频和位移噪声。 */
+        var detectorLowHz: Float
+            get() = kv.decodeFloat("speaker_output_elasticity_detector_low_hz", 85f).coerceIn(50f, 250f)
+            set(value) { kv.encode("speaker_output_elasticity_detector_low_hz", value.coerceIn(50f, 250f)) }
+
+        /** 起音频段低通截止，400..2500Hz。覆盖鼓点主体与敲击前沿。 */
+        var detectorHighHz: Float
+            get() = kv.decodeFloat("speaker_output_elasticity_detector_high_hz", 1350f).coerceIn(400f, 2500f)
+            set(value) { kv.encode("speaker_output_elasticity_detector_high_hz", value.coerceIn(400f, 2500f)) }
+
+        /** 瞬态识别灵敏度，0..100%。不改变最大输出提升。 */
+        var sensitivityPercent: Float
+            get() = kv.decodeFloat("speaker_output_elasticity_sensitivity", 82f).coerceIn(0f, 100f)
+            set(value) { kv.encode("speaker_output_elasticity_sensitivity", value.coerceIn(0f, 100f)) }
+
+        /** 检测门限，-72..-24dBFS。低于门限不触发，避免把底噪放大。 */
+        var gateThresholdDb: Float
+            get() = kv.decodeFloat("speaker_output_elasticity_gate_db", -50f).coerceIn(-72f, -24f)
+            set(value) { kv.encode("speaker_output_elasticity_gate_db", value.coerceIn(-72f, -24f)) }
+
+        /** 快速包络启动，0.2..5ms。越短越强调尖锐起音。 */
+        var fastAttackMs: Float
+            get() = kv.decodeFloat("speaker_output_elasticity_fast_attack_ms", 0.35f).coerceIn(0.2f, 5f)
+            set(value) { kv.encode("speaker_output_elasticity_fast_attack_ms", value.coerceIn(0.2f, 5f)) }
+
+        /** 快速包络释放，8..100ms。决定起音检测器保持时间。 */
+        var fastReleaseMs: Float
+            get() = kv.decodeFloat("speaker_output_elasticity_fast_release_ms", 20f).coerceIn(8f, 100f)
+            set(value) { kv.encode("speaker_output_elasticity_fast_release_ms", value.coerceIn(8f, 100f)) }
+
+        /** 慢速主体包络启动，4..80ms。 */
+        var slowAttackMs: Float
+            get() = kv.decodeFloat("speaker_output_elasticity_slow_attack_ms", 34f).coerceIn(4f, 80f)
+            set(value) { kv.encode("speaker_output_elasticity_slow_attack_ms", value.coerceIn(4f, 80f)) }
+
+        /** 慢速主体包络释放，40..500ms。 */
+        var slowReleaseMs: Float
+            get() = kv.decodeFloat("speaker_output_elasticity_slow_release_ms", 165f).coerceIn(40f, 500f)
+            set(value) { kv.encode("speaker_output_elasticity_slow_release_ms", value.coerceIn(40f, 500f)) }
+
+        /** 实际增益启动，0.2..10ms。越短冲击越硬。 */
+        var gainAttackMs: Float
+            get() = kv.decodeFloat("speaker_output_elasticity_gain_attack_ms", 0.3f).coerceIn(0.2f, 10f)
+            set(value) { kv.encode("speaker_output_elasticity_gain_attack_ms", value.coerceIn(0.2f, 10f)) }
+
+        /** 实际增益回落，10..250ms，是主要回弹速度参数。 */
+        var gainReleaseMs: Float
+            get() = kv.decodeFloat("speaker_output_elasticity_gain_release_ms", 62f).coerceIn(10f, 250f)
+            set(value) { kv.encode("speaker_output_elasticity_gain_release_ms", value.coerceIn(10f, 250f)) }
+
+        /** 起音频段最大并行提升，0..6dB；不再代表全频增益。 */
+        var maxBoostDb: Float
+            get() = kv.decodeFloat("speaker_output_elasticity_max_boost_db", 4.2f).coerceIn(0f, 6f)
+            set(value) { kv.encode("speaker_output_elasticity_max_boost_db", value.coerceIn(0f, 6f)) }
+
+        /** 峰值保护上限，-6..-0.1dBFS。接近上限时自动减少瞬态提升。 */
+        var peakCeilingDb: Float
+            get() = kv.decodeFloat("speaker_output_elasticity_peak_ceiling_db", -0.2f).coerceIn(-6f, -0.1f)
+            set(value) { kv.encode("speaker_output_elasticity_peak_ceiling_db", value.coerceIn(-6f, -0.1f)) }
+    }
+
+    object SpeakerOutputPowerful {
+        /** 内部参数配置版本。 */
+        var profileVersion: Int
+            get() = kv.decodeInt("speaker_output_powerful_profile_version", 1)
+            set(value) { kv.encode("speaker_output_powerful_profile_version", value.coerceAtLeast(1)) }
+
+        /** 总体强度，0..100%。统一缩放动态低频、密度、谐波与存在感。 */
+        var strengthPercent: Float
+            get() = kv.decodeFloat("speaker_output_powerful_strength", 84f).coerceIn(0f, 100f)
+            set(value) { kv.encode("speaker_output_powerful_strength", value.coerceIn(0f, 100f)) }
+
+        /** 厚度频段高通，40..140Hz。用于过滤位移噪声与扬声器难以重放的超低频。 */
+        var bodyLowHz: Float
+            get() = kv.decodeFloat("speaker_output_powerful_body_low_hz", 65f).coerceIn(40f, 140f)
+            set(value) { kv.encode("speaker_output_powerful_body_low_hz", value.coerceIn(40f, 140f)) }
+
+        /** 厚度频段低通，180..700Hz。决定低频饱满感延伸到多高。 */
+        var bodyHighHz: Float
+            get() = kv.decodeFloat("speaker_output_powerful_body_high_hz", 390f).coerceIn(180f, 700f)
+            set(value) { kv.encode("speaker_output_powerful_body_high_hz", value.coerceIn(180f, 700f)) }
+
+        /** 动态低频最大并行提升，0..6dB。原曲低中频越密集，Native 会自动退让。 */
+        var bassBoostDb: Float
+            get() = kv.decodeFloat("speaker_output_powerful_bass_boost_db", 4f).coerceIn(0f, 6f)
+            set(value) { kv.encode("speaker_output_powerful_bass_boost_db", value.coerceIn(0f, 6f)) }
+
+        /** 低频谐波量，0..100%。增强小扬声器可感知低频，不直接强推超低频。 */
+        var harmonicPercent: Float
+            get() = kv.decodeFloat("speaker_output_powerful_harmonic_percent", 34f).coerceIn(0f, 100f)
+            set(value) { kv.encode("speaker_output_powerful_harmonic_percent", value.coerceIn(0f, 100f)) }
+
+        /** 并行密度压缩阈值，-36..-6dBFS。越低，更多声音进入压缩分支。 */
+        var compressorThresholdDb: Float
+            get() = kv.decodeFloat("speaker_output_powerful_compressor_threshold_db", -20f).coerceIn(-36f, -6f)
+            set(value) { kv.encode("speaker_output_powerful_compressor_threshold_db", value.coerceIn(-36f, -6f)) }
+
+        /** 并行密度压缩比，1..8。1 表示不压缩。 */
+        var compressorRatio: Float
+            get() = kv.decodeFloat("speaker_output_powerful_compressor_ratio", 3.5f).coerceIn(1f, 8f)
+            set(value) { kv.encode("speaker_output_powerful_compressor_ratio", value.coerceIn(1f, 8f)) }
+
+        /** 压缩启动，2..80ms。较慢可保留鼓点前沿，较快会增加持续密度。 */
+        var compressorAttackMs: Float
+            get() = kv.decodeFloat("speaker_output_powerful_compressor_attack_ms", 10f).coerceIn(2f, 80f)
+            set(value) { kv.encode("speaker_output_powerful_compressor_attack_ms", value.coerceIn(2f, 80f)) }
+
+        /** 压缩释放，40..500ms。越长越厚，过长可能产生泵动。 */
+        var compressorReleaseMs: Float
+            get() = kv.decodeFloat("speaker_output_powerful_compressor_release_ms", 200f).coerceIn(40f, 500f)
+            set(value) { kv.encode("speaker_output_powerful_compressor_release_ms", value.coerceIn(40f, 500f)) }
+
+        /** 压缩分支混合比例，0..100%。保留原始信号，同时补充声音主体。 */
+        var parallelMixPercent: Float
+            get() = kv.decodeFloat("speaker_output_powerful_parallel_mix_percent", 48f).coerceIn(0f, 100f)
+            set(value) { kv.encode("speaker_output_powerful_parallel_mix_percent", value.coerceIn(0f, 100f)) }
+
+        /** 压缩分支补偿增益，0..6dB。只作用于并行分支，不是全局音量。 */
+        var makeupGainDb: Float
+            get() = kv.decodeFloat("speaker_output_powerful_makeup_gain_db", 3.4f).coerceIn(0f, 6f)
+            set(value) { kv.encode("speaker_output_powerful_makeup_gain_db", value.coerceIn(0f, 6f)) }
+
+        /** 1.8..6.5kHz 存在感并行提升，0..4dB。用于避免声音变厚后发闷。 */
+        var presenceBoostDb: Float
+            get() = kv.decodeFloat("speaker_output_powerful_presence_boost_db", 1.3f).coerceIn(0f, 4f)
+            set(value) { kv.encode("speaker_output_powerful_presence_boost_db", value.coerceIn(0f, 4f)) }
+
+        /** 峰值保护上限，-6..-0.1dBFS。 */
+        var peakCeilingDb: Float
+            get() = kv.decodeFloat("speaker_output_powerful_peak_ceiling_db", -0.25f).coerceIn(-6f, -0.1f)
+            set(value) { kv.encode("speaker_output_powerful_peak_ceiling_db", value.coerceIn(-6f, -0.1f)) }
+    }
+
+    object SpeakerOutputWide {
+        /** 总体强度，0..100%。统一缩放宽度、低频收拢与去相关。 */
+        var strengthPercent: Float
+            get() = kv.decodeFloat("speaker_output_wide_strength", 76f).coerceIn(0f, 100f)
+            set(value) { kv.encode("speaker_output_wide_strength", value.coerceIn(0f, 100f)) }
+
+        /** 侧声道扩展起始频率，300..2200Hz。 */
+        var crossoverHz: Float
+            get() = kv.decodeFloat("speaker_output_wide_crossover_hz", 760f).coerceIn(300f, 2200f)
+            set(value) { kv.encode("speaker_output_wide_crossover_hz", value.coerceIn(300f, 2200f)) }
+
+        /** 中高频侧声道最大提升，0..6dB。 */
+        var widthDb: Float
+            get() = kv.decodeFloat("speaker_output_wide_width_db", 3.2f).coerceIn(0f, 6f)
+            set(value) { kv.encode("speaker_output_wide_width_db", value.coerceIn(0f, 6f)) }
+
+        /** 轻量全通去相关混合，0..60%。 */
+        var decorrelationPercent: Float
+            get() = kv.decodeFloat("speaker_output_wide_decorrelation_percent", 18f).coerceIn(0f, 60f)
+            set(value) { kv.encode("speaker_output_wide_decorrelation_percent", value.coerceIn(0f, 60f)) }
+
+        /** 低于分频点的侧声道收拢量，0..100%。 */
+        var bassCenterPercent: Float
+            get() = kv.decodeFloat("speaker_output_wide_bass_center_percent", 58f).coerceIn(0f, 100f)
+            set(value) { kv.encode("speaker_output_wide_bass_center_percent", value.coerceIn(0f, 100f)) }
+
+        /** 中心保护强度，0..100%。 */
+        var centerProtectionPercent: Float
+            get() = kv.decodeFloat("speaker_output_wide_center_protection_percent", 70f).coerceIn(0f, 100f)
+            set(value) { kv.encode("speaker_output_wide_center_protection_percent", value.coerceIn(0f, 100f)) }
+
+        /** 峰值保护上限，-6..-0.1dBFS。 */
+        var peakCeilingDb: Float
+            get() = kv.decodeFloat("speaker_output_wide_peak_ceiling_db", -0.25f).coerceIn(-6f, -0.1f)
+            set(value) { kv.encode("speaker_output_wide_peak_ceiling_db", value.coerceIn(-6f, -0.1f)) }
+    }
+
     object Surround360 {
         var isEnabled: Boolean
             get() = kv.decodeBool("surround_360_enabled", false)
@@ -854,6 +1079,53 @@ object AppPreferences {
         var elevationDeg: Float
             get() = kv.decodeFloat("panoramic_360_elevation", 0f)
             set(value) { kv.encode("panoramic_360_elevation", value.coerceIn(-90f, 90f)) }
+    }
+
+    object FftConvolver {
+        var isEnabled: Boolean
+            get() = kv.decodeBool("fft_convolver_enabled", false)
+            set(value) { kv.encode("fft_convolver_enabled", value) }
+
+        /** Wet/processed signal level, 0.0 ~ 2.0. */
+        var wet: Float
+            get() = kv.decodeFloat("fft_convolver_wet", 1f).coerceIn(0f, 2f)
+            set(value) { kv.encode("fft_convolver_wet", value.coerceIn(0f, 2f)) }
+
+        /** Dry/original signal level, 0.0 ~ 2.0. */
+        var dry: Float
+            get() = kv.decodeFloat("fft_convolver_dry", 0f).coerceIn(0f, 2f)
+            set(value) { kv.encode("fft_convolver_dry", value.coerceIn(0f, 2f)) }
+
+        /** Convolved signal gain in dB. */
+        var gainDb: Float
+            get() = kv.decodeFloat("fft_convolver_gain_db", -6f).coerceIn(-24f, 24f)
+            set(value) { kv.encode("fft_convolver_gain_db", value.coerceIn(-24f, 24f)) }
+
+        /** Wet-path pre-delay in milliseconds. */
+        var preDelayMs: Float
+            get() = kv.decodeFloat("fft_convolver_pre_delay_ms", 0f).coerceIn(0f, 500f)
+            set(value) { kv.encode("fft_convolver_pre_delay_ms", value.coerceIn(0f, 500f)) }
+
+        /** Persistable Storage Access Framework document URI. */
+        var irUri: String
+            get() = kv.decodeString("fft_convolver_ir_uri", "") ?: ""
+            set(value) { kv.encode("fft_convolver_ir_uri", value) }
+
+        var irName: String
+            get() = kv.decodeString("fft_convolver_ir_name", "") ?: ""
+            set(value) { kv.encode("fft_convolver_ir_name", value) }
+
+        var irSampleRate: Int
+            get() = kv.decodeInt("fft_convolver_ir_sample_rate", 0).coerceAtLeast(0)
+            set(value) { kv.encode("fft_convolver_ir_sample_rate", value.coerceAtLeast(0)) }
+
+        var irChannels: Int
+            get() = kv.decodeInt("fft_convolver_ir_channels", 0).coerceIn(0, 2)
+            set(value) { kv.encode("fft_convolver_ir_channels", value.coerceIn(0, 2)) }
+
+        var irFrames: Int
+            get() = kv.decodeInt("fft_convolver_ir_frames", 0).coerceAtLeast(0)
+            set(value) { kv.encode("fft_convolver_ir_frames", value.coerceAtLeast(0)) }
     }
 
     object WebDav {

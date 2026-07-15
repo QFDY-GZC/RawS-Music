@@ -18,6 +18,7 @@ import com.rawsmusic.module.data.db.entity.FolderFileEntity
 import com.rawsmusic.module.data.prefs.AppPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,6 +42,8 @@ object MusicRepository {
     private var db: MusicDatabase? = null
 
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val startupSnapshotSaveLock = Any()
+    private var startupSnapshotSaveJob: Job? = null
 
     @Volatile
     private var cachedSongs: List<AudioFile>? = null
@@ -168,9 +171,12 @@ object MusicRepository {
     private fun saveStartupSnapshotAsync(songs: List<AudioFile>, reason: String) {
         val context = startupSnapshotContext ?: return
         if (songs.isEmpty()) return
-        repositoryScope.launch {
-            StartupSongSnapshotStore.save(context, songs, AppPreferences.Sort.songSortOrder)
-            AppLogger.d(TAG, "startup snapshot save requested: reason=$reason songs=${songs.size}")
+        synchronized(startupSnapshotSaveLock) {
+            startupSnapshotSaveJob?.cancel()
+            startupSnapshotSaveJob = repositoryScope.launch {
+                StartupSongSnapshotStore.save(context, songs, AppPreferences.Sort.songSortOrder)
+                AppLogger.d(TAG, "startup snapshot save completed: reason=$reason songs=${songs.size}")
+            }
         }
     }
 
@@ -560,6 +566,7 @@ object MusicRepository {
     }
 
     fun updateSong(updated: AudioFile) {
+        var persistedSong = updated
         runBlocking {
             try {
                 val dao = getDb().folderFileDao()
@@ -568,12 +575,30 @@ object MusicRepository {
                 if (existing != null) {
                     val newEntity = mergePreservedFields(EntityConverter.audioFileToFolderFile(updated, existing.folderId), existing)
                     dao.update(newEntity)
+                    persistedSong = EntityConverter.folderFileToAudioFile(newEntity)
                 }
             } catch (e: Exception) {
                 AppLogger.e(TAG, "updateSong: error", e)
             }
         }
         invalidateCache()
+
+        // Metadata edits only affect one library row. Publish that replacement
+        // immediately instead of forcing a directory scan just to refresh the UI.
+        val current = _songs.value
+        val targetKey = persistedSong.libraryKey()
+        val index = current.indexOfFirst {
+            it.libraryKey() == targetKey || (persistedSong.id > 0L && it.id == persistedSong.id)
+        }
+        if (index >= 0) {
+            val replaced = current.toMutableList().apply { this[index] = persistedSong }
+            val sorted = sortSongs(replaced, AppPreferences.Sort.songSortOrder)
+            startupSnapshotPublished = false
+            _songs.value = sorted
+            saveStartupSnapshotAsync(sorted, "metadata_update")
+            repositoryScope.launch { refreshLibraryIndexes(sorted) }
+            AppLogger.d(TAG, "updateSong: lightweight publish key=$targetKey")
+        }
     }
 
     /** 完全替换所有歌曲（用户触发重新扫描后使用）。保留歌单表；播放统计会随 folder_files 重建。 */
