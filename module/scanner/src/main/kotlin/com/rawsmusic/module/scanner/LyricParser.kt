@@ -132,7 +132,7 @@ object LyricParser {
         val mergedSegments = mutableListOf<Pair<Long, String>>()
         for ((ts, text) in rawSegments) {
             if (text.trim().isEmpty() && mergedSegments.isNotEmpty()) {
-                val prev = mergedSegments.removeLast()
+                val prev = mergedSegments.removeAt(mergedSegments.lastIndex)
                 mergedSegments.add(Pair(prev.first, prev.second + text))
             } else {
                 mergedSegments.add(Pair(ts, text))

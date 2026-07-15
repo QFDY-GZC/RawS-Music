@@ -7,10 +7,12 @@ import com.rawsmusic.core.common.model.LyricLine
 import com.rawsmusic.core.common.model.LyricWord
 import com.rawsmusic.module.scanner.parser.KrcParser
 import com.rawsmusic.module.scanner.parser.RawSLyricsParser
-import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
-import java.io.InputStreamReader
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
 import java.text.Normalizer
 
 object LyricReader {
@@ -47,6 +49,8 @@ object LyricReader {
     }
 
     private fun readAlbumLevelLyrics(songPath: String): LyricData {
+        val songFile = File(songPath)
+        Log.i(TAG, "LYRIC_TRACE start path=${songFile.name} readable=${songFile.canRead()} parent=${songFile.parentFile?.canRead()}")
         val embedded = readEmbeddedLyrics(songPath)
         if (!embedded.isEmpty) {
             Log.d(TAG, "  embedded: ${embedded.lines.size} lines")
@@ -65,6 +69,7 @@ object LyricReader {
         }
 
         Log.d(TAG, "  no lyrics found")
+        Log.i(TAG, "LYRIC_TRACE no_match path=${songFile.name}")
         return LyricData()
     }
 
@@ -107,10 +112,56 @@ object LyricReader {
 
     private fun readTextAndParse(file: File, parser: (String) -> LyricData): LyricData {
         return try {
-            val content = BufferedReader(InputStreamReader(FileInputStream(file), "UTF-8")).readText()
-            parser(content)
-        } catch (_: Exception) {
+            val bytes = FileInputStream(file).use { it.readBytes() }
+            val decoded = decodeLyricText(bytes)
+            val result = parser(decoded.text)
+            Log.i(
+                TAG,
+                "LYRIC_TRACE parsed file=${file.name} encoding=${decoded.charset} bytes=${bytes.size} lines=${result.lines.size}"
+            )
+            result
+        } catch (e: Exception) {
+            Log.w(TAG, "LYRIC_TRACE parse_failed file=${file.name} readable=${file.canRead()}", e)
             LyricData()
+        }
+    }
+
+    private data class DecodedLyricText(val text: String, val charset: String)
+
+    /** Handles common lyric encodings rather than treating every sidecar as UTF-8. */
+    private fun decodeLyricText(bytes: ByteArray): DecodedLyricText {
+        if (bytes.startsWith(UTF8_BOM)) return DecodedLyricText(String(bytes, 3, bytes.size - 3, Charsets.UTF_8), "UTF-8 BOM")
+        if (bytes.startsWith(UTF16_LE_BOM)) return DecodedLyricText(String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE), "UTF-16LE BOM")
+        if (bytes.startsWith(UTF16_BE_BOM)) return DecodedLyricText(String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE), "UTF-16BE BOM")
+
+        detectUtf16WithoutBom(bytes)?.let { charset ->
+            return DecodedLyricText(String(bytes, charset), charset.name())
+        }
+        strictDecode(bytes, Charsets.UTF_8)?.let { return DecodedLyricText(it, "UTF-8") }
+        strictDecode(bytes, Charset.forName("GB18030"))?.let { return DecodedLyricText(it, "GB18030") }
+        return DecodedLyricText(String(bytes, Charsets.UTF_8), "UTF-8 replacement")
+    }
+
+    private fun strictDecode(bytes: ByteArray, charset: Charset): String? = try {
+        charset.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(bytes))
+            .toString()
+    } catch (_: CharacterCodingException) {
+        null
+    }
+
+    private fun detectUtf16WithoutBom(bytes: ByteArray): Charset? {
+        val sample = bytes.take(128).toByteArray()
+        if (sample.size < 8) return null
+        val evenNulls = sample.indices.count { it % 2 == 0 && sample[it] == 0.toByte() }
+        val oddNulls = sample.indices.count { it % 2 != 0 && sample[it] == 0.toByte() }
+        val pairs = sample.size / 2
+        return when {
+            oddNulls >= pairs / 3 -> Charsets.UTF_16LE
+            evenNulls >= pairs / 3 -> Charsets.UTF_16BE
+            else -> null
         }
     }
 
@@ -319,4 +370,11 @@ object LyricReader {
             .replace(Regex("\\s+"), " ")
             .trim()
     }
+
+    private fun ByteArray.startsWith(prefix: ByteArray): Boolean =
+        size >= prefix.size && prefix.indices.all { this[it] == prefix[it] }
+
+    private val UTF8_BOM = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
+    private val UTF16_LE_BOM = byteArrayOf(0xFF.toByte(), 0xFE.toByte())
+    private val UTF16_BE_BOM = byteArrayOf(0xFE.toByte(), 0xFF.toByte())
 }
