@@ -11,6 +11,7 @@ class SettingsActivity : BaseSettingsActivity() {
                 onNavigateToLyricManagement = { navigateToSettings(LyricManagementActivity::class.java) },
                 onNavigateToStatusBarLyric = { navigateToSettings(StatusBarLyricActivity::class.java) },
                 onNavigateToAppearance = { navigateToSettings(AppearanceActivity::class.java) },
+                onNavigateToPersonalization = { navigateToSettings(PersonalizationSettingsActivity::class.java) },
                 onNavigateToAudioSettings = { navigateToSettings(AudioSettingsActivity::class.java) },
                 onNavigateToAudioEffects = { navigateToSettings(AudioEffectsActivity::class.java) },
                 onNavigateToPlayerInterface = { navigateToSettings(PlayerInterfaceActivity::class.java) },

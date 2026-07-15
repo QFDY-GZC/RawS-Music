@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.FontManager
+import com.rawsmusic.core.ui.theme.RawThemeRuntimeState
 import androidx.compose.ui.res.stringResource
 import com.rawsmusic.R
 
@@ -41,16 +42,13 @@ fun GlobalFontSettingsScreen(
     var fontItalic by remember { mutableStateOf(AppPreferences.UI.fontItalic) }
 
     val context = LocalContext.current
-    val previewFontFamily = remember(fontWeight) {
-        try {
-            val tf = android.graphics.Typeface.Builder(context.assets, "fonts/MiSansLatinVF.ttf")
-                .setFontVariationSettings("wght $fontWeight")
-                .build()
-            FontFamily(tf)
-        } catch (_: Exception) {
-            FontFamily.Default
-        }
+    fun applyFontSettings() {
+        FontManager.rebuildTypeface(context)
+        FontManager.clearScaledCache()
+        RawThemeRuntimeState.invalidate()
+        onApply()
     }
+    val previewFontFamily = FontFamily.Default
 
     SettingsPage(title = stringResource(R.string.settings_global_font_title), onBack = onBack) {
         SettingsCard {
@@ -121,6 +119,7 @@ fun GlobalFontSettingsScreen(
                 onValueChange = {
                     fontWeight = it.toInt()
                     AppPreferences.UI.fontWeight = fontWeight
+                    applyFontSettings()
                 },
                 valueRange = 150f..700f,
                 steps = 10,
@@ -146,6 +145,7 @@ fun GlobalFontSettingsScreen(
                 onValueChange = {
                     fontSizeScale = it.toInt()
                     AppPreferences.UI.fontSizeScale = fontSizeScale
+                    applyFontSettings()
                 },
                 valueRange = 80f..130f,
                 steps = 9,
@@ -162,6 +162,7 @@ fun GlobalFontSettingsScreen(
                 onCheckedChange = {
                     fontItalic = it
                     AppPreferences.UI.fontItalic = fontItalic
+                    applyFontSettings()
                 }
             )
         }

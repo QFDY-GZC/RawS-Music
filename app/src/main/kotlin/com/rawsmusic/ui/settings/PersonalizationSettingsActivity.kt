@@ -2,14 +2,11 @@ package com.rawsmusic.ui.settings
 
 import android.os.Bundle
 
-class GlobalFontSettingsActivity : BaseSettingsActivity() {
+class PersonalizationSettingsActivity : BaseSettingsActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            GlobalFontSettingsScreen(
-                onBack = { finish() },
-                onApply = {}
-            )
+            PersonalizationSettingsScreen(onBack = { finish() })
         }
     }
 }

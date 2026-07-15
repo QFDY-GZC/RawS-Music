@@ -176,6 +176,7 @@ fun LiquidGlassSettingsScreen(
     onNavigateToLyricManagement: () -> Unit,
     onNavigateToStatusBarLyric: () -> Unit,
     onNavigateToAppearance: () -> Unit,
+    onNavigateToPersonalization: () -> Unit,
     onNavigateToAudioSettings: () -> Unit,
     onNavigateToAudioEffects: () -> Unit,
     onNavigateToPlayerInterface: () -> Unit,
@@ -199,6 +200,7 @@ fun LiquidGlassSettingsScreen(
         SearchableSetting(stringResource(R.string.settings_audio_effects_title), stringResource(R.string.settings_audio_effects_keywords), onNavigateToAudioEffects),
         SearchableSetting(stringResource(R.string.settings_player_interface_title), stringResource(R.string.settings_player_interface_keywords), onNavigateToPlayerInterface),
         SearchableSetting(stringResource(R.string.settings_appearance_title), stringResource(R.string.settings_appearance_keywords), onNavigateToAppearance),
+        SearchableSetting(stringResource(R.string.settings_personalization_title), stringResource(R.string.settings_personalization_keywords), onNavigateToPersonalization),
         SearchableSetting(stringResource(R.string.settings_lyric_management_title), stringResource(R.string.settings_lyric_management_keywords), onNavigateToLyricManagement),
         SearchableSetting(stringResource(R.string.settings_status_bar_lyric_title), stringResource(R.string.settings_status_bar_lyric_keywords), onNavigateToStatusBarLyric),
         SearchableSetting(stringResource(R.string.settings_global_font_title), stringResource(R.string.settings_global_font_keywords), onNavigateToGlobalFont),
@@ -322,6 +324,11 @@ fun LiquidGlassSettingsScreen(
                         title = stringResource(R.string.settings_appearance_title),
                         summary = stringResource(R.string.settings_appearance_summary),
                         onClick = onNavigateToAppearance
+                    )
+                    ArrowPreference(
+                        title = stringResource(R.string.settings_personalization_title),
+                        summary = stringResource(R.string.settings_personalization_summary),
+                        onClick = onNavigateToPersonalization
                     )
                     ArrowPreference(
                         title = stringResource(R.string.settings_global_font_title),

@@ -39,6 +39,8 @@ import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.ui.scene.pages.themeColors
+import com.rawsmusic.core.ui.widget.predictiveDialogMotion
+import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.scanner.webdav.AuthMode
 import com.rawsmusic.module.scanner.webdav.WebDavClient
@@ -295,11 +297,16 @@ private fun WebDavSettingsDialog(
     var password by remember { mutableStateOf(AppPreferences.WebDav.password) }
     var authMode by remember { mutableStateOf(AppPreferences.WebDav.authMode) }
     val authModes = arrayOf("自动选择", "Basic 认证", "Digest 认证")
+    val dismissProgress = rememberPredictiveDialogProgress(enabled = true, onDismissRequest = onDismiss)
 
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(dismissOnBackPress = false)
+    ) {
         Column(
             Modifier
                 .fillMaxWidth()
+                .predictiveDialogMotion(dismissProgress)
                 .clip(RoundedCornerShape(16.dp))
                 .background(colors.surface)
                 .padding(20.dp)

@@ -128,6 +128,8 @@ class ImmersiveLyricActivity : ComponentActivity() {
                 textColor = ComposeColor.White,
                 dimColor = ComposeColor.White.copy(alpha = 0.32f),
                 secondaryColor = ComposeColor.White.copy(alpha = 0.66f),
+                blurEnabled = AppPreferences.UI.lyricBlurEnabled,
+                highlightAll = AppPreferences.UI.lyricHighlightAllEnabled,
                 onLineClick = { beginMs -> playerController?.seekTo(beginMs) },
                 onSwipeRight = onBack,
                 modifier = Modifier

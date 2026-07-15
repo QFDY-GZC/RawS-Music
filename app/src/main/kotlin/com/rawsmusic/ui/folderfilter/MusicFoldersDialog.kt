@@ -53,6 +53,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.rawsmusic.R
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.core.ui.widget.predictiveDialogMotion
+import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.scanner.ScanScheduler
 import com.rawsmusic.module.scanner.SafUtils
@@ -292,18 +294,21 @@ fun MusicFoldersDialog(
         }
     }
 
+    val dismissProgress = rememberPredictiveDialogProgress(enabled = true, onDismissRequest = onDismiss)
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
-            dismissOnBackPress = true,
+            dismissOnBackPress = false,
             dismissOnClickOutside = true
         )
     ) {
         Surface(
             modifier = Modifier
                 .fillMaxWidth(0.92f)
-                .heightIn(min = 420.dp, max = 680.dp),
+                .heightIn(min = 420.dp, max = 680.dp)
+                .predictiveDialogMotion(dismissProgress),
             shape = RoundedCornerShape(28.dp),
             color = MiuixTheme.colorScheme.surfaceContainerHigh,
             tonalElevation = 6.dp,

@@ -107,6 +107,7 @@ fun LiquidGlassAudioSettingsScreen(
         val engines = listOf(
             Triple(AudioOutputMode.OPENSL_ES, R.drawable.ic_audio_opensl_png, stringResource(R.string.settings_audio_engine_opensl_hint)),
             Triple(AudioOutputMode.AAUDIO, R.drawable.ic_audio_aaudio_png, stringResource(R.string.settings_audio_engine_aaudio_hint)),
+            Triple(AudioOutputMode.AUDIO_TRACK, R.drawable.ic_audio_track_png, stringResource(R.string.settings_audio_engine_audiotrack_hint)),
             Triple(AudioOutputMode.DIRECT, R.drawable.ic_audio_hires_png, stringResource(R.string.settings_audio_engine_direct_hint))
         )
 

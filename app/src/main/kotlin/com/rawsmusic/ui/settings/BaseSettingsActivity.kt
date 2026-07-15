@@ -20,6 +20,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.rawsmusic.R
 import com.rawsmusic.core.ui.theme.RawSMusicTheme
 import com.rawsmusic.module.player.PlayerController
+import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import com.rawsmusic.ui.songs.PlayerHolder
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -34,10 +35,63 @@ abstract class BaseSettingsActivity : ComponentActivity() {
 
     private var lastNavigateTime = 0L
     private var lastNavigateClass: Class<*>? = null
+    private var nonPredictiveBackCallback: android.window.OnBackInvokedCallback? = null
+    private var nonPredictiveBackRegistered = false
+    private var activityWindowHasFocus = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, true)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshPredictiveBackPreference()
+    }
+
+    @android.annotation.SuppressLint("NewApi")
+    fun refreshPredictiveBackPreference() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        // MIUIX dropdowns and dialogs use a child window. While that child owns focus, the
+        // Activity-level fallback must not intercept back and finish the whole settings page.
+        val shouldIntercept = !PersonalizationPreferences.predictiveBackAnimationEnabled &&
+            activityWindowHasFocus
+        try {
+            if (shouldIntercept && !nonPredictiveBackRegistered) {
+                val callback = nonPredictiveBackCallback ?: android.window.OnBackInvokedCallback {
+                    if (activityWindowHasFocus && window.decorView.hasWindowFocus()) {
+                        finish()
+                    }
+                }.also { nonPredictiveBackCallback = it }
+                onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    callback
+                )
+                nonPredictiveBackRegistered = true
+            } else if (!shouldIntercept && nonPredictiveBackRegistered) {
+                nonPredictiveBackCallback?.let(onBackInvokedDispatcher::unregisterOnBackInvokedCallback)
+                nonPredictiveBackRegistered = false
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (activityWindowHasFocus == hasFocus) return
+        activityWindowHasFocus = hasFocus
+        refreshPredictiveBackPreference()
+    }
+
+    override fun onDestroy() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && nonPredictiveBackRegistered) {
+            try {
+                nonPredictiveBackCallback?.let(onBackInvokedDispatcher::unregisterOnBackInvokedCallback)
+            } catch (_: Exception) {
+            }
+            nonPredictiveBackRegistered = false
+        }
+        super.onDestroy()
     }
 
     /** 设置 Compose 内容。 */
