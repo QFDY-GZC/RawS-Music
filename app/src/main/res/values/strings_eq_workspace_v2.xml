@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_graphic_eq_current_choice">Current</string>
+    <string name="settings_graphic_eq_band_gain_desc">MIUIX band gain control</string>
+    <string name="settings_graphic_eq_reset_band">Reset band</string>
+
+    <string name="settings_peq_engine_unavailable">The parametric equalizer engine is unavailable</string>
+    <string name="settings_peq_workspace_summary">%1$d bands · %2$d enabled</string>
+    <string name="settings_peq_preamp_summary">Adjust headroom before all parametric filters</string>
+    <string name="settings_peq_band_layout_hint">Smartly converts the current filters</string>
+    <string name="settings_peq_presets_and_tools">Presets and tools</string>
+    <string name="settings_peq_autoeq_card_summary">Search and import headphone corrections</string>
+    <string name="settings_peq_import_formats">RawSMusic JSON, AutoEq text or AutoEq JSON</string>
+    <string name="settings_peq_export_card_summary">Save the current filters and preamp</string>
+    <string name="settings_peq_reset_card_summary">Restore neutral filters for the current band count</string>
+    <string name="settings_peq_cached_preset_summary">%1$d filters · %2$s</string>
+    <string name="settings_peq_cached_preset_applied">Applied %1$s</string>
+    <string name="settings_peq_filters">Filter bands</string>
+    <string name="settings_peq_filter_card_title">Band %1$d</string>
+    <string name="settings_peq_frequency_slider_summary">Logarithmic range from 20 Hz to 20 kHz</string>
+    <string name="settings_peq_gain">Gain</string>
+    <string name="settings_peq_gain_slider_summary">Boost or cut this filter</string>
+    <string name="settings_peq_q_slider_summary">Bandwidth / resonance</string>
+    <string name="settings_peq_reset_filter">Reset filter</string>
+    <string name="settings_peq_apply">Apply</string>
+    <string name="settings_peq_import_smart_adapt_summary">Keep the current layout and retain the most important filters</string>
+    <string name="settings_peq_import_source_count_summary">The source contains %1$d filters</string>
+    <string name="settings_peq_import_applied_detail">Imported %1$s: %2$d source filters → %3$d bands</string>
+    <string name="settings_peq_imported_autoeq_name">Imported AutoEq</string>
+    <string name="settings_peq_imported_list_name">Imported filter list</string>
+</resources>

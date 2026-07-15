@@ -148,9 +148,6 @@
     <string name="settings_album_art_high_res_title">Use higher-resolution covers</string>
     <string name="settings_album_art_high_res_desc">Double the decode target size so covers look sharper on the playback screen.</string>
     <string name="settings_album_art_display">Display</string>
-    <string name="settings_album_art_default_artwork">Use built-in default album art</string>
-    <string name="settings_album_art_default_artwork_title">Default album art</string>
-    <string name="settings_album_art_default_artwork_desc">Show the built-in RawSMusic paper RS artwork only when a song has no album art. Enabled by default.</string>
     <string name="settings_album_art_always_show_cover">Always show cover</string>
     <string name="settings_album_art_cover_animation">Cover transition animation</string>
     <string name="settings_appearance_theme_mode">Theme mode</string>
@@ -164,6 +161,37 @@
     <string name="settings_color_monet_auto">Monet auto</string>
     <string name="settings_color_monet_light">Monet light</string>
     <string name="settings_color_monet_dark">Monet dark</string>
+    <string name="settings_effects_convolution">Convolution</string>
+    <string name="settings_fft_convolver_title">FFT convolver</string>
+    <string name="settings_fft_convolver_summary">Load an impulse response for correction, room, or spatial effects</string>
+    <string name="settings_fft_convolver_engine_unavailable">The native DSP engine is unavailable</string>
+    <string name="settings_fft_convolver_loading">Loading impulse response…</string>
+    <string name="settings_fft_convolver_error_summary">IR loading failed; expand for details</string>
+    <string name="settings_fft_convolver_loaded_summary">Loaded: %1$s</string>
+    <string name="settings_fft_convolver_waiting_engine">IR decoded; waiting for the playback DSP engine</string>
+    <string name="settings_fft_convolver_select_ir">Impulse response</string>
+    <string name="settings_fft_convolver_select_ir_desc">Select a mono or stereo PCM/Float WAV file</string>
+    <string name="settings_fft_convolver_wet">Wet signal</string>
+    <string name="settings_fft_convolver_wet_desc">Level of the convolved signal</string>
+    <string name="settings_fft_convolver_dry">Dry signal</string>
+    <string name="settings_fft_convolver_dry_desc">Level of the original unprocessed signal</string>
+    <string name="settings_fft_convolver_gain">Convolution gain</string>
+    <string name="settings_fft_convolver_gain_desc">Output gain applied to the convolved path; start around −6 dB</string>
+    <string name="settings_fft_convolver_pre_delay">Pre-delay</string>
+    <string name="settings_fft_convolver_pre_delay_desc">Delays only the wet path; useful for room and reverb IRs</string>
+    <string name="settings_fft_convolver_status">IR status</string>
+    <string name="settings_fft_convolver_no_ir">No impulse response selected</string>
+    <string name="settings_fft_convolver_ir_info">%1$d Hz · %2$s · %3$d frames</string>
+    <string name="settings_fft_convolver_latency">Total latency: %1$d frames / %2$.1f ms</string>
+    <string name="settings_fft_convolver_mono">Mono</string>
+    <string name="settings_fft_convolver_stereo">Stereo</string>
+    <string name="settings_fft_convolver_unknown">Unknown</string>
+    <string name="settings_fft_convolver_clear_ir">Clear IR</string>
+    <string name="settings_fft_convolver_load_success">Impulse response loaded</string>
+    <string name="settings_fft_convolver_load_failed">Unable to load this impulse response</string>
+    <string name="settings_fft_convolver_percent">%1$d%%</string>
+    <string name="settings_fft_convolver_db">%1$.1f dB</string>
+    <string name="settings_fft_convolver_ms">%1$d ms</string>
     <string name="settings_effects_eq">Equalizer</string>
     <string name="settings_effects_enable_peq">Enable parametric EQ</string>
     <string name="settings_effects_peq_title">Parametric EQ</string>
@@ -207,6 +235,7 @@
     <string name="settings_font_size">Font size</string>
     <string name="settings_font_italic">Italic</string>
     <string name="settings_percent_value">%1$d%%</string>
+    <string name="settings_percent_value_one_decimal">%1$.1f%%</string>
     <string name="settings_font_weight_value">%1$s (%2$d)</string>
     <string name="settings_lyric_font_title">Lyric font settings</string>
     <string name="settings_lyric_font_preview_text">Lyric preview Lyrics Preview</string>
@@ -380,6 +409,95 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_treble_enable">Enable treble boost</string>
     <string name="settings_effect_gain">Gain</string>
     <string name="settings_effect_corner_frequency">Corner frequency</string>
+    <string name="settings_speaker_output_enable">Speaker output</string>
+    <string name="settings_speaker_output_unavailable">The playback DSP controller is not connected yet.</string>
+    <string name="settings_speaker_output_mode">Effect mode</string>
+    <string name="settings_speaker_output_mode_elasticity">Elasticity</string>
+    <string name="settings_speaker_output_mode_elasticity_summary">Sharper low/mid attacks, brief body collection and a quick rebound.</string>
+    <string name="settings_speaker_output_mode_powerful">Powerful</string>
+    <string name="settings_speaker_output_mode_powerful_summary">Stronger body, audible bass harmonics and sustained parallel density.</string>
+    <string name="settings_speaker_output_mode_wide">Wide</string>
+    <string name="settings_speaker_output_mode_wide_summary">Keeps bass and vocals stable while opening the mid/high stereo field.</string>
+    <string name="settings_speaker_output_wide_desc">Expands the mid/high side channel, centers low frequencies and limits excessive side energy for a wider but stable speaker image.</string>
+    <string name="settings_speaker_output_powerful_desc">Adds stronger low/mid body, bass harmonics and parallel density for a fuller, more energetic presentation while preserving peak control.</string>
+    <string name="settings_speaker_output_reset_current_mode">Reset current mode</string>
+    <string name="settings_speaker_output_powerful_energy_group">Energy and tone</string>
+    <string name="settings_speaker_output_powerful_body_group">Body band</string>
+    <string name="settings_speaker_output_powerful_density_group">Parallel density</string>
+    <string name="settings_speaker_output_powerful_strength">Overall strength</string>
+    <string name="settings_speaker_output_powerful_strength_desc">Scales body, harmonics, density and presence together without changing their individual limits.</string>
+    <string name="settings_speaker_output_powerful_bass_boost">Dynamic body lift</string>
+    <string name="settings_speaker_output_powerful_bass_boost_desc">Maximum parallel lift for the body band. Dense low/mid material automatically receives less.</string>
+    <string name="settings_speaker_output_powerful_harmonic">Bass harmonics</string>
+    <string name="settings_speaker_output_powerful_harmonic_desc">Adds upper harmonics from the body band so small speakers suggest deeper bass without forcing sub-bass.</string>
+    <string name="settings_speaker_output_powerful_presence">Presence</string>
+    <string name="settings_speaker_output_powerful_presence_desc">Adds a small 1.8–6.5 kHz parallel band so the thicker sound does not become dull.</string>
+    <string name="settings_speaker_output_powerful_body_low">Body low cutoff</string>
+    <string name="settings_speaker_output_powerful_body_low_desc">Removes movement noise and very low content that compact speakers cannot reproduce efficiently.</string>
+    <string name="settings_speaker_output_powerful_body_high">Body high cutoff</string>
+    <string name="settings_speaker_output_powerful_body_high_desc">Sets how far the fullness band extends into the low mids.</string>
+    <string name="settings_speaker_output_powerful_threshold">Density threshold</string>
+    <string name="settings_speaker_output_powerful_threshold_desc">Lower values feed more of the signal into the parallel compressor.</string>
+    <string name="settings_speaker_output_powerful_ratio">Density ratio</string>
+    <string name="settings_speaker_output_powerful_ratio_desc">Higher values make the parallel branch denser; 1:1 disables compression.</string>
+    <string name="settings_speaker_output_powerful_attack">Density attack</string>
+    <string name="settings_speaker_output_powerful_attack_desc">Slower values preserve the original hit; faster values thicken the body sooner.</string>
+    <string name="settings_speaker_output_powerful_release">Density release</string>
+    <string name="settings_speaker_output_powerful_release_desc">Controls how long the added density lasts. Too long can cause pumping.</string>
+    <string name="settings_speaker_output_powerful_mix">Parallel mix</string>
+    <string name="settings_speaker_output_powerful_mix_desc">Blends the compressed branch with the original signal instead of replacing it.</string>
+    <string name="settings_speaker_output_powerful_makeup">Branch makeup</string>
+    <string name="settings_speaker_output_powerful_makeup_desc">Gain applied only to the compressed branch, not to the full output.</string>
+    <string name="settings_speaker_output_powerful_ceiling_desc">All powerful-mode branches are scaled together when the predicted peak approaches this level.</string>
+    <string name="settings_speaker_output_wide_space_group">Stereo field</string>
+    <string name="settings_speaker_output_wide_stability_group">Center and low-frequency stability</string>
+    <string name="settings_speaker_output_wide_strength">Overall width</string>
+    <string name="settings_speaker_output_wide_strength_desc">Scales width, decorrelation and low-frequency centering together.</string>
+    <string name="settings_speaker_output_wide_width">Side-channel lift</string>
+    <string name="settings_speaker_output_wide_width_desc">Maximum gain added to the mid/high side channel.</string>
+    <string name="settings_speaker_output_wide_crossover">Expansion start</string>
+    <string name="settings_speaker_output_wide_crossover_desc">Frequencies above this point receive the main stereo expansion.</string>
+    <string name="settings_speaker_output_wide_decorrelation">Decorrelation</string>
+    <string name="settings_speaker_output_wide_decorrelation_desc">Adds a light phase variation to the expanded side band without changing the mono sum.</string>
+    <string name="settings_speaker_output_wide_bass_center">Bass centering</string>
+    <string name="settings_speaker_output_wide_bass_center_desc">Reduces low-frequency side energy to keep bass weight stable between the speakers.</string>
+    <string name="settings_speaker_output_wide_center_protection">Center protection</string>
+    <string name="settings_speaker_output_wide_center_protection_desc">Automatically reduces extra width when side energy begins to dominate vocals and centered instruments.</string>
+    <string name="settings_speaker_output_wide_ceiling_desc">Expansion is reduced when the predicted stereo peak approaches this level.</string>
+    <string name="settings_ratio_value_one_decimal">%1$.1f:1</string>
+    <string name="settings_speaker_output_title">Speaker output</string>
+    <string name="settings_speaker_output_elasticity_enable">Elasticity enhancement</string>
+    <string name="settings_speaker_output_elasticity_desc">Extracts low/mid attacks in parallel, briefly collects the musical body and releases it quickly for clearer impact and rebound.</string>
+    <string name="settings_speaker_output_core_group">Core response</string>
+    <string name="settings_speaker_output_detector_group">Transient detector</string>
+    <string name="settings_speaker_output_envelope_group">Envelope timing</string>
+    <string name="settings_speaker_output_protection_group">Output protection</string>
+    <string name="settings_speaker_output_strength">Strength</string>
+    <string name="settings_speaker_output_strength_desc">Scales the detected transient lift without changing the configured maximum.</string>
+    <string name="settings_speaker_output_max_boost">Maximum lift</string>
+    <string name="settings_speaker_output_max_boost_desc">Upper bound for the parallel attack-band impact without continuously raising the full-band output.</string>
+    <string name="settings_speaker_output_gain_release">Bounce time</string>
+    <string name="settings_speaker_output_gain_release_desc">Combined impact hold, body collection and recovery speed. Shorter feels tighter; longer feels fuller.</string>
+    <string name="settings_speaker_output_detector_low">Detector low cutoff</string>
+    <string name="settings_speaker_output_detector_low_desc">Rejects sub-bass and movement noise before transient detection.</string>
+    <string name="settings_speaker_output_detector_high">Detector high cutoff</string>
+    <string name="settings_speaker_output_detector_high_desc">Sets the highest frequency used to identify kick/snare body.</string>
+    <string name="settings_speaker_output_sensitivity">Sensitivity</string>
+    <string name="settings_speaker_output_sensitivity_desc">Higher values react to smaller attack changes; maximum gain is unchanged.</string>
+    <string name="settings_speaker_output_gate">Detector gate</string>
+    <string name="settings_speaker_output_gate_desc">Signals below this dBFS level cannot trigger the enhancement.</string>
+    <string name="settings_speaker_output_fast_attack">Fast-envelope attack</string>
+    <string name="settings_speaker_output_fast_attack_desc">How quickly the detector captures the leading edge.</string>
+    <string name="settings_speaker_output_fast_release">Fast-envelope release</string>
+    <string name="settings_speaker_output_fast_release_desc">How long the attack detector remains elevated.</string>
+    <string name="settings_speaker_output_slow_attack">Body-envelope attack</string>
+    <string name="settings_speaker_output_slow_attack_desc">Tracks the musical body and must remain slower than the fast envelope.</string>
+    <string name="settings_speaker_output_slow_release">Body-envelope release</string>
+    <string name="settings_speaker_output_slow_release_desc">Controls how steadily the detector follows sustained low/mid energy.</string>
+    <string name="settings_speaker_output_gain_attack">Output gain attack</string>
+    <string name="settings_speaker_output_gain_attack_desc">How quickly the actual lift reaches its target. Shorter sounds harder.</string>
+    <string name="settings_speaker_output_peak_ceiling">Peak-aware ceiling</string>
+    <string name="settings_speaker_output_peak_ceiling_desc">Requested lift is reduced when recent peaks approach this dBFS level.</string>
     <string name="settings_compressor_title">Compressor</string>
     <string name="settings_compressor_enable">Enable compressor</string>
     <string name="settings_compressor_gain_reduction">Gain reduction</string>
@@ -417,7 +535,7 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_spatial_expand_section">Stereo expansion</string>
     <string name="settings_spatial_expand_enable">Enable stereo expansion</string>
     <string name="settings_spatial_strength_title">Strength</string>
-    <string name="settings_spatial_strength_summary">Uses stronger side-channel widening and light decorrelation. 60% is the new practical default.</string>
+    <string name="settings_spatial_strength_summary">Continuously increases the left-right difference. 0% preserves the source and 100% expands Side to 3×, with linked stereo peak control to keep the image stable.</string>
     <string name="settings_spatial_crossfeed_section">Crossfeed</string>
     <string name="settings_spatial_crossfeed_enable">Enable crossfeed</string>
     <string name="settings_spatial_crossfeed_low_cut_title">Low-cut frequency</string>
@@ -526,4 +644,91 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="folder_filter_internal_storage">内部存储</string>
     <string name="folder_filter_usb_storage">USB 存储</string>
     <string name="folder_filter_sd_card">SD 卡</string>
+    <string name="settings_audio_engine_audiotrack_hint">System mixer · High compatibility · PCM ≤ 48kHz / 24bit / Stereo</string>
+    <string name="settings_personalization_title">Personalization</string>
+    <string name="settings_personalization_summary">Motion and interaction preferences</string>
+    <string name="settings_personalization_keywords">personalization predictive back animation gesture motion</string>
+    <string name="settings_personalization_motion_section">Motion</string>
+    <string name="settings_predictive_back_title">Predictive back animation</string>
+    <string name="settings_predictive_back_summary">Preview the destination while swiping back</string>
+    <string name="settings_performance_mode_title">Performance mode</string>
+    <string name="settings_performance_mode_summary">Disable liquid-glass refraction and use Gaussian blur to reduce GPU load.</string>
+    <string name="playlist_import">Import playlist</string>
+    <string name="playlist_create">New playlist</string>
+    <string name="playlist_song_count">%1$d songs</string>
+    <string name="playlist_delete_action">Delete</string>
+    <string name="playlist_name_hint">Playlist name</string>
+    <string name="playlist_create_action">Create</string>
+    <string name="playlist_cancel_action">Cancel</string>
+    <string name="playlist_delete_title">Delete playlist</string>
+    <string name="playlist_delete_message">Delete this playlist? This action cannot be undone.</string>
+    <string name="playlist_import_success">Imported %1$d songs; %2$d entries were not found</string>
+    <string name="playlist_import_empty">No matching songs were found in this playlist file</string>
+    <string name="playlist_name_exists">A playlist with this name already exists</string>
+    <string name="playlist_rename">Rename playlist</string>
+    <string name="playlist_confirm_action">Confirm</string>
+    <string name="playlist_fallback_name">Playlist</string>
+    <string name="playlist_empty">This playlist is empty. Add songs from a song menu.</string>
+    <string name="metadata_editor_title">Edit metadata</string>
+    <string name="metadata_field_title">Title</string>
+    <string name="metadata_field_artist">Artist</string>
+    <string name="metadata_field_album">Album</string>
+    <string name="metadata_field_album_artist">Album artist</string>
+    <string name="metadata_field_genre">Genre</string>
+    <string name="metadata_field_composer">Composer</string>
+    <string name="metadata_field_year">Year</string>
+    <string name="metadata_field_track">Track</string>
+    <string name="metadata_field_disc">Disc</string>
+    <string name="metadata_field_bpm">BPM</string>
+    <string name="metadata_saving">Saving…</string>
+    <string name="metadata_cancel">Cancel</string>
+    <string name="metadata_save">Save</string>
+    <string name="metadata_close">Close</string>
+    <string name="metadata_unknown">Unknown</string>
+    <string name="scan_complete_no_changes">Scan complete: no changes, %1$d tracks total, %2$.1f s</string>
+    <string name="scan_complete_summary">Scan complete: %1$d added, %2$d updated, %3$d removed; %4$d unchanged, %5$d total, %6$.1f s</string>
+    <string name="update_dialog_title">RawS Music %1$s</string>
+    <string name="update_dialog_time">Updated: July 14, 2026</string>
+    <string name="update_developer_message_title">A word from the developer</string>
+    <string name="update_join_qq_group">点击链接加入群聊【RawS Music交流群】：https://qm.qq.com/q/bOvqTQPABi</string>
+    <string name="update_close">Close</string>
+    <string-array name="update_notes">
+        <item>Fixed crashes caused by some options in the audio-effects screen opened from the player.</item>
+        <item>Fixed lyric lag in streaming playback caused by rounding differences between wall-clock and actual positions.</item>
+        <item>Fixed progress display mismatching natural playback position.</item>
+        <item>Fixed UI and audio mismatching after shuffle track changes in the standard player.</item>
+        <item>Fixed Previous restarting the current track after seeking.</item>
+        <item>Fixed status-bar lyric artwork mismatching the current track.</item>
+        <item>Fixed default artwork not appearing in the player when a track has no artwork.</item>
+        <item>Fixed global font settings not taking effect.</item>
+        <item>Fixed default artwork not being passed to system metadata.</item>
+        <item>Fixed inconsistent backgrounds in some areas.</item>
+        <item>Fixed globally scaled fonts overflowing their intended regions.</item>
+        <item>Simplified the top region of every list.</item>
+        <item>Improved animations in other library categories.</item>
+        <item>Improved and refined category features.</item>
+        <item>Improved liquid-glass effects for the mini player and navigation bar.</item>
+        <item>Improved Previous and Next handling that could mismatch audio and UI.</item>
+        <item>Unified entrance animations and removed the duplicate animation style.</item>
+        <item>Refined the About page and added Halcyon to open-source libraries.</item>
+        <item>Adjusted the locate button position.</item>
+        <item>Added Shuffle to the top menu.</item>
+        <item>Added the playback queue screen.</item>
+        <item>Added the recently added screen.</item>
+        <item>Added editable metadata fields with direct keyboard input.</item>
+        <item>Added long-press copying for song information in lists and the player.</item>
+        <item>Added current-track information to the top menu.</item>
+        <item>Added a performance setting for users who do not need liquid-glass effects.</item>
+        <item>Added update detection with an optional disable setting.</item>
+        <item>Added marquee lyrics to the mini player.</item>
+        <item>Improved lyric-screen animations.</item>
+    </string-array>
+    <string-array name="update_developer_quotes">
+        <item>“永远快乐”这句话，不但渺茫得不能实现，并且荒谬得不能成立。快过的决不会永久；我们说永远快乐，正好像说四方的圆形、静止的动作，同样地自相矛盾。在高兴的时候，我们空对瞬息即逝的时间喊着说：“逗留一会儿吧！你太美了！”那有什么用？你要永久，你该向痛苦里去找。不讲别的，只要一个失眠的晚上，或者有约不来的下午，或者一课沉闷的听讲，这许多比一切宗教信仰更有效力，能使你尝到什么叫做“永生”的滋味。人生的刺就在这里：留恋着不肯快走的，偏是你所不留恋的东西。</item>
+        <item>为什么说擦屁股的最后一下，并不是你擦干净了，而是它的颜色淡到你能接受了？生活也是如此，差不多就行了。你越往里抠越多，其实人生和擦屁股一样，不是擦干净了，而是看淡了。所以尽力了就行，剩下的就交给内裤吧。</item>
+        <item>人对旧事物的怀念是无解的。或许你认为你已经释怀了，但是提起那个熟悉又陌生的名字时，还是会恍惚吧？她之所以那么难忘，是因为你和她之间是不完整的：那份最后没送出去的礼物，那些没说出口的话，以及脑海里幻想的以后。最要命的是那些没发生的场景，总在脑子里自动续写。可惜没有以后了，也不会再见面了。后来我才明白，原来有些告别不需要说再见，它早就藏在每一天熄灭又亮起的屏幕里，没说出口的话都成了过去。</item>
+        <item>我的心里下着一场不停歇的雨。看似平静的表面下，是潮湿、沉重的泥泞。我不是不想笑，只是所有的力气都用来支撑这个快要垮掉的自己。世界很吵闹，可我听到的只有空洞的回声。我努力地抓，却抓不住任何温暖的光。也许，我只是一个困在深海中的人，拼命地向上游，却早已忘记了岸的方向。</item>
+        <item>最近被一个叫微信支付的盯上了，太有手段了。我吃饭扣我钱，我喝奶茶扣我钱，我买皮肤也扣我钱，动不动就扣我钱。你很会做局呀，你很会阴我啊，成天藏在网络里，有本事咱们现实碰一碰。我这个人不怕事，也不来事儿，也不怕来事。小小的老子要是真发威了，你后悔就来不及了。再搞我钱包，我真要来事儿了，收手吧你。</item>
+        <item>自在极意豪，我有幸进入过。那是不可求的机遇，当我沉浸其中时，不会觉得有任何问题。直到某天，可能过了几天，也可能是十年、一辈子，你的思绪突然回到当时情景，以一种不自主的状态，被以前的自己击中。这时才明白，我追求一辈子的自在极意豪，原来一开始我就会了。此后我不再追求，不再刻意为之，只追寻内心的感觉，放任身体，发掘内心本来就存在的力量。</item>
+    </string-array>
 </resources>

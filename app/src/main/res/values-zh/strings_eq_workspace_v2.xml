@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_graphic_eq_current_choice">当前</string>
+    <string name="settings_graphic_eq_band_gain_desc">MIUIX 风格频段增益控制</string>
+    <string name="settings_graphic_eq_reset_band">重置频段</string>
+
+    <string name="settings_peq_engine_unavailable">参量均衡器引擎不可用</string>
+    <string name="settings_peq_workspace_summary">%1$d 段 · 已启用 %2$d 段</string>
+    <string name="settings_peq_preamp_summary">在所有参量滤波器之前调整余量</string>
+    <string name="settings_peq_band_layout_hint">智能转换当前滤波器</string>
+    <string name="settings_peq_presets_and_tools">预设与工具</string>
+    <string name="settings_peq_autoeq_card_summary">搜索并导入耳机校正</string>
+    <string name="settings_peq_import_formats">支持 RawSMusic JSON、AutoEq 文本和 AutoEq JSON</string>
+    <string name="settings_peq_export_card_summary">保存当前滤波器和前级增益</string>
+    <string name="settings_peq_reset_card_summary">按当前段数恢复中性滤波器</string>
+    <string name="settings_peq_cached_preset_summary">%1$d 个滤波器 · %2$s</string>
+    <string name="settings_peq_cached_preset_applied">已应用 %1$s</string>
+    <string name="settings_peq_filters">滤波频段</string>
+    <string name="settings_peq_filter_card_title">第 %1$d 段</string>
+    <string name="settings_peq_frequency_slider_summary">20 Hz 到 20 kHz 对数范围</string>
+    <string name="settings_peq_gain">增益</string>
+    <string name="settings_peq_gain_slider_summary">提升或衰减该滤波器</string>
+    <string name="settings_peq_q_slider_summary">带宽 / 共振强度</string>
+    <string name="settings_peq_reset_filter">重置滤波器</string>
+    <string name="settings_peq_apply">应用</string>
+    <string name="settings_peq_import_smart_adapt_summary">保持当前布局，优先保留最重要的滤波器</string>
+    <string name="settings_peq_import_source_count_summary">源预设包含 %1$d 个滤波器</string>
+    <string name="settings_peq_import_applied_detail">已导入 %1$s：%2$d 个源滤波器 → %3$d 段</string>
+    <string name="settings_peq_imported_autoeq_name">导入的 AutoEq</string>
+    <string name="settings_peq_imported_list_name">导入的滤波器列表</string>
+</resources>

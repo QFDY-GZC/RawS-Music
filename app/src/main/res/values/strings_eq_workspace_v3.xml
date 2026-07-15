@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_peq_tools_dropdown_summary">AutoEq search, preset import/export, reset, and downloaded presets</string>
+    <string name="settings_peq_tools_dropdown_value">Choose</string>
+    <string name="settings_peq_type_inline_hint">Tap to choose inside this band card</string>
+</resources>

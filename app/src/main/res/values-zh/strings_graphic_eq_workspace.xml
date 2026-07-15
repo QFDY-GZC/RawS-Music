@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_graphic_eq_engine_unavailable">均衡器引擎不可用</string>
+    <string name="settings_graphic_eq_summary">%1$d 段 · %2$s</string>
+    <string name="settings_graphic_eq_preamp_desc">在固定频率滤波器之前调整余量</string>
+    <string name="settings_graphic_eq_presets">内置预设</string>
+    <string name="settings_graphic_eq_frequency_bands">频段</string>
+    <string name="settings_graphic_eq_band_desc">第 %1$d 段 · Q %2$.2f</string>
+    <string name="settings_graphic_eq_frequency_khz_integer">%1$d kHz</string>
+    <string name="settings_graphic_eq_frequency_khz_decimal">%1$.1f kHz</string>
+    <string name="settings_graphic_eq_reset_flat">恢复平直</string>
+    <string name="settings_graphic_eq_preset_normal">平直</string>
+    <string name="settings_graphic_eq_preset_pop">流行</string>
+    <string name="settings_graphic_eq_preset_rock">摇滚</string>
+    <string name="settings_graphic_eq_preset_jazz">爵士</string>
+    <string name="settings_graphic_eq_preset_classical">古典</string>
+    <string name="settings_graphic_eq_preset_bass_boost">低音增强</string>
+    <string name="settings_graphic_eq_preset_treble_boost">高音增强</string>
+    <string name="settings_graphic_eq_preset_vocal">人声</string>
+    <string name="settings_graphic_eq_preset_electronic">电子</string>
+    <string name="settings_graphic_eq_preset_acoustic">原声</string>
+    <string name="settings_graphic_eq_preset_custom">自定义</string>
+</resources>

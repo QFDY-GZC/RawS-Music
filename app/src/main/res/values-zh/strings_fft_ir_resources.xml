@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_fft_convolver_resources_title">脉冲响应资源</string>
+    <string name="settings_fft_convolver_resources_desc">以下为第三方网站。导入前请确认授权、WAV 格式、声道路由和 IR 长度。</string>
+    <string name="settings_fft_convolver_resource_openair">OpenAIR</string>
+    <string name="settings_fft_convolver_resource_openair_desc">下载在真实建筑和空间中采集的声学脉冲响应</string>
+    <string name="settings_fft_convolver_resource_echothief">EchoThief</string>
+    <string name="settings_fft_convolver_resource_echothief_desc">洞穴、楼梯间、隧道、堡垒等真实空间 IR</string>
+    <string name="settings_fft_convolver_resource_waves">Waves IR 资源库</string>
+    <string name="settings_fft_convolver_resource_waves_desc">大型卷积混响资源库，下载可能需要登录</string>
+    <string name="settings_fft_convolver_resource_autoeq">AutoEq</string>
+    <string name="settings_fft_convolver_resource_autoeq_desc">为支持的耳机型号生成卷积均衡文件</string>
+    <string name="settings_fft_convolver_resource_open_failed">没有可用于打开此链接的浏览器</string>
+</resources>

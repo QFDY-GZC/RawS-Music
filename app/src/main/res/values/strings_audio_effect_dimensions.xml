@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_effects_tab_parametric_eq">Parametric EQ</string>
+    <string name="settings_effects_tab_graphic_eq">Graphic EQ</string>
+    <string name="settings_effects_tab_spatial_reverb">Space &amp; reverb</string>
+    <string name="settings_effects_tab_advanced">Advanced</string>
+</resources>

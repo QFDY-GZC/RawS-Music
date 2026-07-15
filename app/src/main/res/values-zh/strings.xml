@@ -148,9 +148,6 @@
     <string name="settings_album_art_high_res_title">使用更高分辨率封面</string>
     <string name="settings_album_art_high_res_desc">解码目标尺寸翻倍，播放界面封面更清晰。</string>
     <string name="settings_album_art_display">显示</string>
-    <string name="settings_album_art_default_artwork">使用播放器自带默认专辑图</string>
-    <string name="settings_album_art_default_artwork_title">默认专辑图</string>
-    <string name="settings_album_art_default_artwork_desc">仅当歌曲没有专辑图时显示 RawSMusic 内置的纸张 RS 专辑图，默认开启。</string>
     <string name="settings_album_art_always_show_cover">始终显示封面</string>
     <string name="settings_album_art_cover_animation">封面切换动画</string>
     <string name="settings_appearance_theme_mode">主题模式</string>
@@ -164,6 +161,37 @@
     <string name="settings_color_monet_auto">Monet 自动</string>
     <string name="settings_color_monet_light">Monet 浅色</string>
     <string name="settings_color_monet_dark">Monet 深色</string>
+    <string name="settings_effects_convolution">卷积</string>
+    <string name="settings_fft_convolver_title">FFT 卷积</string>
+    <string name="settings_fft_convolver_summary">加载脉冲响应，用于耳机校正、房间或空间效果</string>
+    <string name="settings_fft_convolver_engine_unavailable">Native DSP 引擎当前不可用</string>
+    <string name="settings_fft_convolver_loading">正在加载脉冲响应…</string>
+    <string name="settings_fft_convolver_error_summary">IR 加载失败，展开查看详情</string>
+    <string name="settings_fft_convolver_loaded_summary">已加载：%1$s</string>
+    <string name="settings_fft_convolver_waiting_engine">IR 已解析，正在等待播放 DSP 引擎</string>
+    <string name="settings_fft_convolver_select_ir">脉冲响应文件</string>
+    <string name="settings_fft_convolver_select_ir_desc">选择单声道或立体声 PCM / Float WAV 文件</string>
+    <string name="settings_fft_convolver_wet">湿声混合</string>
+    <string name="settings_fft_convolver_wet_desc">卷积处理后信号的电平</string>
+    <string name="settings_fft_convolver_dry">干声混合</string>
+    <string name="settings_fft_convolver_dry_desc">未经处理的原始信号电平</string>
+    <string name="settings_fft_convolver_gain">卷积增益</string>
+    <string name="settings_fft_convolver_gain_desc">仅作用于卷积路径，未知 IR 建议从 −6 dB 开始</string>
+    <string name="settings_fft_convolver_pre_delay">预延迟</string>
+    <string name="settings_fft_convolver_pre_delay_desc">只延迟湿声路径，适合房间和混响 IR</string>
+    <string name="settings_fft_convolver_status">IR 状态</string>
+    <string name="settings_fft_convolver_no_ir">尚未选择脉冲响应</string>
+    <string name="settings_fft_convolver_ir_info">%1$d Hz · %2$s · %3$d 帧</string>
+    <string name="settings_fft_convolver_latency">总延迟：%1$d 帧 / %2$.1f ms</string>
+    <string name="settings_fft_convolver_mono">单声道</string>
+    <string name="settings_fft_convolver_stereo">立体声</string>
+    <string name="settings_fft_convolver_unknown">未知</string>
+    <string name="settings_fft_convolver_clear_ir">清除 IR</string>
+    <string name="settings_fft_convolver_load_success">脉冲响应已加载</string>
+    <string name="settings_fft_convolver_load_failed">无法加载此脉冲响应</string>
+    <string name="settings_fft_convolver_percent">%1$d%%</string>
+    <string name="settings_fft_convolver_db">%1$.1f dB</string>
+    <string name="settings_fft_convolver_ms">%1$d ms</string>
     <string name="settings_effects_eq">均衡</string>
     <string name="settings_effects_enable_peq">启用参量均衡器</string>
     <string name="settings_effects_peq_title">参量均衡器</string>
@@ -207,6 +235,7 @@
     <string name="settings_font_size">字体大小</string>
     <string name="settings_font_italic">斜体</string>
     <string name="settings_percent_value">%1$d%%</string>
+    <string name="settings_percent_value_one_decimal">%1$.1f%%</string>
     <string name="settings_font_weight_value">%1$s (%2$d)</string>
     <string name="settings_lyric_font_title">歌词字体设置</string>
     <string name="settings_lyric_font_preview_text">歌词预览 Lyrics Preview</string>
@@ -380,6 +409,95 @@
     <string name="settings_treble_enable">启用高音增强</string>
     <string name="settings_effect_gain">增益</string>
     <string name="settings_effect_corner_frequency">转折频率</string>
+    <string name="settings_speaker_output_enable">扬声器外放</string>
+    <string name="settings_speaker_output_unavailable">播放 DSP 控制器尚未连接。</string>
+    <string name="settings_speaker_output_mode">效果模式</string>
+    <string name="settings_speaker_output_mode_elasticity">弹性</string>
+    <string name="settings_speaker_output_mode_elasticity_summary">强化低中频起音，短暂收紧主体后快速回弹。</string>
+    <string name="settings_speaker_output_mode_powerful">澎湃</string>
+    <string name="settings_speaker_output_mode_powerful_summary">更强的低中频厚度、可感知低频谐波与持续并行密度。</string>
+    <string name="settings_speaker_output_mode_wide">宽广</string>
+    <string name="settings_speaker_output_mode_wide_summary">保持低频和人声稳定，同时打开中高频立体声边界。</string>
+    <string name="settings_speaker_output_wide_desc">扩展中高频侧声道、收拢低频并限制过强的侧声道能量，让扬声器声场更开阔且中心稳定。</string>
+    <string name="settings_speaker_output_powerful_desc">加强低中频厚度、低频谐波与并行密度，让声音更饱满、更有持续能量，同时保持峰值控制。</string>
+    <string name="settings_speaker_output_reset_current_mode">恢复当前模式默认值</string>
+    <string name="settings_speaker_output_powerful_energy_group">能量与音色</string>
+    <string name="settings_speaker_output_powerful_body_group">厚度频段</string>
+    <string name="settings_speaker_output_powerful_density_group">并行密度</string>
+    <string name="settings_speaker_output_powerful_strength">总体强度</string>
+    <string name="settings_speaker_output_powerful_strength_desc">统一缩放厚度、谐波、密度和存在感，不改变各参数上限。</string>
+    <string name="settings_speaker_output_powerful_bass_boost">动态厚度提升</string>
+    <string name="settings_speaker_output_powerful_bass_boost_desc">厚度频段的最大并行提升；原曲低中频越密集，Native 自动退让越多。</string>
+    <string name="settings_speaker_output_powerful_harmonic">低频谐波</string>
+    <string name="settings_speaker_output_powerful_harmonic_desc">从厚度频段生成上方谐波，让小扬声器产生更深低频的听感，而不是强推超低频。</string>
+    <string name="settings_speaker_output_powerful_presence">存在感</string>
+    <string name="settings_speaker_output_powerful_presence_desc">轻量加入 1.8–6.5kHz 并行频段，避免声音变厚后发闷。</string>
+    <string name="settings_speaker_output_powerful_body_low">厚度低截止</string>
+    <string name="settings_speaker_output_powerful_body_low_desc">滤除位移噪声和小型扬声器难以有效重放的超低频。</string>
+    <string name="settings_speaker_output_powerful_body_high">厚度高截止</string>
+    <string name="settings_speaker_output_powerful_body_high_desc">决定饱满感向低中频延伸到多高。</string>
+    <string name="settings_speaker_output_powerful_threshold">密度阈值</string>
+    <string name="settings_speaker_output_powerful_threshold_desc">数值越低，进入并行压缩分支的声音越多。</string>
+    <string name="settings_speaker_output_powerful_ratio">密度压缩比</string>
+    <string name="settings_speaker_output_powerful_ratio_desc">越高并行分支越紧实；1:1 等于不压缩。</string>
+    <string name="settings_speaker_output_powerful_attack">密度启动</string>
+    <string name="settings_speaker_output_powerful_attack_desc">较慢可保留原始冲击，较快会更早填充声音主体。</string>
+    <string name="settings_speaker_output_powerful_release">密度释放</string>
+    <string name="settings_speaker_output_powerful_release_desc">决定补充密度持续多久；过长可能产生泵动。</string>
+    <string name="settings_speaker_output_powerful_mix">并行混合</string>
+    <string name="settings_speaker_output_powerful_mix_desc">将压缩分支与原始信号混合，而不是替换原始动态。</string>
+    <string name="settings_speaker_output_powerful_makeup">分支补偿</string>
+    <string name="settings_speaker_output_powerful_makeup_desc">只增加压缩分支的增益，不是全局音量。</string>
+    <string name="settings_speaker_output_powerful_ceiling_desc">预测峰值接近该电平时，澎湃模式的各个分支会一起按比例退让。</string>
+    <string name="settings_speaker_output_wide_space_group">立体声空间</string>
+    <string name="settings_speaker_output_wide_stability_group">中心与低频稳定</string>
+    <string name="settings_speaker_output_wide_strength">总体宽度</string>
+    <string name="settings_speaker_output_wide_strength_desc">统一缩放宽度、去相关和低频收拢强度。</string>
+    <string name="settings_speaker_output_wide_width">侧声道提升</string>
+    <string name="settings_speaker_output_wide_width_desc">中高频侧声道允许增加的最大增益。</string>
+    <string name="settings_speaker_output_wide_crossover">扩展起始频率</string>
+    <string name="settings_speaker_output_wide_crossover_desc">高于该频率的侧声道会获得主要扩展。</string>
+    <string name="settings_speaker_output_wide_decorrelation">去相关</string>
+    <string name="settings_speaker_output_wide_decorrelation_desc">为扩展频段加入轻量相位变化，同时保持单声道和声不变。</string>
+    <string name="settings_speaker_output_wide_bass_center">低频居中</string>
+    <string name="settings_speaker_output_wide_bass_center_desc">减少低频侧声道能量，让低频重量稳定在两个扬声器之间。</string>
+    <string name="settings_speaker_output_wide_center_protection">中心保护</string>
+    <string name="settings_speaker_output_wide_center_protection_desc">当侧声道开始压过人声和中心乐器时，自动减少额外宽度。</string>
+    <string name="settings_speaker_output_wide_ceiling_desc">预测立体声峰值接近该电平时自动减少扩展。</string>
+    <string name="settings_ratio_value_one_decimal">%1$.1f:1</string>
+    <string name="settings_speaker_output_title">扬声器外放</string>
+    <string name="settings_speaker_output_elasticity_enable">弹性增强</string>
+    <string name="settings_speaker_output_elasticity_desc">提取低中频起音并行增强，轻微收紧声音主体后快速恢复，让鼓点更有冲击与回弹。</string>
+    <string name="settings_speaker_output_core_group">核心响应</string>
+    <string name="settings_speaker_output_detector_group">瞬态检测器</string>
+    <string name="settings_speaker_output_envelope_group">包络时间</string>
+    <string name="settings_speaker_output_protection_group">输出保护</string>
+    <string name="settings_speaker_output_strength">强度</string>
+    <string name="settings_speaker_output_strength_desc">缩放检测到的瞬态提升，不改变设定的最大提升。</string>
+    <string name="settings_speaker_output_max_boost">最大提升</string>
+    <string name="settings_speaker_output_max_boost_desc">起音频段并行冲击的上限，不会持续抬高整个全频输出。</string>
+    <string name="settings_speaker_output_gain_release">回弹时间</string>
+    <string name="settings_speaker_output_gain_release_desc">冲击保持、主体回收和恢复的综合速度；更短更紧，更长更饱满。</string>
+    <string name="settings_speaker_output_detector_low">检测低截止</string>
+    <string name="settings_speaker_output_detector_low_desc">在瞬态识别前滤除超低频和位移噪声。</string>
+    <string name="settings_speaker_output_detector_high">检测高截止</string>
+    <string name="settings_speaker_output_detector_high_desc">限定用于识别底鼓、军鼓主体的最高频率。</string>
+    <string name="settings_speaker_output_sensitivity">灵敏度</string>
+    <string name="settings_speaker_output_sensitivity_desc">越高越容易响应较小起音变化，但不会提高最大增益。</string>
+    <string name="settings_speaker_output_gate">检测门限</string>
+    <string name="settings_speaker_output_gate_desc">低于该 dBFS 电平的信号不会触发增强。</string>
+    <string name="settings_speaker_output_fast_attack">快速包络启动</string>
+    <string name="settings_speaker_output_fast_attack_desc">检测器捕捉起音前沿的速度。</string>
+    <string name="settings_speaker_output_fast_release">快速包络释放</string>
+    <string name="settings_speaker_output_fast_release_desc">起音检测器保持抬升的时间。</string>
+    <string name="settings_speaker_output_slow_attack">主体包络启动</string>
+    <string name="settings_speaker_output_slow_attack_desc">跟踪音乐主体，必须慢于快速包络。</string>
+    <string name="settings_speaker_output_slow_release">主体包络释放</string>
+    <string name="settings_speaker_output_slow_release_desc">控制检测器跟随持续低中频能量的稳定程度。</string>
+    <string name="settings_speaker_output_gain_attack">输出增益启动</string>
+    <string name="settings_speaker_output_gain_attack_desc">实际提升到达目标的速度；越短冲击越硬。</string>
+    <string name="settings_speaker_output_peak_ceiling">峰值保护上限</string>
+    <string name="settings_speaker_output_peak_ceiling_desc">近期峰值接近该 dBFS 电平时自动减少请求的提升。</string>
     <string name="settings_compressor_title">压限器</string>
     <string name="settings_compressor_enable">启用压限器</string>
     <string name="settings_compressor_gain_reduction">增益衰减</string>
@@ -417,7 +535,7 @@
     <string name="settings_spatial_expand_section">立体声扩展</string>
     <string name="settings_spatial_expand_enable">启用立体声扩展</string>
     <string name="settings_spatial_strength_title">强度</string>
-    <string name="settings_spatial_strength_summary">使用更明显的 side 通道展宽和轻量去相关；60% 是新的实用默认值。</string>
+    <string name="settings_spatial_strength_summary">连续放大左右声道差异，0% 保持原声，100% 将 Side 扩展到 3 倍；双声道联动峰值控制保持声像稳定。</string>
     <string name="settings_spatial_crossfeed_section">互馈 (Crossfeed)</string>
     <string name="settings_spatial_crossfeed_enable">启用互馈</string>
     <string name="settings_spatial_crossfeed_low_cut_title">低切频率</string>
@@ -506,4 +624,91 @@
     <string name="immersive_waveform_debug_panel">调试板</string>
     <string name="immersive_waveform_debug_panel_desc">显示可视化进度条的颜色预览。</string>
     <string name="immersive_waveform_color_debug_title">颜色调试板</string>
+    <string name="settings_audio_engine_audiotrack_hint">系统混音 · 高兼容 · PCM ≤ 48kHz / 24bit / Stereo</string>
+    <string name="settings_personalization_title">个性化</string>
+    <string name="settings_personalization_summary">动画与交互偏好</string>
+    <string name="settings_personalization_keywords">个性化 预测性返回 返回动画 手势 动画</string>
+    <string name="settings_personalization_motion_section">动画</string>
+    <string name="settings_predictive_back_title">预测性返回动画</string>
+    <string name="settings_predictive_back_summary">返回手势过程中预览即将返回的页面</string>
+    <string name="settings_performance_mode_title">性能模式</string>
+    <string name="settings_performance_mode_summary">关闭液态玻璃折射并改用高斯模糊，降低 GPU 负载。</string>
+    <string name="playlist_import">导入歌单</string>
+    <string name="playlist_create">新建歌单</string>
+    <string name="playlist_song_count">%1$d 首</string>
+    <string name="playlist_delete_action">删除</string>
+    <string name="playlist_name_hint">歌单名称</string>
+    <string name="playlist_create_action">创建</string>
+    <string name="playlist_cancel_action">取消</string>
+    <string name="playlist_delete_title">删除歌单</string>
+    <string name="playlist_delete_message">确定要删除这个歌单吗？此操作不可恢复。</string>
+    <string name="playlist_import_success">已导入 %1$d 首，另有 %2$d 项未在曲库中找到</string>
+    <string name="playlist_import_empty">该歌单文件中没有匹配到曲库歌曲</string>
+    <string name="playlist_name_exists">已存在同名歌单</string>
+    <string name="playlist_rename">重命名歌单</string>
+    <string name="playlist_confirm_action">确定</string>
+    <string name="playlist_fallback_name">歌单</string>
+    <string name="playlist_empty">歌单暂无歌曲，可从歌曲菜单添加</string>
+    <string name="metadata_editor_title">编辑元数据</string>
+    <string name="metadata_field_title">标题</string>
+    <string name="metadata_field_artist">艺术家</string>
+    <string name="metadata_field_album">专辑</string>
+    <string name="metadata_field_album_artist">专辑艺术家</string>
+    <string name="metadata_field_genre">流派</string>
+    <string name="metadata_field_composer">作曲</string>
+    <string name="metadata_field_year">年份</string>
+    <string name="metadata_field_track">音轨</string>
+    <string name="metadata_field_disc">碟片</string>
+    <string name="metadata_field_bpm">BPM</string>
+    <string name="metadata_saving">正在保存…</string>
+    <string name="metadata_cancel">取消</string>
+    <string name="metadata_save">保存</string>
+    <string name="metadata_close">关闭</string>
+    <string name="metadata_unknown">未知</string>
+    <string name="scan_complete_no_changes">扫描完成：未发现变化，共 %1$d 首，用时 %2$.1f 秒</string>
+    <string name="scan_complete_summary">扫描完成：新增 %1$d 首，更新 %2$d 首，移除 %3$d 首；未变化 %4$d 首，共 %5$d 首，用时 %6$.1f 秒</string>
+    <string name="update_dialog_title">RawS Music %1$s 更新</string>
+    <string name="update_dialog_time">更新时间：2026 年 7 月 14 日</string>
+    <string name="update_developer_message_title">开发者的话</string>
+    <string name="update_join_qq_group">点击链接加入群聊【RawS Music交流群】：https://qm.qq.com/q/bOvqTQPABi</string>
+    <string name="update_close">关闭</string>
+    <string-array name="update_notes">
+        <item>修复通过播放界面调出的音效界面后，点击某些选项会造成界面崩溃的问题。</item>
+        <item>修复流式播放下，由于真实墙钟与实际位置相差，出现取整误差，导致歌词进度落后的问题。</item>
+        <item>修复自然播放下，进度条显示与实际播放进度不吻合的问题。</item>
+        <item>修复普通播放模式下，使用随机播放切歌导致 UI 与实际声音不匹配的问题。</item>
+        <item>修复 seek 后，点击上一首会导致重新播放而不是真实上一首的问题。</item>
+        <item>修复词幕状态栏的专辑图与当前播放专辑图不一致的问题。</item>
+        <item>修复当前歌曲没有专辑图且使用播放器默认专辑图后，在播放界面不显示默认专辑图的问题。</item>
+        <item>修复字体设置不生效的问题。</item>
+        <item>修复默认专辑图不传递给系统 metadata 的问题。</item>
+        <item>修复部分区域背景不统一的问题。</item>
+        <item>修复全局字体生效后，字体超出对应区域导致区域效果叠加的问题。</item>
+        <item>优化所有列表的顶部区域，不再冗余。</item>
+        <item>优化其他分类的动画交互。</item>
+        <item>优化其他分类的功能调试。</item>
+        <item>优化播放栏与导航栏液态玻璃效果。</item>
+        <item>优化部分播放内进行上一首与下一首操作时，可能导致声音与当前 UI 显示不一致的问题。</item>
+        <item>统一入场动画，不再出现两套不同的入场动画。</item>
+        <item>优化关于页，调整卡片与背景，将 Halcyon 加入开源库。</item>
+        <item>调整定位图标的位置。</item>
+        <item>新增顶部菜单栏的随机播放。</item>
+        <item>新增播放队列界面。</item>
+        <item>新增最近添加界面。</item>
+        <item>新增元数据窗口，可调整元数据信息，点击对应文本即可调用键盘。</item>
+        <item>新增长按列表及播放界面区域文本复制歌曲信息的功能。</item>
+        <item>新增顶部菜单栏的当前播放歌曲。</item>
+        <item>新增性能设置，如果不在乎液态玻璃等其他效果，请酌情关闭。</item>
+        <item>新增更新检测，可主观关闭。</item>
+        <item>新增播放栏的跑马灯歌词。</item>
+        <item>优化歌词界面的动画效果。</item>
+    </string-array>
+    <string-array name="update_developer_quotes">
+        <item>“永远快乐”这句话，不但渺茫得不能实现，并且荒谬得不能成立。快过的决不会永久；我们说永远快乐，正好像说四方的圆形、静止的动作，同样地自相矛盾。在高兴的时候，我们空对瞬息即逝的时间喊着说：“逗留一会儿吧！你太美了！”那有什么用？你要永久，你该向痛苦里去找。不讲别的，只要一个失眠的晚上，或者有约不来的下午，或者一课沉闷的听讲，这许多比一切宗教信仰更有效力，能使你尝到什么叫做“永生”的滋味。人生的刺就在这里：留恋着不肯快走的，偏是你所不留恋的东西。</item>
+        <item>为什么说擦屁股的最后一下，并不是你擦干净了，而是它的颜色淡到你能接受了？生活也是如此，差不多就行了。你越往里抠越多，其实人生和擦屁股一样，不是擦干净了，而是看淡了。所以尽力了就行，剩下的就交给内裤吧。</item>
+        <item>人对旧事物的怀念是无解的。或许你认为你已经释怀了，但是提起那个熟悉又陌生的名字时，还是会恍惚吧？她之所以那么难忘，是因为你和她之间是不完整的：那份最后没送出去的礼物，那些没说出口的话，以及脑海里幻想的以后。最要命的是那些没发生的场景，总在脑子里自动续写。可惜没有以后了，也不会再见面了。后来我才明白，原来有些告别不需要说再见，它早就藏在每一天熄灭又亮起的屏幕里，没说出口的话都成了过去。</item>
+        <item>我的心里下着一场不停歇的雨。看似平静的表面下，是潮湿、沉重的泥泞。我不是不想笑，只是所有的力气都用来支撑这个快要垮掉的自己。世界很吵闹，可我听到的只有空洞的回声。我努力地抓，却抓不住任何温暖的光。也许，我只是一个困在深海中的人，拼命地向上游，却早已忘记了岸的方向。</item>
+        <item>最近被一个叫微信支付的盯上了，太有手段了。我吃饭扣我钱，我喝奶茶扣我钱，我买皮肤也扣我钱，动不动就扣我钱。你很会做局呀，你很会阴我啊，成天藏在网络里，有本事咱们现实碰一碰。我这个人不怕事，也不来事儿，也不怕来事。小小的老子要是真发威了，你后悔就来不及了。再搞我钱包，我真要来事儿了，收手吧你。</item>
+        <item>自在极意豪，我有幸进入过。那是不可求的机遇，当我沉浸其中时，不会觉得有任何问题。直到某天，可能过了几天，也可能是十年、一辈子，你的思绪突然回到当时情景，以一种不自主的状态，被以前的自己击中。这时才明白，我追求一辈子的自在极意豪，原来一开始我就会了。此后我不再追求，不再刻意为之，只追寻内心的感觉，放任身体，发掘内心本来就存在的力量。</item>
+    </string-array>
 </resources>

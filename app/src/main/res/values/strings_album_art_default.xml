@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_album_art_default_artwork">Use default artwork</string>
+    <string name="settings_album_art_default_artwork_title">Fallback artwork for songs without a cover</string>
+    <string name="settings_album_art_default_artwork_desc">Show the built-in default album artwork when a song has no embedded or external cover. Turn this off to use the normal placeholder instead.</string>
+</resources>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_graphic_eq_band_count_dropdown_desc">Choose the number of fixed-frequency bands</string>
+    <string name="settings_graphic_eq_preset_dropdown_desc">Current: %1$s · Manual changes become Custom</string>
+</resources>

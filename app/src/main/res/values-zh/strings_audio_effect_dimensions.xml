@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_effects_tab_parametric_eq">参量均衡器</string>
+    <string name="settings_effects_tab_graphic_eq">图形均衡器</string>
+    <string name="settings_effects_tab_spatial_reverb">空间混响</string>
+    <string name="settings_effects_tab_advanced">高级设置</string>
+</resources>

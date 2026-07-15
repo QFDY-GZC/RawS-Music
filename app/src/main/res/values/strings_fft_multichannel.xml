@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_fft_convolver_select_ir_multichannel_desc">Preserves every WAV channel. Supports shared mono, per-channel kernels, and full matrices; stereo matrix order is LL, LR, RL, RR.</string>
+    <string name="settings_fft_convolver_channels">%1$d channels</string>
+</resources>
