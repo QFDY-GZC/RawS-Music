@@ -7,6 +7,8 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -23,8 +25,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rawsmusic.core.ui.theme.RawThemeRuntimeState
+import com.rawsmusic.module.data.prefs.FontManager
 import kotlin.math.ceil
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ComposePlayerTitleInfo(
     title: String,
@@ -34,9 +39,23 @@ fun ComposePlayerTitleInfo(
     titleColor: Color = Color.White,
     artistColor: Color = Color(0xCCFFFFFF),
     albumColor: Color = Color(0x99FFFFFF),
-    endPaddingDp: Float = 0f
+    endPaddingDp: Float = 0f,
+    onLongClick: (() -> Unit)? = null
 ) {
-    Column(modifier = modifier.fillMaxWidth()) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (onLongClick != null) {
+                    Modifier.combinedClickable(
+                        onClick = {},
+                        onLongClick = onLongClick
+                    )
+                } else {
+                    Modifier
+                }
+            )
+    ) {
         MarqueeCanvasText(
             text = title,
             color = titleColor,
@@ -47,8 +66,13 @@ fun ComposePlayerTitleInfo(
                 .fillMaxWidth()
                 .height(28.dp)
         )
+        val secondary = listOf(artist, album)
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+            .joinToString(" / ")
         MarqueeCanvasText(
-            text = artist,
+            text = secondary,
             color = artistColor,
             fontSizeSp = 14f,
             endPaddingDp = endPaddingDp,
@@ -57,18 +81,6 @@ fun ComposePlayerTitleInfo(
                 .height(21.dp)
                 .padding(top = 2.dp)
         )
-        if (album.isNotBlank()) {
-            MarqueeCanvasText(
-                text = album,
-                color = albumColor,
-                fontSizeSp = 12f,
-                endPaddingDp = endPaddingDp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(18.dp)
-                    .padding(top = 1.dp)
-            )
-        }
     }
 }
 
@@ -82,14 +94,23 @@ private fun MarqueeCanvasText(
     endPaddingDp: Float = 0f
 ) {
     val density = LocalDensity.current
-    val paint = remember(text, color, fontSizeSp, fontWeight, density.density, density.fontScale) {
+    val fontRuntimeVersion = RawThemeRuntimeState.version
+    val paint = remember(text, color, fontSizeSp, fontWeight, density.density, density.fontScale, fontRuntimeVersion) {
         android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             this.color = color.toArgb()
             textSize = with(density) { fontSizeSp.sp.toPx() }
-            typeface = android.graphics.Typeface.create(
-                android.graphics.Typeface.SANS_SERIF,
-                if (fontWeight >= FontWeight.Bold) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL
-            )
+            val configuredTypeface = FontManager.typeface
+            typeface = if (configuredTypeface != null) {
+                android.graphics.Typeface.create(
+                    configuredTypeface,
+                    if (fontWeight >= FontWeight.Bold) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL
+                )
+            } else {
+                android.graphics.Typeface.create(
+                    android.graphics.Typeface.SANS_SERIF,
+                    if (fontWeight >= FontWeight.Bold) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL
+                )
+            }
         }
     }
     val textWidth = remember(text, paint.textSize, fontWeight) {

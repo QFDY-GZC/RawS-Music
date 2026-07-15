@@ -2,7 +2,6 @@ package com.rawsmusic.core.ui.widget.bitmaps
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.drawable.BitmapDrawable
 import android.util.Log
 import coil.ImageLoader
@@ -89,10 +88,7 @@ private class PowerListCoilArtworkFetcher(
             BitmapProvider.hasRecentThumbnailFailure(data.id.value, data.side, data.side)
         ) {
             Log.d("RawArt", "COIL_DEFAULT_ARTWORK_HIT key=${data.id.value.takeLast(80)}")
-            BitmapFactory.decodeResource(
-                options.context.resources,
-                com.rawsmusic.core.ui.R.drawable.default_album_art
-            )
+            decodeDefaultAlbumArtwork(options.context.resources, data.side)
         } else {
             null
         }

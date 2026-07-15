@@ -4,6 +4,8 @@ import android.graphics.RectF
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.scene.CoverTransitionTarget
 
@@ -23,6 +25,7 @@ fun ComposeGenericPowerList(
     selectedPositions: Set<Int> = emptySet(),
     revealIndexRequest: Int = -1,
     hidePlayingCover: Boolean = false,
+    contentTopPadding: Dp = 0.dp,
     onPlayingCoverBoundsChanged: (RectF?) -> Unit = {},
     onPlayingCoverTargetChanged: (CoverTransitionTarget?) -> Unit = {},
     onRevealCoverTargetResolved: (CoverTransitionTarget?) -> Unit = {},
@@ -48,6 +51,7 @@ fun ComposeGenericPowerList(
         selectedPositions = selectedPositions,
         revealIndexRequest = revealIndexRequest,
         hidePlayingCover = hidePlayingCover,
+        contentTopPadding = contentTopPadding,
         sharedCoverSceneId = sharedCoverSceneId,
         sharedCoverElementIdProvider = { _, index ->
             if (sharedCoverSceneId.isBlank()) "" else items.getOrNull(index)?.sharedCoverElementId.orEmpty()
@@ -89,7 +93,7 @@ private fun PowerListVisualItem.toAudioFile(): AudioFile {
         channelCount = 0,
         bpm = 0,
         albumArtist = "",
-        encodingFormat = "",
+        encodingFormat = POWER_LIST_COLLECTION_ENCODING,
         isFavorite = false,
         trackGain = 0f,
         trackPeak = 1.0f,

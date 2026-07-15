@@ -1,5 +1,8 @@
 package com.rawsmusic.core.ui.widget.bitmaps
 
+import android.content.res.Resources
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -13,7 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
-import com.rawsmusic.core.ui.R
+import com.rawsmusic.core.common.R
 import com.rawsmusic.module.data.prefs.AppPreferences
 import android.util.Log
 
@@ -37,6 +40,15 @@ fun shouldShowDefaultAlbumArtwork(key: String?, targetWidth: Int, targetHeight: 
         targetWidth = targetWidth,
         targetHeight = targetHeight
     )
+}
+
+fun decodeDefaultAlbumArtwork(resources: Resources, targetSide: Int): Bitmap? {
+    val source = BitmapFactory.decodeResource(resources, R.drawable.default_album_art) ?: return null
+    val side = targetSide.coerceIn(1, 1024)
+    if (source.width == side && source.height == side) return source
+    val scaled = Bitmap.createScaledBitmap(source, side, side, true)
+    if (scaled !== source && !source.isRecycled) source.recycle()
+    return scaled
 }
 
 @Composable

@@ -22,6 +22,7 @@ class NavigationState {
         val settingsScenes = setOf(
             NavScene.SETTINGS,
             NavScene.APPEARANCE,
+            NavScene.PERSONALIZATION_SETTINGS,
             NavScene.ALBUM_ART_SETTINGS,
             NavScene.GLOBAL_FONT_SETTINGS,
             NavScene.LYRIC_FONT_SETTINGS,

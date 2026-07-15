@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.dp
 import com.rawsmusic.core.common.model.AudioFile
@@ -46,6 +47,7 @@ fun AlbumsPage(
         AlbumListPage(
             albums = albums,
             state = powerListState,
+            onBack = onBack,
             onAlbumClick = onAlbumClick,
             modifier = modifier
         )
@@ -71,6 +73,7 @@ fun AlbumsPage(
 private fun AlbumListPage(
     albums: List<AlbumGroupUi>,
     state: ComposePowerListState,
+    onBack: () -> Unit,
     onAlbumClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -91,15 +94,19 @@ private fun AlbumListPage(
 
     val alphabetIndexData = rememberAdaptiveAlphabetIndexData(items) { it.title }
 
-    Box(
+    LibraryListScaffold(
+        title = stringResource(com.rawsmusic.core.ui.R.string.library_title_albums),
+        sceneId = NavScene.ALBUMS.name,
+        onBack = onBack,
+        powerListState = state,
         modifier = modifier
-            .fillMaxSize()
-    ) {
+    ) { topPadding, backdropSource ->
         ComposeGenericPowerList(
             items = items,
             state = state,
+            contentTopPadding = topPadding,
             sharedCoverSceneId = NavScene.ALBUMS.name,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().then(backdropSource),
             onItemClick = { item, _, _ ->
                 val album = item as? AlbumPowerListItem ?: return@ComposeGenericPowerList
 
@@ -117,6 +124,7 @@ private fun AlbumListPage(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .padding(top = 92.dp, bottom = 118.dp, end = 0.dp)
+                .then(backdropSource)
                 .zIndex(30f),
             onSelect = { _, index ->
                 state.requestScrollToIndex(index)
@@ -146,7 +154,7 @@ private data class AlbumGroupUi(
             coverKey = coverKey,
             title = name,
             subtitle = artist.ifBlank { "未知艺术家" },
-            meta = "♫ $songCount | ${formatPowerListDuration(totalDurationMs)}",
+            meta = "$songCount | ${formatPowerListDuration(totalDurationMs)}",
             songs = songs
         )
     }

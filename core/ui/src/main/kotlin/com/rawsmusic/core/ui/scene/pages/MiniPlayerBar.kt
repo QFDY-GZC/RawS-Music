@@ -90,7 +90,6 @@ fun MiniPlayerBar(
                 coverPath = coverPath,
                 coverBitmap = null,
                 isPlaying = isPlaying,
-                progress = progress,
                 contentDescription = title,
                 onCoverBoundsChanged = {},
                 onDoubleTapToggleMode = {

@@ -31,7 +31,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
@@ -49,11 +48,15 @@ import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
 import com.rawsmusic.core.ui.widget.bitmaps.DefaultAlbumArtwork
 import com.rawsmusic.core.ui.widget.bitmaps.shouldShowDefaultAlbumArtwork
 import com.rawsmusic.core.ui.widget.bitmaps.RawArtworkPolicy
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val MINI_PLAYER_PREFS = "mini_player_prefs"
 private const val KEY_ARTWORK_MODE = "artwork_mode"
 private const val KEY_LAST_COVER_PATH = "last_cover_path"
+
+private data class MiniPlayerRememberedBitmap(
+    val key: String,
+    val bitmap: Bitmap
+)
 
 @Composable
 fun rememberMiniPlayerArtworkMode(): MutableState<MiniPlayerArtworkMode> {
@@ -94,7 +97,6 @@ fun MiniPlayerArtwork(
     coverPath: String?,
     coverBitmap: Bitmap?,
     isPlaying: Boolean,
-    progress: Float,
     contentDescription: String?,
     onCoverBoundsChanged: (RectF?) -> Unit,
     onDoubleTapToggleMode: () -> Unit,
@@ -103,39 +105,48 @@ fun MiniPlayerArtwork(
     animateArtwork: Boolean = false
 ) {
     val rememberedCoverPath = rememberMiniPlayerCoverPath(coverPath)
-    val progressColor = MiuixTheme.colorScheme.primary
+    val currentCoverKey = rememberedCoverPath?.takeIf { it.isNotBlank() }
     val context = LocalContext.current.applicationContext
-    var rememberedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var rememberedBitmap by remember { mutableStateOf<MiniPlayerRememberedBitmap?>(null) }
 
     // P0 省电：迷你播放栏不再用最高优先级主动抽 256 封面。
-    // 先复用 BitmapProvider 里已有的缩略图；缺失时交给 CoverVisual/列表管线按低优先级补齐。
-    LaunchedEffect(context, rememberedCoverPath) {
+    // 但缓存 bitmap 必须和当前 coverKey 绑定；切歌后新 key 暂时 miss 时不能继续显示上一首。
+    LaunchedEffect(context, currentCoverKey) {
         BitmapProvider.init(context)
-        val key = rememberedCoverPath?.takeIf { it.isNotBlank() }
+        val key = currentCoverKey
         if (key == null) {
             rememberedBitmap = null
             return@LaunchedEffect
         }
+
+        val retained = rememberedBitmap
+        if (retained?.key != key || retained.bitmap.isRecycled) {
+            rememberedBitmap = null
+        }
+
         val cached = BitmapProvider.peekThumbnail(key, 256, 256)
             ?: BitmapProvider.peekThumbnail(key, 128, 128)
             ?: BitmapProvider.peekAny(key)
         if (cached != null && !cached.isRecycled) {
-            rememberedBitmap = cached
+            rememberedBitmap = MiniPlayerRememberedBitmap(key, cached)
         }
     }
 
-    LaunchedEffect(coverBitmap, rememberedCoverPath) {
-        if (coverBitmap != null && !coverBitmap.isRecycled) {
-            rememberedBitmap = coverBitmap
-        } else if (rememberedCoverPath.isNullOrBlank()) {
+    LaunchedEffect(coverBitmap, currentCoverKey) {
+        val key = currentCoverKey
+        if (key == null) {
             rememberedBitmap = null
+        } else if (coverBitmap != null && !coverBitmap.isRecycled) {
+            rememberedBitmap = MiniPlayerRememberedBitmap(key, coverBitmap)
         }
     }
-    val visualBitmap = if (rememberedCoverPath.isNullOrBlank()) {
+    val visualBitmap = if (currentCoverKey == null) {
         null
     } else {
         coverBitmap?.takeIf { !it.isRecycled }
-            ?: rememberedBitmap?.takeIf { !it.isRecycled }
+            ?: rememberedBitmap
+                ?.takeIf { it.key == currentCoverKey && !it.bitmap.isRecycled }
+                ?.bitmap
     }
 
     val appliedRotation = rememberMiniArtworkRotation(
@@ -148,8 +159,6 @@ fun MiniPlayerArtwork(
                 coverPath = rememberedCoverPath,
                 coverBitmap = visualBitmap,
                 rotation = appliedRotation,
-                progress = progress,
-                progressColor = progressColor,
                 contentDescription = contentDescription,
                 onCoverBoundsChanged = onCoverBoundsChanged,
                 onDoubleTapToggleMode = onDoubleTapToggleMode,
@@ -198,8 +207,6 @@ private fun NormalMiniArtwork(
     coverPath: String?,
     coverBitmap: Bitmap?,
     rotation: Float,
-    progress: Float,
-    progressColor: Color,
     contentDescription: String?,
     onCoverBoundsChanged: (RectF?) -> Unit,
     onDoubleTapToggleMode: () -> Unit,
@@ -216,22 +223,6 @@ private fun NormalMiniArtwork(
         },
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(52.dp)) {
-            val strokeWidth = 2.dp.toPx()
-            val radius = (size.minDimension - strokeWidth) / 2f
-            drawCircle(
-                color = Color.White.copy(alpha = 0.15f),
-                radius = radius,
-                style = Stroke(width = strokeWidth)
-            )
-            drawArc(
-                color = progressColor,
-                startAngle = -90f,
-                sweepAngle = (1f - progress.coerceIn(0f, 1f)) * 360f,
-                useCenter = false,
-                style = Stroke(width = strokeWidth)
-            )
-        }
         CoverVisual(
             coverPath = coverPath,
             coverBitmap = coverBitmap,

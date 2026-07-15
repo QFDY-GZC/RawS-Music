@@ -3,6 +3,7 @@ package com.rawsmusic.core.ui.scene
 import android.net.Uri
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import android.graphics.RectF
 import com.rawsmusic.core.common.model.Album
@@ -22,6 +23,8 @@ import com.rawsmusic.core.ui.scene.pages.GenresPage
 import com.rawsmusic.core.ui.scene.pages.YearsPage
 import com.rawsmusic.core.ui.scene.pages.HomePage
 import com.rawsmusic.core.ui.scene.pages.LogViewerPage
+import com.rawsmusic.core.ui.scene.pages.LibraryChromeInfo
+import com.rawsmusic.core.ui.scene.pages.LocalLibraryChromeInfo
 import com.rawsmusic.core.ui.scene.pages.PlaylistsPage
 import com.rawsmusic.core.ui.scene.pages.QueuePage
 import com.rawsmusic.core.ui.scene.pages.RecentlyAddedPage
@@ -79,10 +82,17 @@ data class NavData(
     val songs: List<AudioFile> = emptyList(),
     val currentPlayingIndex: Int = -1,
     val currentSong: AudioFile? = null,
+    val queueSongs: List<AudioFile> = emptyList(),
+    val queueCurrentIndex: Int = -1,
     val miniPlayerTitle: String = "",
     val miniPlayerArtist: String = "",
+    val miniPlayerLyric: String = "",
+    val miniPlayerLyricTranslation: String = "",
     val miniPlayerIsPlaying: Boolean = false,
     val miniPlayerProgress: Float = 0f,
+    val playbackPositionMs: Long = 0L,
+    val playbackDurationMs: Long = 0L,
+    val nextSongTitle: String = "",
     val miniPlayerCoverPath: String? = null,
     val playerReturnRevealIndex: Int = -1,
     val hidePlayingCover: Boolean = false,
@@ -115,6 +125,20 @@ fun ComposeNavHost(
     val yearsPowerListState = rememberComposePowerListState("years")
     val composersPowerListState = rememberComposePowerListState("composers")
 
+    CompositionLocalProvider(
+        LocalLibraryChromeInfo provides LibraryChromeInfo(
+            nowPlayingTitle = data.miniPlayerTitle,
+            nextSongTitle = data.nextSongTitle,
+            showNextQueueHint = data.miniPlayerIsPlaying &&
+                data.playbackDurationMs > 0L &&
+                (data.playbackDurationMs - data.playbackPositionMs) in 1L..10_000L &&
+                data.nextSongTitle.isNotBlank(),
+            onSearch = callbacks.onSearchClick,
+            onOpenFolderPicker = callbacks.onOpenFolderPicker,
+            currentSortOrder = data.currentSortOrder,
+            onSortSelected = callbacks.onSongSortSelected
+        )
+    ) {
     SceneTransitionHost(
         state = state,
         modifier = modifier,
@@ -150,6 +174,9 @@ fun ComposeNavHost(
                 miniPlayerArtist = data.miniPlayerArtist,
                 miniPlayerIsPlaying = data.miniPlayerIsPlaying,
                 miniPlayerProgress = data.miniPlayerProgress,
+                playbackPositionMs = data.playbackPositionMs,
+                playbackDurationMs = data.playbackDurationMs,
+                nextSongTitle = data.nextSongTitle,
                 miniPlayerCoverPath = data.miniPlayerCoverPath,
                 hidePlayingCover = data.hidePlayingCover,
                 onBack = onBack,
@@ -161,6 +188,7 @@ fun ComposeNavHost(
                 onMiniPlayerNext = callbacks.onMiniPlayerNext,
                 onOpenFolderPicker = callbacks.onOpenFolderPicker,
                 onSortClick = callbacks.onSortClick,
+                onShuffleAll = callbacks.onShuffleAll,
                 onSortSelected = callbacks.onSongSortSelected,
                 onSelectionAddToPlaylist = callbacks.onSelectionAddToPlaylist,
                 onSelectionAddToQueue = callbacks.onSelectionAddToQueue,
@@ -222,8 +250,19 @@ fun ComposeNavHost(
                     PlaylistsPage(onBack = onBack)
                 }
             }
-            NavScene.QUEUE -> QueuePage(onBack = onBack)
-            NavScene.RECENTLY_ADDED -> RecentlyAddedPage(onBack = onBack)
+            NavScene.QUEUE -> QueuePage(
+                songs = data.queueSongs,
+                currentIndex = data.queueCurrentIndex,
+                onBack = onBack,
+                onSongClick = callbacks.onQueueSongClick,
+                onShuffle = callbacks.onShuffleAll
+            )
+            NavScene.RECENTLY_ADDED -> RecentlyAddedPage(
+                songs = data.songs,
+                onBack = onBack,
+                onSongClick = callbacks.onRecentlyAddedClick,
+                onShuffle = callbacks.onShuffleAll
+            )
             // WEBDAV 由外部渲染器处理（依赖 AppPreferences）
             NavScene.ABOUT -> AboutPage(onBack = onBack)
             NavScene.SONG_STATS -> SongStatsPage(onBack = onBack)
@@ -364,5 +403,6 @@ fun ComposeNavHost(
                 }
             }
         }
+    }
     }
 }

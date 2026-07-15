@@ -1,10 +1,14 @@
 package com.rawsmusic.core.ui.widget.player
 
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,12 +29,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -42,10 +50,22 @@ import io.github.proify.lyricon.lyric.model.interfaces.IRichLyricLine
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
+
+enum class LyricTextPosition(val value: Int) {
+    Left(0),
+    Center(1),
+    Right(2);
+
+    companion object {
+        fun from(value: Int): LyricTextPosition = entries.firstOrNull { it.value == value } ?: Left
+    }
+}
+
 @Composable
 fun ComposeLyricView(
     song: Song?,
     positionMs: Long,
+    isPlaying: Boolean = false,
     displayTranslation: Boolean,
     displayRoma: Boolean,
     modifier: Modifier = Modifier,
@@ -55,15 +75,30 @@ fun ComposeLyricView(
     dimColor: Color = Color.White.copy(alpha = 0.28f),
     secondaryColor: Color = Color.White.copy(alpha = 0.58f),
     fontFamily: FontFamily? = null,
+    fontSizeSp: Int = 28,
+    textPosition: LyricTextPosition = LyricTextPosition.Left,
+    blurEnabled: Boolean = true,
+    highlightAll: Boolean = false,
     maxPrimaryVisibleLines: Int = Int.MAX_VALUE,
     onLineClick: (Long) -> Unit = {},
     onSwipeRight: () -> Unit = {}
 ) {
     val lines = remember(song) { song?.lyrics.orEmpty() }
+    var interpolatedPositionMs by remember { androidx.compose.runtime.mutableLongStateOf(positionMs) }
+    LaunchedEffect(positionMs, isPlaying) {
+        interpolatedPositionMs = positionMs
+        if (!isPlaying) return@LaunchedEffect
+        val startedAtNs = withFrameNanos { it }
+        while (true) {
+            val frameNs = withFrameNanos { it }
+            val elapsedMs = ((frameNs - startedAtNs) / 1_000_000L).coerceIn(0L, 80L)
+            interpolatedPositionMs = positionMs + elapsedMs
+        }
+    }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    val playbackState by remember(lines, positionMs) {
-        derivedStateOf { calculateLyricPlaybackState(lines, positionMs) }
+    val playbackState by remember(lines, interpolatedPositionMs) {
+        derivedStateOf { calculateLyricPlaybackState(lines, interpolatedPositionMs) }
     }
     val currentIndex = playbackState.currentLineIndex
     val compactWindowEnabled = maxPrimaryVisibleLines != Int.MAX_VALUE
@@ -89,10 +124,12 @@ fun ComposeLyricView(
         }
     }
 
-    // 用户手动滚动时暂停自动追踪
+    // Only a real finger drag pauses lyric tracking. isScrollInProgress also becomes
+    // true for animateScrollToItem and previously made auto-scroll disable itself.
+    val userDragging by listState.interactionSource.collectIsDraggedAsState()
     var userScrolling by remember { mutableStateOf(false) }
-    LaunchedEffect(listState.isScrollInProgress) {
-        if (listState.isScrollInProgress) {
+    LaunchedEffect(userDragging) {
+        if (userDragging) {
             userScrolling = true
         } else {
             kotlinx.coroutines.delay(1800)
@@ -100,9 +137,21 @@ fun ComposeLyricView(
         }
     }
 
-    LaunchedEffect(currentIndex, lines.size, compactWindowEnabled) {
-        if (!compactWindowEnabled && currentIndex >= 0 && lines.isNotEmpty() && !userScrolling && !listState.isScrollInProgress) {
-            listState.animateScrollToItem(currentIndex, scrollOffset = -160)
+    LaunchedEffect(currentIndex, lines.size, compactWindowEnabled, userScrolling) {
+        if (!compactWindowEnabled && currentIndex >= 0 && lines.isNotEmpty() && !userScrolling) {
+            val lazyIndex = currentIndex + 1 // Leading spacer occupies item 0.
+            val visibleItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == lazyIndex }
+            if (visibleItem != null) {
+                val layoutInfo = listState.layoutInfo
+                val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
+                val targetOffset = layoutInfo.viewportStartOffset + viewportHeight * 0.28f
+                listState.animateScrollBy(
+                    value = visibleItem.offset - targetOffset,
+                    animationSpec = tween(durationMillis = 750, easing = AppleLyricsEasing)
+                )
+            } else {
+                listState.animateScrollToItem(lazyIndex, scrollOffset = -160)
+            }
         }
     }
 
@@ -123,24 +172,7 @@ fun ComposeLyricView(
         Column(
             modifier = modifier
                 .fillMaxSize()
-                .pointerInput(Unit) {
-                    var totalX = 0f
-                    var totalY = 0f
-                    detectDragGestures(
-                        onDragStart = {
-                            totalX = 0f
-                            totalY = 0f
-                        },
-                        onDragEnd = {
-                            if (totalX > 150f && abs(totalX) > abs(totalY)) onSwipeRight()
-                        },
-                        onDrag = { change, dragAmount ->
-                            totalX += dragAmount.x
-                            totalY += dragAmount.y
-                            change.consume()
-                        }
-                    )
-                },
+                .observeLyricSwipeRight(onSwipeRight),
             verticalArrangement = Arrangement.spacedBy(
                 space = if (visibleLineIndices.size <= 3) 18.dp else 12.dp,
                 alignment = Alignment.CenterVertically
@@ -155,20 +187,24 @@ fun ComposeLyricView(
                 ComposeLyricLine(
                     line = line,
                     active = active,
-                    progress = if (active) playbackState.lineProgress else 0f,
-                    positionMs = positionMs,
+                    positionMs = interpolatedPositionMs,
                     displayTranslation = displayTranslation,
                     displayRoma = displayRoma,
-                    textColor = if (active) textColor else dimColor,
+                    textColor = if (active || highlightAll) textColor else dimColor,
                     dimColor = dimColor,
-                    secondaryColor = if (active) secondaryColor else secondaryColor.copy(alpha = 0.58f),
+                    secondaryColor = if (active || highlightAll) secondaryColor
+                    else secondaryColor.copy(alpha = 0.58f),
                     fontFamily = fontFamily,
+                    fontSizeSp = fontSizeSp,
+                    textPosition = textPosition,
                     modifier = Modifier
                         .fillMaxWidth()
                         .appleLyricLineVisuals(
                             active = active,
-                            distance = distance,
-                            alignedRight = line.isAlignedRight
+                            signedDistance = index - currentIndex,
+                            pivotFractionX = textPosition.pivotFractionX,
+                            blurEnabled = blurEnabled,
+                            highlightAll = highlightAll
                         )
                         .clickable {
                             scope.launch { onLineClick(line.begin) }
@@ -183,24 +219,7 @@ fun ComposeLyricView(
         state = listState,
         modifier = modifier
             .fillMaxSize()
-            .pointerInput(Unit) {
-                var totalX = 0f
-                var totalY = 0f
-                detectDragGestures(
-                    onDragStart = {
-                        totalX = 0f
-                        totalY = 0f
-                    },
-                    onDragEnd = {
-                        if (totalX > 150f && abs(totalX) > abs(totalY)) onSwipeRight()
-                    },
-                    onDrag = { change, dragAmount ->
-                        totalX += dragAmount.x
-                        totalY += dragAmount.y
-                        change.consume()
-                    }
-                )
-            },
+            .observeLyricSwipeRight(onSwipeRight),
         verticalArrangement = Arrangement.spacedBy(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -217,20 +236,24 @@ fun ComposeLyricView(
             ComposeLyricLine(
                 line = line,
                 active = active,
-                progress = if (active) playbackState.lineProgress else 0f,
-                positionMs = positionMs,
+                positionMs = interpolatedPositionMs,
                 displayTranslation = displayTranslation,
                 displayRoma = displayRoma,
-                textColor = if (active) textColor else dimColor,
+                textColor = if (active || highlightAll) textColor else dimColor,
                 dimColor = dimColor,
-                secondaryColor = if (active) secondaryColor else secondaryColor.copy(alpha = 0.58f),
+                secondaryColor = if (active || highlightAll) secondaryColor
+                else secondaryColor.copy(alpha = 0.58f),
                 fontFamily = fontFamily,
+                fontSizeSp = fontSizeSp,
+                textPosition = textPosition,
                 modifier = Modifier
                     .fillMaxWidth()
                     .appleLyricLineVisuals(
                         active = active,
-                        distance = distance,
-                        alignedRight = line.isAlignedRight
+                        signedDistance = index - currentIndex,
+                        pivotFractionX = textPosition.pivotFractionX,
+                        blurEnabled = blurEnabled && !userScrolling,
+                        highlightAll = highlightAll
                     )
                     .clickable {
                         scope.launch { onLineClick(line.begin) }
@@ -245,7 +268,6 @@ fun ComposeLyricView(
 private fun ComposeLyricLine(
     line: IRichLyricLine,
     active: Boolean,
-    progress: Float,
     positionMs: Long,
     displayTranslation: Boolean,
     displayRoma: Boolean,
@@ -253,41 +275,69 @@ private fun ComposeLyricLine(
     dimColor: Color,
     secondaryColor: Color,
     fontFamily: FontFamily?,
+    fontSizeSp: Int,
+    textPosition: LyricTextPosition,
     modifier: Modifier = Modifier
 ) {
-    val align = if (line.isAlignedRight) Alignment.End else Alignment.Start
-    val textAlign = if (line.isAlignedRight) TextAlign.End else TextAlign.Start
+    val align = textPosition.horizontalAlignment
+    val textAlign = textPosition.textAlign
+    val primarySize = fontSizeSp.coerceIn(24, 40)
+    val primaryLineHeight = primarySize + 6
+    val secondarySize = (primarySize * 0.62f).toInt().coerceIn(15, 25)
+    val secondaryLineHeight = secondarySize + 6
     val hasWordTiming = !line.words.isNullOrEmpty()
     Column(
         modifier = modifier.padding(horizontal = 28.dp),
         horizontalAlignment = align
     ) {
         val main = line.text.orEmpty().ifBlank { "..." }
-        Box(modifier = Modifier.widthIn(max = 340.dp)) {
-            if (active && hasWordTiming) {
-                // 逐字渐变扫过
-                KaraokeLyricLine(
-                    line = line,
-                    positionMs = positionMs,
-                    highlightColor = textColor,
-                    dimColor = dimColor,
-                    fontSize = 28.sp,
-                    lineHeight = 34.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = fontFamily,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            } else {
-                Text(
-                    text = main,
-                    color = textColor,
-                    fontSize = 28.sp,
-                    lineHeight = 34.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = fontFamily,
-                    textAlign = textAlign,
-                    modifier = Modifier.fillMaxWidth()
-                )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 340.dp),
+            contentAlignment = textPosition.boxAlignment
+        ) {
+            when {
+                active && hasWordTiming -> {
+                    // 逐字歌词：按单词时间轴羽化、高亮并上抬。
+                    KaraokeLyricLine(
+                        line = line,
+                        positionMs = positionMs,
+                        highlightColor = textColor,
+                        dimColor = dimColor,
+                        fontSize = primarySize.sp,
+                        lineHeight = primaryLineHeight.sp,
+                        textAlign = textAlign,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = fontFamily,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                active -> {
+                    // 普通逐行歌词只做当前行整体高亮，不启用羽化或时间进度扫光。
+                    Text(
+                        text = main,
+                        color = textColor,
+                        fontSize = primarySize.sp,
+                        lineHeight = primaryLineHeight.sp,
+                        textAlign = textAlign,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = fontFamily,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                else -> {
+                    Text(
+                        text = main,
+                        color = textColor,
+                        fontSize = primarySize.sp,
+                        lineHeight = primaryLineHeight.sp,
+                        textAlign = textAlign,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = fontFamily,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
         }
         val secondaryText: String? = when {
@@ -302,12 +352,14 @@ private fun ComposeLyricLine(
             Text(
                 text = visibleSecondary,
                 color = secondaryColor,
-                fontSize = 17.sp,
-                lineHeight = 23.sp,
+                fontSize = secondarySize.sp,
+                lineHeight = secondaryLineHeight.sp,
                 fontWeight = FontWeight.Medium,
                 fontFamily = fontFamily,
                 textAlign = textAlign,
-                modifier = Modifier.widthIn(max = 340.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 340.dp)
             )
         }
     }
@@ -315,16 +367,20 @@ private fun ComposeLyricLine(
 
 // ========== 行级歌词视觉 ==========
 
-private val AppleLyricsEasing = CubicBezierEasing(0.25f, 0.10f, 0.25f, 1.00f)
+private val AppleLyricsEasing = CubicBezierEasing(0.40f, 0.10f, 0.00f, 1.00f)
 
 @Composable
 private fun Modifier.appleLyricLineVisuals(
     active: Boolean,
-    distance: Int,
-    alignedRight: Boolean
+    signedDistance: Int,
+    pivotFractionX: Float,
+    blurEnabled: Boolean,
+    highlightAll: Boolean
 ): Modifier {
+    val distance = abs(signedDistance)
+    val staggerDelay = appleLowerLineStaggerDelay(signedDistance)
     val targetAlpha = when {
-        active -> 1f
+        active || highlightAll -> 1f
         distance == 1 -> 0.72f
         distance == 2 -> 0.46f
         distance == 3 -> 0.30f
@@ -340,27 +396,108 @@ private fun Modifier.appleLyricLineVisuals(
 
     val alpha by animateFloatAsState(
         targetValue = targetAlpha,
-        animationSpec = tween(durationMillis = 260, easing = AppleLyricsEasing),
+        animationSpec = tween(
+            durationMillis = 750,
+            delayMillis = staggerDelay,
+            easing = AppleLyricsEasing
+        ),
         label = "appleLyricLineAlpha"
     )
 
     val scale by animateFloatAsState(
         targetValue = targetScale,
-        animationSpec = tween(durationMillis = 360, easing = AppleLyricsEasing),
+        animationSpec = tween(
+            durationMillis = 750,
+            delayMillis = staggerDelay,
+            easing = AppleLyricsEasing
+        ),
         label = "appleLyricLineScale"
     )
 
-    return this.graphicsLayer {
+    val targetBlur = when {
+        !blurEnabled -> 0.dp
+        active -> 0.dp
+        signedDistance < 0 -> (distance * 0.72f).coerceAtMost(3.6f).dp
+        else -> (distance * 1.45f).coerceAtMost(8.5f).dp
+    }
+    val blurRadius by animateDpAsState(
+        targetValue = targetBlur,
+        animationSpec = tween(
+            durationMillis = if (blurEnabled) 750 else 120,
+            delayMillis = if (blurEnabled) staggerDelay else 0,
+            easing = AppleLyricsEasing
+        ),
+        label = "appleLyricLineBlur"
+    )
+
+    return this
+        .blur(blurRadius)
+        .graphicsLayer {
         this.alpha = alpha
         scaleX = scale
         scaleY = scale
-        transformOrigin = if (alignedRight) {
-            TransformOrigin(1f, 0.5f)
-        } else {
-            TransformOrigin(0f, 0.5f)
+        transformOrigin = TransformOrigin(pivotFractionX, 0.5f)
+        }
+}
+
+private fun Modifier.observeLyricSwipeRight(onSwipeRight: () -> Unit): Modifier {
+    return pointerInput(onSwipeRight) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            val start = down.position
+            var end = start
+            var finished = false
+            while (!finished) {
+                val event = awaitPointerEvent(PointerEventPass.Final)
+                val change = event.changes.firstOrNull { it.id == down.id }
+                    ?: event.changes.firstOrNull()
+                    ?: break
+                end = change.position
+                finished = change.changedToUpIgnoreConsumed() || !change.pressed
+            }
+            val totalX = end.x - start.x
+            val totalY = end.y - start.y
+            if (totalX > 150f && abs(totalX) > abs(totalY) * 1.35f) {
+                onSwipeRight()
+            }
         }
     }
 }
+
+private fun appleLowerLineStaggerDelay(signedDistance: Int): Int {
+    if (signedDistance <= 0) return 0
+    val itemDistance = signedDistance.coerceAtMost(4)
+    return ((25f * 0.25f) *
+        (5f * itemDistance - ((itemDistance + 1f) * itemDistance) / 2f)).toInt()
+}
+
+private val LyricTextPosition.horizontalAlignment: Alignment.Horizontal
+    get() = when (this) {
+        LyricTextPosition.Left -> Alignment.Start
+        LyricTextPosition.Center -> Alignment.CenterHorizontally
+        LyricTextPosition.Right -> Alignment.End
+    }
+
+private val LyricTextPosition.textAlign: TextAlign
+    get() = when (this) {
+        LyricTextPosition.Left -> TextAlign.Start
+        LyricTextPosition.Center -> TextAlign.Center
+        LyricTextPosition.Right -> TextAlign.End
+    }
+
+private val LyricTextPosition.boxAlignment: Alignment
+    get() = when (this) {
+        LyricTextPosition.Left -> Alignment.CenterStart
+        LyricTextPosition.Center -> Alignment.Center
+        LyricTextPosition.Right -> Alignment.CenterEnd
+    }
+
+private val LyricTextPosition.pivotFractionX: Float
+    get() = when (this) {
+        LyricTextPosition.Left -> 0f
+        LyricTextPosition.Center -> 0.5f
+        LyricTextPosition.Right -> 1f
+    }
 
 private fun immersivePrimaryLyricLineLimit(
     lines: List<IRichLyricLine>,

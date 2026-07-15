@@ -4,7 +4,6 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
@@ -37,7 +36,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastFirstOrNull
 import androidx.compose.ui.util.lerp
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.max
@@ -63,8 +61,6 @@ private enum class PageMotion {
     Generic,
     FolderSharedForward,
     FolderSharedBack,
-    PowerListForward,
-    PowerListBack,
     SettingsForward,
     SettingsBack,
 }
@@ -88,6 +84,7 @@ private val settingsScenes = setOf(
     NavScene.LOG_VIEWER,
     NavScene.ANALYTICS,
     NavScene.APPEARANCE,
+    NavScene.PERSONALIZATION_SETTINGS,
     NavScene.AUDIO_EFFECTS,
     NavScene.AUDIO_SETTINGS,
     NavScene.ALBUM_ART_SETTINGS,
@@ -129,7 +126,7 @@ private fun usesSharedCoverMotion(from: NavScene, to: NavScene): Boolean {
         (from == NavScene.COMPOSER_DETAIL && to == NavScene.COMPOSER)
 }
 
-private fun usesPowerListMotion(from: NavScene, to: NavScene): Boolean {
+private fun allowsContentBackDrag(from: NavScene, to: NavScene): Boolean {
     if (from in settingsScenes || to in settingsScenes) return false
     if (usesSharedCoverMotion(from, to)) return false
     return from != to
@@ -163,7 +160,6 @@ fun SceneTransitionHost(
     var isAnimating by remember { mutableStateOf(false) }
     var isGestureActive by remember { mutableStateOf(false) }
     var pageMotion by remember { mutableStateOf(PageMotion.Generic) }
-    var motionDirection by remember { mutableFloatStateOf(1f) }
     var screenWidthPx by remember { mutableFloatStateOf(0f) }
     val prevSceneRef = remember { mutableStateOf(state.currentScene) }
 
@@ -204,10 +200,8 @@ fun SceneTransitionHost(
         pageMotion = when {
             usesSharedCoverMotion(oldScene, newScene) -> PageMotion.FolderSharedForward
             usesSettingsFragmentMotion(oldScene, newScene) -> PageMotion.SettingsForward
-            usesPowerListMotion(oldScene, newScene) -> PageMotion.PowerListForward
             else -> PageMotion.Generic
         }
-        motionDirection = 1f
         isAnimating = true
         animProgress.snapTo(1f)
         displayedScene = newScene
@@ -232,10 +226,8 @@ fun SceneTransitionHost(
         pageMotion = when {
             usesSharedCoverMotion(state.currentScene, targetScene) -> PageMotion.FolderSharedBack
             usesSettingsFragmentMotion(state.currentScene, targetScene) -> PageMotion.SettingsBack
-            usesPowerListMotion(state.currentScene, targetScene) -> PageMotion.PowerListBack
             else -> PageMotion.Generic
         }
-        motionDirection = state.dragBackDirection
         isAnimating = true
         animProgress.snapTo(0f)
         withFrameNanos { }
@@ -260,10 +252,8 @@ fun SceneTransitionHost(
             pageMotion = when {
                 usesSharedCoverMotion(state.currentScene, targetScene) -> PageMotion.FolderSharedBack
                 usesSettingsFragmentMotion(state.currentScene, targetScene) -> PageMotion.SettingsBack
-                usesPowerListMotion(state.currentScene, targetScene) -> PageMotion.PowerListBack
                 else -> PageMotion.Generic
             }
-            motionDirection = state.dragBackDirection
             isGestureActive = true
             animProgress.snapTo(0f)
         }
@@ -300,7 +290,7 @@ fun SceneTransitionHost(
             if (isAnimating || state.isDraggingBack) return@awaitEachGesture
             val localWidthPx = size.width.toFloat().coerceAtLeast(1f)
             val prev = state.getPreviousScene() ?: return@awaitEachGesture
-            val allowContentDrag = usesPowerListMotion(state.currentScene, prev)
+            val allowContentDrag = allowsContentBackDrag(state.currentScene, prev)
             var direction = when {
                 down.position.x <= edgeWidthPx -> 1f
                 down.position.x >= localWidthPx - edgeWidthPx -> -1f
@@ -336,7 +326,6 @@ fun SceneTransitionHost(
                     dragging = absDx > absDy * 1.15f && (allowContentDrag || dx * direction > 0f)
                     if (!dragging) return@awaitEachGesture
                     if (!state.startBackDrag(direction)) return@awaitEachGesture
-                    motionDirection = direction
                     isGestureActive = true
                     scope.launch { animProgress.snapTo(0f) }
                     change.consume()
@@ -365,8 +354,6 @@ fun SceneTransitionHost(
         }
     }
 
-    val sharedRegistry = remember { SharedTransitionRegistry() }
-
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -390,8 +377,6 @@ fun SceneTransitionHost(
             PageMotion.SettingsBack -> progress
             PageMotion.FolderSharedForward -> 1f - progress
             PageMotion.FolderSharedBack -> progress
-            PageMotion.PowerListForward -> 1f - progress
-            PageMotion.PowerListBack -> progress
             PageMotion.Generic -> {
                 if (isGestureActive || state.isDraggingBack || state.isAnimatingBack) {
                     progress
@@ -401,15 +386,8 @@ fun SceneTransitionHost(
             }
         }.coerceIn(0f, 1f)
 
-        val isPowerListSceneTransition =
-            pageMotion == PageMotion.PowerListForward || pageMotion == PageMotion.PowerListBack
-        val sharedActive = inTransition && sharedFromScene != sharedToScene && !isPowerListSceneTransition
+        val sharedActive = inTransition && sharedFromScene != sharedToScene
         val transitionKey = "${sharedFromScene.name}->${sharedToScene.name}"
-
-        // 过渡结束时清除冻结坐标
-        if (!sharedActive) {
-            sharedRegistry.clearFrozen()
-        }
 
         val sharedCoverRegistry = remember { SharedCoverRegistry() }
         if (!sharedActive) {
@@ -420,29 +398,18 @@ fun SceneTransitionHost(
             active = sharedActive,
             fromSceneId = sharedFromScene.name,
             toSceneId = sharedToScene.name,
-            activeSceneId = sharedFromScene.name,
+            activeSceneId = displayedScene.name,
             progress = sharedProgress,
             transitionKey = transitionKey
         )
 
         CompositionLocalProvider(
-            LocalSharedTransitionRegistry provides sharedRegistry,
             LocalSharedCoverRegistry provides sharedCoverRegistry,
-            LocalIsSharedTransitionActive provides inTransition,
             LocalSharedTransitionSpec provides sharedSpec
         ) {
             if (inTransition && fromScene != displayedScene) {
-                val transform = pageTransforms(pageMotion, progress, screenWidthPx, motionDirection)
+                val transform = pageTransforms(pageMotion, progress, screenWidthPx)
                 val isSettings = pageMotion == PageMotion.SettingsForward || pageMotion == PageMotion.SettingsBack
-                val isPowerList = pageMotion == PageMotion.PowerListForward || pageMotion == PageMotion.PowerListBack
-
-                if (isPowerList) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(MiuixTheme.colorScheme.background)
-                    )
-                }
 
                 // 来源页面（下层）
                 Box(
@@ -461,8 +428,7 @@ fun SceneTransitionHost(
                         }
                 ) {
                     CompositionLocalProvider(
-                        LocalSceneTransitionProgress provides if (isPowerList) 0f else sharedProgress,
-                        LocalSceneBackgroundFrozen provides isPowerList
+                        LocalSceneBackgroundFrozen provides false
                     ) {
                         SceneContent(fromScene)
                     }
@@ -485,28 +451,25 @@ fun SceneTransitionHost(
                         }
                 ) {
                     CompositionLocalProvider(
-                        LocalSceneTransitionProgress provides if (isPowerList) 0f else sharedProgress,
-                        LocalSceneBackgroundFrozen provides isPowerList
+                        LocalSceneBackgroundFrozen provides false
                     ) {
                         SceneContent(displayedScene)
                     }
                 }
 
             } else {
-                CompositionLocalProvider(LocalSceneTransitionProgress provides 0f) {
-                    SceneContent(displayedScene)
-                    prewarmScenes.forEach { scene ->
-                        if (scene != displayedScene) {
-                            Box(
+                SceneContent(displayedScene)
+                prewarmScenes.forEach { scene ->
+                    if (scene != displayedScene) {
+                        Box(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .graphicsLayer {
                                         alpha = 0f
                                         translationX = screenWidthPx.coerceAtLeast(1f) * 2f
                                     }
-                            ) {
-                                SceneContent(scene)
-                            }
+                        ) {
+                            SceneContent(scene)
                         }
                     }
                 }
@@ -538,10 +501,8 @@ private fun pageTransforms(
     motion: PageMotion,
     progress: Float,
     screenWidthPx: Float,
-    direction: Float,
 ): PageTransform {
     val width = screenWidthPx.coerceAtLeast(1f)
-    val dir = if (direction < 0f) -1f else 1f
     return when (motion) {
         PageMotion.SettingsForward -> {
             val elapsed = 1f - progress
@@ -576,30 +537,6 @@ private fun pageTransforms(
                 currentScale = 1f,
                 currentAlpha = lerp(1f, 0f, elapsed),
                 currentTranslationX = 0f,
-            )
-        }
-
-        PageMotion.PowerListForward -> {
-            val elapsed = 1f - progress
-            PageTransform(
-                fromScale = 1f,
-                fromAlpha = lerp(1f, 0.92f, elapsed),
-                fromTranslationX = lerp(0f, -dir * width * 0.10f, elapsed),
-                currentScale = 1f,
-                currentAlpha = lerp(0.86f, 1f, elapsed),
-                currentTranslationX = lerp(dir * width * 0.18f, 0f, elapsed),
-            )
-        }
-
-        PageMotion.PowerListBack -> {
-            val elapsed = progress
-            PageTransform(
-                fromScale = 1f,
-                fromAlpha = lerp(0.86f, 1f, elapsed),
-                fromTranslationX = lerp(-dir * width * 0.16f, 0f, elapsed),
-                currentScale = 1f,
-                currentAlpha = lerp(1f, 0.92f, elapsed),
-                currentTranslationX = lerp(0f, dir * width * 0.18f, elapsed),
             )
         }
 

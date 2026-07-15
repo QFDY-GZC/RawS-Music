@@ -1,10 +1,6 @@
 package com.rawsmusic.core.ui.widget.player
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Text
@@ -29,19 +25,18 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.proify.lyricon.lyric.model.LyricWord
 import io.github.proify.lyricon.lyric.model.interfaces.IRichLyricLine
-import kotlin.math.roundToInt
-import kotlinx.coroutines.delay
 
 /**
  * Karaoke lyric line.
  *
- * - sweep progress 直接由 positionMs 计算，避免逐字扫光和 PCM 播放位置各跑各的
- * - lift 仍使用本地 spring，只影响视觉抬升，不影响歌词时间轴
+ * - sweep progress 直接由前台 16 ms 歌词时钟计算，按显示帧推进羽化和高亮
+ * - lift 只上抬：已开始/已完成的单词保持抬升，当前行结束后随整行退出，不再回落
  */
 @Composable
 fun KaraokeLyricLine(
@@ -53,6 +48,7 @@ fun KaraokeLyricLine(
     lineHeight: androidx.compose.ui.unit.TextUnit = 34.sp,
     fontWeight: FontWeight = FontWeight.Bold,
     fontFamily: FontFamily? = null,
+    textAlign: TextAlign = TextAlign.Start,
     wordLiftDp: Dp = 0.25.dp,
     wordLiftScale: Float = 0f,
     modifier: Modifier = Modifier
@@ -69,7 +65,10 @@ fun KaraokeLyricLine(
         fontWeight = fontWeight, fontFamily = fontFamily
     )
 
-    BaselineFlowRow(modifier = modifier.widthIn(max = 340.dp)) {
+    BaselineFlowRow(
+        modifier = modifier.widthIn(max = 340.dp),
+        textAlign = textAlign
+    ) {
         segments.forEach { segment ->
             when (segment) {
                 is LyricSegment.Space -> {
@@ -89,7 +88,6 @@ fun KaraokeLyricLine(
                         text = segment.text,
                         progress = timing.progress,
                         wordBeginMs = timing.beginMs,
-                        durationMs = timing.durationMs,
                         isCurrentWord = isCurrentWord,
                         isCompleted = isCompleted,
                         highlightColor = highlightColor,
@@ -111,7 +109,6 @@ private fun KaraokeWordGroup(
     text: String,
     progress: Float,
     wordBeginMs: Long,
-    durationMs: Int,
     isCurrentWord: Boolean,
     isCompleted: Boolean,
     highlightColor: Color,
@@ -120,51 +117,75 @@ private fun KaraokeWordGroup(
     wordLiftDp: Dp,
     wordLiftScale: Float
 ) {
-    var widthPx by remember(text) { mutableFloatStateOf(1f) }
     val density = LocalDensity.current
     val maxLiftPx = with(density) { wordLiftDp.toPx() }
 
-    // Lift：从当前值 spring，不 snapTo(0)（damping=0.93, stiffness=25）
+    // 已开始的单词只上抬，不再在完成后回落。当前行切走时该组会退出组合，
+    // 因此不会把抬升状态泄漏到下一行。
     val lift = remember(text, wordBeginMs) { Animatable(0f) }
+    val shouldLift = isCurrentWord || isCompleted
 
-    LaunchedEffect(text, wordBeginMs, isCurrentWord, durationMs) {
-        if (isCurrentWord) {
+    LaunchedEffect(text, wordBeginMs, shouldLift) {
+        if (shouldLift) {
             lift.animateTo(
                 targetValue = 1f,
                 animationSpec = spring(dampingRatio = 0.93f, stiffness = 25f)
             )
-            val holdMs = (durationMs * 0.10f).roundToInt().coerceIn(20, 70)
-            delay(holdMs.toLong())
-            lift.animateTo(
-                targetValue = 0f,
-                animationSpec = spring(dampingRatio = 0.96f, stiffness = 32f)
-            )
         } else {
-            lift.animateTo(
-                targetValue = 0f,
-                animationSpec = spring(dampingRatio = 0.96f, stiffness = 32f)
-            )
+            lift.snapTo(0f)
         }
     }
 
-    // Smooth the glyph fill between playback position ticks.  The authoritative
-    // timing still comes from positionMs, but the visual brush no longer jumps
-    // word-by-word when the controller dispatch interval is coarse.
-    val p by animateFloatAsState(
-        targetValue = progress.coerceIn(0f, 1f),
-        animationSpec = tween(durationMillis = 92, easing = LinearEasing),
-        label = "karaokeWordProgress"
+    ProgressiveLyricText(
+        text = text,
+        progress = progress,
+        highlightColor = highlightColor,
+        dimColor = dimColor,
+        style = style,
+        modifier = Modifier.graphicsLayer {
+            translationY = -maxLiftPx * lift.value
+            val scale = 1f + wordLiftScale * lift.value
+            scaleX = scale
+            scaleY = scale
+            transformOrigin = TransformOrigin(0.5f, 1f)
+        }
     )
 
-    val featherPx = with(density) { 18.dp.toPx() }.coerceAtMost(widthPx * 0.72f)
+}
+
+// ========== Shared progressive text ==========
+
+@Composable
+private fun ProgressiveLyricText(
+    text: String,
+    progress: Float,
+    highlightColor: Color,
+    dimColor: Color,
+    style: TextStyle,
+    modifier: Modifier = Modifier
+) {
+    var widthPx by remember(text) { mutableFloatStateOf(1f) }
+    val density = LocalDensity.current
+
+    // 逐字歌词可见时 positionMs 按 16 ms 分发，直接使用权威进度，避免短 tween
+    // 对连续目标反复重启造成拖尾。Compose 会按设备 vsync（通常 60/90/120 Hz）重绘。
+    val p = progress.coerceIn(0f, 1f)
+    // Keep only a tiny anti-aliased edge. A wide feather makes the bright front sit
+    // visibly behind the timestamp even when the underlying word progress is exact.
+    val featherPx = with(density) { 3.dp.toPx() }.coerceAtMost(widthPx * 0.12f)
     val sweepPx = widthPx * p
     val fadeStart = ((sweepPx - featherPx) / widthPx).coerceIn(0f, 1f)
     val fadeEnd = (sweepPx / widthPx).coerceIn(0f, 1f)
+    val fadeSpan = (fadeEnd - fadeStart).coerceAtLeast(0f)
+    val fadeSoft = (fadeStart + fadeSpan * 0.42f).coerceIn(fadeStart, fadeEnd)
+    val fadeTail = (fadeStart + fadeSpan * 0.78f).coerceIn(fadeStart, fadeEnd)
 
     val brush = Brush.linearGradient(
         colorStops = arrayOf(
             0f to highlightColor,
             fadeStart to highlightColor,
+            fadeSoft to highlightColor.copy(alpha = 0.88f),
+            fadeTail to highlightColor.copy(alpha = 0.34f),
             fadeEnd to highlightColor.copy(alpha = 0f),
             1f to highlightColor.copy(alpha = 0f)
         ),
@@ -173,32 +194,32 @@ private fun KaraokeWordGroup(
     )
 
     Layout(
-        modifier = Modifier.graphicsLayer {
-            translationY = -maxLiftPx * lift.value
-            val s = 1f + wordLiftScale * lift.value
-            scaleX = s
-            scaleY = s
-            transformOrigin = TransformOrigin(0.5f, 1f)
-        },
+        modifier = modifier,
         content = {
             Text(
-                text = text, color = dimColor, style = style,
+                text = text,
+                color = dimColor,
+                style = style,
                 onTextLayout = { widthPx = it.size.width.toFloat().coerceAtLeast(1f) }
             )
             when {
                 p <= 0.001f -> Unit
-                isCompleted -> Text(text = text, color = highlightColor, style = style)
+                p >= 0.999f -> Text(text = text, color = highlightColor, style = style)
                 else -> Text(text = text, style = style.copy(brush = brush))
             }
         }
     ) { measurables, constraints ->
         val loose = constraints.copy(minWidth = 0, minHeight = 0)
         val placeables = measurables.map { it.measure(loose) }
-        val w = placeables.maxOfOrNull { it.width } ?: 0
-        val h = placeables.maxOfOrNull { it.height } ?: 0
+        val width = placeables.maxOfOrNull { it.width } ?: 0
+        val height = placeables.maxOfOrNull { it.height } ?: 0
         val baseline = placeables.firstOrNull()
-            ?.get(FirstBaseline)?.takeIf { it != AlignmentLine.Unspecified } ?: h
-        layout(w, h, alignmentLines = mapOf(FirstBaseline to baseline, LastBaseline to baseline)) {
+            ?.get(FirstBaseline)?.takeIf { it != AlignmentLine.Unspecified } ?: height
+        layout(
+            width = width.coerceIn(constraints.minWidth, constraints.maxWidth),
+            height = height.coerceIn(constraints.minHeight, constraints.maxHeight),
+            alignmentLines = mapOf(FirstBaseline to baseline, LastBaseline to baseline)
+        ) {
             placeables.forEach { it.placeRelative(0, 0) }
         }
     }
@@ -222,7 +243,11 @@ private fun StaticLyricText(text: String, color: Color, style: TextStyle) {
 // ========== BaselineFlowRow ==========
 
 @Composable
-private fun BaselineFlowRow(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+private fun BaselineFlowRow(
+    modifier: Modifier = Modifier,
+    textAlign: TextAlign,
+    content: @Composable () -> Unit
+) {
     Layout(modifier = modifier, content = content) { measurables, constraints ->
         val childConstraints = constraints.copy(minWidth = 0, minHeight = 0)
         val maxWidth = constraints.maxWidth
@@ -258,14 +283,23 @@ private fun BaselineFlowRow(modifier: Modifier = Modifier, content: @Composable 
         }
 
         val maxLineW = lines.maxOfOrNull { line -> line.sumOf { it.width } } ?: 0
-        val layoutWidth = maxLineW.coerceIn(constraints.minWidth, constraints.maxWidth)
+        val layoutWidth = if (constraints.maxWidth != Int.MAX_VALUE) {
+            constraints.maxWidth.coerceAtLeast(constraints.minWidth)
+        } else {
+            maxLineW.coerceAtLeast(constraints.minWidth)
+        }
         val layoutHeight = lineHeights.sum().coerceIn(constraints.minHeight, constraints.maxHeight)
 
         layout(layoutWidth, layoutHeight) {
             var y = 0
             lines.forEachIndexed { lineIdx, line ->
                 val baseline = lineBaselines[lineIdx]
-                var x = 0
+                val lineWidth = line.sumOf { it.width }
+                var x = when (textAlign) {
+                    TextAlign.Center -> ((layoutWidth - lineWidth) / 2).coerceAtLeast(0)
+                    TextAlign.End, TextAlign.Right -> (layoutWidth - lineWidth).coerceAtLeast(0)
+                    else -> 0
+                }
                 line.forEach { placeable ->
                     val childBaseline = placeable[FirstBaseline].let {
                         if (it != AlignmentLine.Unspecified) it else placeable.height
@@ -323,9 +357,7 @@ private fun String.cleanLyricSegmentText(): String = filter { ch ->
 
 private data class WordTimingState(
     val progress: Float,
-    val beginMs: Long,
-    val endMs: Long,
-    val durationMs: Int
+    val beginMs: Long
 )
 
 private fun wordTimingState(
@@ -352,5 +384,5 @@ private fun wordTimingState(
         positionMs >= end -> 1f
         else -> ((positionMs - begin).toFloat() / duration.toFloat()).coerceIn(0f, 1f)
     }
-    return WordTimingState(progress = progress, beginMs = begin, endMs = end, durationMs = duration)
+    return WordTimingState(progress = progress, beginMs = begin)
 }

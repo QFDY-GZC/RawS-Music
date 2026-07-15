@@ -6,12 +6,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
@@ -19,158 +18,95 @@ import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
-import com.kyant.backdrop.effects.liquidGlass
-import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
-import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
+import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 
 /**
- * 播放栏液态玻璃背景。
+ * 底部播放栏的玻璃背景。
  *
- * 当 [backdrop] 非空时使用 Backdrop 效果（模糊+折射+高光+阴影），
- * 否则退化为半透明纯色背景。
+ * Android 12 及以上直接采样页面内容；Android 13 及以上再增加轻量折射。
+ * 低版本才绘制半透明降级层，避免支持模糊的设备被颜色遮罩盖住。
  */
 @Composable
 fun LiquidGlassMiniPlayerBg(
     backdrop: Backdrop? = null,
     isLight: Boolean = false
 ) {
-    val shape = RoundedCornerShape(24.dp)
-    val containerColor = if (isLight) {
-        Color.White.copy(alpha = 0.24f)
-    } else {
-        Color(0xFF171512).copy(alpha = 0.24f)
+    val shape = RoundedCornerShape(32.dp)
+    val glassSupported = backdrop != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val performanceMode by PersonalizationPreferences.performanceMode.collectAsState()
+    val containerColor = when {
+        performanceMode && isLight -> Color.White.copy(alpha = 0.56f)
+        performanceMode -> Color(0xFF111114).copy(alpha = 0.58f)
+        isLight -> Color.White.copy(alpha = 0.34f)
+        else -> Color(0xFF111114).copy(alpha = 0.38f)
     }
-    val fallbackSurface = Modifier
-        .background(
-            Brush.linearGradient(
-                colors = if (isLight) {
-                    listOf(
-                        Color.White.copy(alpha = 0.62f),
-                        Color.White.copy(alpha = 0.28f),
-                        Color(0xFFC8B6A3).copy(alpha = 0.18f)
-                    )
-                } else {
-                    listOf(
-                        Color.White.copy(alpha = 0.20f),
-                        Color(0xFF2A2420).copy(alpha = 0.36f),
-                        Color.Black.copy(alpha = 0.24f)
-                    )
-                },
-                start = Offset.Zero,
-                end = Offset.Infinite
-            ),
-            shape
-        )
-        .drawBehind {
-            drawRoundRect(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = if (isLight) 0.32f else 0.18f),
-                        Color.Transparent
-                    ),
-                    center = Offset(size.width * 0.18f, size.height * 0.12f),
-                    radius = size.width * 0.82f
-                ),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(24.dp.toPx())
-            )
-        }
 
-    val glassModifier = if (backdrop != null) {
+    val fallbackSurface = Modifier
+        .background(containerColor, shape)
+
+    val glassModifier = backdrop
+        ?.takeIf { Build.VERSION.SDK_INT >= Build.VERSION_CODES.S }
+        ?.let { resolvedBackdrop ->
         Modifier.drawBackdrop(
-            backdrop = backdrop,
+            backdrop = resolvedBackdrop,
             shape = { shape },
             effects = {
-                vibrancy()
-                blur(if (isLight) 40f else 50f)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    liquidGlass(
-                        cornerRadius = 24.dp.toPx(),
-                        refraction = 0.90f,
-                        curve = 0.80f,
-                        dispersion = 0.35f,
-                        saturation = if (isLight) 1.25f else 1.40f,
-                        contrast = if (isLight) 1.06f else 1.14f,
-                        edge = if (isLight) 0.15f else 0.22f,
-                        tintR = if (isLight) 1f else 0.86f,
-                        tintG = if (isLight) 1f else 0.80f,
-                        tintB = if (isLight) 1f else 0.70f,
-                        tintA = if (isLight) 0.06f else 0.08f
-                    )
+                if (performanceMode) {
+                    blur(34.dp.toPx())
                 } else {
+                    blur(6.dp.toPx())
                     lens(
-                        refractionHeight = 18f,
-                        refractionAmount = 36f,
-                        depthEffect = true,
-                        chromaticAberration = true
+                        refractionHeight = 24.dp.toPx(),
+                        refractionAmount = 24.dp.toPx()
                     )
                 }
             },
             highlight = {
                 Highlight.Default.copy(
-                    alpha = if (isLight) 0.50f else 0.38f
+                    alpha = if (performanceMode) {
+                        if (isLight) 0.22f else 0.14f
+                    } else {
+                        if (isLight) 0.18f else 0.10f
+                    }
                 )
             },
             shadow = {
                 Shadow.Default.copy(
                     color = Color.Black.copy(
-                        alpha = if (isLight) 0.20f else 0.52f
+                        alpha = if (performanceMode) {
+                            if (isLight) 0.12f else 0.30f
+                        } else {
+                            if (isLight) 0.12f else 0.26f
+                        }
                     )
-                )
-            },
-            innerShadow = {
-                InnerShadow.Default.copy(
-                    color = Color.White.copy(alpha = if (isLight) 0.32f else 0.18f)
                 )
             },
             onDrawSurface = {
                 drawRect(containerColor)
-                drawRect(
-                    Brush.linearGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = if (isLight) 0.40f else 0.24f),
-                            Color.Transparent,
-                            Color.Black.copy(alpha = if (isLight) 0.04f else 0.14f)
-                        ),
-                        start = Offset(0f, 0f),
-                        end = Offset(size.width, size.height)
-                    )
-                )
-            },
-            onDrawFront = {
-                drawRoundRect(
-                    color = Color.White.copy(alpha = if (isLight) 0.30f else 0.18f),
-                    size = size,
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(24.dp.toPx()),
-                    style = Stroke(width = 1.dp.toPx())
-                )
             }
         )
-    } else {
-        Modifier
-    }
+    } ?: Modifier
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .clip(shape)
-            .then(fallbackSurface)
+            .then(if (glassSupported) Modifier else fallbackSurface)
             .then(glassModifier)
             .drawWithContent {
                 drawContent()
                 drawRoundRect(
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = if (isLight) 0.56f else 0.26f),
-                            Color.White.copy(alpha = 0.06f),
-                            Color.Black.copy(alpha = if (isLight) 0.04f else 0.18f)
-                        ),
-                        start = Offset(0f, 0f),
-                        end = Offset(size.width, size.height)
+                    color = Color.White.copy(
+                        alpha = if (performanceMode) {
+                            if (isLight) 0.24f else 0.13f
+                        } else {
+                            if (isLight) 0.20f else 0.10f
+                        }
                     ),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(24.dp.toPx()),
-                    style = Stroke(width = 1.2.dp.toPx())
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(32.dp.toPx()),
+                    style = Stroke(width = 1.dp.toPx())
                 )
             }
     )

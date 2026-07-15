@@ -8,9 +8,11 @@ import android.graphics.RadialGradient
 import android.graphics.Shader
 import android.graphics.Color as AndroidColor
 import android.util.LruCache
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -44,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -80,18 +83,12 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 
 private const val FLOW_PREFS = "raw_flow_background"
 private const val FLOW_MODE_KEY = "mode"
-private const val FLOW_COLOR_COUNT = 4
-private const val FLOW_MAIN_PERIOD_SECONDS = 6.6f
-private const val FLOW_SECONDARY_PERIOD_SECONDS = 9.8f
-private const val FLOW_BREATH_PERIOD_SECONDS = 5.4f
-private const val FLOW_FRAME_INTERVAL_MS = 66L
+private const val FLOW_MAX_COLOR_COUNT = 5
+private const val FLOW_FRAME_INTERVAL_MS = 25L
 private const val FLOW_DISABLED_FRAME_INTERVAL_MS = 0L
-private const val FLOW_TEXTURE_WIDTH = 360
-private const val FLOW_TEXTURE_HEIGHT = 640
 private const val FLOW_EXTRACT_SIZE = 96
-private const val FLOW_SAMPLE_GRID = 12
+private const val FLOW_SAMPLE_GRID = 18
 private val FLOW_PALETTE_RETRY_DELAYS_MS = longArrayOf(0L, 420L, 1400L)
-private val FLOW_TWO_PI = (PI * 2.0).toFloat()
 private val flowPaletteCache = LruCache<String, List<Color>>(48)
 
 /**
@@ -350,61 +347,47 @@ fun RawFlowBackground(
     }
 
     val colors = remember(targetColors, fallbackColors) {
-        List(FLOW_COLOR_COUNT) { index ->
-            targetColors.getOrElse(index) { fallbackColors[index % fallbackColors.size] }
-        }
+        targetColors.ifEmpty { fallbackColors }.take(FLOW_MAX_COLOR_COUNT)
     }
 
-    val baseColor = remember(flowMode, isSystemDark) { baseFlowColor(flowMode, isSystemDark) }
-    val motionScale = if (!motionEnabled || flowMode == RawFlowMode.UNIVERSAL) 0f else 1f
+    val baseColor = remember(flowMode, isSystemDark, colors) {
+        baseFlowColor(flowMode, isSystemDark, colors.firstOrNull())
+    }
+    val canMove = flowMode != RawFlowMode.UNIVERSAL
     val timeSeconds = rememberRawFlowTimeSeconds(
-        enabled = motionScale > 0f,
+        enabled = motionEnabled && canMove,
         modeName = flowMode.prefValue,
-        frameIntervalMs = frameIntervalMs.coerceAtLeast(66L)
+        frameIntervalMs = frameIntervalMs.coerceAtLeast(FLOW_FRAME_INTERVAL_MS)
     )
-    val textureBitmap = remember(colors, baseColor, flowMode, isSystemDark) {
-        createFlowTextureBitmap(
-            colors = colors,
-            baseColor = baseColor,
-            mode = flowMode,
-            isDarkTheme = isSystemDark
-        )
-    }
-    val texture = remember(textureBitmap) { textureBitmap.asImageBitmap() }
-    val layerA = rememberFlowLayerTransform(timeSeconds, phase = 0.0f, motionScale = motionScale)
-    val layerB = rememberFlowLayerTransform(timeSeconds, phase = 2.17f, motionScale = motionScale * 0.72f)
-
-    Box(modifier = modifier.fillMaxSize().background(baseColor)) {
-        Image(
-            bitmap = texture,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = layerA.scale
-                    scaleY = layerA.scale
-                    translationX = layerA.translationX
-                    translationY = layerA.translationY
-                    rotationZ = layerA.rotation
-                    alpha = 1f
-                }
-        )
-        if (motionScale > 0f) {
-            Image(
-                bitmap = texture,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = layerB.scale
-                        scaleY = layerB.scale
-                        translationX = layerB.translationX
-                        translationY = layerB.translationY
-                        rotationZ = layerB.rotation
-                        alpha = 0.38f
-                    }
+    Canvas(modifier = modifier.fillMaxSize().clipToBounds().background(baseColor)) {
+        val maxDimension = max(size.width, size.height)
+        val countScale = when (colors.size) {
+            1 -> 1.18f
+            2 -> 1.05f
+            else -> 0.92f
+        }
+        colors.forEachIndexed { index, color ->
+            val seed = flowBlobSeeds()[index % flowBlobSeeds().size]
+            val phase = seed.phase + index * 0.83f
+            val motion = if (canMove) 1f else 0f
+            val x = size.width * seed.baseX +
+                size.width * seed.amplitudeX * sin(timeSeconds * seed.speedX + phase) * motion
+            val y = size.height * seed.baseY +
+                size.height * seed.amplitudeY * cos(timeSeconds * seed.speedY + phase * 1.21f) * motion
+            val radiusPulse = 1f + 0.11f * sin(timeSeconds * seed.radiusSpeed + phase)
+            val radius = maxDimension * seed.radius * countScale * radiusPulse
+            val coreAlpha = if (isSystemDark) 0.88f else 0.82f
+            drawCircle(
+                brush = Brush.radialGradient(
+                    0f to color.copy(alpha = coreAlpha),
+                    0.38f to color.copy(alpha = coreAlpha * 0.72f),
+                    0.72f to color.copy(alpha = coreAlpha * 0.28f),
+                    1f to Color.Transparent,
+                    center = Offset(x, y),
+                    radius = radius
+                ),
+                radius = radius,
+                center = Offset(x, y)
             )
         }
     }
@@ -419,7 +402,9 @@ private fun rememberRawFlowTimeSeconds(
     var timeSeconds by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(enabled, modeName, frameIntervalMs) {
         if (!enabled) {
-            timeSeconds = 0f
+            // Pause on the current visual phase instead of snapping back to the canonical texture.
+            // Non-flow pages can therefore stop the animation, and flow pages resume without a
+            // one-frame non-flow/static-background flash.
             PowerTraceLogger.flowFrame(
                 mode = modeName,
                 enabled = false,
@@ -441,76 +426,6 @@ private fun rememberRawFlowTimeSeconds(
     return timeSeconds
 }
 
-private data class FlowLayerTransform(
-    val translationX: Float,
-    val translationY: Float,
-    val scale: Float,
-    val rotation: Float
-)
-
-private fun rememberFlowLayerTransform(
-    timeSeconds: Float,
-    phase: Float,
-    motionScale: Float
-): FlowLayerTransform {
-    if (motionScale <= 0f) {
-        return FlowLayerTransform(0f, 0f, 1f, 0f)
-    }
-    val a = timeSeconds / 18.0f * FLOW_TWO_PI + phase
-    val b = timeSeconds / 27.0f * FLOW_TWO_PI + phase * 1.37f
-    val x = (sin(a) * 18f + cos(b * 0.73f) * 11f) * motionScale
-    val y = (cos(a * 0.67f) * 22f + sin(b) * 9f) * motionScale
-    val scale = 1.075f + 0.018f * sin(b * 0.61f) * motionScale
-    val rotation = (sin(a * 0.41f) * 1.35f + cos(b * 0.31f) * 0.85f) * motionScale
-    return FlowLayerTransform(x, y, scale, rotation)
-}
-
-private fun createFlowTextureBitmap(
-    colors: List<Color>,
-    baseColor: Color,
-    mode: RawFlowMode,
-    isDarkTheme: Boolean
-): AndroidBitmap {
-    val bitmap = AndroidBitmap.createBitmap(
-        FLOW_TEXTURE_WIDTH,
-        FLOW_TEXTURE_HEIGHT,
-        AndroidBitmap.Config.ARGB_8888
-    )
-    val canvas = AndroidCanvas(bitmap)
-    canvas.drawColor(baseColor.toAndroidArgb())
-
-    val paint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG or AndroidPaint.FILTER_BITMAP_FLAG).apply {
-        isDither = true
-    }
-    val seeds = flowBlobSeeds()
-    val maxDimension = max(FLOW_TEXTURE_WIDTH, FLOW_TEXTURE_HEIGHT).toFloat()
-    seeds.forEachIndexed { index, blob ->
-        val color = colors.getOrElse(index % colors.size) { baseColor }
-        val centerX = FLOW_TEXTURE_WIDTH * blob.baseX
-        val centerY = FLOW_TEXTURE_HEIGHT * blob.baseY
-        val radius = maxDimension * (blob.radius * 0.92f).coerceAtLeast(0.34f)
-        val baseAlpha = (blob.alpha * if (mode == RawFlowMode.LIGHT && !isDarkTheme) 0.78f else 0.92f)
-            .coerceIn(0.16f, 0.70f)
-        paint.shader = RadialGradient(
-            centerX,
-            centerY,
-            radius,
-            intArrayOf(
-                color.toAndroidArgb(baseAlpha),
-                color.toAndroidArgb(baseAlpha * 0.54f),
-                color.toAndroidArgb(baseAlpha * 0.16f),
-                color.toAndroidArgb(0f)
-            ),
-            floatArrayOf(0f, 0.42f, 0.76f, 1f),
-            Shader.TileMode.CLAMP
-        )
-        canvas.drawCircle(centerX, centerY, radius, paint)
-    }
-    paint.shader = null
-    return bitmap
-}
-
-
 @Composable
 fun RawFlowModeDialog(
     show: Boolean,
@@ -523,6 +438,22 @@ fun RawFlowModeDialog(
     val fallbackMode = if (isSystemDark) RawFlowMode.DARK else RawFlowMode.LIGHT
     val displayMode = RawFlowRuntimeState.mode ?: selectedMode
     val flowEnabled = displayMode != RawFlowMode.OFF
+    var predictiveBackProgress by remember { mutableFloatStateOf(0f) }
+    var predictiveBackActive by remember { mutableStateOf(false) }
+    val visualBackProgress by animateFloatAsState(
+        targetValue = predictiveBackProgress,
+        animationSpec = if (predictiveBackActive || predictiveBackProgress == 0f) {
+            snap()
+        } else {
+            tween(durationMillis = 150)
+        },
+        label = "raw-flow-dialog-predictive-back"
+    )
+
+    LaunchedEffect(show) {
+        predictiveBackActive = false
+        predictiveBackProgress = 0f
+    }
 
     fun selectMode(mode: RawFlowMode) {
         RawFlowRuntimeState.persistAndUpdate(context, mode)
@@ -531,10 +462,33 @@ fun RawFlowModeDialog(
 
     WindowDialog(
         show = show,
+        modifier = Modifier.graphicsLayer {
+            val progress = visualBackProgress.coerceIn(0f, 1f)
+            translationY = progress * 72.dp.toPx()
+            val scale = 1f - progress * 0.08f
+            scaleX = scale
+            scaleY = scale
+            alpha = 1f - progress * 0.14f
+            transformOrigin = TransformOrigin(0.5f, 1f)
+        },
         title = stringResource(R.string.flow_background_dialog_title),
         summary = stringResource(R.string.flow_background_dialog_summary),
         onDismissRequest = onDismissRequest
     ) {
+        PredictiveBackHandler(enabled = show) { events ->
+            predictiveBackActive = true
+            try {
+                events.collect { event ->
+                    predictiveBackProgress = event.progress.coerceIn(0f, 1f)
+                }
+                predictiveBackActive = false
+                predictiveBackProgress = 1f
+                onDismissRequest()
+            } catch (_: kotlinx.coroutines.CancellationException) {
+                predictiveBackActive = false
+                predictiveBackProgress = 0f
+            }
+        }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             RawFlowEnableRow(
                 checked = flowEnabled,
@@ -670,7 +624,7 @@ private fun FlowColorPreview(colors: List<Color>) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             drawRect(
                 Brush.linearGradient(
-                    colors = colors.take(FLOW_COLOR_COUNT),
+                    colors = colors.take(FLOW_MAX_COLOR_COUNT),
                     start = Offset.Zero,
                     end = Offset(size.width, size.height)
                 )
@@ -682,7 +636,7 @@ private fun FlowColorPreview(colors: List<Color>) {
                 .padding(bottom = 5.dp),
             horizontalArrangement = Arrangement.spacedBy(3.dp)
         ) {
-            colors.take(FLOW_COLOR_COUNT).forEach { color ->
+            colors.take(FLOW_MAX_COLOR_COUNT).forEach { color ->
                 Box(
                     modifier = Modifier
                         .size(6.dp)
@@ -715,7 +669,8 @@ private fun flowBlobSeeds(): List<FlowBlobSeed> {
         FlowBlobSeed(0.08f, 0.17f, 0.38f, 0.30f, 0.45f, 0.54f, 0.20f, 0.91f, 0.63f, 0.37f, 0.49f, 0.43f, 0.61f),
         FlowBlobSeed(0.86f, 0.14f, 0.31f, 0.33f, 0.40f, 0.48f, 1.70f, 0.57f, 0.83f, 0.41f, 0.31f, 0.55f, 0.47f),
         FlowBlobSeed(0.28f, 0.63f, 0.34f, 0.35f, 0.50f, 0.50f, 3.10f, 0.77f, 0.45f, 0.29f, 0.58f, 0.38f, 0.53f),
-        FlowBlobSeed(0.88f, 0.78f, 0.30f, 0.29f, 0.43f, 0.46f, 4.40f, 0.43f, 0.73f, 0.54f, 0.36f, 0.49f, 0.67f)
+        FlowBlobSeed(0.88f, 0.78f, 0.30f, 0.29f, 0.43f, 0.46f, 4.40f, 0.43f, 0.73f, 0.54f, 0.36f, 0.49f, 0.67f),
+        FlowBlobSeed(0.48f, 0.42f, 0.29f, 0.38f, 0.39f, 0.44f, 5.35f, 0.69f, 0.57f, 0.47f, 0.39f, 0.52f, 0.59f)
     )
 }
 
@@ -724,7 +679,7 @@ private object RawFlowPaletteExtractor {
         if (bitmap.isRecycled) return emptyList()
 
         val paletteCandidates = Palette.from(bitmap)
-            .maximumColorCount(16)
+            .maximumColorCount(24)
             .clearFilters()
             .generate()
             .swatches
@@ -732,7 +687,7 @@ private object RawFlowPaletteExtractor {
                 normalizeColor(swatch.rgb, mode, isSystemDark)?.let { color ->
                     ScoredFlowColor(
                         color = color,
-                        score = swatch.population * colorVisualWeight(color, mode, isSystemDark)
+                        score = swatch.population * colorVisualWeight(color)
                     )
                 }
             }
@@ -740,9 +695,8 @@ private object RawFlowPaletteExtractor {
         val sampledCandidates = sampleBitmapColors(bitmap, mode, isSystemDark)
         val candidates = (paletteCandidates + sampledCandidates)
             .sortedByDescending { it.score }
-            .map { it.color }
 
-        return selectSeparatedColors(candidates, emptyList(), FLOW_COLOR_COUNT)
+        return selectAdaptiveColors(candidates)
     }
 
     private fun sampleBitmapColors(
@@ -779,7 +733,7 @@ private object RawFlowPaletteExtractor {
             normalizeColor(bucket.rgb(), mode, isSystemDark)?.let { color ->
                 ScoredFlowColor(
                     color = color,
-                    score = bucket.count * colorVisualWeight(color, mode, isSystemDark)
+                    score = bucket.count * 24f * colorVisualWeight(color)
                 )
             }
         }
@@ -792,43 +746,36 @@ private object RawFlowPaletteExtractor {
         val luminance = rawColor.luminance()
         if (luminance < 0.015f || luminance > 0.985f) return null
 
-        val targetValue = when (mode) {
-            RawFlowMode.LIGHT -> if (isSystemDark) 0.62f else 0.88f
-            RawFlowMode.DARK -> if (isSystemDark) 0.38f else 0.58f
+        val valueRange = when (mode) {
+            RawFlowMode.LIGHT -> if (isSystemDark) 0.34f..0.88f else 0.38f..0.94f
+            RawFlowMode.DARK -> if (isSystemDark) 0.20f..0.76f else 0.30f..0.82f
             RawFlowMode.UNIVERSAL,
             RawFlowMode.OFF -> return null
         }
-        val valueRange = when (mode) {
-            RawFlowMode.LIGHT -> if (isSystemDark) 0.48f..0.72f else 0.78f..0.97f
-            RawFlowMode.DARK -> if (isSystemDark) 0.24f..0.52f else 0.46f..0.70f
-            RawFlowMode.UNIVERSAL,
-            RawFlowMode.OFF -> 0f..1f
+        if (hsv[1] >= 0.10f) {
+            hsv[1] = (hsv[1] * 1.06f + 0.02f).coerceIn(0.14f, 0.96f)
         }
-        val saturationRange = when {
-            hsv[1] < 0.08f -> 0.08f..0.18f
-            mode == RawFlowMode.LIGHT && !isSystemDark -> 0.22f..0.56f
-            mode == RawFlowMode.LIGHT -> 0.24f..0.62f
-            mode == RawFlowMode.DARK && isSystemDark -> 0.28f..0.72f
-            else -> 0.24f..0.64f
-        }
-
-        hsv[1] = (hsv[1] * 0.68f + 0.10f).coerceIn(saturationRange.start, saturationRange.endInclusive)
-        hsv[2] = (hsv[2] * 0.32f + targetValue * 0.68f).coerceIn(valueRange.start, valueRange.endInclusive)
+        hsv[2] = hsv[2].coerceIn(valueRange.start, valueRange.endInclusive)
         return colorFromArgb(AndroidColor.HSVToColor(0xFF, hsv))
     }
 
-    private fun colorVisualWeight(color: Color, mode: RawFlowMode, isSystemDark: Boolean): Float {
+    private fun colorVisualWeight(color: Color): Float {
         val hsv = FloatArray(3)
         AndroidColor.colorToHSV(color.toArgbNoAlpha(), hsv)
-        val saturationBonus = 0.76f + hsv[1] * 0.66f
-        val valueTarget = when (mode) {
-            RawFlowMode.LIGHT -> if (isSystemDark) 0.62f else 0.88f
-            RawFlowMode.DARK -> if (isSystemDark) 0.38f else 0.58f
-            RawFlowMode.UNIVERSAL,
-            RawFlowMode.OFF -> 0.5f
+        return 0.82f + hsv[1] * 0.48f
+    }
+
+    private fun selectAdaptiveColors(candidates: List<ScoredFlowColor>): List<Color> {
+        val strongest = candidates.firstOrNull()?.score ?: return emptyList()
+        val selected = mutableListOf<Color>()
+        candidates.forEach { candidate ->
+            if (selected.size >= FLOW_MAX_COLOR_COUNT) return@forEach
+            if (candidate.score < strongest * 0.045f) return@forEach
+            if (selected.none { existing -> perceptualColorDistance(existing, candidate.color) >= 0.17f }) {
+                selected += candidate.color
+            }
         }
-        val valueBalance = 1f - abs(hsv[2] - valueTarget).coerceAtMost(0.55f)
-        return saturationBonus * valueBalance.coerceAtLeast(0.45f)
+        return selected.ifEmpty { listOf(candidates.first().color) }
     }
 }
 
@@ -859,65 +806,21 @@ private class MutableColorBucket {
 
 private fun completeExtractedFlowColors(extracted: List<Color>, fallback: List<Color>): List<Color> {
     if (extracted.isEmpty()) return fallback
-    val separated = selectSeparatedColors(extracted, emptyList(), FLOW_COLOR_COUNT)
-    if (separated.isEmpty()) return fallback
-    val completed = separated.toMutableList()
-    var index = 0
-    while (completed.size < FLOW_COLOR_COUNT) {
-        completed += toneVariant(completed[index % completed.size], completed.size)
-        index++
-    }
-    return completed.take(FLOW_COLOR_COUNT)
+    return extracted.take(FLOW_MAX_COLOR_COUNT)
 }
 
-private fun selectSeparatedColors(
-    primary: List<Color>,
-    fallback: List<Color>,
-    count: Int
-): List<Color> {
-    val selected = mutableListOf<Color>()
-    val relaxed = mutableListOf<Color>()
-
-    (primary + fallback).forEach { color ->
-        when {
-            selected.size < count && selected.none { hueDistance(it, color) < 24f } -> selected += color
-            relaxed.size < count && selected.none { hueDistance(it, color) < 10f } -> relaxed += color
-        }
-    }
-
-    val merged = (selected + relaxed + fallback).distinctBy { color ->
-        val hsv = FloatArray(3)
-        AndroidColor.colorToHSV(color.toArgbNoAlpha(), hsv)
-        Pair((hsv[0] / 8f).toInt(), (hsv[2] * 8f).toInt())
-    }
-    if (fallback.isEmpty()) return merged.take(count)
-    return List(count) { index -> merged.getOrElse(index) { fallback[index % fallback.size] } }
-}
-
-private fun toneVariant(color: Color, index: Int): Color {
-    val hsv = FloatArray(3)
-    AndroidColor.colorToHSV(color.toArgbNoAlpha(), hsv)
-    val valueOffset = when (index % 3) {
-        0 -> 0.10f
-        1 -> -0.08f
-        else -> 0.05f
-    }
-    val saturationOffset = when (index % 2) {
-        0 -> -0.06f
-        else -> 0.04f
-    }
-    hsv[1] = (hsv[1] + saturationOffset).coerceIn(0.08f, 0.76f)
-    hsv[2] = (hsv[2] + valueOffset).coerceIn(0.22f, 0.98f)
-    return colorFromArgb(AndroidColor.HSVToColor(0xFF, hsv))
-}
-
-private fun hueDistance(a: Color, b: Color): Float {
+private fun perceptualColorDistance(a: Color, b: Color): Float {
     val hsvA = FloatArray(3)
     val hsvB = FloatArray(3)
     AndroidColor.colorToHSV(a.toArgbNoAlpha(), hsvA)
     AndroidColor.colorToHSV(b.toArgbNoAlpha(), hsvB)
-    val distance = abs(hsvA[0] - hsvB[0])
-    return minOf(distance, 360f - distance)
+    val rawHueDistance = abs(hsvA[0] - hsvB[0])
+    val hueDistance = minOf(rawHueDistance, 360f - rawHueDistance) / 180f
+    val chromaWeight = ((hsvA[1] + hsvB[1]) * 0.75f).coerceIn(0f, 1f)
+    val hue = hueDistance * 0.68f * chromaWeight
+    val saturation = abs(hsvA[1] - hsvB[1]) * 0.46f
+    val value = abs(hsvA[2] - hsvB[2]) * 0.58f
+    return kotlin.math.sqrt(hue * hue + saturation * saturation + value * value)
 }
 
 private fun defaultFlowColors(mode: RawFlowMode, isSystemDark: Boolean): List<Color> {
@@ -958,13 +861,20 @@ private fun defaultFlowColors(mode: RawFlowMode, isSystemDark: Boolean): List<Co
     }
 }
 
-private fun baseFlowColor(mode: RawFlowMode, isSystemDark: Boolean): Color {
-    return when (mode) {
-        RawFlowMode.DARK, RawFlowMode.LIGHT ->
-            if (isSystemDark) Color(0xFF09080F) else Color(0xFFFFFAF5)
-        RawFlowMode.UNIVERSAL, RawFlowMode.OFF ->
-            if (isSystemDark) Color(0xFF0B0911) else Color(0xFFFFFAF4)
+private fun baseFlowColor(mode: RawFlowMode, isSystemDark: Boolean, dominant: Color?): Color {
+    if (dominant == null || mode == RawFlowMode.UNIVERSAL || mode == RawFlowMode.OFF) {
+        return if (isSystemDark) Color(0xFF0B0911) else Color(0xFFFFFAF4)
     }
+    val hsv = FloatArray(3)
+    AndroidColor.colorToHSV(dominant.toArgbNoAlpha(), hsv)
+    if (isSystemDark) {
+        hsv[1] = (hsv[1] * 0.58f).coerceIn(0.10f, 0.48f)
+        hsv[2] = 0.13f
+    } else {
+        hsv[1] = (hsv[1] * 0.42f).coerceIn(0.08f, 0.34f)
+        hsv[2] = 0.92f
+    }
+    return colorFromArgb(AndroidColor.HSVToColor(0xFF, hsv))
 }
 
 private fun androidColorIntToComposeColor(colorInt: Int): Color {

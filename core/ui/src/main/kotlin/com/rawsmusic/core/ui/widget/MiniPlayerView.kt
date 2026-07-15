@@ -4,7 +4,9 @@ import android.graphics.Bitmap
 import android.graphics.Paint
 import android.graphics.PathMeasure
 import android.graphics.RectF
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -41,6 +43,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,10 +64,13 @@ import kotlin.math.abs
  * - 点击打开播放器
  * - 双击切换普通/黑胶模式
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ComposeMiniPlayer(
     title: String,
     artist: String,
+    lyricText: String = "",
+    lyricTranslation: String = "",
     isPlaying: Boolean,
     progress: Float = 0f,
     coverPath: String? = null,
@@ -84,6 +90,10 @@ fun ComposeMiniPlayer(
 
     val textColor = cs.onBackground
     val secondaryColor = cs.onSurfaceVariantSummary
+    val hasLyric = lyricText.isNotBlank()
+    val primaryText = if (hasLyric) lyricText.trim() else title.ifBlank { "暂无音乐播放" }
+    val secondaryText = if (hasLyric) lyricTranslation.trim() else artist
+    val centerLyrics = hasLyric && isLikelyChineseLyric(primaryText)
 
     val artworkModeState = rememberMiniPlayerArtworkMode()
     val artworkMode = artworkModeState.value
@@ -91,7 +101,7 @@ fun ComposeMiniPlayer(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .padding(vertical = 4.dp)
             .height(62.dp)
             .shadow(
                 elevation = 18.dp,
@@ -144,7 +154,6 @@ fun ComposeMiniPlayer(
                 coverPath = coverPath,
                 coverBitmap = coverBitmap,
                 isPlaying = isPlaying,
-                progress = progress,
                 contentDescription = title,
                 onCoverBoundsChanged = onCoverBoundsChanged,
                 onDoubleTapToggleMode = {
@@ -165,21 +174,37 @@ fun ComposeMiniPlayer(
             ) {
                 androidx.compose.foundation.layout.Column {
                     Text(
-                        text = title.ifBlank { "暂无音乐播放" },
+                        text = primaryText,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = textColor,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        softWrap = false,
+                        textAlign = if (centerLyrics) TextAlign.Center else TextAlign.Start,
+                        overflow = TextOverflow.Clip,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .basicMarquee(
+                                iterations = Int.MAX_VALUE,
+                                repeatDelayMillis = 900
+                            )
                     )
-                    if (artist.isNotBlank()) {
+                    if (secondaryText.isNotBlank()) {
                         Text(
-                            text = artist,
+                            text = secondaryText,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Medium,
                             color = secondaryColor,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            softWrap = false,
+                            textAlign = if (centerLyrics) TextAlign.Center else TextAlign.Start,
+                            overflow = TextOverflow.Clip,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    repeatDelayMillis = 900
+                                )
                         )
                     }
                 }
@@ -207,6 +232,12 @@ fun ComposeMiniPlayer(
             }
         }
     }
+}
+
+private fun isLikelyChineseLyric(text: String): Boolean {
+    val hasHan = text.any { it in '\u3400'..'\u9FFF' }
+    val hasKana = text.any { it in '\u3040'..'\u30FF' }
+    return hasHan && !hasKana
 }
 
 /**

@@ -30,6 +30,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -80,6 +81,7 @@ fun FoldersPage(
         FolderListPage(
             folders = folders,
             state = powerListState,
+            onBack = onBack,
             onFolderClick = onFolderClick,
             modifier = modifier
         )
@@ -102,6 +104,7 @@ fun FoldersPage(
 private fun FolderListPage(
     folders: List<FolderGroupUi>,
     state: ComposePowerListState,
+    onBack: () -> Unit,
     onFolderClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -120,15 +123,19 @@ private fun FolderListPage(
         }
     }
 
-    Box(
+    LibraryListScaffold(
+        title = stringResource(com.rawsmusic.core.ui.R.string.library_title_folders),
+        sceneId = NavScene.FOLDERS.name,
+        onBack = onBack,
+        powerListState = state,
         modifier = modifier
-            .fillMaxSize()
-    ) {
+    ) { topPadding, backdropSource ->
         ComposeGenericPowerList(
             items = items,
             state = state,
+            contentTopPadding = topPadding,
             sharedCoverSceneId = NavScene.FOLDERS.name,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().then(backdropSource),
             onItemClick = { item, _, _ ->
                 val folder = item as? FolderPowerListItem ?: return@ComposeGenericPowerList
 
@@ -390,8 +397,10 @@ private fun FolderSharedCover(
     val spec = LocalSharedTransitionSpec.current
     val sceneId = scene.name
     val elementId = folder.sharedElementId
+    val shouldTrack = spec.shouldTrackScene(sceneId)
 
-    DisposableEffect(sceneId, elementId) {
+    DisposableEffect(sceneId, elementId, shouldTrack) {
+        if (!shouldTrack) coverRegistry.unregister(sceneId, elementId)
         onDispose { coverRegistry.unregister(sceneId, elementId) }
     }
 
@@ -416,6 +425,7 @@ private fun FolderSharedCover(
             key = folder.coverKey,
             modifier = modifier
                 .onGloballyPositioned { coordinates ->
+                    if (!shouldTrack) return@onGloballyPositioned
                     val position = coordinates.positionInWindow()
                     val size = coordinates.size
                     coverRegistry.register(
@@ -447,6 +457,7 @@ private fun FolderSharedCover(
         Box(
             modifier = modifier
                 .onGloballyPositioned { coordinates ->
+                    if (!shouldTrack) return@onGloballyPositioned
                     val position = coordinates.positionInWindow()
                     val size = coordinates.size
                     coverRegistry.register(

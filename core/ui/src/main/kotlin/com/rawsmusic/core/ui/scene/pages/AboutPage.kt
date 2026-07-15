@@ -1,160 +1,274 @@
 package com.rawsmusic.core.ui.scene.pages
 
 import android.content.Context
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import com.rawsmusic.core.ui.R
+import top.yukonga.miuix.kmp.basic.BasicComponent
+import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.blur.BlendColorEntry
+import top.yukonga.miuix.kmp.blur.BlurBlendMode
+import top.yukonga.miuix.kmp.blur.BlurColors
+import top.yukonga.miuix.kmp.blur.BlurDefaults
+import top.yukonga.miuix.kmp.blur.LayerBackdrop
+import top.yukonga.miuix.kmp.blur.layerBackdrop
+import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
+import top.yukonga.miuix.kmp.blur.textureBlur
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Back
+import top.yukonga.miuix.kmp.shader.isRenderEffectSupported
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val PROJECT_URL = "https://github.com/QFDY-GZC/RawS-Music"
+private const val HALCYON_URL = "https://github.com/Kifranei/Halcyon"
+private const val QQ_GROUP_URL = "https://qm.qq.com/q/bOvqTQPABi"
 
 @Composable
 fun AboutPage(onBack: () -> Unit) {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
-    val colors = themeColors()
+    val scheme = MiuixTheme.colorScheme
+    val isDark = scheme.background.luminance() < 0.5f
     val versionName = remember(context) { context.rawSMusicVersionName() }
-
-    SettingsPage(title = "关于", onBack = onBack) {
-        AboutHeroCard(versionName = versionName, colors = colors)
-
-        SectionHeader("核心功能")
-        SettingsCard {
-            FeatureItem("高解析本地播放", "面向本地音乐库的播放体验，支持歌曲、专辑、艺术家、文件夹、队列和日常推荐等常用入口。", colors)
-            CardDivider(colors)
-            FeatureItem("FFmpeg 解码与高兼容音频输出", "使用 FFmpeg 解析多种音频格式，并通过原生播放链路输出，兼顾格式兼容性和播放稳定性。", colors)
-            CardDivider(colors)
-            FeatureItem("USB DAC 独占输出", "为外接 USB DAC 准备的独占输出路径，支持常规 DSP 处理，也可在完美比特模式下保持直通。", colors)
-            CardDivider(colors)
-            FeatureItem("Native DSP 与音效系统", "包含参量均衡器、前级增益、低音/高音、压缩器、交叉馈送、立体声扩展和空间/环绕相关音效。", colors)
-            CardDivider(colors)
-            FeatureItem("歌词与状态栏歌词", "支持内嵌/本地歌词、逐字歌词、翻译、罗马音，以及 Lyricon 词幕、Flyme 状态栏歌词、Lyric Getter 和蓝牙车载歌词桥接。", colors)
-            CardDivider(colors)
-            FeatureItem("高清专辑图与沉浸播放界面", "优先读取当前音频内嵌封面，支持高清专辑图、动态背景、共享元素动画和沉浸式播放页。", colors)
-            CardDivider(colors)
-            FeatureItem("Miuix / Monet 外观与备份", "提供 Miuix 风格界面、Material You 动态取色、全局/歌词字体设置，以及 WebDAV 备份相关能力。", colors)
-        }
-
-        SectionHeader("项目")
-        SettingsCard {
-            LinkItem("项目主页", PROJECT_URL, colors) { uriHandler.openUri(PROJECT_URL) }
-            CardDivider(colors)
-            InfoItem("开发者", "QFDY-GZC", colors)
-            CardDivider(colors)
-            InfoItem("定位", "专注本地音乐、高音质输出和高度可定制界面的 Android 音乐播放器", colors)
-        }
-
-        SectionHeader("开源组件")
-        SettingsCard {
-            OpenSourceItem("FFmpeg", "音频解码与格式解析", colors)
-            CardDivider(colors)
-            OpenSourceItem("libusb", "USB DAC 访问与独占输出基础能力", colors)
-            CardDivider(colors)
-            OpenSourceItem("TagLib / JAudioTagger", "音频标签、元数据与封面读取", colors)
-            CardDivider(colors)
-            OpenSourceItem("Miuix", "MIUI 风格 Compose UI 组件与主题能力", colors)
-            CardDivider(colors)
-            OpenSourceItem("Lyricon", "状态栏歌词与结构化歌词显示能力", colors)
-            CardDivider(colors)
-            OpenSourceItem("AndroidX / Kotlin Coroutines", "应用基础架构、Compose 与异步任务支持", colors)
+    val listState = rememberLazyListState()
+    val backdrop = rememberLayerBackdrop()
+    val density = LocalDensity.current
+    val heroTravelPx = with(density) { 180.dp.toPx() }
+    val scrollProgress by remember(listState, heroTravelPx) {
+        derivedStateOf {
+            if (listState.firstVisibleItemIndex > 0) 1f
+            else (listState.firstVisibleItemScrollOffset / heroTravelPx).coerceIn(0f, 1f)
         }
     }
-}
+    val blurEnabled = remember { isRenderEffectSupported() }
+    val titleBlend = remember(isDark) { aboutTitleBlendColors(isDark) }
+    val cardBlend = remember(isDark) { aboutCardBlendColors(isDark) }
 
-@Composable
-private fun AboutHeroCard(versionName: String, colors: ThemeColors) {
-    SettingsCard {
-        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(
-                Modifier.size(72.dp).clip(RoundedCornerShape(22.dp)).background(colors.primaryContainer),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("R", color = colors.onPrimaryContainer, fontSize = 34.sp, fontWeight = FontWeight.Bold, fontFamily = appFontFamily())
-            }
-            Spacer(Modifier.height(14.dp))
-            Text("RawS Music", color = colors.onSurface, fontSize = 26.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center, fontFamily = appFontFamily())
-            Text("版本 $versionName", color = colors.secondaryText, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp), fontFamily = appFontFamily())
+    AboutDynamicBackground(
+        modifier = Modifier.fillMaxSize(),
+        backgroundModifier = Modifier.layerBackdrop(backdrop)
+    ) {
+        Column(
+            Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .graphicsLayer {
+                    alpha = (1f - scrollProgress * 1.35f).coerceIn(0f, 1f)
+                    translationY = -heroTravelPx * 0.55f * scrollProgress
+                }
+                .padding(top = 148.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
             Text(
-                "为本地音乐、高清封面、状态栏歌词、USB DAC 和 Native DSP 打造的音乐播放器。",
-                color = colors.onSurfaceVariant, fontSize = 14.sp, lineHeight = 20.sp, textAlign = TextAlign.Center,
-                modifier = Modifier.padding(top = 14.dp, start = 8.dp, end = 8.dp), fontFamily = appFontFamily()
+                text = stringResource(R.string.about_app_name),
+                color = scheme.onBackground,
+                fontWeight = FontWeight.Bold,
+                fontSize = 35.sp,
+                modifier = Modifier
+                    .padding(bottom = 5.dp)
+                    .then(
+                        if (blurEnabled) {
+                            Modifier.textureBlur(
+                                backdrop = backdrop,
+                                shape = RoundedCornerShape(16.dp),
+                                blurRadius = 150f,
+                                noiseCoefficient = BlurDefaults.NoiseCoefficient,
+                                colors = BlurColors(blendColors = titleBlend),
+                                contentBlendMode = BlendMode.DstIn,
+                                enabled = true
+                            )
+                        } else Modifier
+                    )
+            )
+            Text(
+                text = stringResource(R.string.about_version_format, versionName),
+                color = scheme.onSurfaceVariantSummary,
+                fontSize = 14.sp,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = stringResource(R.string.about_tagline),
+                color = scheme.onSurfaceVariantSummary,
+                fontSize = 13.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 12.dp, start = 28.dp, end = 28.dp)
             )
         }
-    }
-}
 
-@Composable
-private fun FeatureItem(title: String, description: String, colors: ThemeColors) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.Top) {
-        Box(Modifier.padding(top = 7.dp).size(7.dp).clip(CircleShape).background(colors.primary))
-        Column(Modifier.padding(start = 12.dp).weight(1f)) {
-            Text(title, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = colors.onSurface, fontFamily = appFontFamily())
-            Text(description, fontSize = 13.sp, lineHeight = 19.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp), fontFamily = appFontFamily())
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 360.dp)
+        ) {
+            item {
+                SmallTitle(text = stringResource(R.string.about_project_section))
+                AboutFrostedCard(backdrop, blurEnabled, cardBlend, scrollProgress) {
+                    BasicComponent(
+                        title = stringResource(R.string.about_project_home),
+                        summary = PROJECT_URL,
+                        onClick = { uriHandler.openUri(PROJECT_URL) }
+                    )
+                    BasicComponent(
+                        title = stringResource(R.string.about_open_source_license),
+                        summary = "Apache-2.0",
+                        onClick = { uriHandler.openUri("https://www.apache.org/licenses/LICENSE-2.0") }
+                    )
+                    BasicComponent(
+                        title = stringResource(R.string.about_qq_group),
+                        summary = stringResource(R.string.about_qq_group_summary),
+                        onClick = { uriHandler.openUri(QQ_GROUP_URL) }
+                    )
+                }
+            }
+
+            item {
+                SmallTitle(text = stringResource(R.string.about_open_source_projects))
+                AboutFrostedCard(backdrop, blurEnabled, cardBlend, scrollProgress) {
+                    AboutLibrary("Halcyon", R.string.about_halcyon_summary, HALCYON_URL)
+                    AboutLibrary("AndroidLiquidGlass", R.string.about_android_liquid_glass_summary, "https://github.com/Kyant0/AndroidLiquidGlass")
+                    AboutLibrary("Miuix", R.string.about_miuix_summary, "https://github.com/compose-miuix-ui/miuix")
+                    AboutLibrary("FFmpeg", R.string.about_ffmpeg_summary, "https://ffmpeg.org")
+                    AboutLibrary("libusb", R.string.about_libusb_summary, "https://github.com/libusb/libusb")
+                    AboutLibrary("TagLib", R.string.about_taglib_summary, "https://taglib.org")
+                    AboutLibrary("Coil", R.string.about_coil_summary, "https://github.com/coil-kt/coil")
+                    AboutLibrary("Lyricon", R.string.about_lyricon_summary, "https://github.com/proify/lyricon")
+                    AboutLibrary("AndroidX / Kotlin Coroutines", R.string.about_androidx_summary, "https://developer.android.com/jetpack/androidx")
+                }
+            }
+
+            item {
+                Spacer(Modifier.height(160.dp).navigationBarsPadding())
+            }
         }
+
+        SmallTopAppBar(
+            title = stringResource(R.string.about_title),
+            color = scheme.surface.copy(alpha = scrollProgress),
+            titleColor = scheme.onSurface.copy(alpha = scrollProgress),
+            navigationIcon = {
+                IconButton(onClick = onBack) {
+                    Icon(
+                        imageVector = MiuixIcons.Regular.Back,
+                        contentDescription = stringResource(R.string.settings_back),
+                        tint = scheme.onSurface
+                    )
+                }
+            },
+            modifier = Modifier.align(Alignment.TopCenter).zIndex(10f)
+        )
     }
 }
 
 @Composable
-private fun LinkItem(title: String, description: String, colors: ThemeColors, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
+private fun AboutLibrary(name: String, summaryRes: Int, url: String) {
+    val uriHandler = LocalUriHandler.current
+    BasicComponent(
+        title = name,
+        summary = stringResource(summaryRes),
+        onClick = { uriHandler.openUri(url) }
+    )
+}
+
+@Composable
+private fun AboutFrostedCard(
+    backdrop: LayerBackdrop,
+    blurEnabled: Boolean,
+    blendColors: List<BlendColorEntry>,
+    scrollProgress: Float,
+    content: @Composable () -> Unit
+) {
+    val scheme = MiuixTheme.colorScheme
+    val isDark = scheme.background.luminance() < 0.5f
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+            .padding(bottom = 12.dp)
+            .then(
+                if (blurEnabled) {
+                    Modifier.textureBlur(
+                        backdrop = backdrop,
+                        shape = RoundedCornerShape(16.dp),
+                        blurRadius = if (isDark) 72f else 64f,
+                        noiseCoefficient = BlurDefaults.NoiseCoefficient,
+                        colors = BlurColors(blendColors = blendColors),
+                        enabled = true
+                    )
+                } else Modifier
+            ),
+        colors = CardDefaults.defaultColors(
+            color = if (blurEnabled) Color.Transparent else if (isDark) {
+                Color(0xFF252528).copy(alpha = 0.86f + 0.08f * scrollProgress)
+            } else {
+                scheme.surfaceContainer
+            },
+            contentColor = scheme.onSurface
+        )
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = colors.onSurface, fontFamily = appFontFamily())
-            Text(description, fontSize = 12.sp, color = colors.secondaryText, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp), fontFamily = appFontFamily())
-        }
-        Text("›", color = colors.secondaryText, fontSize = 26.sp, modifier = Modifier.padding(start = 10.dp), fontFamily = appFontFamily())
+        content()
     }
 }
 
-@Composable
-private fun InfoItem(title: String, description: String, colors: ThemeColors) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        Text(title, fontSize = 15.sp, color = colors.onSurface, fontFamily = appFontFamily())
-        Text(description, fontSize = 13.sp, lineHeight = 19.sp, color = colors.secondaryText, modifier = Modifier.padding(top = 3.dp), fontFamily = appFontFamily())
+private fun aboutTitleBlendColors(isDark: Boolean): List<BlendColorEntry> =
+    if (isDark) {
+        listOf(
+            BlendColorEntry(Color(0xE6A1A1A1), BlurBlendMode.ColorDodge),
+            BlendColorEntry(Color(0x4DE6E6E6), BlurBlendMode.LinearLight),
+            BlendColorEntry(Color(0xFF1AF500), BlurBlendMode.Lab)
+        )
+    } else {
+        listOf(
+            BlendColorEntry(Color(0xCC4A4A4A), BlurBlendMode.ColorBurn),
+            BlendColorEntry(Color(0xFF4F4F4F), BlurBlendMode.LinearLight),
+            BlendColorEntry(Color(0xFF1AF200), BlurBlendMode.Lab)
+        )
     }
-}
 
-@Composable
-private fun OpenSourceItem(name: String, description: String, colors: ThemeColors) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        Text(name, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = colors.onSurface, fontFamily = appFontFamily())
-        Text(description, fontSize = 13.sp, lineHeight = 19.sp, color = colors.secondaryText, modifier = Modifier.padding(top = 3.dp), fontFamily = appFontFamily())
+private fun aboutCardBlendColors(isDark: Boolean): List<BlendColorEntry> =
+    if (isDark) {
+        listOf(BlendColorEntry(Color(0x757A7A7A), BlurBlendMode.Luminosity))
+    } else {
+        listOf(
+            BlendColorEntry(Color(0x340034F9), BlurBlendMode.Overlay),
+            BlendColorEntry(Color(0xB3FFFFFF), BlurBlendMode.HardLight)
+        )
     }
-}
 
-@Composable
-private fun CardDivider(colors: ThemeColors) {
-    Spacer(Modifier.height(12.dp))
-    Box(Modifier.fillMaxWidth().height(1.dp).background(colors.outline.copy(alpha = 0.12f)))
-    Spacer(Modifier.height(12.dp))
-}
-
-private fun Context.rawSMusicVersionName(): String {
-    return runCatching {
-        packageManager.getPackageInfo(packageName, 0).versionName ?: "未知版本"
-    }.getOrDefault("未知版本")
-}
+private fun Context.rawSMusicVersionName(): String = runCatching {
+    packageManager.getPackageInfo(packageName, 0).versionName ?: "-"
+}.getOrDefault("-")

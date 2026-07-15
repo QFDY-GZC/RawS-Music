@@ -28,6 +28,11 @@ fun SettingsRootPage(
                 onClick = { onNavigate(NavScene.APPEARANCE) }
             )
             SettingsNavigationEntry(
+                title = stringResource(R.string.settings_personalization_title),
+                description = stringResource(R.string.settings_personalization_summary),
+                onClick = { onNavigate(NavScene.PERSONALIZATION_SETTINGS) }
+            )
+            SettingsNavigationEntry(
                 title = stringResource(R.string.settings_player_interface_title),
                 description = stringResource(R.string.settings_player_interface_summary),
                 onClick = { onNavigate(NavScene.PLAYER_INTERFACE) }

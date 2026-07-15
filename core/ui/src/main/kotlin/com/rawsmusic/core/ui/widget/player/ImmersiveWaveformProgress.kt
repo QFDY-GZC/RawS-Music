@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalViewConfiguration
@@ -42,13 +43,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AudioUtils
-import kotlin.math.PI
+import com.rawsmusic.core.common.waveform.RawWaveformCache
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
-import kotlin.math.sin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 internal enum class ImmersiveProgressStyle(val value: Int) {
     Classic(0),
@@ -77,25 +81,46 @@ internal fun ImmersiveSecondProgressBar(
     var dragSecond by remember { mutableFloatStateOf(0f) }
     val densityValue = LocalDensity.current.density
     val touchSlop = LocalViewConfiguration.current.touchSlop
-    val totalSeconds = (totalDurationMs / 1000f).coerceAtLeast(1f)
+    val effectiveDurationMs = totalDurationMs.takeIf { it > 0L }
+        ?: currentSong?.duration?.takeIf { it > 0L }
+        ?: 0L
+    val totalSeconds = (effectiveDurationMs / 1000f).coerceAtLeast(1f)
     val currentSecond = (currentPositionMs / 1000f).coerceIn(0f, totalSeconds)
-    val songMotionKey = remember(currentSong?.path, currentSong?.fileSize, currentSong?.dateModified, totalDurationMs) {
-        "${currentSong?.path}|${currentSong?.fileSize}|${currentSong?.dateModified}|$totalDurationMs"
+    val endSnapSeconds = min(1f, totalSeconds * 0.004f)
+    val timelineSecond = if (isPlaying && totalSeconds - currentSecond <= endSnapSeconds) {
+        totalSeconds
+    } else {
+        currentSecond
+    }
+    val context = LocalContext.current.applicationContext
+    val songMotionKey = remember(currentSong?.path, currentSong?.fileSize, currentSong?.dateModified, effectiveDurationMs) {
+        "${currentSong?.path}|${currentSong?.fileSize}|${currentSong?.dateModified}|$effectiveDurationMs"
+    }
+    val waveformSongKey = remember(
+        currentSong?.path,
+        currentSong?.fileSize,
+        currentSong?.dateModified,
+        currentSong?.cueOffsetMs,
+        currentSong?.cueEndMs,
+        currentSong?.cueTrackIndex
+    ) {
+        "${currentSong?.path}|${currentSong?.fileSize}|${currentSong?.dateModified}|" +
+            "${currentSong?.cueOffsetMs}|${currentSong?.cueEndMs}|${currentSong?.cueTrackIndex}"
     }
     var lastMotionKey by remember { mutableStateOf(songMotionKey) }
-    var lastTargetSecond by remember { mutableFloatStateOf(currentSecond) }
-    val shouldSnapSecond = lastMotionKey != songMotionKey || abs(currentSecond - lastTargetSecond) > 2.4f
+    var lastTargetSecond by remember { mutableFloatStateOf(timelineSecond) }
+    val shouldSnapSecond = lastMotionKey != songMotionKey || abs(timelineSecond - lastTargetSecond) > 2.4f
     val settledSecond by animateFloatAsState(
-        targetValue = currentSecond,
+        targetValue = timelineSecond,
         animationSpec = tween(
-            durationMillis = if (shouldSnapSecond) 0 else if (isPlaying) 520 else 180,
+            durationMillis = if (shouldSnapSecond) 0 else if (isPlaying) 150 else 180,
             easing = FastOutSlowInEasing
         ),
         label = "secondTimelineMotion"
     )
     SideEffect {
         lastMotionKey = songMotionKey
-        lastTargetSecond = currentSecond
+        lastTargetSecond = timelineSecond
     }
     val pauseMorph by animateFloatAsState(
         targetValue = if (isPlaying || isDragging) 0f else 1f,
@@ -103,29 +128,48 @@ internal fun ImmersiveSecondProgressBar(
         label = "secondTimelinePauseMorph"
     )
     var pendingSeekSecond by remember(songMotionKey) { mutableStateOf<Float?>(null) }
-    val seed = remember(currentSong?.path, currentSong?.fileSize, currentSong?.dateModified) {
-        stableHash("${currentSong?.path}|${currentSong?.fileSize}|${currentSong?.dateModified}")
+    // One native PCM bucket maps to one displayed second, preserving the dynamics of long tracks.
+    val waveformSampleCount = ceil(totalSeconds).toInt()
+        .coerceIn(32, RawWaveformCache.MAX_SAMPLE_COUNT)
+    val cachedPcmWaveform = remember(waveformSongKey, waveformSampleCount) {
+        RawWaveformCache.tryReadCached(context, currentSong, waveformSampleCount)
     }
-    LaunchedEffect(pendingSeekSecond, currentSecond, songMotionKey) {
+    var staticPcmWaveform by remember(waveformSongKey, waveformSampleCount) {
+        mutableStateOf(cachedPcmWaveform ?: RawWaveformCache.placeholder(waveformSampleCount, style = 1))
+    }
+    var realWaveformReady by remember(waveformSongKey, waveformSampleCount) {
+        mutableStateOf(false)
+    }
+    LaunchedEffect(waveformSongKey, waveformSampleCount) {
+        if (cachedPcmWaveform != null) {
+            realWaveformReady = true
+        } else {
+            val result = withContext(Dispatchers.IO) {
+                RawWaveformCache.loadOrScanResult(context, currentSong, waveformSampleCount)
+            }
+            staticPcmWaveform = result.values
+            realWaveformReady = result.isReal
+        }
+    }
+    val waveformReveal by animateFloatAsState(
+        targetValue = if (realWaveformReady) 1f else 0f,
+        animationSpec = tween(durationMillis = 620, easing = FastOutSlowInEasing),
+        label = "secondWaveformReveal"
+    )
+    LaunchedEffect(pendingSeekSecond, timelineSecond, songMotionKey) {
         val pending = pendingSeekSecond ?: return@LaunchedEffect
-        if (abs(currentSecond - pending) <= 0.18f) {
+        if (abs(timelineSecond - pending) <= 0.18f) {
             pendingSeekSecond = null
         } else {
             delay(520)
             if (pendingSeekSecond == pending) pendingSeekSecond = null
         }
     }
-    var forceTrackStart by remember { mutableStateOf(false) }
     LaunchedEffect(songMotionKey) {
         pendingSeekSecond = null
-        forceTrackStart = true
-        delay(180)
-        forceTrackStart = false
     }
     val displaySecond = if (isDragging) {
         dragSecond
-    } else if (forceTrackStart) {
-        0f
     } else {
         pendingSeekSecond ?: settledSecond
     }
@@ -137,10 +181,10 @@ internal fun ImmersiveSecondProgressBar(
                 .fillMaxWidth()
                 .height(76.dp)
                 .onSizeChanged { widthPx = it.width.coerceAtLeast(1) }
-                .pointerInput(totalDurationMs, widthPx, touchSlop, densityValue) {
+                .pointerInput(effectiveDurationMs, widthPx, touchSlop, densityValue) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Main)
-                        if (totalDurationMs <= 0L || widthPx <= 1) return@awaitEachGesture
+                        if (effectiveDurationMs <= 0L || widthPx <= 1) return@awaitEachGesture
                         val barStep = 7.45f * densityValue
                         val startSecond = latestDisplaySecond
                         val startX = down.position.x
@@ -181,24 +225,40 @@ internal fun ImmersiveSecondProgressBar(
             val barWidth = (4.9f - pauseMorph * 0.55f) * density
             val centerX = size.width * 0.5f
             val visible = (size.width / step).toInt() + 5
-            val firstSecond = kotlin.math.floor(displaySecond).toInt() - visible / 2
+            val firstSecond = floor(displaySecond).toInt() - visible / 2
+            val segmentCount = ceil(totalSeconds).toInt().coerceAtLeast(1)
+            val waveform = staticPcmWaveform
             for (index in 0 until visible) {
                 val second = firstSecond + index
-                if (second !in 0..totalSeconds.toInt()) continue
-                val x = centerX + (second - displaySecond) * step
-                val amplitude = emphasizeWaveValue(secondPeak(seed, second))
-                val liveHeight = (12.5f * density + amplitude * size.height * 0.83f).coerceAtMost(size.height * 0.96f)
+                if (second !in 0 until segmentCount) continue
+                val segmentEnd = min(second + 1f, totalSeconds)
+                val segmentLength = (segmentEnd - second).coerceIn(0f, 1f)
+                val segmentCenter = second + segmentLength * 0.5f
+                val x = centerX + (segmentCenter - displaySecond) * step
+                val waveformIndex = second.coerceIn(0, waveform.lastIndex)
+                // Preserve actual RMS differences. A power curve suppresses low-energy
+                // windows instead of lifting them into the same visual band as peaks.
+                val realAmplitude = waveform[waveformIndex]
+                    .coerceIn(0f, 1f)
+                    .pow(2.15f)
+                val revealDelay = (abs(x - centerX) / size.width.coerceAtLeast(1f) * 0.30f)
+                    .coerceIn(0f, 0.24f)
+                val rawBarReveal = ((waveformReveal - revealDelay) / (1f - revealDelay))
+                    .coerceIn(0f, 1f)
+                val barReveal = rawBarReveal * rawBarReveal * (3f - 2f * rawBarReveal)
+                val amplitude = realAmplitude * barReveal
+                val liveHeight = (7.5f * density + amplitude * size.height * 0.88f).coerceAtMost(size.height * 0.96f)
                 val idleHeight = (5.5f * density + amplitude * 7.0f * density).coerceAtMost(size.height * 0.26f)
                 val height = liveHeight * (1f - pauseMorph) + idleHeight * pauseMorph
-                val color = if (second < displaySecond) colors.played else colors.remaining
                 val edgeAlpha = edgeFade(x = x, width = size.width, fade = step * 1.9f)
                 val activeAlpha = if (isDragging || isPlaying) 1f else 0.68f
                 val heightScale = 0.90f + 0.10f * edgeAlpha
                 val easedHeight = (height * heightScale).coerceAtMost(size.height * 0.88f)
-                val left = x - barWidth * 0.5f
-                val right = x + barWidth * 0.5f
+                val segmentBarWidth = (barWidth * segmentLength.coerceAtLeast(0.35f)).coerceAtLeast(density)
+                val left = x - segmentBarWidth * 0.5f
+                val right = x + segmentBarWidth * 0.5f
                 val top = (size.height - easedHeight) * 0.5f
-                val radius = CornerRadius(barWidth * 0.5f, barWidth * 0.5f)
+                val radius = CornerRadius(segmentBarWidth * 0.5f, segmentBarWidth * 0.5f)
                 val playedColor = colors.played.copy(alpha = colors.played.alpha * edgeAlpha * activeAlpha)
                 val remainingColor = colors.remaining.copy(alpha = colors.remaining.alpha * edgeAlpha * activeAlpha)
                 when {
@@ -206,7 +266,7 @@ internal fun ImmersiveSecondProgressBar(
                         drawRoundRect(
                             color = remainingColor,
                             topLeft = Offset(left, top),
-                            size = Size(barWidth, easedHeight),
+                            size = Size(segmentBarWidth, easedHeight),
                             cornerRadius = radius
                         )
                     }
@@ -214,7 +274,7 @@ internal fun ImmersiveSecondProgressBar(
                         drawRoundRect(
                             color = playedColor,
                             topLeft = Offset(left, top),
-                            size = Size(barWidth, easedHeight),
+                            size = Size(segmentBarWidth, easedHeight),
                             cornerRadius = radius
                         )
                     }
@@ -223,7 +283,7 @@ internal fun ImmersiveSecondProgressBar(
                             drawRoundRect(
                                 color = playedColor,
                                 topLeft = Offset(left, top),
-                                size = Size(barWidth, easedHeight),
+                                size = Size(segmentBarWidth, easedHeight),
                                 cornerRadius = radius
                             )
                         }
@@ -231,7 +291,7 @@ internal fun ImmersiveSecondProgressBar(
                             drawRoundRect(
                                 color = remainingColor,
                                 topLeft = Offset(left, top),
-                                size = Size(barWidth, easedHeight),
+                                size = Size(segmentBarWidth, easedHeight),
                                 cornerRadius = radius
                             )
                         }
@@ -253,7 +313,8 @@ internal fun ImmersiveSecondProgressBar(
         Spacer(Modifier.height(4.dp))
         ImmersiveWaveformTimeRow(
             currentMs = (displaySecond * 1000f).toLong().coerceAtLeast(0L),
-            totalMs = totalDurationMs
+            totalMs = effectiveDurationMs,
+            textColor = colors.time
         )
     }
 }
@@ -264,14 +325,6 @@ private fun edgeFade(x: Float, width: Float, fade: Float): Float {
     val right = ((width - x) / fade).coerceIn(0f, 1f)
     val raw = min(left, right)
     return raw * raw * (3f - 2f * raw)
-}
-
-private fun secondPeak(seed: Int, second: Int): Float {
-    var value = seed xor (second * 0x45D9F3B)
-    value = value xor (value ushr 16)
-    value *= 0x45D9F3B
-    value = value xor (value ushr 16)
-    return 0.20f + ((value ushr 8) and 0xFF) / 255f * 0.80f
 }
 
 internal data class ImmersiveClimaxSegment(
@@ -285,7 +338,8 @@ internal data class ImmersiveWaveformColors(
     val remaining: Color,
     val climaxPlayed: Color,
     val climaxRemaining: Color,
-    val needle: Color
+    val needle: Color,
+    val time: Color
 )
 
 @Composable
@@ -307,11 +361,17 @@ internal fun ImmersiveWaveformProgressBar(
     var isDragging by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(0f) }
 
-    val realFraction = if (totalDurationMs > 0L) {
+    val rawFraction = if (totalDurationMs > 0L) {
         currentPositionMs.toFloat() / totalDurationMs.toFloat()
     } else {
         0f
     }.coerceIn(0f, 1f)
+    val endSnapFraction = if (totalDurationMs > 0L) {
+        (min(1000L, (totalDurationMs * 0.004f).toLong()).toFloat() / totalDurationMs).coerceAtLeast(0f)
+    } else {
+        0f
+    }
+    val realFraction = if (isPlaying && 1f - rawFraction <= endSnapFraction) 1f else rawFraction
     val seedKey = remember(currentSong?.path, currentSong?.fileSize, currentSong?.dateModified, totalDurationMs) {
         buildString {
             append(currentSong?.path.orEmpty())
@@ -353,7 +413,27 @@ internal fun ImmersiveWaveformProgressBar(
         pendingSeekFraction ?: realFraction
     }
 
-    val waveform = remember(seedKey) { generatePreviewWaveform(seedKey, sampleCount = 100) }
+    val context = LocalContext.current.applicationContext
+    val waveformSongKey = remember(
+        currentSong?.path,
+        currentSong?.fileSize,
+        currentSong?.dateModified,
+        currentSong?.cueOffsetMs,
+        currentSong?.cueEndMs,
+        currentSong?.cueTrackIndex
+    ) {
+        "${currentSong?.path}|${currentSong?.fileSize}|${currentSong?.dateModified}|" +
+            "${currentSong?.cueOffsetMs}|${currentSong?.cueEndMs}|${currentSong?.cueTrackIndex}"
+    }
+    val waveformSampleCount = 160
+    var waveform by remember(waveformSongKey) {
+        mutableStateOf(RawWaveformCache.placeholder(waveformSampleCount))
+    }
+    LaunchedEffect(waveformSongKey) {
+        waveform = withContext(Dispatchers.IO) {
+            RawWaveformCache.loadOrScan(context, currentSong, waveformSampleCount)
+        }
+    }
     val climaxSegments = remember(seedKey, waveform) { detectPreviewClimaxSegments(waveform) }
 
     Column(modifier = modifier) {
@@ -415,7 +495,8 @@ internal fun ImmersiveWaveformProgressBar(
         Spacer(Modifier.height(4.dp))
         ImmersiveWaveformTimeRow(
             currentMs = (displayFraction.coerceIn(0f, 1f) * totalDurationMs).toLong().coerceAtLeast(0L),
-            totalMs = totalDurationMs
+            totalMs = totalDurationMs,
+            textColor = colors.time
         )
         @Suppress("UNUSED_EXPRESSION")
         showDebugPanel
@@ -532,9 +613,9 @@ private fun DrawScope.drawRoundedWaveform(
 @Composable
 private fun ImmersiveWaveformTimeRow(
     currentMs: Long,
-    totalMs: Long
+    totalMs: Long,
+    textColor: Color
 ) {
-    val textColor = Color.White.copy(alpha = 0.66f)
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -576,42 +657,6 @@ private fun lerpColor(start: Color, end: Color, t: Float): Color {
     )
 }
 
-private fun generatePreviewWaveform(seedKey: String, sampleCount: Int): FloatArray {
-    var seed = stableHash(seedKey)
-    fun nextUnit(): Float {
-        seed = seed * 1664525 + 1013904223
-        return ((seed ushr 8) and 0xFFFF).toFloat() / 65535f
-    }
-
-    val base1 = 1.6f + nextUnit() * 2.2f
-    val base2 = 4.3f + nextUnit() * 4.0f
-    val base3 = 11.0f + nextUnit() * 7.0f
-    val raw = FloatArray(sampleCount)
-    for (i in 0 until sampleCount) {
-        val t = i.toFloat() / (sampleCount - 1).coerceAtLeast(1).toFloat()
-        val songShape = 0.45f + 0.22f * sin((t * PI * base1).toFloat()) +
-            0.16f * sin((t * PI * base2 + 0.7f).toFloat()) +
-            0.09f * sin((t * PI * base3 + 1.6f).toFloat())
-        val noise = (nextUnit() - 0.5f) * 0.24f
-        val intro = (t / 0.08f).coerceIn(0f, 1f)
-        val outro = ((1f - t) / 0.08f).coerceIn(0f, 1f)
-        val value = (songShape + noise) * intro * outro
-        raw[i] = value.coerceIn(0.04f, 1f)
-    }
-
-    val smooth = FloatArray(sampleCount)
-    for (i in raw.indices) {
-        val left2 = raw[(i - 2).coerceAtLeast(0)]
-        val left1 = raw[(i - 1).coerceAtLeast(0)]
-        val center = raw[i]
-        val right1 = raw[(i + 1).coerceAtMost(raw.lastIndex)]
-        val right2 = raw[(i + 2).coerceAtMost(raw.lastIndex)]
-        smooth[i] = (left2 * 0.08f + left1 * 0.18f + center * 0.48f + right1 * 0.18f + right2 * 0.08f)
-            .coerceIn(0.03f, 1f)
-    }
-    return smooth
-}
-
 private fun detectPreviewClimaxSegments(peaks: FloatArray): List<ImmersiveClimaxSegment> {
     if (peaks.size < 64) return emptyList()
     val window = (peaks.size * 0.075f).toInt().coerceIn(32, 96)
@@ -649,13 +694,4 @@ private fun detectPreviewClimaxSegments(peaks: FloatArray): List<ImmersiveClimax
             confidence = bestScore.coerceIn(0f, 1f)
         )
     )
-}
-
-private fun stableHash(value: String): Int {
-    var h = -0x7ee3623b
-    value.forEach { c ->
-        h = h xor c.code
-        h *= 16777619
-    }
-    return if (h == 0) 0x13579bdf else h
 }

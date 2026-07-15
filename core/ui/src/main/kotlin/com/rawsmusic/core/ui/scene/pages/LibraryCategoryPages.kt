@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.dp
 import com.rawsmusic.core.common.model.AudioFile
@@ -53,6 +54,7 @@ fun GenresPage(
             listScene = NavScene.GENRE,
             indexMode = RawIndexMode.AUTO,
             state = powerListState,
+            onBack = onBack,
             toItem = { group ->
                 GenrePowerListItem(
                     key = group.key,
@@ -109,6 +111,7 @@ fun YearsPage(
             indexMode = RawIndexMode.LATIN,
             yearIndex = true,
             state = powerListState,
+            onBack = onBack,
             toItem = { group ->
                 YearPowerListItem(
                     key = group.key,
@@ -164,6 +167,7 @@ fun ComposersPage(
             listScene = NavScene.COMPOSER,
             indexMode = RawIndexMode.AUTO,
             state = powerListState,
+            onBack = onBack,
             toItem = { group ->
                 ComposerPowerListItem(
                     key = group.key,
@@ -205,6 +209,7 @@ private fun <T : PowerListVisualItem> CategoryListPage(
     indexMode: RawIndexMode,
     yearIndex: Boolean = false,
     state: ComposePowerListState,
+    onBack: () -> Unit,
     toItem: (CategoryGroupUi) -> T,
     onGroupClick: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -220,15 +225,25 @@ private fun <T : PowerListVisualItem> CategoryListPage(
         ) { item -> item.title }
     }
 
-    Box(
+    val title = when (listScene) {
+        NavScene.GENRE -> stringResource(com.rawsmusic.core.ui.R.string.library_title_genres)
+        NavScene.YEAR -> stringResource(com.rawsmusic.core.ui.R.string.library_title_years)
+        NavScene.COMPOSER -> stringResource(com.rawsmusic.core.ui.R.string.library_title_composers)
+        else -> stringResource(com.rawsmusic.core.ui.R.string.library_title_fallback)
+    }
+    LibraryListScaffold(
+        title = title,
+        sceneId = listScene.name,
+        onBack = onBack,
+        powerListState = state,
         modifier = modifier
-            .fillMaxSize()
-    ) {
+    ) { topPadding, backdropSource ->
         ComposeGenericPowerList(
             items = items,
             state = state,
+            contentTopPadding = topPadding,
             sharedCoverSceneId = listScene.name,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().then(backdropSource),
             onItemClick = { item, _, _ ->
                 coverRegistry.freeze(
                     sceneId = listScene.name,
@@ -243,6 +258,7 @@ private fun <T : PowerListVisualItem> CategoryListPage(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .padding(top = 92.dp, bottom = 118.dp, end = 0.dp)
+                .then(backdropSource)
                 .zIndex(30f),
             onSelect = { _, index ->
                 state.requestScrollToIndex(index)
@@ -303,7 +319,7 @@ private data class CategoryGroupUi(
             coverKey = coverKey,
             title = name,
             subtitle = subtitle,
-            meta = "♫ $songCount | ${formatPowerListDuration(totalDurationMs)}",
+            meta = "$songCount | ${formatPowerListDuration(totalDurationMs)}",
             songs = songs
         )
     }

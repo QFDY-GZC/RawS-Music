@@ -24,6 +24,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -51,13 +52,27 @@ fun PlayerDismissMotionHost(
     modifier: Modifier = Modifier,
     backEnabled: Boolean = true,
     gestureEnabled: Boolean = true,
+    gestureBlocked: Boolean = false,
     overlayContent: @Composable () -> Unit = {},
     content: @Composable (dismissingPlayer: Boolean) -> Unit
 ) {
+    // The ordinary player owns its vertical scene gesture. When both host inputs are disabled,
+    // do not keep an idle full-screen graphicsLayer around it: during the inner PLAYER -> MAIN
+    // drag that extra retained layer can be presented together with the moving scene layer.
+    if (!gestureEnabled && !backEnabled) {
+        SideEffect { onDismissProgressChange(0f) }
+        Box(modifier = modifier.fillMaxSize().clipToBounds()) {
+            content(false)
+            overlayContent()
+        }
+        return
+    }
+
     val density = LocalDensity.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
     val latestOnDismiss by rememberUpdatedState(onDismiss)
+    val latestGestureBlocked by rememberUpdatedState(gestureBlocked)
     val dragDismissOffset = remember { Animatable(0f) }
     var dismissingPlayer by remember { mutableStateOf(false) }
     val topDragLimitPx = with(density) { 132.dp.toPx() }
@@ -108,7 +123,9 @@ fun PlayerDismissMotionHost(
                         val velocityTracker = VelocityTracker()
                         detectDragGestures(
                             onDragStart = { offset ->
-                                closeGesture = !dismissingPlayer && offset.y <= topDragLimitPx
+                                closeGesture = !dismissingPlayer &&
+                                    !latestGestureBlocked &&
+                                    offset.y <= topDragLimitPx
                                 gestureOffset = dragDismissOffset.value
                                 velocityTracker.resetTracking()
                                 velocityTracker.addPosition(SystemClock.uptimeMillis(), offset)
@@ -117,6 +134,21 @@ fun PlayerDismissMotionHost(
                                 }
                             },
                             onDrag = { change, dragAmount ->
+                                if (latestGestureBlocked) {
+                                    if (closeGesture) {
+                                        closeGesture = false
+                                        scope.launch {
+                                            dragDismissOffset.animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = spring(
+                                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                                    stiffness = Spring.StiffnessMediumLow
+                                                )
+                                            )
+                                        }
+                                    }
+                                    return@detectDragGestures
+                                }
                                 if (!closeGesture) return@detectDragGestures
                                 gestureOffset = (gestureOffset + if (dragAmount.y > 0f) {
                                     dragAmount.y
@@ -140,6 +172,19 @@ fun PlayerDismissMotionHost(
                                 }
                             },
                             onDragEnd = {
+                                if (latestGestureBlocked) {
+                                    closeGesture = false
+                                    scope.launch {
+                                        dragDismissOffset.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                                stiffness = Spring.StiffnessMediumLow
+                                            )
+                                        )
+                                    }
+                                    return@detectDragGestures
+                                }
                                 if (!closeGesture) return@detectDragGestures
                                 closeGesture = false
                                 val velocityY = velocityTracker.calculateVelocity().y

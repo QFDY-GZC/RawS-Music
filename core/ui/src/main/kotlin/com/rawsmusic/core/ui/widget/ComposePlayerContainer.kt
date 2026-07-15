@@ -1,6 +1,7 @@
 package com.rawsmusic.core.ui.widget
 
 import android.graphics.RectF
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -13,13 +14,22 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -29,6 +39,10 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.scene.CoverTransitionTarget
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
+import com.rawsmusic.core.ui.widget.bitmaps.PlayerArtworkDirection
+import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkTransitionState
+import com.rawsmusic.core.ui.widget.bitmaps.rememberPlaybackArtworkTransitionState
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.core.ui.widget.player.AlbumDetailPanel
 import com.rawsmusic.core.ui.widget.player.FullCoverPage
@@ -36,9 +50,10 @@ import com.rawsmusic.core.ui.widget.player.ImmersiveAlbumInfoPage
 import com.rawsmusic.core.ui.widget.player.ImmersivePlayerHorizontalStack
 import com.rawsmusic.core.ui.widget.player.ImmersiveLyricPage
 import com.rawsmusic.core.ui.widget.player.ImmersivePlayerMainPage
+import com.rawsmusic.core.ui.widget.player.LYRIC_HEADER_ARTWORK_CORNER_RADIUS_DP
 import com.rawsmusic.core.ui.widget.player.LyricPage
 import com.rawsmusic.core.ui.widget.player.PlayerMainPage
-import com.rawsmusic.core.ui.widget.player.QueuePanel
+import com.rawsmusic.core.ui.widget.player.STANDARD_PLAYER_ARTWORK_CORNER_RADIUS_DP
 import com.rawsmusic.core.ui.widget.player.StandardPlayerBackdrop
 import com.rawsmusic.core.ui.widget.player.rememberCoverAccentColor
 import io.github.proify.lyricon.lyric.model.Song
@@ -58,6 +73,8 @@ fun ComposePlayerContainer(
     sceneState: PlayerSceneState,
     currentSong: AudioFile?,
     coverPath: String? = null,
+    previousGestureArtworkKey: String? = null,
+    nextGestureArtworkKey: String? = null,
     isPlaying: Boolean = false,
     currentPositionMs: Long = 0L,
     totalDurationMs: Long = 0L,
@@ -71,16 +88,22 @@ fun ComposePlayerContainer(
     audioInfoText: String = "",
     onSeekStart: () -> Unit = {},
     onSeekStop: (Float) -> Unit = {},
-    onPrevious: () -> Unit = {},
+    onPrevious: () -> AudioFile? = { null },
     onPlayPause: () -> Unit = {},
-    onNext: () -> Unit = {},
+    onNext: () -> AudioFile? = { null },
+    onArtworkGesturePrevious: () -> AudioFile? = onPrevious,
+    onArtworkGestureNext: () -> AudioFile? = onNext,
     onPlayMode: () -> Unit = {},
     onPlayModeLongPress: () -> Unit = {},
     onMore: () -> Unit = {},
+    onOpenMetadata: () -> Unit = {},
+    onOpenAudioEffects: () -> Unit = {},
+    onLyricModifyAlbumArt: () -> Unit = {},
+    sleepTimerSelection: Int = 0,
+    onSleepTimerSelectionChange: (Int) -> Unit = {},
     onAudioQuality: () -> Unit = {},
     onAudioQualityLongPress: () -> Unit = onAudioQuality,
     onOpenLyric: () -> Unit = {},
-    onOpenQueue: () -> Unit = {},
     onPlayerCoverSwipeUpStart: () -> Unit = {},
     onPlayerCoverSwipeUpProgress: (Float) -> Unit = {},
     onPlayerCoverSwipeUpEnd: (Boolean, Float) -> Unit = { _, _ -> },
@@ -104,9 +127,11 @@ fun ComposePlayerContainer(
     onLyricSeek: (Long) -> Unit = {},
     onLyricTranslationToggle: () -> Unit = {},
     isImmersiveEnabled: Boolean = false,
+    overlaySuspended: Boolean = false,
     onClosePlayer: () -> Unit = { sceneState.backToMain() },
     onBackToPlayer: () -> Unit = { sceneState.backToPlayer() },
     onModalVisibleChange: (Boolean) -> Unit = {},
+    onModalDismissActionChange: ((() -> Unit)?) -> Unit = {},
     controllerScene: PlayerSceneController.Scene? = null,
     controllerFromScene: PlayerSceneController.Scene? = null,
     controllerToScene: PlayerSceneController.Scene? = null,
@@ -115,14 +140,192 @@ fun ComposePlayerContainer(
     sourceCoverTarget: CoverTransitionTarget? = null,
     modifier: Modifier = Modifier
 ) {
+    val latestOnModalVisibleChange by rememberUpdatedState(onModalVisibleChange)
+    val latestOnModalDismissActionChange by rememberUpdatedState(onModalDismissActionChange)
+    DisposableEffect(Unit) {
+        onDispose {
+            latestOnModalVisibleChange(false)
+            latestOnModalDismissActionChange(null)
+        }
+    }
+
     val resolvedCoverPath = currentSong.resolvePlaybackArtworkKey(coverPath)
     val resolvedAlbumCoverPath = albumCoverPath?.takeIf { it.isNotBlank() } ?: resolvedCoverPath
+    val artworkTransitionState = rememberPlaybackArtworkTransitionState(
+        currentKey = resolvedCoverPath,
+        queueCurrentIndex = queueCurrentIndex,
+        queueSize = queueSongs.size
+    )
+    LaunchedEffect(previousGestureArtworkKey, nextGestureArtworkKey) {
+        artworkTransitionState.setGestureTargetKeys(
+            previousKey = previousGestureArtworkKey,
+            nextKey = nextGestureArtworkKey
+        )
+    }
+    val previousArtworkKey = when {
+        queueSongs.isEmpty() -> null
+        queueCurrentIndex > 0 -> queueSongs[queueCurrentIndex - 1]
+        queueCurrentIndex == 0 -> queueSongs.lastOrNull()
+        else -> null
+    }?.resolvePlaybackArtworkKey(null)
+    val nextArtworkKey = when {
+        queueSongs.isEmpty() -> null
+        queueCurrentIndex in 0 until queueSongs.lastIndex -> queueSongs[queueCurrentIndex + 1]
+        queueCurrentIndex == queueSongs.lastIndex -> queueSongs.firstOrNull()
+        else -> null
+    }?.resolvePlaybackArtworkKey(null)
+
+    // Advance the speculative queue target immediately instead of recomputing each rapid tap from
+    // a possibly stale player-reported index. Keep a speculative navigation index until the player
+    // catches up, otherwise multiple fast Next taps keep requesting the same artwork identity.
+    var requestedQueueIndex by remember(queueSongs) { mutableIntStateOf(queueCurrentIndex) }
+    LaunchedEffect(queueCurrentIndex, queueSongs.size, resolvedCoverPath) {
+        val playerBoundIsPreparedTarget = !resolvedCoverPath.isNullOrBlank() &&
+            artworkTransitionState.foregroundTargetKey() == resolvedCoverPath
+        if (!artworkTransitionState.hasPendingNavigation() ||
+            queueCurrentIndex == requestedQueueIndex ||
+            playerBoundIsPreparedTarget
+        ) {
+            requestedQueueIndex = queueCurrentIndex
+        }
+    }
+
+    fun indexForSong(song: AudioFile): Int {
+        return queueSongs.indexOfFirst {
+            it.path == song.path &&
+                it.cueOffsetMs == song.cueOffsetMs &&
+                it.cueTrackIndex == song.cueTrackIndex
+        }
+    }
+
+    fun adjacentRequestedIndex(direction: PlayerArtworkDirection): Int {
+        if (queueSongs.isEmpty()) return -1
+        val base = requestedQueueIndex.takeIf { it in queueSongs.indices }
+            ?: queueCurrentIndex.takeIf { it in queueSongs.indices }
+            ?: 0
+        return when (direction) {
+            PlayerArtworkDirection.Previous -> if (base > 0) base - 1 else queueSongs.lastIndex
+            PlayerArtworkDirection.Next -> if (base < queueSongs.lastIndex) base + 1 else 0
+        }
+    }
+
+    LaunchedEffect(previousArtworkKey, nextArtworkKey) {
+        previousArtworkKey?.takeIf { it.isNotBlank() }?.let { BitmapProvider.warmPlaybackArt(it) }
+        nextArtworkKey?.takeIf { it.isNotBlank() }?.let { BitmapProvider.warmPlaybackArt(it) }
+    }
+
+    val inlineQueueVisible = sceneState.isQueueOverlayVisible
+    var childInteractionVisible by remember { mutableStateOf(false) }
+    var childModalDismissAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var immersiveMoreRequested by rememberSaveable { mutableStateOf(false) }
+    val immersiveMoreVisible = immersiveMoreRequested && !overlaySuspended
+
+    fun dismissInlineQueue() {
+        sceneState.closeQueueOverlay()
+    }
+    val dismissInlineQueueAction = remember(sceneState) {
+        { sceneState.closeQueueOverlay() }
+    }
+
+    val toggleInlineQueue = {
+        sceneState.toggleQueueOverlay()
+    }
+    val playQueueSong: (AudioFile, Int) -> Unit = { song, index ->
+        val base = requestedQueueIndex.takeIf { it in queueSongs.indices } ?: queueCurrentIndex
+        val direction = if (base >= 0 && index < base) {
+            PlayerArtworkDirection.Previous
+        } else {
+            PlayerArtworkDirection.Next
+        }
+        requestedQueueIndex = index
+        artworkTransitionState.prepare(
+            direction = direction,
+            expectedKey = song.resolvePlaybackArtworkKey(null),
+            expectedQueueIndex = index
+        )
+        onQueueSongClick(song, index)
+    }
+
+    fun issueTrackCommand(
+        direction: PlayerArtworkDirection,
+        command: () -> AudioFile?,
+        gestureCommand: () -> AudioFile?
+    ) {
+        // The controller returns the song selected by this exact command before its asynchronous
+        // decoder switch starts. Use that identity to supersede any older swipe/button transaction.
+        val gestureTargetKey = artworkTransitionState.pendingGestureTarget(direction)
+        val selectedSong = if (gestureTargetKey != null) gestureCommand() else command()
+        val selectedKey = selectedSong.resolvePlaybackArtworkKey(null)
+        if (selectedSong != null && !selectedKey.isNullOrBlank()) {
+            artworkTransitionState.prepare(
+                direction = direction,
+                expectedKey = selectedKey,
+                expectedQueueIndex = indexForSong(selectedSong)
+            )
+        } else {
+            artworkTransitionState.expectConfirmedNavigation(direction)
+        }
+    }
+
+    val previousFromPlayer = {
+        issueTrackCommand(
+            PlayerArtworkDirection.Previous,
+            command = onPrevious,
+            gestureCommand = onArtworkGesturePrevious
+        )
+    }
+    val nextFromPlayer = {
+        issueTrackCommand(
+            PlayerArtworkDirection.Next,
+            command = onNext,
+            gestureCommand = onArtworkGestureNext
+        )
+    }
+    val modalVisibilityChanged: (Boolean) -> Unit = { childVisible ->
+        childInteractionVisible = childVisible
+    }
+    val modalDismissActionChanged: ((() -> Unit)?) -> Unit = { dismissAction ->
+        childModalDismissAction = dismissAction
+    }
+    val effectiveModalDismissAction = childModalDismissAction
+        ?: dismissInlineQueueAction.takeIf { inlineQueueVisible }
+    val effectiveModalVisible = childInteractionVisible || effectiveModalDismissAction != null
+
+    LaunchedEffect(effectiveModalVisible) {
+        latestOnModalVisibleChange(effectiveModalVisible)
+    }
+    LaunchedEffect(effectiveModalDismissAction) {
+        latestOnModalDismissActionChange(effectiveModalDismissAction)
+    }
+
+    LaunchedEffect(sceneState.currentScene) {
+        when (sceneState.currentScene) {
+            PlayerScene.QUEUE -> {
+                sceneState.backToPlayer()
+                sceneState.openQueueOverlay()
+            }
+            PlayerScene.PLAYER -> Unit
+            else -> dismissInlineQueue()
+        }
+    }
+    LaunchedEffect(controllerScene) {
+        if (controllerScene != null &&
+            controllerScene != PlayerSceneController.Scene.PLAYER &&
+            controllerScene != PlayerSceneController.Scene.QUEUE
+        ) {
+            dismissInlineQueue()
+        }
+    }
+    BackHandler(enabled = inlineQueueVisible) {
+        dismissInlineQueue()
+    }
 
     if (isImmersiveEnabled) {
         ImmersiveComposePlayerContainer(
             sceneState = sceneState,
             currentSong = currentSong,
             coverPath = resolvedCoverPath,
+            artworkTransitionState = artworkTransitionState,
             isPlaying = isPlaying,
             currentPositionMs = currentPositionMs,
             totalDurationMs = totalDurationMs,
@@ -140,20 +343,36 @@ fun ComposePlayerContainer(
             onAlbumSongClick = onAlbumSongClick,
             queueSongs = queueSongs,
             queueCurrentIndex = queueCurrentIndex,
+            inlineQueueVisible = inlineQueueVisible,
+            onToggleInlineQueue = toggleInlineQueue,
             onQueueSongClick = onQueueSongClick,
             onClearPriorityQueue = onClearPriorityQueue,
             onClosePlayer = onClosePlayer,
-            onModalVisibleChange = onModalVisibleChange,
+            morePanelVisible = immersiveMoreVisible,
+            onMorePanelVisibleChangeState = { immersiveMoreRequested = it },
+            onModalVisibleChange = modalVisibilityChanged,
+            onModalDismissActionChange = modalDismissActionChanged,
             onSeekStart = onSeekStart,
             onSeekStop = onSeekStop,
-            onPrevious = onPrevious,
+            onPrevious = {
+                onPrevious()
+                Unit
+            },
             onPlayPause = onPlayPause,
-            onNext = onNext,
+            onNext = {
+                onNext()
+                Unit
+            },
             onPlayMode = onPlayMode,
+            onLyricModifyAlbumArt = onLyricModifyAlbumArt,
+            sleepTimerSelection = sleepTimerSelection,
+            onSleepTimerSelectionChange = onSleepTimerSelectionChange,
             onOpenLyric = onOpenLyric,
             audioInfoText = audioInfoText,
             onAudioQuality = onAudioQuality,
             onAudioQualityLongPress = onAudioQualityLongPress,
+            onOpenMetadata = onOpenMetadata,
+            onOpenAudioEffects = onOpenAudioEffects,
             onLyricSeek = onLyricSeek,
             onLyricTranslationToggle = onLyricTranslationToggle,
             controllerScene = controllerScene,
@@ -168,6 +387,7 @@ fun ComposePlayerContainer(
             sceneState = sceneState,
             currentSong = currentSong,
             coverPath = resolvedCoverPath,
+            artworkTransitionState = artworkTransitionState,
             isPlaying = isPlaying,
             currentPositionMs = currentPositionMs,
             totalDurationMs = totalDurationMs,
@@ -181,16 +401,20 @@ fun ComposePlayerContainer(
             audioInfoText = audioInfoText,
             onSeekStart = onSeekStart,
             onSeekStop = onSeekStop,
-            onPrevious = onPrevious,
+            onPrevious = previousFromPlayer,
             onPlayPause = onPlayPause,
-            onNext = onNext,
+            onNext = nextFromPlayer,
             onPlayMode = onPlayMode,
             onPlayModeLongPress = onPlayModeLongPress,
             onMore = onMore,
+            onOpenMetadata = onOpenMetadata,
+            onOpenAudioEffects = onOpenAudioEffects,
+            onLyricModifyAlbumArt = onLyricModifyAlbumArt,
+            sleepTimerSelection = sleepTimerSelection,
+            onSleepTimerSelectionChange = onSleepTimerSelectionChange,
             onAudioQuality = onAudioQuality,
             onAudioQualityLongPress = onAudioQualityLongPress,
             onOpenLyric = onOpenLyric,
-            onOpenQueue = onOpenQueue,
             onPlayerCoverSwipeUpStart = onPlayerCoverSwipeUpStart,
             onPlayerCoverSwipeUpProgress = onPlayerCoverSwipeUpProgress,
             onPlayerCoverSwipeUpEnd = onPlayerCoverSwipeUpEnd,
@@ -202,7 +426,9 @@ fun ComposePlayerContainer(
             onLyricCoverSwipeDownEnd = onLyricCoverSwipeDownEnd,
             queueSongs = queueSongs,
             queueCurrentIndex = queueCurrentIndex,
-            onQueueSongClick = onQueueSongClick,
+            inlineQueueVisible = inlineQueueVisible,
+            onToggleInlineQueue = toggleInlineQueue,
+            onQueueSongClick = playQueueSong,
             onClearPriorityQueue = onClearPriorityQueue,
             albumSongs = albumSongs,
             albumCoverPath = resolvedAlbumCoverPath,
@@ -221,7 +447,9 @@ fun ComposePlayerContainer(
             controllerProgress = controllerProgress,
             controllerIsTransitioning = controllerIsTransitioning,
             sourceCoverTarget = sourceCoverTarget,
-            onModalVisibleChange = onModalVisibleChange,
+            overlaySuspended = overlaySuspended,
+            onModalVisibleChange = modalVisibilityChanged,
+            onModalDismissActionChange = modalDismissActionChanged,
             modifier = modifier
         )
     }
@@ -232,6 +460,7 @@ private fun ImmersiveComposePlayerContainer(
     sceneState: PlayerSceneState,
     currentSong: AudioFile?,
     coverPath: String?,
+    artworkTransitionState: PlaybackArtworkTransitionState,
     isPlaying: Boolean,
     currentPositionMs: Long,
     totalDurationMs: Long,
@@ -249,20 +478,30 @@ private fun ImmersiveComposePlayerContainer(
     onAlbumSongClick: (AudioFile, Int) -> Unit,
     queueSongs: List<AudioFile>,
     queueCurrentIndex: Int,
+    inlineQueueVisible: Boolean,
+    onToggleInlineQueue: () -> Unit,
     onQueueSongClick: (AudioFile, Int) -> Unit,
     onClearPriorityQueue: (() -> Unit)?,
     onClosePlayer: () -> Unit,
+    morePanelVisible: Boolean,
+    onMorePanelVisibleChangeState: (Boolean) -> Unit,
     onModalVisibleChange: (Boolean) -> Unit,
+    onModalDismissActionChange: ((() -> Unit)?) -> Unit,
     onSeekStart: () -> Unit,
     onSeekStop: (Float) -> Unit,
     onPrevious: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onPlayMode: () -> Unit,
+    onLyricModifyAlbumArt: () -> Unit,
+    sleepTimerSelection: Int,
+    onSleepTimerSelectionChange: (Int) -> Unit,
     onOpenLyric: () -> Unit,
     audioInfoText: String = "",
     onAudioQuality: () -> Unit = {},
     onAudioQualityLongPress: () -> Unit = onAudioQuality,
+    onOpenMetadata: () -> Unit,
+    onOpenAudioEffects: () -> Unit,
     onLyricSeek: (Long) -> Unit,
     onLyricTranslationToggle: () -> Unit,
     controllerScene: PlayerSceneController.Scene?,
@@ -279,17 +518,19 @@ private fun ImmersiveComposePlayerContainer(
     } else {
         controllerScene
     }
-    val scene = when {
-        sceneState.currentScene != PlayerScene.MAIN -> sceneState.currentScene
-        controllerSceneForVisibility != null -> controllerSceneForVisibility.toPlayerScene()
-        else -> PlayerScene.MAIN
+    val auxiliaryScene = sceneState.currentScene.takeIf {
+        it == PlayerScene.QUEUE || it == PlayerScene.ALBUM_DETAIL || it == PlayerScene.FULL_COVER
     }
+    val resolvedScene = auxiliaryScene
+        ?: controllerSceneForVisibility?.toPlayerScene()
+        ?: sceneState.currentScene
+    val scene = if (resolvedScene == PlayerScene.QUEUE) PlayerScene.PLAYER else resolvedScene
     if (scene == PlayerScene.MAIN) return
 
     Box(modifier = modifier.fillMaxSize()) {
         if (scene in setOf(PlayerScene.PLAYER, PlayerScene.LYRIC, PlayerScene.ALBUM_DETAIL)) {
-            val from = controllerFromScene ?: scene.toControllerScene()
-            val to = controllerToScene ?: scene.toControllerScene()
+            val from = (controllerFromScene ?: scene.toControllerScene()).inlineQueueHostScene()
+            val to = (controllerToScene ?: scene.toControllerScene()).inlineQueueHostScene()
             val progress = controllerProgress.coerceIn(0f, 1f)
             val drawerProgress = when {
                 controllerIsTransitioning && from == PlayerSceneController.Scene.MAIN && to != PlayerSceneController.Scene.MAIN -> progress
@@ -303,13 +544,14 @@ private fun ImmersiveComposePlayerContainer(
                 modifier = Modifier.fillMaxSize()
             ) {
                 ImmersivePlayerHorizontalStack(
-                    currentScene = controllerScene ?: scene.toControllerScene(),
-                    fromScene = controllerFromScene ?: scene.toControllerScene(),
-                    toScene = controllerToScene ?: scene.toControllerScene(),
+                    currentScene = (controllerScene ?: scene.toControllerScene()).inlineQueueHostScene(),
+                    fromScene = from,
+                    toScene = to,
                     progress = controllerProgress,
                     isTransitioning = controllerIsTransitioning,
                     currentSong = currentSong,
                     coverPath = coverPath,
+                    artworkTransitionState = artworkTransitionState,
                     isPlaying = isPlaying,
                     currentPositionMs = currentPositionMs,
                     totalDurationMs = totalDurationMs,
@@ -325,6 +567,12 @@ private fun ImmersiveComposePlayerContainer(
                     audioInfoText = audioInfoText,
                     albumSongs = albumSongs,
                     albumCoverPath = albumCoverPath ?: coverPath,
+                    queueVisible = inlineQueueVisible,
+                    queueSongs = queueSongs,
+                    queueCurrentIndex = queueCurrentIndex,
+                    onQueueSongClick = onQueueSongClick,
+                    onClearPriorityQueue = onClearPriorityQueue,
+                    onToggleQueue = onToggleInlineQueue,
                     onBack = onClosePlayer,
                     onSeekStart = onSeekStart,
                     onSeekStop = onSeekStop,
@@ -334,7 +582,15 @@ private fun ImmersiveComposePlayerContainer(
                     onPlayMode = onPlayMode,
                     onAudioQuality = onAudioQuality,
                     onAudioQualityLongPress = onAudioQualityLongPress,
+                    onOpenMetadata = onOpenMetadata,
+                    onOpenAudioEffects = onOpenAudioEffects,
+                    showPlayerMore = morePanelVisible,
+                    onShowPlayerMoreChange = onMorePanelVisibleChangeState,
                     onMorePanelVisibleChange = onModalVisibleChange,
+                    onModalDismissActionChange = onModalDismissActionChange,
+                    sleepTimerSelection = sleepTimerSelection,
+                    onSleepTimerSelectionChange = onSleepTimerSelectionChange,
+                    onLyricModifyAlbumArt = onLyricModifyAlbumArt,
                     onOpenLyric = onOpenLyric,
                     onLyricSeek = onLyricSeek,
                     onLyricTranslationToggle = onLyricTranslationToggle,
@@ -344,26 +600,12 @@ private fun ImmersiveComposePlayerContainer(
                         .graphicsLayer {
                             translationY = size.height * (1f - drawerProgress)
                             alpha = 1f
+                            clip = true
                         }
+                        .clipToBounds()
                 )
             }
             return@Box
-        }
-
-        // 沉浸模式的队列/全屏封面仍使用共用辅助面板，不进入普通播放器主体。
-        AnimatedVisibility(
-            visible = scene == PlayerScene.QUEUE,
-            enter = fadeIn(animationSpec = tween(200)),
-            exit = fadeOut(animationSpec = tween(200)),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            QueuePanel(
-                songs = queueSongs,
-                currentIndex = queueCurrentIndex,
-                onSongClick = onQueueSongClick,
-                onClearPriorityQueue = onClearPriorityQueue,
-                onBack = { sceneState.backToPlayer() }
-            )
         }
 
         AnimatedVisibility(
@@ -386,6 +628,7 @@ private fun StandardComposePlayerContainer(
     sceneState: PlayerSceneState,
     currentSong: AudioFile?,
     coverPath: String?,
+    artworkTransitionState: PlaybackArtworkTransitionState,
     isPlaying: Boolean,
     currentPositionMs: Long,
     totalDurationMs: Long,
@@ -405,10 +648,14 @@ private fun StandardComposePlayerContainer(
     onPlayMode: () -> Unit,
     onPlayModeLongPress: () -> Unit,
     onMore: () -> Unit,
+    onOpenMetadata: () -> Unit,
+    onOpenAudioEffects: () -> Unit,
+    onLyricModifyAlbumArt: () -> Unit,
+    sleepTimerSelection: Int,
+    onSleepTimerSelectionChange: (Int) -> Unit,
     onAudioQuality: () -> Unit,
     onAudioQualityLongPress: () -> Unit,
     onOpenLyric: () -> Unit,
-    onOpenQueue: () -> Unit,
     onPlayerCoverSwipeUpStart: () -> Unit,
     onPlayerCoverSwipeUpProgress: (Float) -> Unit,
     onPlayerCoverSwipeUpEnd: (Boolean, Float) -> Unit,
@@ -420,6 +667,8 @@ private fun StandardComposePlayerContainer(
     onLyricCoverSwipeDownEnd: (Boolean, Float) -> Unit,
     queueSongs: List<AudioFile>,
     queueCurrentIndex: Int,
+    inlineQueueVisible: Boolean,
+    onToggleInlineQueue: () -> Unit,
     onQueueSongClick: (AudioFile, Int) -> Unit,
     onClearPriorityQueue: (() -> Unit)?,
     albumSongs: List<AudioFile>,
@@ -439,7 +688,9 @@ private fun StandardComposePlayerContainer(
     controllerProgress: Float,
     controllerIsTransitioning: Boolean,
     sourceCoverTarget: CoverTransitionTarget?,
+    overlaySuspended: Boolean,
     onModalVisibleChange: (Boolean) -> Unit,
+    onModalDismissActionChange: ((() -> Unit)?) -> Unit,
     modifier: Modifier
 ) {
     val controllerSceneForVisibility = if (controllerIsTransitioning) {
@@ -449,17 +700,19 @@ private fun StandardComposePlayerContainer(
     } else {
         controllerScene
     }
-    val scene = when {
-        sceneState.currentScene != PlayerScene.MAIN -> sceneState.currentScene
-        controllerSceneForVisibility != null -> controllerSceneForVisibility.toPlayerScene()
-        else -> PlayerScene.MAIN
+    val auxiliaryScene = sceneState.currentScene.takeIf {
+        it == PlayerScene.QUEUE || it == PlayerScene.ALBUM_DETAIL || it == PlayerScene.FULL_COVER
     }
+    val resolvedScene = auxiliaryScene
+        ?: controllerSceneForVisibility?.toPlayerScene()
+        ?: sceneState.currentScene
+    val scene = if (resolvedScene == PlayerScene.QUEUE) PlayerScene.PLAYER else resolvedScene
     if (scene == PlayerScene.MAIN) return
 
     Box(modifier = modifier.fillMaxSize()) {
         if (scene == PlayerScene.PLAYER || scene == PlayerScene.LYRIC) {
-            val from = controllerFromScene ?: scene.toControllerScene()
-            val to = controllerToScene ?: scene.toControllerScene()
+            val from = (controllerFromScene ?: scene.toControllerScene()).inlineQueueHostScene()
+            val to = (controllerToScene ?: scene.toControllerScene()).inlineQueueHostScene()
             val progress = controllerProgress.coerceIn(0f, 1f)
             val drawerProgress = when {
                 controllerIsTransitioning && from == PlayerSceneController.Scene.MAIN && to != PlayerSceneController.Scene.MAIN -> progress
@@ -470,16 +723,21 @@ private fun StandardComposePlayerContainer(
                 (from == PlayerSceneController.Scene.MAIN && to == PlayerSceneController.Scene.PLAYER) ||
                     (from == PlayerSceneController.Scene.PLAYER && to == PlayerSceneController.Scene.MAIN)
             StandardPlayerLyricStack(
-                currentScene = controllerScene ?: scene.toControllerScene(),
+                currentScene = (controllerScene ?: scene.toControllerScene()).inlineQueueHostScene(),
                 fromScene = from,
                 toScene = to,
                 progress = progress,
                 isTransitioning = controllerIsTransitioning,
                 currentSong = currentSong,
                 coverPath = coverPath,
+                artworkTransitionState = artworkTransitionState,
                 isPlaying = isPlaying,
                 currentPositionMs = currentPositionMs,
                 totalDurationMs = totalDurationMs,
+                lyricSong = lyricSong,
+                lyricPositionMs = lyricPositionMs,
+                displayTranslation = displayTranslation,
+                displayRoma = displayRoma,
                 previousIconRes = previousIconRes,
                 playIconRes = playIconRes,
                 pauseIconRes = pauseIconRes,
@@ -496,10 +754,14 @@ private fun StandardComposePlayerContainer(
                 onPlayMode = onPlayMode,
                 onPlayModeLongPress = onPlayModeLongPress,
                 onMore = onMore,
+                onOpenMetadata = onOpenMetadata,
+                onOpenAudioEffects = onOpenAudioEffects,
+                onLyricModifyAlbumArt = onLyricModifyAlbumArt,
+                sleepTimerSelection = sleepTimerSelection,
+                onSleepTimerSelectionChange = onSleepTimerSelectionChange,
                 onAudioQuality = onAudioQuality,
                 onAudioQualityLongPress = onAudioQualityLongPress,
                 onOpenLyric = onOpenLyric,
-                onOpenQueue = onOpenQueue,
                 onPlayerCoverSwipeUpStart = onPlayerCoverSwipeUpStart,
                 onPlayerCoverSwipeUpProgress = onPlayerCoverSwipeUpProgress,
                 onPlayerCoverSwipeUpEnd = onPlayerCoverSwipeUpEnd,
@@ -509,16 +771,20 @@ private fun StandardComposePlayerContainer(
                 onLyricCoverSwipeDownStart = onLyricCoverSwipeDownStart,
                 onLyricCoverSwipeDownProgress = onLyricCoverSwipeDownProgress,
                 onLyricCoverSwipeDownEnd = onLyricCoverSwipeDownEnd,
-                lyricSong = lyricSong,
-                lyricPositionMs = lyricPositionMs,
-                displayTranslation = displayTranslation,
-                displayRoma = displayRoma,
+                queueVisible = inlineQueueVisible,
+                queueSongs = queueSongs,
+                queueCurrentIndex = queueCurrentIndex,
+                onQueueSongClick = onQueueSongClick,
+                onClearPriorityQueue = onClearPriorityQueue,
+                onToggleQueue = onToggleInlineQueue,
                 onLyricSeek = onLyricSeek,
                 onLyricTranslationToggle = onLyricTranslationToggle,
                 onClosePlayer = onClosePlayer,
                 onBackToPlayer = onBackToPlayer,
                 sourceCoverTarget = sourceCoverTarget,
+                overlaySuspended = overlaySuspended,
                 onModalVisibleChange = onModalVisibleChange,
+                onModalDismissActionChange = onModalDismissActionChange,
                 drawerProgress = drawerProgress,
                 modifier = Modifier
                     .fillMaxSize()
@@ -535,9 +801,14 @@ private fun StandardComposePlayerContainer(
             PlayerMainPage(
                 currentSong = currentSong,
                 coverPath = coverPath,
+                artworkTransitionState = artworkTransitionState,
                 isPlaying = isPlaying,
                 currentPositionMs = currentPositionMs,
                 totalDurationMs = totalDurationMs,
+                lyricSong = lyricSong,
+                lyricPositionMs = lyricPositionMs,
+                displayTranslation = displayTranslation,
+                displayRoma = displayRoma,
                 previousIconRes = previousIconRes,
                 playIconRes = playIconRes,
                 pauseIconRes = pauseIconRes,
@@ -554,10 +825,22 @@ private fun StandardComposePlayerContainer(
                 onPlayMode = onPlayMode,
                 onPlayModeLongPress = onPlayModeLongPress,
                 onMore = onMore,
+                onOpenMetadata = onOpenMetadata,
+                onOpenAudioEffects = onOpenAudioEffects,
+                onModalVisibleChange = onModalVisibleChange,
+                onModalDismissActionChange = onModalDismissActionChange,
                 onAudioQuality = onAudioQuality,
                 onAudioQualityLongPress = onAudioQualityLongPress,
                 onOpenLyric = onOpenLyric,
-                onOpenQueue = onOpenQueue,
+                queueVisible = inlineQueueVisible,
+                queueSongs = queueSongs,
+                queueCurrentIndex = queueCurrentIndex,
+                onQueueSongClick = onQueueSongClick,
+                onClearPriorityQueue = onClearPriorityQueue,
+                onToggleQueue = onToggleInlineQueue,
+                sleepTimerSelection = sleepTimerSelection,
+                onSleepTimerSelectionChange = onSleepTimerSelectionChange,
+                overlaySuspended = overlaySuspended,
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -573,28 +856,16 @@ private fun StandardComposePlayerContainer(
                 coverPath = coverPath,
                 song = lyricSong,
                 positionMs = lyricPositionMs,
+                isPlaying = isPlaying,
                 displayTranslation = displayTranslation,
                 displayRoma = displayRoma,
                 moreIconRes = moreIconRes,
                 onSeek = onLyricSeek,
                 onTranslationToggle = onLyricTranslationToggle,
-                onMore = onMore,
+                onModifyAlbumArt = onLyricModifyAlbumArt,
+                onModalVisibleChange = onModalVisibleChange,
+                onModalDismissActionChange = onModalDismissActionChange,
                 onBack = onBackToPlayer
-            )
-        }
-
-        AnimatedVisibility(
-            visible = scene == PlayerScene.QUEUE,
-            enter = fadeIn(animationSpec = tween(200)),
-            exit = fadeOut(animationSpec = tween(200)),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            QueuePanel(
-                songs = queueSongs,
-                currentIndex = queueCurrentIndex,
-                onSongClick = onQueueSongClick,
-                onClearPriorityQueue = onClearPriorityQueue,
-                onBack = { sceneState.backToPlayer() }
             )
         }
 
@@ -628,6 +899,9 @@ private fun StandardComposePlayerContainer(
     }
 }
 
+private fun PlayerSceneController.Scene.inlineQueueHostScene(): PlayerSceneController.Scene =
+    if (this == PlayerSceneController.Scene.QUEUE) PlayerSceneController.Scene.PLAYER else this
+
 private fun PlayerScene.toControllerScene(): PlayerSceneController.Scene = when (this) {
     PlayerScene.MAIN -> PlayerSceneController.Scene.MAIN
     PlayerScene.PLAYER -> PlayerSceneController.Scene.PLAYER
@@ -646,6 +920,7 @@ private fun StandardPlayerLyricStack(
     isTransitioning: Boolean,
     currentSong: AudioFile?,
     coverPath: String?,
+    artworkTransitionState: PlaybackArtworkTransitionState,
     isPlaying: Boolean,
     currentPositionMs: Long,
     totalDurationMs: Long,
@@ -665,10 +940,14 @@ private fun StandardPlayerLyricStack(
     onPlayMode: () -> Unit,
     onPlayModeLongPress: () -> Unit,
     onMore: () -> Unit,
+    onOpenMetadata: () -> Unit,
+    onOpenAudioEffects: () -> Unit,
+    onLyricModifyAlbumArt: () -> Unit,
+    sleepTimerSelection: Int,
+    onSleepTimerSelectionChange: (Int) -> Unit,
     onAudioQuality: () -> Unit,
     onAudioQualityLongPress: () -> Unit,
     onOpenLyric: () -> Unit,
-    onOpenQueue: () -> Unit,
     onPlayerCoverSwipeUpStart: () -> Unit,
     onPlayerCoverSwipeUpProgress: (Float) -> Unit,
     onPlayerCoverSwipeUpEnd: (Boolean, Float) -> Unit,
@@ -678,6 +957,12 @@ private fun StandardPlayerLyricStack(
     onLyricCoverSwipeDownStart: () -> Unit,
     onLyricCoverSwipeDownProgress: (Float) -> Unit,
     onLyricCoverSwipeDownEnd: (Boolean, Float) -> Unit,
+    queueVisible: Boolean,
+    queueSongs: List<AudioFile>,
+    queueCurrentIndex: Int,
+    onQueueSongClick: (AudioFile, Int) -> Unit,
+    onClearPriorityQueue: (() -> Unit)?,
+    onToggleQueue: () -> Unit,
     lyricSong: Song?,
     lyricPositionMs: Long,
     displayTranslation: Boolean,
@@ -687,7 +972,9 @@ private fun StandardPlayerLyricStack(
     onClosePlayer: () -> Unit,
     onBackToPlayer: () -> Unit,
     sourceCoverTarget: CoverTransitionTarget?,
+    overlaySuspended: Boolean,
     onModalVisibleChange: (Boolean) -> Unit,
+    onModalDismissActionChange: ((() -> Unit)?) -> Unit,
     drawerProgress: Float,
     modifier: Modifier = Modifier
 ) {
@@ -695,6 +982,7 @@ private fun StandardPlayerLyricStack(
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
+            .clipToBounds()
             .onGloballyPositioned { coordinates ->
                 val bounds = coordinates.boundsInRoot()
                 containerRootBounds = RectF(bounds.left, bounds.top, bounds.right, bounds.bottom)
@@ -738,27 +1026,53 @@ private fun StandardPlayerLyricStack(
             mainPlayerTransition &&
             !coverPath.isNullOrBlank() &&
             source != null
+        val playerSurfaceOffsetY = if (mainPlayerTransition) {
+            heightPx * (1f - drawerProgress.coerceIn(0f, 1f))
+        } else {
+            0f
+        }
+        // Keep the gesture coordinate space stationary while only translating the rendered
+        // player surface. A layout-level offset moves AlbumArtCard's pointer-input node itself;
+        // its local dy then alternates between the real finger distance and nearly zero, which
+        // resets PLAYER -> MAIN progress every other frame and produces the apparent duplicate
+        // player / violent flashing. Canvas translation moves one draw tree without changing
+        // layout, hit testing, or pointer coordinates, and does not create a retained full-screen
+        // graphics layer.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .drawWithContent {
+                    clipRect(
+                        left = 0f,
+                        top = 0f,
+                        right = size.width,
+                        bottom = size.height
+                    ) {
+                        translate(top = playerSurfaceOffsetY) {
+                            this@drawWithContent.drawContent()
+                        }
+                    }
+                }
+        ) {
         StandardPlayerBackdrop(
             coverPath = coverPath,
             accent = rememberCoverAccentColor(coverPath),
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    translationY = if (mainPlayerTransition) {
-                        heightPx * (1f - drawerProgress.coerceIn(0f, 1f))
-                    } else {
-                        0f
-                    }
-                }
+            artworkTransitionState = artworkTransitionState,
+            modifier = Modifier.fillMaxSize()
         )
 
         if (playerVisible) {
             PlayerMainPage(
                 currentSong = currentSong,
                 coverPath = coverPath,
+                artworkTransitionState = artworkTransitionState,
                 isPlaying = isPlaying,
                 currentPositionMs = currentPositionMs,
                 totalDurationMs = totalDurationMs,
+                lyricSong = lyricSong,
+                lyricPositionMs = lyricPositionMs,
+                displayTranslation = displayTranslation,
+                displayRoma = displayRoma,
                 previousIconRes = previousIconRes,
                 playIconRes = playIconRes,
                 pauseIconRes = pauseIconRes,
@@ -774,9 +1088,12 @@ private fun StandardPlayerLyricStack(
                 onPlayMode = onPlayMode,
                 onPlayModeLongPress = onPlayModeLongPress,
                 onMore = onMore,
+                onOpenMetadata = onOpenMetadata,
+                onOpenAudioEffects = onOpenAudioEffects,
+                onModalVisibleChange = onModalVisibleChange,
+                onModalDismissActionChange = onModalDismissActionChange,
                 onAudioQuality = onAudioQuality,
                 onOpenLyric = onOpenLyric,
-                onOpenQueue = onOpenQueue,
                 onClosePlayer = onClosePlayer,
                 onCoverSwipeUpStart = onPlayerCoverSwipeUpStart,
                 onCoverSwipeUpProgress = onPlayerCoverSwipeUpProgress,
@@ -788,16 +1105,22 @@ private fun StandardPlayerLyricStack(
                 renderBackdrop = false,
                 audioInfoText = audioInfoText,
                 onAudioQualityLongPress = onAudioQualityLongPress,
+                queueVisible = queueVisible,
+                queueSongs = queueSongs,
+                queueCurrentIndex = queueCurrentIndex,
+                onQueueSongClick = onQueueSongClick,
+                onClearPriorityQueue = onClearPriorityQueue,
+                onToggleQueue = onToggleQueue,
+                sleepTimerSelection = sleepTimerSelection,
+                onSleepTimerSelectionChange = onSleepTimerSelectionChange,
+                overlaySuspended = overlaySuspended,
                 contentAlpha = if (playerLyricTransition) (1f - lyricProgress).coerceIn(0f, 1f) else 1f,
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        alpha = 1f
-                        translationY = if (mainPlayerTransition) {
-                            heightPx * (1f - drawerProgress.coerceIn(0f, 1f))
-                        } else {
-                            0f
-                        }
+                        val sceneScale = lerpFloat(1f, 0.97f, lyricProgress.coerceIn(0f, 1f))
+                        scaleX = sceneScale
+                        scaleY = sceneScale
                     }
             )
         }
@@ -807,12 +1130,15 @@ private fun StandardPlayerLyricStack(
                 coverPath = coverPath,
                 song = lyricSong,
                 positionMs = lyricPositionMs,
+                isPlaying = isPlaying,
                 displayTranslation = displayTranslation,
                 displayRoma = displayRoma,
                 moreIconRes = moreIconRes,
                 onSeek = onLyricSeek,
                 onTranslationToggle = onLyricTranslationToggle,
-                onMore = onMore,
+                onModifyAlbumArt = onLyricModifyAlbumArt,
+                onModalVisibleChange = onModalVisibleChange,
+                onModalDismissActionChange = onModalDismissActionChange,
                 onBack = onBackToPlayer,
                 onCoverSwipeDownStart = onLyricCoverSwipeDownStart,
                 onCoverSwipeDownProgress = onLyricCoverSwipeDownProgress,
@@ -824,15 +1150,20 @@ private fun StandardPlayerLyricStack(
                     .fillMaxSize()
                     .graphicsLayer {
                         alpha = 1f
-                        translationY = heightPx * 0.06f * (1f - lyricProgress.coerceIn(0f, 1f))
+                        val sceneProgress = lyricProgress.coerceIn(0f, 1f)
+                        val sceneScale = lerpFloat(0.97f, 1f, sceneProgress)
+                        scaleX = sceneScale
+                        scaleY = sceneScale
+                        translationY = heightPx * 0.035f * (1f - sceneProgress)
                     }
             )
+        }
         }
         if (mainSharedTransition) {
             val f = if (fromScene == PlayerSceneController.Scene.MAIN) progress.coerceIn(0f, 1f) else 1f - progress.coerceIn(0f, 1f)
             val rect = lerpRect(source, playerCoverRect, f)
             val sourceRadius = sourceCoverTarget.radiusDp
-            val playerRadius = 28f
+            val playerRadius = STANDARD_PLAYER_ARTWORK_CORNER_RADIUS_DP
             Box(
                 modifier = Modifier
                     .offset { IntOffset(rect.left.toInt(), rect.top.toInt()) }
@@ -867,24 +1198,16 @@ private fun StandardPlayerLyricStack(
         }
 
         if (playerLyricTransition) {
-            val f = if (fromScene == PlayerSceneController.Scene.PLAYER) {
-                progress.coerceIn(0f, 1f)
-            } else {
-                1f - progress.coerceIn(0f, 1f)
-            }
-            val startRect = if (fromScene == PlayerSceneController.Scene.PLAYER) {
-                playerCoverRect
-            } else {
-                lyricCoverRect
-            }
-            val endRect = if (fromScene == PlayerSceneController.Scene.PLAYER) {
-                lyricCoverRect
-            } else {
-                playerCoverRect
-            }
-            val rect = lerpRect(startRect, endRect, f)
-            val startRadius = if (fromScene == PlayerSceneController.Scene.PLAYER) 28f else 18f
-            val endRadius = if (fromScene == PlayerSceneController.Scene.PLAYER) 18f else 28f
+            // lyricProgress is an absolute scene-state fraction: 0 = player, 1 = lyric.
+            // The old code swapped the endpoints and reversed progress on lyric -> player,
+            // which double-inverted the transition and made the cover jump in one frame.
+            val coverStateProgress = lyricProgress.coerceIn(0f, 1f)
+            val rect = lerpRect(playerCoverRect, lyricCoverRect, coverStateProgress)
+            val radiusDp = lerpFloat(
+                STANDARD_PLAYER_ARTWORK_CORNER_RADIUS_DP,
+                LYRIC_HEADER_ARTWORK_CORNER_RADIUS_DP,
+                coverStateProgress
+            )
             Box(
                 modifier = Modifier
                     .offset { IntOffset(rect.left.toInt(), rect.top.toInt()) }
@@ -894,9 +1217,7 @@ private fun StandardPlayerLyricStack(
                     )
                     .graphicsLayer {
                         clip = true
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(
-                            lerpFloat(startRadius, endRadius, f).dp
-                        )
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(radiusDp.dp)
                     }
             ) {
                 BitmapImage(

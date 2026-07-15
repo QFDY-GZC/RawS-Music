@@ -315,9 +315,12 @@ internal fun CollectionSharedCoverAnchor(
     modifier: Modifier = Modifier
 ) {
     val coverRegistry = LocalSharedCoverRegistry.current
+    val spec = LocalSharedTransitionSpec.current
     val sceneId = scene.name
+    val shouldTrack = spec.shouldTrackScene(sceneId)
 
-    DisposableEffect(sceneId, elementId) {
+    DisposableEffect(sceneId, elementId, shouldTrack) {
+        if (!shouldTrack) coverRegistry.unregister(sceneId, elementId)
         onDispose {
             coverRegistry.unregister(sceneId, elementId)
         }
@@ -325,7 +328,7 @@ internal fun CollectionSharedCoverAnchor(
 
     Box(
         modifier = modifier.onGloballyPositioned { coordinates ->
-            if (coverKey.isBlank() || elementId.isBlank()) return@onGloballyPositioned
+            if (!shouldTrack || coverKey.isBlank() || elementId.isBlank()) return@onGloballyPositioned
             val position = coordinates.positionInWindow()
             val size = coordinates.size
             coverRegistry.register(

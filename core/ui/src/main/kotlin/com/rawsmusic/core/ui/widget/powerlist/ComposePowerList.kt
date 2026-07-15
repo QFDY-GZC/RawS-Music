@@ -61,12 +61,13 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
-import com.rawsmusic.core.ui.scene.LocalSceneTransitionProgress
+import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.scene.LocalBottomChromeScrollState
 import com.rawsmusic.core.ui.scene.CoverTransitionTarget
 import com.rawsmusic.core.ui.scene.LocalSharedCoverRegistry
@@ -87,6 +88,8 @@ import com.rawsmusic.core.ui.widget.bitmaps.PowerListArtworkRecords
 import com.rawsmusic.core.ui.widget.bitmaps.PowerListCoilArtwork
 import com.rawsmusic.core.ui.widget.bitmaps.PowerListCoilArtworkModel
 import com.rawsmusic.core.ui.widget.bitmaps.SizeSlotCache
+import com.rawsmusic.core.ui.widget.player.copySongInfoToClipboard
+import com.rawsmusic.module.data.prefs.FontManager
 import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
 import top.yukonga.miuix.kmp.basic.Icon
@@ -1370,39 +1373,29 @@ private fun ComposePowerListDrawnItem(
     val title = song.displayName
     val subtitle = song.subtitle()
     val meta = song.metaText()
+    val hasCollectionMetaIcon = song.encodingFormat == POWER_LIST_COLLECTION_ENCODING
+    val copyTextBounds = remember(mode, rects) {
+        if (mode.isGrid) {
+            null
+        } else {
+            val visibleRects = listOf(rects.title, rects.subtitle, rects.meta)
+                .filter { it.alpha > 0f && it.width > 0 && it.height > 0 }
+            if (visibleRects.isEmpty()) {
+                null
+            } else {
+                IntRect(
+                    left = visibleRects.minOf { it.left },
+                    top = visibleRects.minOf { it.top },
+                    right = visibleRects.maxOf { it.left + it.width },
+                    bottom = visibleRects.maxOf { it.top + it.height }
+                )
+            }
+        }
+    }
 
-    // 场景过渡进度（由 SceneTransitionHost 通过 CompositionLocal 提供）
-    val transitionProgress = LocalSceneTransitionProgress.current
-
-    // 文本颜色动画状态
-    // 当场景过渡时，使用逐通道 ARGB 插值实现平滑颜色渐变
-    val titleAnimState = remember { FastTextAnimState() }
-    val subtitleAnimState = remember { FastTextAnimState() }
-    val metaAnimState = remember { FastTextAnimState() }
-
-    // 在 draw 块外准备颜色：当过渡进度变化时更新插值状态
-    val titleColorArgb = colors.title.toArgb()
-    val subtitleColorArgb = colors.secondary.toArgb()
-    val metaColorArgb = colors.meta.toArgb()
-
-    // 场景切换时设置颜色过渡
-    // 注意：当前同一 item 在过渡中颜色不变（isPlaying/isSelected 不变），
-    // 所以 fromColor == toColor，interpolateColor() 直接返回 toColor。
-    // 当未来场景级别颜色变化时（如不同场景用不同配色），
-    // fromColor 和 toColor 会不同，插值将产生平滑颜色渐变。
-    titleAnimState.setupTransition(titleColorArgb, titleColorArgb)
-    subtitleAnimState.setupTransition(subtitleColorArgb, subtitleColorArgb)
-    metaAnimState.setupTransition(metaColorArgb, metaColorArgb)
-
-    // 更新插值因子
-    titleAnimState.updateRatio(transitionProgress)
-    subtitleAnimState.updateRatio(transitionProgress)
-    metaAnimState.updateRatio(transitionProgress)
-
-    // 获取插值后的颜色
-    val titleColor = Color(titleAnimState.interpolateColor())
-    val subtitleColor = Color(subtitleAnimState.interpolateColor())
-    val metaColor = Color(metaAnimState.interpolateColor())
+    val titleColor = colors.title
+    val subtitleColor = colors.secondary
+    val metaColor = colors.meta
 
     var rootBounds by remember { mutableStateOf<RectF?>(null) }
     val shouldHideForSharedCover = shouldHideSharedCover(
@@ -1535,7 +1528,7 @@ private fun ComposePowerListDrawnItem(
                 text = title,
                 rect = rects.title,
                 color = titleColor,
-                density = density.density,
+                density = density.density * density.fontScale,
                 bold = true
             )
             drawPowerListText(
@@ -1543,7 +1536,7 @@ private fun ComposePowerListDrawnItem(
                 text = subtitle,
                 rect = rects.subtitle,
                 color = subtitleColor,
-                density = density.density,
+                density = density.density * density.fontScale,
                 bold = false
             )
             drawPowerListText(
@@ -1551,10 +1544,54 @@ private fun ComposePowerListDrawnItem(
                 text = meta,
                 rect = rects.meta,
                 color = metaColor,
-                density = density.density,
-                bold = false
+                density = density.density * density.fontScale,
+                bold = false,
+                leftInsetPx = if (hasCollectionMetaIcon) 16f * density.density else 0f
             )
             canvas.restore()
+        }
+
+        if (
+            hasCollectionMetaIcon &&
+            rects.meta.alpha > 0f &&
+            rects.meta.width > 0 &&
+            rects.meta.height > 0
+        ) {
+            val iconSizePx = minOf(
+                rects.meta.height,
+                with(density) { 12.dp.roundToPx() }
+            ).coerceAtLeast(1)
+            Image(
+                painter = painterResource(R.drawable.ic_music_note),
+                contentDescription = null,
+                colorFilter = ColorFilter.tint(metaColor),
+                modifier = Modifier
+                    .offset {
+                        androidx.compose.ui.unit.IntOffset(
+                            x = rects.meta.left,
+                            y = rects.meta.top + (rects.meta.height - iconSizePx) / 2
+                        )
+                    }
+                    .requiredSize(with(density) { iconSizePx.toDp() })
+                    .graphicsLayer {
+                        alpha = rects.meta.alpha.coerceIn(0f, 1f)
+                    }
+            )
+        }
+
+        copyTextBounds?.let { bounds ->
+            Box(
+                modifier = Modifier
+                    .offset { androidx.compose.ui.unit.IntOffset(bounds.left, bounds.top) }
+                    .requiredSize(
+                        width = with(density) { bounds.width.coerceAtLeast(1).toDp() },
+                        height = with(density) { bounds.height.coerceAtLeast(1).toDp() }
+                    )
+                    .combinedClickable(
+                        onClick = { onClick(clickedCoverTarget()) },
+                        onLongClick = { copySongInfoToClipboard(context, song) }
+                    )
+            )
         }
 
         if (useCoilArtwork && !hideCover && !shouldHideForSharedCover && song.coverKey.isNotBlank()) {
@@ -2126,18 +2163,15 @@ private fun shouldHideSharedCover(
     sceneId: String,
     elementId: String
 ): Boolean {
-    // Correctness first: do not hide the real list/grid cell while the shared-cover overlay is
-    // active.  The latest logs show the provider successfully reaches DISPLAY_READY, yet the user
-    // still sees empty cells.  The only remaining UI-side path that can suppress a ready bitmap is
-    // this shared-transition hide gate.  The design keeps the bound artwork view drawable valid and
-    // lets transition layers draw above it; hiding the source view is an implementation detail, not
-    // a provider/lifecycle rule.
-    //
-    // Keep the registry tracking below in place for future transitions, but never let a stale or
-    // over-broad transition spec blank every visible cover.  Duplicate cover during a transition is
-    // safer than an invisible grid/list.
     if (sceneId.isBlank() || elementId.isBlank()) return false
-    return false
+    val registry = LocalSharedCoverRegistry.current
+    val spec = LocalSharedTransitionSpec.current
+    if (!spec.active || !spec.shouldTrackScene(sceneId)) return false
+    return registry.hasPair(
+        fromSceneId = spec.fromSceneId,
+        toSceneId = spec.toSceneId,
+        elementId = elementId
+    )
 }
 
 private fun Modifier.trackSharedCoverSlot(
@@ -2151,14 +2185,18 @@ private fun Modifier.trackSharedCoverSlot(
 
     return composed {
         val registry = LocalSharedCoverRegistry.current
+        val spec = LocalSharedTransitionSpec.current
+        val shouldTrack = spec.shouldTrackScene(sceneId)
 
-        DisposableEffect(sceneId, elementId) {
+        DisposableEffect(sceneId, elementId, shouldTrack) {
+            if (!shouldTrack) registry.unregister(sceneId, elementId)
             onDispose {
                 registry.unregister(sceneId, elementId)
             }
         }
 
         onGloballyPositioned { coordinates ->
+            if (!shouldTrack) return@onGloballyPositioned
             val pos = coordinates.positionInWindow()
             registry.register(
                 sceneId = sceneId,
@@ -2218,14 +2256,20 @@ private fun drawPowerListText(
     rect: ComposeItemRect,
     color: Color,
     density: Float,
-    bold: Boolean
+    bold: Boolean,
+    leftInsetPx: Float = 0f
 ) {
     if (text.isBlank() || rect.alpha <= 0f || rect.width <= 0 || rect.height <= 0) return
     val fontSizeSp = rect.fontSizeSp.takeIf { it > 0f } ?: 14f
     powerListTextPaint.color = color.copy(alpha = color.alpha * rect.alpha.coerceIn(0f, 1f)).toArgb()
     powerListTextPaint.textSize = fontSizeSp * density
-    powerListTextPaint.typeface = if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-    val availableWidth = rect.width.toFloat().coerceAtLeast(1f)
+    val configuredTypeface = FontManager.typeface
+    powerListTextPaint.typeface = when {
+        configuredTypeface == null -> if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        bold -> Typeface.create(configuredTypeface, Typeface.BOLD)
+        else -> configuredTypeface
+    }
+    val availableWidth = (rect.width.toFloat() - leftInsetPx).coerceAtLeast(1f)
     val display = TextUtils.ellipsize(
         text,
         powerListTextPaint,
@@ -2234,7 +2278,7 @@ private fun drawPowerListText(
     )
     val fontMetrics = powerListTextPaint.fontMetrics
     val baseline = rect.top + (rect.height - fontMetrics.ascent - fontMetrics.descent) * 0.5f
-    canvas.drawText(display.toString(), rect.left.toFloat(), baseline, powerListTextPaint)
+    canvas.drawText(display.toString(), rect.left.toFloat() + leftInsetPx, baseline, powerListTextPaint)
 }
 
 @OptIn(ExperimentalFoundationApi::class)

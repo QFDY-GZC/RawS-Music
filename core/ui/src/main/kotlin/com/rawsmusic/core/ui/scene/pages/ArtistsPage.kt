@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
@@ -29,6 +30,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -157,6 +160,7 @@ fun ArtistsPage(
         ArtistListPage(
             artists = artists,
             state = powerListState,
+            onBack = onBack,
             onArtistClick = onArtistClick,
             modifier = modifier
         )
@@ -182,6 +186,7 @@ fun ArtistsPage(
 private fun ArtistListPage(
     artists: List<ArtistGroupUi>,
     state: ComposePowerListState,
+    onBack: () -> Unit,
     onArtistClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -200,15 +205,19 @@ private fun ArtistListPage(
     }
     val alphabetIndexData = rememberAdaptiveAlphabetIndexData(items) { it.title }
 
-    Box(
+    LibraryListScaffold(
+        title = stringResource(com.rawsmusic.core.ui.R.string.library_title_artists),
+        sceneId = NavScene.ARTISTS.name,
+        onBack = onBack,
+        powerListState = state,
         modifier = modifier
-            .fillMaxSize()
-    ) {
+    ) { topPadding, backdropSource ->
         ComposeGenericPowerList(
             items = items,
             state = state,
+            contentTopPadding = topPadding,
             sharedCoverSceneId = NavScene.ARTISTS.name,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().then(backdropSource),
             onItemClick = { item, _, _ ->
                 val artist = item as? ArtistPowerListItem ?: return@ComposeGenericPowerList
 
@@ -226,6 +235,7 @@ private fun ArtistListPage(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .padding(top = 92.dp, bottom = 118.dp, end = 0.dp)
+                .then(backdropSource)
                 .zIndex(30f),
             onSelect = { _, index ->
                 state.requestScrollToIndex(index)
@@ -253,7 +263,7 @@ private data class ArtistGroupUi(
             coverKey = coverKey,
             title = name,
             subtitle = "$albumCount 张专辑",
-            meta = "♫ $songCount | ${formatPowerListDuration(totalDurationMs)}",
+            meta = "$songCount | ${formatPowerListDuration(totalDurationMs)}",
             songs = songs
         )
     }
@@ -321,7 +331,11 @@ fun ArtistDetailScreenEmbedded(
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
-                Text("←", fontSize = 20.sp, color = colors.secondaryText)
+                Icon(
+                    painter = painterResource(com.rawsmusic.core.ui.R.drawable.ic_back),
+                    contentDescription = stringResource(com.rawsmusic.core.ui.R.string.library_action_back),
+                    tint = colors.secondaryText
+                )
             }
             Text(
                 name,
@@ -332,16 +346,29 @@ fun ArtistDetailScreenEmbedded(
             )
         }
         Spacer(Modifier.height(8.dp))
-        Box(
+        Row(
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
                 .background(colors.primary)
                 .clickable { onPlayAll(songs) }
                 .padding(horizontal = 16.dp, vertical = 12.dp),
-            contentAlignment = Alignment.Center
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("▶ 播放全部 (${songs.size})", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Icon(
+                painter = painterResource(com.rawsmusic.core.ui.R.drawable.ic_playlist_play),
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                stringResource(com.rawsmusic.core.ui.R.string.library_play_all_count, songs.size),
+                color = Color.White,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold
+            )
         }
         Spacer(Modifier.height(12.dp))
         LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {

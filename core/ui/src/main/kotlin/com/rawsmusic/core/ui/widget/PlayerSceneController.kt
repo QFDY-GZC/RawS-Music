@@ -144,9 +144,18 @@ class PlayerSceneController {
     }
 
     fun endCoverDrag(shouldClose: Boolean, duration: Long = SCENE_ANIM_DURATION, velocity: Float = 0f) {
-        val target = if (shouldClose) toScene else fromScene
+        val visualToScene = toScene
+        val target = if (shouldClose) visualToScene else fromScene
         val endRatio = if (shouldClose) 1f else 0f
-        settleScene(fromScene, target, duration, transitionRatio, endRatio, velocity)
+        settleScene(
+            oldScene = fromScene,
+            targetScene = target,
+            duration = duration,
+            startRatio = transitionRatio,
+            endRatio = endRatio,
+            velocity = velocity,
+            visualToScene = visualToScene
+        )
     }
 
     fun releaseCoverDrag(shouldClose: Boolean, velocity: Float) {
@@ -158,9 +167,18 @@ class PlayerSceneController {
     }
 
     fun endDragBack(shouldGoBack: Boolean, velocity: Float = 0f) {
-        val target = if (shouldGoBack) toScene else fromScene
+        val visualToScene = toScene
+        val target = if (shouldGoBack) visualToScene else fromScene
         val endRatio = if (shouldGoBack) 1f else 0f
-        settleScene(fromScene, target, SCENE_ANIM_DURATION, transitionRatio, endRatio, velocity)
+        settleScene(
+            oldScene = fromScene,
+            targetScene = target,
+            duration = SCENE_ANIM_DURATION,
+            startRatio = transitionRatio,
+            endRatio = endRatio,
+            velocity = velocity,
+            visualToScene = visualToScene
+        )
     }
 
     fun startCoverSwipeUpDrag(from: Scene = Scene.PLAYER, to: Scene = Scene.LYRIC) {
@@ -185,9 +203,18 @@ class PlayerSceneController {
     }
 
     fun endCoverSwipeUpDrag(shouldOpen: Boolean, duration: Long = SCENE_ANIM_DURATION, velocity: Float = 0f) {
-        val target = if (shouldOpen) toScene else fromScene
+        val visualToScene = toScene
+        val target = if (shouldOpen) visualToScene else fromScene
         val endRatio = if (shouldOpen) 1f else 0f
-        settleScene(fromScene, target, duration, transitionRatio, endRatio, velocity)
+        settleScene(
+            oldScene = fromScene,
+            targetScene = target,
+            duration = duration,
+            startRatio = transitionRatio,
+            endRatio = endRatio,
+            velocity = velocity,
+            visualToScene = visualToScene
+        )
     }
 
     fun endLyricToPlayerDrag(shouldReturnToPlayer: Boolean, velocity: Float = 0f) {
@@ -196,7 +223,15 @@ class PlayerSceneController {
         }
         val target = if (shouldReturnToPlayer) Scene.PLAYER else Scene.LYRIC
         val endRatio = if (shouldReturnToPlayer) 1f else 0f
-        settleScene(Scene.LYRIC, target, SCENE_ANIM_DURATION, transitionRatio, endRatio, velocity)
+        settleScene(
+            oldScene = Scene.LYRIC,
+            targetScene = target,
+            duration = SCENE_ANIM_DURATION,
+            startRatio = transitionRatio,
+            endRatio = endRatio,
+            velocity = velocity,
+            visualToScene = Scene.PLAYER
+        )
     }
 
     fun onDragStart(directionLeft: Boolean, forceBackToMain: Boolean = false) {
@@ -364,13 +399,17 @@ class PlayerSceneController {
         duration: Long,
         startRatio: Float,
         endRatio: Float,
-        velocity: Float = 0f
+        velocity: Float = 0f,
+        visualToScene: Scene = targetScene
     ) {
         sceneAnimator?.cancel()
         fromScene = oldScene
-        toScene = targetScene
+        // Keep the original visual pair while an interactive gesture settles back to its source.
+        // Collapsing LYRIC -> PLAYER into LYRIC -> LYRIC on cancel removes the shared overlay
+        // immediately and causes a release-time geometry/radius jump instead of a reverse lerp.
+        toScene = visualToScene
         composeFromScene = oldScene
-        composeToScene = targetScene
+        composeToScene = visualToScene
         isTransitioning = true
         composeIsTransitioning = true
         transitionRatio = startRatio.coerceIn(0f, 1f)
@@ -384,7 +423,7 @@ class PlayerSceneController {
             addUpdateListener { anim ->
                 transitionRatio = anim.animatedValue as Float
                 composeTransitionProgress = transitionRatio
-                onTransitionProgress?.invoke(targetScene, transitionRatio)
+                onTransitionProgress?.invoke(visualToScene, transitionRatio)
             }
             addListener(object : AnimatorListenerAdapter() {
                 private var cancelled = false

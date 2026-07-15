@@ -535,13 +535,8 @@ fun Daily20Page(
 
     val dailySongs = remember(songs, todayKey) { daily20Songs(songs, todayKey) }
     val coverSong = dailySongs.firstOrNull()
-    // Daily20 不参与 PowerList 背景冻结，始终使用不透明背景
-    val backgroundColor = MiuixTheme.colorScheme.background
-
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(backgroundColor)
+        modifier = Modifier.fillMaxSize()
     ) {
         item {
             Box(
@@ -556,8 +551,8 @@ fun Daily20Page(
                         modifier = Modifier
                             .fillMaxSize(),
                         contentScale = ContentScale.Crop,
-                        targetWidth = 720,
-                        targetHeight = 720
+                        targetWidth = 1600,
+                        targetHeight = 1600
                     )
                 } else {
                     Box(
@@ -574,8 +569,8 @@ fun Daily20Page(
                                 listOf(
                                     Color.Black.copy(alpha = 0.04f),
                                     Color.Black.copy(alpha = 0.08f),
-                                    MiuixTheme.colorScheme.background.copy(alpha = 0.94f),
-                                    MiuixTheme.colorScheme.background
+                                    MiuixTheme.colorScheme.background.copy(alpha = 0.72f),
+                                    MiuixTheme.colorScheme.background.copy(alpha = 0.38f)
                                 ),
                                 startY = 0f,
                                 endY = 1200f
@@ -591,10 +586,19 @@ fun Daily20Page(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     CircleIconButton(onClick = onBack) {
-                        VectorIcon(Icons.Default.ArrowBack, contentDescription = "返回", tint = Color.White)
+                        VectorIcon(
+                            Icons.Default.ArrowBack,
+                            contentDescription = stringResource(R.string.library_action_back),
+                            tint = Color.White
+                        )
                     }
                     CircleIconButton(onClick = {}) {
-                        Text("↗", fontSize = 28.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                        Image(
+                            painter = painterResource(R.drawable.ic_share),
+                            contentDescription = stringResource(R.string.home_action_share),
+                            colorFilter = ColorFilter.tint(Color.White),
+                            modifier = Modifier.size(25.dp)
+                        )
                     }
                 }
                 Column(

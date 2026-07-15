@@ -2,7 +2,6 @@ package com.rawsmusic.core.ui.widget.player
 
 import androidx.activity.compose.BackHandler
 import androidx.annotation.DrawableRes
-import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.basicMarquee
@@ -16,6 +15,8 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
@@ -27,16 +28,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -47,6 +51,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -86,23 +91,37 @@ import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.ui.R
-import com.rawsmusic.core.ui.widget.flow.rememberCurrentRawFlowMode
-import com.rawsmusic.core.ui.widget.flow.RawFlowBackground
 import com.rawsmusic.core.ui.widget.PlayerSceneController
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
+import com.rawsmusic.core.ui.widget.bitmaps.PlayerArtworkAnimationStyle
+import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkTransitionState
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.module.data.prefs.AppPreferences
 import io.github.proify.lyricon.lyric.model.Song
 import io.github.proify.lyricon.lyric.model.interfaces.IRichLyricLine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import top.yukonga.miuix.kmp.basic.DropdownEntry
+import top.yukonga.miuix.kmp.basic.DropdownItem
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.ListView
+import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.abs
+
+/**
+ * The top clear-cover layer in immersive mode. Its lower edge is also the hard upper boundary
+ * for the inline queue, so queue rows never cover the clear album artwork.
+ */
+private const val IMMERSIVE_CLEAR_ARTWORK_FRACTION = 0.41f
+private val IMMERSIVE_CLEAR_ARTWORK_FADE_EXTENSION = 32.dp
 
 private data class PlayerForegroundTone(
     val primary: Color,
@@ -145,6 +164,7 @@ fun ImmersivePlayerHorizontalStack(
     isTransitioning: Boolean,
     currentSong: AudioFile?,
     coverPath: String?,
+    artworkTransitionState: PlaybackArtworkTransitionState,
     isPlaying: Boolean,
     currentPositionMs: Long,
     totalDurationMs: Long,
@@ -160,6 +180,12 @@ fun ImmersivePlayerHorizontalStack(
     audioInfoText: String = "",
     albumSongs: List<AudioFile>,
     albumCoverPath: String?,
+    queueVisible: Boolean,
+    queueSongs: List<AudioFile>,
+    queueCurrentIndex: Int,
+    onQueueSongClick: (AudioFile, Int) -> Unit,
+    onClearPriorityQueue: (() -> Unit)?,
+    onToggleQueue: () -> Unit,
     onBack: () -> Unit,
     onSeekStart: () -> Unit,
     onSeekStop: (Float) -> Unit,
@@ -169,7 +195,15 @@ fun ImmersivePlayerHorizontalStack(
     onPlayMode: () -> Unit,
     onAudioQuality: () -> Unit = {},
     onAudioQualityLongPress: () -> Unit = onAudioQuality,
+    onOpenMetadata: () -> Unit = {},
+    onOpenAudioEffects: () -> Unit = {},
+    showPlayerMore: Boolean,
+    onShowPlayerMoreChange: (Boolean) -> Unit,
     onMorePanelVisibleChange: (Boolean) -> Unit,
+    onModalDismissActionChange: ((() -> Unit)?) -> Unit,
+    sleepTimerSelection: Int = 0,
+    onSleepTimerSelectionChange: (Int) -> Unit = {},
+    onLyricModifyAlbumArt: () -> Unit = {},
     onOpenLyric: () -> Unit,
     onLyricSeek: (Long) -> Unit,
     onLyricTranslationToggle: () -> Unit,
@@ -181,125 +215,8 @@ fun ImmersivePlayerHorizontalStack(
     } else {
         scenePageIndex(currentScene).toFloat()
     }
-    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
-        fun Modifier.pageLayer(page: Int): Modifier {
-            val distance = page - basePage
-            return graphicsLayer {
-                translationX = distance * widthPx
-                alpha = 1f
-            }
-        }
-        ImmersiveBackdrop(coverPath = coverPath, pageProgress = basePage)
-        ImmersiveAlbumInfoPage(
-            currentSong = currentSong,
-            songs = albumSongs,
-            coverPath = albumCoverPath ?: coverPath,
-            onBack = { },
-            onSongClick = onAlbumSongClick,
-            pageProgress = basePage,
-            renderBackdrop = false,
-            renderTopBar = false,
-            modifier = Modifier.pageLayer(0)
-        )
-        ImmersivePlayerMainPage(
-            currentSong = currentSong,
-            coverPath = coverPath,
-            isPlaying = isPlaying,
-            currentPositionMs = currentPositionMs,
-            totalDurationMs = totalDurationMs,
-            previousIconRes = previousIconRes,
-            playIconRes = playIconRes,
-            pauseIconRes = pauseIconRes,
-            nextIconRes = nextIconRes,
-            playModeIconRes = playModeIconRes,
-            lyricSong = lyricSong,
-            lyricPositionMs = lyricPositionMs,
-            displayTranslation = displayTranslation,
-            displayRoma = displayRoma,
-            audioInfoText = audioInfoText,
-            onBack = onBack,
-            onSeekStart = onSeekStart,
-            onSeekStop = onSeekStop,
-            onPrevious = onPrevious,
-            onPlayPause = onPlayPause,
-            onNext = onNext,
-            onPlayMode = onPlayMode,
-            onAudioQuality = onAudioQuality,
-            onAudioQualityLongPress = onAudioQualityLongPress,
-            onMorePanelVisibleChange = onMorePanelVisibleChange,
-            onOpenLyric = onOpenLyric,
-            pageProgress = basePage,
-            renderBackdrop = false,
-            renderTopBar = false,
-            modifier = Modifier.pageLayer(1)
-        )
-        LyricPage(
-            currentSong = currentSong,
-            coverPath = coverPath,
-            song = lyricSong,
-            positionMs = lyricPositionMs,
-            displayTranslation = displayTranslation,
-            displayRoma = displayRoma,
-            onSeek = onLyricSeek,
-            onTranslationToggle = onLyricTranslationToggle,
-            moreIconRes = R.drawable.ic_more_vert,
-            onMore = { },
-            onBack = { },
-            showHeaderCover = true,
-            renderBackdrop = false,
-            modifier = Modifier.pageLayer(2)
-        )
-        ImmersiveTopBar(
-            pageProgress = basePage,
-            showPageDots = isImmersiveHorizontalPagingIndicatorVisible(
-                isTransitioning = isTransitioning,
-                fromScene = fromScene,
-                toScene = toScene
-            ),
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(start = 30.dp, end = 30.dp, top = 2.dp)
-        )
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun ImmersivePlayerMainPage(
-    currentSong: AudioFile?,
-    coverPath: String?,
-    isPlaying: Boolean,
-    currentPositionMs: Long,
-    totalDurationMs: Long,
-    @DrawableRes previousIconRes: Int,
-    @DrawableRes playIconRes: Int,
-    @DrawableRes pauseIconRes: Int,
-    @DrawableRes nextIconRes: Int,
-    @DrawableRes playModeIconRes: Int,
-    lyricSong: Song?,
-    lyricPositionMs: Long,
-    displayTranslation: Boolean,
-    displayRoma: Boolean,
-    audioInfoText: String = "",
-    onBack: () -> Unit,
-    onSeekStart: () -> Unit,
-    onSeekStop: (Float) -> Unit,
-    onPrevious: () -> Unit,
-    onPlayPause: () -> Unit,
-    onNext: () -> Unit,
-    onPlayMode: () -> Unit,
-    onAudioQuality: () -> Unit = {},
-    onAudioQualityLongPress: () -> Unit = onAudioQuality,
-    onMorePanelVisibleChange: (Boolean) -> Unit,
-    onOpenLyric: () -> Unit = {},
-    pageProgress: Float = 1f,
-    renderBackdrop: Boolean = true,
-    renderTopBar: Boolean = true,
-    modifier: Modifier = Modifier
-) {
-    var showMore by remember { mutableStateOf(false) }
+    // Visibility is owned by ComposePlayerContainer rather than this horizontally moving page
+    // stack, so a page recomposition cannot reset the modal immediately after it opens.
     var immersiveProgressStyle by remember { mutableStateOf(ImmersiveProgressStyle.from(AppPreferences.UI.immersiveProgressStyle)) }
     var climaxEnabled by remember { mutableStateOf(AppPreferences.UI.immersiveClimaxEnabled) }
     var waveformDebugPanel by remember { mutableStateOf(AppPreferences.UI.immersiveWaveformDebugPanel) }
@@ -337,129 +254,141 @@ fun ImmersivePlayerMainPage(
         AppPreferences.UI.immersiveWaveformClimaxColor = waveformClimaxColorInt
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
-        val tone = rememberPlayerForegroundTone()
-        if (renderBackdrop) ImmersiveBackdrop(coverPath = coverPath, pageProgress = pageProgress)
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(horizontal = 30.dp, vertical = 14.dp)
-        ) {
-            val titleTop = (maxHeight * 0.405f + 8.dp).coerceAtLeast(116.dp)
+    fun closePlayerMore() {
+        onShowPlayerMoreChange(false)
+    }
 
-            if (renderTopBar) {
-                ImmersiveTopBar(
-                    pageProgress = pageProgress,
-                    showPageDots = false,
-                    modifier = Modifier.align(Alignment.TopCenter)
-                )
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .offset(y = titleTop),
-                verticalAlignment = Alignment.Top
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        currentSong?.displayName ?: stringResource(R.string.player_no_song),
-                        color = tone.primary,
-                        fontSize = 21.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Clip,
-                        modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, repeatDelayMillis = 900)
-                    )
-                    Text(
-                        currentSong?.artist?.ifBlank { stringResource(R.string.player_unknown_artist) } ?: "",
-                        color = tone.secondary,
-                        fontSize = 14.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    MiniLyricPreview(
-                        song = lyricSong,
-                        positionMs = lyricPositionMs,
-                        displayTranslation = displayTranslation,
-                        displayRoma = displayRoma,
-                        onClick = onOpenLyric,
-                        primaryColor = tone.primary,
-                        secondaryColor = tone.secondary,
-                        dimColor = tone.tertiary
-                    )
-                }
-                Spacer(Modifier.width(16.dp))
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("♡", color = tone.icon, fontSize = 33.sp)
-                    Text("••", color = tone.iconSoft, fontSize = 23.sp, modifier = Modifier.clickable {
-                        showMore = true
-                        onMorePanelVisibleChange(true)
-                    })
-                }
-            }
-
-            Column(
-                modifier = Modifier.align(Alignment.BottomCenter)
-            ) {
-                ImmersiveProgress(
-                    currentSong = currentSong,
-                    currentPositionMs = currentPositionMs,
-                    totalDurationMs = totalDurationMs,
-                    isPlaying = isPlaying,
-                    progressStyle = immersiveProgressStyle,
-                    climaxEnabled = climaxEnabled,
-                    waveformDebugPanel = waveformDebugPanel,
-                    waveformRemainingColor = Color(waveformRemainingColorInt),
-                    waveformPlayedColor = Color(waveformPlayedColorInt),
-                    waveformClimaxColor = Color(waveformClimaxColorInt),
-                    onSeekStart = onSeekStart,
-                    onSeekStop = onSeekStop
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    ImmersiveQualityPill(
-                        song = currentSong,
-                        text = audioInfoText,
-                        onClick = onAudioQuality,
-                        onLongClick = onAudioQualityLongPress
-                    )
-                }
-                Spacer(Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    IconCircle(iconRes = playModeIconRes, size = 38.dp, tint = tone.iconSoft, onClick = onPlayMode)
-                    IconCircle(iconRes = previousIconRes, size = 50.dp, tint = tone.icon, onClick = onPrevious)
-                    IconCircle(
-                        iconRes = if (isPlaying) pauseIconRes else playIconRes,
-                        size = 68.dp,
-                        tint = tone.icon,
-                        onClick = onPlayPause
-                    )
-                    IconCircle(iconRes = nextIconRes, size = 50.dp, tint = tone.icon, onClick = onNext)
-                    Text("≡", color = tone.iconSoft, fontSize = 33.sp)
-                }
-            }
-        }
-        BackHandler(enabled = showMore) {
-            showMore = false
+    LaunchedEffect(showPlayerMore) {
+        if (showPlayerMore) {
+            onModalDismissActionChange(::closePlayerMore)
+            onMorePanelVisibleChange(true)
+        } else {
+            onModalDismissActionChange(null)
             onMorePanelVisibleChange(false)
         }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            onModalDismissActionChange(null)
+            onMorePanelVisibleChange(false)
+        }
+    }
+
+    BoxWithConstraints(modifier = modifier.fillMaxSize().clipToBounds()) {
+        val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
+        fun Modifier.pageLayer(page: Int): Modifier {
+            val distance = page - basePage
+            return graphicsLayer {
+                translationX = distance * widthPx
+                alpha = 1f
+            }
+        }
+        ImmersiveBackdrop(
+            coverPath = coverPath,
+            pageProgress = basePage,
+            artworkTransitionState = artworkTransitionState
+        )
+        ImmersiveAlbumInfoPage(
+            currentSong = currentSong,
+            songs = albumSongs,
+            coverPath = albumCoverPath ?: coverPath,
+            onBack = { },
+            onSongClick = onAlbumSongClick,
+            pageProgress = basePage,
+            renderBackdrop = false,
+            renderTopBar = false,
+            modifier = Modifier.pageLayer(0)
+        )
+        ImmersivePlayerMainPage(
+            currentSong = currentSong,
+            coverPath = coverPath,
+            artworkTransitionState = artworkTransitionState,
+            isPlaying = isPlaying,
+            currentPositionMs = currentPositionMs,
+            totalDurationMs = totalDurationMs,
+            previousIconRes = previousIconRes,
+            playIconRes = playIconRes,
+            pauseIconRes = pauseIconRes,
+            nextIconRes = nextIconRes,
+            playModeIconRes = playModeIconRes,
+            lyricSong = lyricSong,
+            lyricPositionMs = lyricPositionMs,
+            displayTranslation = displayTranslation,
+            displayRoma = displayRoma,
+            audioInfoText = audioInfoText,
+            queueVisible = queueVisible,
+            queueSongs = queueSongs,
+            queueCurrentIndex = queueCurrentIndex,
+            onQueueSongClick = onQueueSongClick,
+            onClearPriorityQueue = onClearPriorityQueue,
+            onToggleQueue = onToggleQueue,
+            onBack = onBack,
+            onSeekStart = onSeekStart,
+            onSeekStop = onSeekStop,
+            onPrevious = onPrevious,
+            onPlayPause = onPlayPause,
+            onNext = onNext,
+            onPlayMode = onPlayMode,
+            onAudioQuality = onAudioQuality,
+            onAudioQualityLongPress = onAudioQualityLongPress,
+            progressStyle = immersiveProgressStyle,
+            climaxEnabled = climaxEnabled,
+            waveformDebugPanel = waveformDebugPanel,
+            waveformRemainingColor = Color(waveformRemainingColorInt),
+            waveformPlayedColor = Color(waveformPlayedColorInt),
+            waveformClimaxColor = Color(waveformClimaxColorInt),
+            onOpenMore = {
+                onShowPlayerMoreChange(true)
+            },
+            onOpenLyric = onOpenLyric,
+            pageProgress = basePage,
+            renderBackdrop = false,
+            renderTopBar = false,
+            modifier = Modifier.pageLayer(1)
+        )
+        LyricPage(
+            currentSong = currentSong,
+            coverPath = coverPath,
+            song = lyricSong,
+            positionMs = lyricPositionMs,
+            isPlaying = isPlaying,
+            displayTranslation = displayTranslation,
+            displayRoma = displayRoma,
+            onSeek = onLyricSeek,
+            onTranslationToggle = onLyricTranslationToggle,
+            moreIconRes = R.drawable.ic_more_vert,
+            onModifyAlbumArt = onLyricModifyAlbumArt,
+            onModalVisibleChange = onMorePanelVisibleChange,
+            onModalDismissActionChange = onModalDismissActionChange,
+            onBack = { },
+            showHeaderCover = true,
+            renderBackdrop = false,
+            modifier = Modifier.pageLayer(2)
+        )
         AnimatedVisibility(
-            visible = showMore,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.fillMaxSize()
+            visible = !queueVisible,
+            enter = fadeIn(animationSpec = tween(180)),
+            exit = fadeOut(animationSpec = tween(140)),
+            modifier = Modifier.align(Alignment.TopCenter)
         ) {
+            ImmersiveTopBar(
+                pageProgress = basePage,
+                showPageDots = isImmersiveHorizontalPagingIndicatorVisible(
+                    isTransitioning = isTransitioning,
+                    fromScene = fromScene,
+                    toScene = toScene
+                ),
+                modifier = Modifier
+                    .statusBarsPadding()
+                    .padding(start = 30.dp, end = 30.dp, top = 2.dp)
+            )
+        }
+
+        BackHandler(enabled = showPlayerMore) {
+            closePlayerMore()
+        }
+        if (showPlayerMore) {
             ImmersiveMoreSheet(
                 currentSong = currentSong,
                 coverPath = coverPath,
@@ -475,12 +404,296 @@ fun ImmersivePlayerMainPage(
                 onWaveformRemainingColorChange = ::saveWaveformRemainingColor,
                 onWaveformPlayedColorChange = ::saveWaveformPlayedColor,
                 onWaveformClimaxColorChange = ::saveWaveformClimaxColor,
-                onDismiss = {
-                    showMore = false
-                    onMorePanelVisibleChange(false)
-                }
+                onOpenMetadata = onOpenMetadata,
+                onOpenAudioEffects = onOpenAudioEffects,
+                onDismiss = ::closePlayerMore,
+                dismissOnScrimTap = true,
+                sleepTimerSelection = sleepTimerSelection,
+                onSleepTimerSelectionChange = onSleepTimerSelectionChange,
             )
         }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun ImmersivePlayerMainPage(
+    currentSong: AudioFile?,
+    coverPath: String?,
+    artworkTransitionState: PlaybackArtworkTransitionState? = null,
+    isPlaying: Boolean,
+    currentPositionMs: Long,
+    totalDurationMs: Long,
+    @DrawableRes previousIconRes: Int,
+    @DrawableRes playIconRes: Int,
+    @DrawableRes pauseIconRes: Int,
+    @DrawableRes nextIconRes: Int,
+    @DrawableRes playModeIconRes: Int,
+    lyricSong: Song?,
+    lyricPositionMs: Long,
+    displayTranslation: Boolean,
+    displayRoma: Boolean,
+    audioInfoText: String = "",
+    queueVisible: Boolean,
+    queueSongs: List<AudioFile>,
+    queueCurrentIndex: Int,
+    onQueueSongClick: (AudioFile, Int) -> Unit,
+    onClearPriorityQueue: (() -> Unit)?,
+    onToggleQueue: () -> Unit,
+    onBack: () -> Unit,
+    onSeekStart: () -> Unit,
+    onSeekStop: (Float) -> Unit,
+    onPrevious: () -> Unit,
+    onPlayPause: () -> Unit,
+    onNext: () -> Unit,
+    onPlayMode: () -> Unit,
+    onAudioQuality: () -> Unit = {},
+    onAudioQualityLongPress: () -> Unit = onAudioQuality,
+    progressStyle: ImmersiveProgressStyle,
+    climaxEnabled: Boolean,
+    waveformDebugPanel: Boolean,
+    waveformRemainingColor: Color,
+    waveformPlayedColor: Color,
+    waveformClimaxColor: Color,
+    onOpenMore: () -> Unit,
+    onOpenLyric: () -> Unit = {},
+    pageProgress: Float = 1f,
+    renderBackdrop: Boolean = true,
+    renderTopBar: Boolean = true,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val fontScale = LocalDensity.current.fontScale
+    Box(modifier = modifier.fillMaxSize()) {
+        val tone = rememberPlayerForegroundTone()
+        val statusBarHeight = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+        val navigationBarHeight = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        val contentVerticalPadding = 14.dp
+        if (renderBackdrop) {
+            ImmersiveBackdrop(
+                coverPath = coverPath,
+                pageProgress = pageProgress,
+                artworkTransitionState = artworkTransitionState
+            )
+        }
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 30.dp, vertical = 14.dp)
+        ) {
+            val titleTop = (maxHeight * 0.405f + 8.dp).coerceAtLeast(116.dp)
+            val lyricPreviewHeight = when (progressStyle) {
+                ImmersiveProgressStyle.Classic -> 126.dp
+                ImmersiveProgressStyle.Waveform -> 108.dp
+                ImmersiveProgressStyle.Seconds -> 104.dp
+            }
+            val lyricPreviewRows = when {
+                fontScale >= 1.18f -> 2
+                progressStyle == ImmersiveProgressStyle.Classic -> 4
+                else -> 3
+            }
+            // Map the full-screen clear-cover boundary into this inset/padded content coordinate
+            // space. The queue must begin below the clear artwork instead of being laid over it.
+            val fullViewportHeight =
+                maxHeight + statusBarHeight + navigationBarHeight + contentVerticalPadding * 2
+            val clearArtworkBottom =
+                fullViewportHeight * IMMERSIVE_CLEAR_ARTWORK_FRACTION +
+                    IMMERSIVE_CLEAR_ARTWORK_FADE_EXTENSION -
+                    statusBarHeight -
+                    contentVerticalPadding
+            val queueTop = (clearArtworkBottom + 12.dp).coerceIn(0.dp, maxHeight)
+            val queueBottomReserve = 82.dp
+            val queueViewportHeight = (maxHeight - queueTop - queueBottomReserve)
+                .coerceAtLeast(0.dp)
+
+            if (renderTopBar) {
+                ImmersiveTopBar(
+                    pageProgress = pageProgress,
+                    showPageDots = false,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
+            }
+
+            AnimatedVisibility(
+                visible = !queueVisible,
+                enter = fadeIn(animationSpec = tween(180)),
+                exit = fadeOut(animationSpec = tween(140)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .offset(y = titleTop)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .pointerInput(currentSong?.path, currentSong?.title, currentSong?.artist, currentSong?.album) {
+                                detectTapGestures(
+                                    onLongPress = { copySongInfoToClipboard(context, currentSong) }
+                                )
+                            }
+                    ) {
+                        Text(
+                            currentSong?.displayName ?: stringResource(R.string.player_no_song),
+                            color = tone.primary,
+                            fontSize = 21.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Clip,
+                            modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, repeatDelayMillis = 900)
+                        )
+                        Text(
+                            currentSong?.artist?.ifBlank { stringResource(R.string.player_unknown_artist) } ?: "",
+                            color = tone.secondary,
+                            fontSize = 14.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        MiniLyricPreview(
+                            song = lyricSong,
+                            positionMs = lyricPositionMs,
+                            displayTranslation = displayTranslation,
+                            displayRoma = displayRoma,
+                            onClick = onOpenLyric,
+                            primaryColor = tone.primary,
+                            secondaryColor = tone.secondary,
+                            dimColor = tone.tertiary,
+                            maxHeight = lyricPreviewHeight,
+                            maxPrimaryRows = lyricPreviewRows
+                        )
+                    }
+                    Spacer(Modifier.width(16.dp))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("♡", color = tone.icon, fontSize = 33.sp)
+                        IconCircle(
+                            iconRes = R.drawable.ic_more_vert,
+                            size = 44.dp,
+                            tint = tone.iconSoft,
+                            onClick = onOpenMore
+                        )
+                    }
+                }
+            }
+
+            AnimatedVisibility(
+                visible = queueVisible,
+                enter = fadeIn(animationSpec = tween(180)),
+                exit = fadeOut(animationSpec = tween(140)),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .offset(y = queueTop)
+                    .fillMaxWidth()
+                    .height(queueViewportHeight)
+                    .clipToBounds()
+            ) {
+                InlinePlayerQueue(
+                    songs = queueSongs,
+                    currentIndex = queueCurrentIndex,
+                    currentSong = currentSong,
+                    currentCoverPath = coverPath,
+                    colors = InlinePlayerQueueColors(
+                        primaryText = tone.primary,
+                        secondaryText = tone.secondary,
+                        accent = tone.icon,
+                        icon = tone.iconSoft,
+                        currentBackground = tone.chipBackground,
+                        artworkPlaceholder = tone.chipBackground.copy(alpha = 0.72f)
+                    ),
+                    onSongClick = onQueueSongClick,
+                    onClearPriorityQueue = onClearPriorityQueue,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            AnimatedVisibility(
+                visible = !queueVisible,
+                enter = fadeIn(animationSpec = tween(180)),
+                exit = fadeOut(animationSpec = tween(140)),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 82.dp)
+            ) {
+                Column {
+                    ImmersiveProgress(
+                        currentSong = currentSong,
+                        currentPositionMs = currentPositionMs,
+                        totalDurationMs = totalDurationMs,
+                        isPlaying = isPlaying,
+                        progressStyle = progressStyle,
+                        climaxEnabled = climaxEnabled,
+                        waveformDebugPanel = waveformDebugPanel,
+                        waveformRemainingColor = waveformRemainingColor,
+                        waveformPlayedColor = waveformPlayedColor,
+                        waveformClimaxColor = waveformClimaxColor,
+                        onSeekStart = onSeekStart,
+                        onSeekStop = onSeekStop
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        ImmersiveQualityPill(
+                            song = currentSong,
+                            text = audioInfoText,
+                            onClick = onAudioQuality,
+                            onLongClick = onAudioQualityLongPress
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                IconCircle(iconRes = playModeIconRes, size = 38.dp, tint = tone.iconSoft, onClick = onPlayMode)
+                IconCircle(iconRes = previousIconRes, size = 50.dp, tint = tone.icon, onClick = onPrevious)
+                IconCircle(
+                    iconRes = if (isPlaying) pauseIconRes else playIconRes,
+                    size = 68.dp,
+                    tint = tone.icon,
+                    onClick = onPlayPause
+                )
+                IconCircle(iconRes = nextIconRes, size = 50.dp, tint = tone.icon, onClick = onNext)
+                ImmersiveQueueButton(
+                    selected = queueVisible,
+                    tint = if (queueVisible) tone.icon else tone.iconSoft,
+                    onClick = onToggleQueue
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImmersiveQueueButton(
+    selected: Boolean,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .background(if (selected) tint.copy(alpha = 0.12f) else Color.Transparent)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = MiuixIcons.Regular.ListView,
+            contentDescription = "播放队列",
+            tint = tint,
+            modifier = Modifier.size(28.dp)
+        )
     }
 }
 
@@ -490,6 +703,7 @@ fun ImmersiveLyricPage(
     coverPath: String?,
     song: Song?,
     positionMs: Long,
+    isPlaying: Boolean = false,
     displayTranslation: Boolean,
     displayRoma: Boolean,
     onBack: () -> Unit,
@@ -542,11 +756,14 @@ fun ImmersiveLyricPage(
                 ComposeLyricView(
                     song = song,
                     positionMs = positionMs,
+                    isPlaying = isPlaying,
                     displayTranslation = displayTranslation,
                     displayRoma = displayRoma,
                     textColor = tone.primary,
                     dimColor = tone.tertiary.copy(alpha = 0.62f),
                     secondaryColor = tone.secondary,
+                    blurEnabled = AppPreferences.UI.lyricBlurEnabled,
+                    highlightAll = AppPreferences.UI.lyricHighlightAllEnabled,
                     maxPrimaryVisibleLines = maxPrimaryLyricLines,
                     onLineClick = onSeek,
                     onSwipeRight = onBack,
@@ -752,53 +969,81 @@ private fun Modifier.edgeTransparent(
 @Composable
 private fun ImmersiveBackdrop(
     coverPath: String?,
-    pageProgress: Float = 1f
+    pageProgress: Float = 1f,
+    artworkTransitionState: PlaybackArtworkTransitionState? = null
 ) {
-    // page: 0 = 专辑页，1 = 播放页，2 = 歌词页。
-    // 背景统一走 RawFlowBackground，和主界面/列表页共用同一套主题跟随与流光开关。
-    val flowMode = rememberCurrentRawFlowMode()
     val playerProgress = (1f - abs(pageProgress - 1f)).coerceIn(0f, 1f)
     val density = LocalDensity.current
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        RawFlowBackground(
-            mode = flowMode,
-            sourceCoverKey = coverPath,
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().clipToBounds()) {
+        StandardPlayerBackdrop(
+            coverPath = coverPath,
+            accent = Color.Transparent,
+            artworkTransitionState = artworkTransitionState,
             modifier = Modifier.fillMaxSize()
         )
 
-        if (!coverPath.isNullOrBlank()) {
-            val splitY = maxHeight * 0.41f
+        val clearArtworkLayers = artworkTransitionState?.backgroundLayers().orEmpty()
+        val hasClearArtwork = clearArtworkLayers.isNotEmpty() || !coverPath.isNullOrBlank()
+        if (hasClearArtwork) {
+            val splitY = maxHeight * IMMERSIVE_CLEAR_ARTWORK_FRACTION
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(splitY + 32.dp)
+                    .height(splitY + IMMERSIVE_CLEAR_ARTWORK_FADE_EXTENSION)
                     .align(Alignment.TopCenter)
                     .clipToBounds()
                     .graphicsLayer {
-                        // 横滑进入歌词页时只做清晰封面淡出；返回播放页时自然淡入。
                         alpha = playerProgress
                     }
             ) {
                 val fadeHeightPx = with(density) { 118.dp.toPx() }
-                BitmapImage(
-                    key = coverPath,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .edgeTransparent(EdgeFade.Bottom, fadeHeightPx),
-                    contentScale = ContentScale.Crop,
-                    targetWidth = 1080,
-                    targetHeight = 1080,
-                    priority = com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest.Priority.LOADING_WIDGET,
-                    surface = ArtworkSurface.Playback,
-                    fadeInMillis = 0,
-                    holdPreviousOnKeyChange = false,
-                    fadeOnBitmapChange = false
-                )
+                if (clearArtworkLayers.isEmpty()) {
+                    ImmersiveClearArtworkLayer(
+                        coverKey = coverPath.orEmpty(),
+                        alpha = 1f,
+                        fadeHeightPx = fadeHeightPx
+                    )
+                } else {
+                    clearArtworkLayers.forEach { layer ->
+                        androidx.compose.runtime.key(layer.token) {
+                            ImmersiveClearArtworkLayer(
+                                coverKey = layer.key,
+                                alpha = layer.alpha,
+                                fadeHeightPx = fadeHeightPx
+                            )
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+
+@Composable
+private fun ImmersiveClearArtworkLayer(
+    coverKey: String,
+    alpha: Float,
+    fadeHeightPx: Float
+) {
+    if (coverKey.isBlank() || alpha <= 0f) return
+    BitmapImage(
+        key = coverKey,
+        contentDescription = null,
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer { this.alpha = alpha.coerceIn(0f, 1f) }
+            .edgeTransparent(EdgeFade.Bottom, fadeHeightPx),
+        contentScale = ContentScale.Crop,
+        targetWidth = 1080,
+        targetHeight = 1080,
+        priority = com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest.Priority.LOADING_WIDGET,
+        surface = ArtworkSurface.Playback,
+        fadeInMillis = 0,
+        holdPreviousOnKeyChange = false,
+        fadeOnBitmapChange = false
+    )
 }
 
 @Composable
@@ -869,15 +1114,23 @@ private fun MiniLyricPreview(
     onClick: () -> Unit,
     primaryColor: Color = Color.White,
     secondaryColor: Color = Color.White.copy(alpha = 0.58f),
-    dimColor: Color = Color.White.copy(alpha = 0.40f)
+    dimColor: Color = Color.White.copy(alpha = 0.40f),
+    maxHeight: Dp,
+    maxPrimaryRows: Int
 ) {
-    val lines = remember(song, positionMs, displayTranslation, displayRoma) {
-        currentLyricPreviewLines(song?.lyrics.orEmpty(), positionMs, displayTranslation, displayRoma)
+    val lines = remember(song, positionMs, displayTranslation, displayRoma, maxPrimaryRows) {
+        currentLyricPreviewLines(
+            lines = song?.lyrics.orEmpty(),
+            positionMs = positionMs,
+            displayTranslation = displayTranslation,
+            displayRoma = displayRoma,
+            maxPrimaryRows = maxPrimaryRows
+        )
     }
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = if (lines.any { !it.secondary.isNullOrBlank() }) 118.dp else 132.dp)
+            .height(maxHeight)
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
             .padding(vertical = 2.dp)
@@ -944,6 +1197,7 @@ internal fun ImmersiveProgress(
     onSeekStart: () -> Unit,
     onSeekStop: (Float) -> Unit
 ) {
+    val foregroundTone = rememberPlayerForegroundTone()
     if (progressStyle == ImmersiveProgressStyle.Waveform) {
         ImmersiveWaveformProgressBar(
             currentSong = currentSong,
@@ -955,7 +1209,8 @@ internal fun ImmersiveProgress(
                 remaining = waveformRemainingColor,
                 climaxPlayed = waveformClimaxColor.copy(alpha = 0.46f),
                 climaxRemaining = waveformClimaxColor.copy(alpha = 0.95f),
-                needle = Color.White.copy(alpha = 0.92f)
+                needle = Color.White.copy(alpha = 0.92f),
+                time = foregroundTone.tertiary
             ),
             climaxEnabled = climaxEnabled,
             showDebugPanel = waveformDebugPanel,
@@ -975,7 +1230,8 @@ internal fun ImmersiveProgress(
                 remaining = waveformRemainingColor,
                 climaxPlayed = waveformClimaxColor,
                 climaxRemaining = waveformClimaxColor,
-                needle = Color.White.copy(alpha = 0.92f)
+                needle = Color.White.copy(alpha = 0.92f),
+                time = foregroundTone.tertiary
             ),
             onSeekStart = onSeekStart,
             onSeekStop = onSeekStop
@@ -1045,22 +1301,21 @@ internal fun ImmersiveProgress(
                     .fillMaxWidth()
                     .height(4.dp)
                     .clip(RoundedCornerShape(50))
-                    .background(rememberPlayerForegroundTone().controlTrack)
+                    .background(foregroundTone.controlTrack)
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth(displayFraction.coerceIn(0f, 1f))
                         .height(4.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(rememberPlayerForegroundTone().controlFill)
+                        .background(foregroundTone.controlFill)
                 )
             }
         }
         Spacer(Modifier.height(7.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            val tone = rememberPlayerForegroundTone()
-            Text(AudioUtils.formatDuration(displayPositionMs), color = tone.tertiary, fontSize = 12.sp)
-            Text(AudioUtils.formatDuration(totalDurationMs), color = tone.tertiary, fontSize = 12.sp)
+            Text(AudioUtils.formatDuration(displayPositionMs), color = foregroundTone.tertiary, fontSize = 12.sp)
+            Text(AudioUtils.formatDuration(totalDurationMs), color = foregroundTone.tertiary, fontSize = 12.sp)
         }
     }
 }
@@ -1211,6 +1466,20 @@ private fun AlbumInfoSongRow(song: AudioFile, onClick: () -> Unit) {
     }
 }
 
+private val playerSleepTimerOptions = listOf(
+    "关闭",
+    "10 分钟",
+    "15 分钟",
+    "20 分钟",
+    "30 分钟",
+    "45 分钟",
+    "60 分钟",
+    "90 分钟",
+    "当前歌曲结束后",
+    "再播放 3 首",
+    "再播放 5 首"
+)
+
 @Composable
 internal fun ImmersiveMoreSheet(
     currentSong: AudioFile?,
@@ -1227,33 +1496,75 @@ internal fun ImmersiveMoreSheet(
     onWaveformRemainingColorChange: (Color) -> Unit,
     onWaveformPlayedColorChange: (Color) -> Unit,
     onWaveformClimaxColorChange: (Color) -> Unit,
-    onDismiss: () -> Unit
+    onOpenMetadata: () -> Unit = {},
+    onOpenAudioEffects: () -> Unit = {},
+    onDismiss: () -> Unit,
+    dismissOnScrimTap: Boolean = true,
+    sleepTimerSelection: Int = 0,
+    onSleepTimerSelectionChange: ((Int) -> Unit)? = null,
+    artworkAnimationStyle: PlayerArtworkAnimationStyle? = null,
+    onArtworkAnimationStyleChange: ((PlayerArtworkAnimationStyle) -> Unit)? = null
 ) {
     val scheme = MiuixTheme.colorScheme
     val isDark = scheme.background.luminance() < 0.5f
     val sheetColor = if (isDark) scheme.background else scheme.surface
     val cardColor = if (isDark) scheme.surfaceContainerHigh.copy(alpha = 0.72f) else Color.White.copy(alpha = 0.88f)
-    val actionIconColor = if (isDark) scheme.primary else scheme.onSurface
-    val actions = remember { immersiveMoreActions() }
+    val actionIconColor = scheme.onSurface
+    val sheetScrollState = rememberScrollState()
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.54f))
-            .clickable(onClick = onDismiss),
+        modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.BottomCenter
     ) {
+        // The scrim is a sibling behind the card, so taps inside the card never reach it. Ignore
+        // the still-running pointer sequence that opened the menu; only a later clean tap closes it.
+        val sheetMountedAt = remember { android.os.SystemClock.uptimeMillis() }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.54f))
+                .pointerInput(dismissOnScrimTap, onDismiss, sheetMountedAt) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(
+                            requireUnconsumed = false,
+                            pass = PointerEventPass.Initial
+                        )
+                        val canDismissThisGesture = dismissOnScrimTap &&
+                            down.uptimeMillis > sheetMountedAt
+                        val start = down.position
+                        var released = false
+                        var movedTooFar = false
+                        down.consume()
+                        while (!released) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                                ?: event.changes.firstOrNull()
+                                ?: break
+                            if ((change.position - start).getDistance() > viewConfiguration.touchSlop) {
+                                movedTooFar = true
+                            }
+                            released = !change.pressed
+                            change.consume()
+                        }
+                        if (canDismissThisGesture && released && !movedTooFar) {
+                            onDismiss()
+                        }
+                    }
+                }
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .fillMaxHeight(0.72f)
                 .clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
                 .background(sheetColor)
-                .navigationBarsPadding()
-                .padding(horizontal = 22.dp, vertical = 22.dp)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                     onClick = {}
                 )
+                .verticalScroll(sheetScrollState)
+                .navigationBarsPadding()
+                .padding(horizontal = 22.dp, vertical = 22.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
@@ -1273,25 +1584,97 @@ internal fun ImmersiveMoreSheet(
                 }
             }
             Spacer(Modifier.height(26.dp))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                itemsIndexed(actions) { _, action ->
-                    val label = stringResource(action.labelRes)
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(
-                            modifier = Modifier
-                                .size(70.dp)
-                                .clip(RoundedCornerShape(18.dp))
-                                .background(cardColor),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(action.glyph, color = actionIconColor, fontSize = 28.sp, fontWeight = FontWeight.Medium)
-                        }
-                        Spacer(Modifier.height(10.dp))
-                        Text(label, color = scheme.onSurface, fontSize = 15.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                ImmersiveMoreActionButton(
+                    iconRes = R.drawable.ic_metadata_outline,
+                    label = stringResource(R.string.player_more_metadata_short),
+                    iconColor = actionIconColor,
+                    cardColor = cardColor,
+                    onClick = {
+                        onOpenMetadata()
                     }
-                }
+                )
+                ImmersiveMoreActionButton(
+                    iconRes = R.drawable.ic_audio_effects_custom,
+                    label = stringResource(R.string.player_more_effects_short),
+                    iconColor = actionIconColor,
+                    cardColor = cardColor,
+                    onClick = {
+                        onOpenAudioEffects()
+                    }
+                )
             }
             Spacer(Modifier.height(20.dp))
+            val sleepSelectionChange = onSleepTimerSelectionChange
+            if (sleepSelectionChange != null) {
+                val sleepDropdown = DropdownEntry(
+                    items = playerSleepTimerOptions.mapIndexed { index, title ->
+                        DropdownItem(
+                            text = title,
+                            selected = index == sleepTimerSelection,
+                            onClick = { sleepSelectionChange(index) }
+                        )
+                    }
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(cardColor)
+                ) {
+                    WindowDropdownPreference(
+                        entry = sleepDropdown,
+                        title = "睡眠定时",
+                        summary = playerSleepTimerOptions.getOrElse(sleepTimerSelection) { playerSleepTimerOptions.first() },
+                        showValue = true,
+                        maxHeight = 440.dp,
+                        collapseOnSelection = true
+                    )
+                }
+                Spacer(Modifier.height(18.dp))
+            }
+            val animationStyleChange = onArtworkAnimationStyleChange
+            if (artworkAnimationStyle != null && animationStyleChange != null) {
+                val animationDropdown = DropdownEntry(
+                    items = PlayerArtworkAnimationStyle.entries.map { style ->
+                        val (title, summary) = when (style) {
+                            PlayerArtworkAnimationStyle.PerspectiveDepth ->
+                                "透视切换" to "密集步距、距离缩放与轻微三轴旋转"
+                            PlayerArtworkAnimationStyle.InwardCarousel ->
+                                "内倾轮播" to "保留双卡片缩放、位移与倾斜效果"
+                            PlayerArtworkAnimationStyle.Slide ->
+                                "平移" to "只进行水平平移，不做淡入淡出"
+                        }
+                        DropdownItem(
+                            text = title,
+                            summary = summary,
+                            selected = style == artworkAnimationStyle,
+                            onClick = { animationStyleChange(style) }
+                        )
+                    }
+                )
+                val selectedAnimationSummary = when (artworkAnimationStyle) {
+                    PlayerArtworkAnimationStyle.PerspectiveDepth -> "透视切换"
+                    PlayerArtworkAnimationStyle.InwardCarousel -> "内倾轮播"
+                    PlayerArtworkAnimationStyle.Slide -> "平移"
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(cardColor)
+                ) {
+                    WindowDropdownPreference(
+                        entry = animationDropdown,
+                        title = "专辑图切换动画",
+                        summary = selectedAnimationSummary,
+                        showValue = true,
+                        maxHeight = 360.dp,
+                        collapseOnSelection = true
+                    )
+                }
+                Spacer(Modifier.height(18.dp))
+            }
             ImmersiveProgressSettingsCard(
                 progressStyle = progressStyle,
                 climaxEnabled = climaxEnabled,
@@ -1588,19 +1971,36 @@ private fun ImmersiveColorPaletteRow(
     }
 }
 
-private data class ImmersiveMoreAction(
-    @StringRes val labelRes: Int,
-    val glyph: String
-)
-
-private fun immersiveMoreActions(): List<ImmersiveMoreAction> = listOf(
-    ImmersiveMoreAction(R.string.player_more_add_playlist, "+"),
-    ImmersiveMoreAction(R.string.player_more_effects, "≋"),
-    ImmersiveMoreAction(R.string.player_more_play_mode, "↻"),
-    ImmersiveMoreAction(R.string.player_more_queue, "≡"),
-    ImmersiveMoreAction(R.string.player_more_metadata, "i"),
-    ImmersiveMoreAction(R.string.player_more_preferences, "⚙")
-)
+@Composable
+private fun ImmersiveMoreActionButton(
+    @DrawableRes iconRes: Int,
+    label: String,
+    iconColor: Color,
+    cardColor: Color,
+    onClick: () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.clickable(onClick = onClick)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(70.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(cardColor),
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                painter = painterResource(iconRes),
+                contentDescription = label,
+                colorFilter = ColorFilter.tint(iconColor),
+                modifier = Modifier.size(32.dp)
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(label, color = MiuixTheme.colorScheme.onSurface, fontSize = 15.sp)
+    }
+}
 
 private fun scenePageIndex(scene: PlayerSceneController.Scene): Int = when (scene) {
     PlayerSceneController.Scene.ALBUM_DETAIL -> 0
@@ -1671,7 +2071,8 @@ private fun currentLyricPreviewLines(
     lines: List<IRichLyricLine>,
     positionMs: Long,
     displayTranslation: Boolean,
-    displayRoma: Boolean
+    displayRoma: Boolean,
+    maxPrimaryRows: Int
 ): List<ImmersiveLyricPreviewLine> {
     if (lines.isEmpty()) return emptyList()
     val visibleIndices = lines.indices.filter { index ->
@@ -1691,12 +2092,14 @@ private fun currentLyricPreviewLines(
     val hasSecondaryText = lines.any { line ->
         visiblePreviewSecondary(line, displayTranslation, displayRoma) != null
     }
-    val maxPrimaryRows = if (hasSecondaryText) 3 else 5
-    val preferredBefore = if (hasSecondaryText) 1 else 2
+    val rowLimit = maxPrimaryRows
+        .coerceAtLeast(1)
+        .coerceAtMost(if (hasSecondaryText) 3 else 5)
+    val preferredBefore = if (rowLimit <= 2 || hasSecondaryText) 1 else 2
     var start = (anchorVisiblePosition - preferredBefore).coerceAtLeast(0)
-    var endExclusive = (start + maxPrimaryRows).coerceAtMost(visibleIndices.size)
-    start = (endExclusive - maxPrimaryRows).coerceAtLeast(0)
-    endExclusive = (start + maxPrimaryRows).coerceAtMost(visibleIndices.size)
+    var endExclusive = (start + rowLimit).coerceAtMost(visibleIndices.size)
+    start = (endExclusive - rowLimit).coerceAtLeast(0)
+    endExclusive = (start + rowLimit).coerceAtMost(visibleIndices.size)
 
     return visibleIndices.subList(start, endExclusive).map { index ->
         val line = lines[index]
