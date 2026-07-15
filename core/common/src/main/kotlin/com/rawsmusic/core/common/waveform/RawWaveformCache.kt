@@ -11,63 +11,80 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
 import java.security.MessageDigest
-import kotlin.math.PI
-import kotlin.math.abs
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.max
-import kotlin.math.sin
 
 /**
  * Offline waveform source for progress bars.
  *
  * UI never scans on the main thread. It first draws a neutral placeholder, then this cache
- * returns a real offline/native seek-scanned waveform when available. The scanned result is a
+ * returns a real offline/native PCM waveform when available. The scanned result is a
  * stable file-level cache, not the realtime PCM visualizer stream.
  */
 object RawWaveformCache {
-    private const val VERSION = 3
+    data class LoadResult(val values: FloatArray, val isReal: Boolean)
+
+    const val MAX_SAMPLE_COUNT = 21_600
+    private const val VERSION = 6
     private const val MAGIC = 0x52535746 // RSWF
-    private const val DIR = "waveform_v3"
+    private const val DIR = "waveform_v6"
     private const val DEFAULT_SAMPLE_COUNT = 100
     private val mutex = Mutex()
+    private val memoryCache = ConcurrentHashMap<String, FloatArray>()
 
     fun placeholder(sampleCount: Int = DEFAULT_SAMPLE_COUNT, style: Int = 0): FloatArray {
-        val count = sampleCount.coerceIn(32, 100)
-        val period = if (style == 1) 1.5f else 3.0f
-        val amp = if (style == 1) 0.25f else 0.33f
-        return FloatArray(count) { index ->
-            val t = index.toFloat() / count.toFloat()
-            (abs(sin((t * PI * period).toFloat())) * amp).coerceIn(0f, 0.36f)
-        }
+        val count = sampleCount.coerceIn(32, MAX_SAMPLE_COUNT)
+        val level = if (style == 1) 0.035f else 0.055f
+        return FloatArray(count) { level }
     }
 
     suspend fun loadOrScan(
         context: Context,
         audioFile: AudioFile?,
         sampleCount: Int = DEFAULT_SAMPLE_COUNT
-    ): FloatArray {
-        val song = audioFile ?: return placeholder(sampleCount)
+    ): FloatArray = loadOrScanResult(context, audioFile, sampleCount).values
+
+    suspend fun loadOrScanResult(
+        context: Context,
+        audioFile: AudioFile?,
+        sampleCount: Int = DEFAULT_SAMPLE_COUNT
+    ): LoadResult {
+        val song = audioFile ?: return LoadResult(placeholder(sampleCount), false)
         val path = song.path
-        if (path.isBlank()) return placeholder(sampleCount)
-        val boundedSamples = sampleCount.coerceIn(32, 100)
+        if (path.isBlank()) return LoadResult(placeholder(sampleCount), false)
+        val boundedSamples = sampleCount.coerceIn(32, MAX_SAMPLE_COUNT)
         val identity = identityFor(song, boundedSamples)
+        memoryCache[identity]?.let { return LoadResult(it, true) }
         val file = cacheFile(context, identity)
-        read(file, identity)?.let { return it }
+        read(file, identity)?.let {
+            memoryCache[identity] = it
+            return LoadResult(it, true)
+        }
 
         return mutex.withLock {
-            read(file, identity)?.let { return@withLock it }
+            memoryCache[identity]?.let { return@withLock LoadResult(it, true) }
+            read(file, identity)?.let {
+                memoryCache[identity] = it
+                return@withLock LoadResult(it, true)
+            }
             val scanned = scanNative(song, boundedSamples)
             val result = if (scanned.size == boundedSamples) normalize(scanned) else placeholder(boundedSamples)
-            if (scanned.size == boundedSamples) write(file, identity, result)
-            result
+            val isReal = scanned.size == boundedSamples
+            if (isReal) {
+                memoryCache[identity] = result
+                write(file, identity, result)
+            }
+            LoadResult(result, isReal)
         }
     }
 
     fun tryReadCached(context: Context, audioFile: AudioFile?, sampleCount: Int = DEFAULT_SAMPLE_COUNT): FloatArray? {
         val song = audioFile ?: return null
         if (song.path.isBlank()) return null
-        val boundedSamples = sampleCount.coerceIn(32, 100)
+        val boundedSamples = sampleCount.coerceIn(32, MAX_SAMPLE_COUNT)
         val identity = identityFor(song, boundedSamples)
-        return read(cacheFile(context, identity), identity)
+        memoryCache[identity]?.let { return it }
+        return read(cacheFile(context, identity), identity)?.also { memoryCache[identity] = it }
     }
 
     private fun scanNative(song: AudioFile, sampleCount: Int): FloatArray {
@@ -97,8 +114,6 @@ object RawWaveformCache {
             append('|')
             append(song.dateModified)
             append('|')
-            append(song.duration)
-            append('|')
             append(song.cueOffsetMs)
             append('|')
             append(song.cueEndMs)
@@ -124,7 +139,7 @@ object RawWaveformCache {
                 if (magic != MAGIC || version != VERSION) return null
                 val identity = input.readUTF()
                 if (identity != expectedIdentity) return null
-                val count = input.readInt().coerceIn(0, 100)
+                val count = input.readInt().coerceIn(0, MAX_SAMPLE_COUNT)
                 if (count <= 0) return null
                 FloatArray(count) { input.readFloat().coerceIn(0f, 1f) }
             }

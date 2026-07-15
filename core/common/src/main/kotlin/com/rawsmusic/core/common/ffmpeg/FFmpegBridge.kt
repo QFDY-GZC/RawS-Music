@@ -176,15 +176,15 @@ object FFmpegBridge {
 
     /**
      * Offline waveform scan.
-     * Returns normalized RMS waveform bars in 0..1, or an empty array on failure.
-     * startMs/endMs are used for CUE tracks and segment previews; native side samples by seek-decoding 500ms windows.
+     * Returns normalized PCM waveform bars in 0..1, or an empty array on failure.
+     * startMs/endMs are used for CUE tracks; native scans the segment sequentially into time buckets.
      */
     fun scanWaveform(path: String, startMs: Long, endMs: Long, sampleCount: Int): FloatArray {
         if (!loaded || path.isBlank() || sampleCount <= 0) {
             appendDebug("scanWaveform skipped: loaded=$loaded pathBlank=${path.isBlank()} samples=$sampleCount")
             return FloatArray(0)
         }
-        val boundedSamples = sampleCount.coerceIn(32, 100)
+        val boundedSamples = sampleCount.coerceIn(32, 21_600)
         val result = nativeScanWaveform(path, startMs.coerceAtLeast(0L), endMs.coerceAtLeast(0L), boundedSamples)
             ?: FloatArray(0)
         appendDebug(
