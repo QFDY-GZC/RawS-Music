@@ -17,7 +17,9 @@ import java.nio.ByteOrder
 class PlaybackDspProcessor(
     private val isBitPerfectBypassActive: () -> Boolean,
     private val reportBitPerfectBypass: (Long, String) -> Unit,
-    private val isFloatOutputActive: () -> Boolean
+    private val isFloatOutputActive: () -> Boolean,
+    private val isPacked24OutputActive: () -> Boolean,
+    private val isRegularAndroidOutputActive: () -> Boolean
 ) {
     companion object {
         private const val TAG = "PlaybackDspProcessor"
@@ -31,6 +33,80 @@ class PlaybackDspProcessor(
     private var dspByteBuffer: ByteBuffer? = null
     private var dspFloatArray: FloatArray? = null
     private var dspFloatByteBuffer: ByteBuffer? = null
+
+    @Volatile
+    var androidBinauralSpatialRequested: Boolean = false
+        set(value) {
+            field = value
+            applyAndroidBinauralState(force = true)
+        }
+
+    @Volatile
+    var androidBinauralSpatialIntensity: Float = 55f
+        set(value) {
+            field = value.coerceIn(0f, 100f)
+            applyAndroidBinauralState(force = true)
+        }
+
+    @Volatile
+    var androidBinauralSpatialRoom: Float = 18f
+        set(value) {
+            field = value.coerceIn(0f, 100f)
+            applyAndroidBinauralState(force = true)
+        }
+
+    @Volatile
+    var androidBinauralBrirEnabled: Boolean = true
+        set(value) {
+            field = value
+            applyAndroidBinauralState(force = true)
+        }
+
+    @Volatile
+    var androidBinauralSeparation: Float = 72f
+        set(value) {
+            field = value.coerceIn(0f, 100f)
+            applyAndroidBinauralState(force = true)
+        }
+
+    @Volatile
+    var androidBinauralHeadSizeCentimeters: Float = 57f
+        set(value) {
+            field = value.coerceIn(48f, 68f)
+            applyAndroidBinauralState(force = true)
+        }
+
+    @Volatile
+    var androidBinauralPinnaDetail: Float = 55f
+        set(value) {
+            field = value.coerceIn(0f, 100f)
+            applyAndroidBinauralState(force = true)
+        }
+
+    @Volatile
+    var androidBinauralHeadTrackingEnabled: Boolean = false
+        set(value) {
+            field = value
+            applyAndroidHeadPose(force = true)
+        }
+
+    @Volatile private var headQuaternionX: Float = 0f
+    @Volatile private var headQuaternionY: Float = 0f
+    @Volatile private var headQuaternionZ: Float = 0f
+    @Volatile private var headQuaternionW: Float = 1f
+
+    private var appliedAndroidBinauralEnabled: Boolean? = null
+    private var appliedAndroidBinauralIntensity: Float = Float.NaN
+    private var appliedAndroidBinauralRoom: Float = Float.NaN
+    private var appliedAndroidBinauralBrirEnabled: Boolean? = null
+    private var appliedAndroidBinauralSeparation: Float = Float.NaN
+    private var appliedAndroidBinauralHeadSize: Float = Float.NaN
+    private var appliedAndroidBinauralPinna: Float = Float.NaN
+    private var appliedHeadTrackingEnabled: Boolean? = null
+    private var appliedHeadQuaternionX: Float = Float.NaN
+    private var appliedHeadQuaternionY: Float = Float.NaN
+    private var appliedHeadQuaternionZ: Float = Float.NaN
+    private var appliedHeadQuaternionW: Float = Float.NaN
 
     @Volatile
     var stereoWidenFactor: Float = 0f
@@ -61,6 +137,8 @@ class PlaybackDspProcessor(
                 engine.init(sampleRate, channels)
                 engine.setStereoWiden(stereoWidenFactor)
                 nativeDspEngine = engine
+                resetAppliedAndroidBinauralState()
+                applyAndroidBinauralState(force = true)
                 useNativeDsp = true
                 AppLogger.d(TAG, "DSP: NativeDSPEngine initialized, sr=$sampleRate, ch=$channels")
                 notifyEngineReinit()
@@ -76,6 +154,8 @@ class PlaybackDspProcessor(
             existing.release()
             existing.init(sampleRate, channels)
             existing.setStereoWiden(stereoWidenFactor)
+            resetAppliedAndroidBinauralState()
+            applyAndroidBinauralState(force = true)
             useNativeDsp = true
             AppLogger.d(TAG, "DSP: NativeDSPEngine reinitialized, sr=$sampleRate, ch=$channels")
             notifyEngineReinit()
@@ -98,6 +178,7 @@ class PlaybackDspProcessor(
         val engine = nativeDspEngine
         nativeDspEngine = null
         useNativeDsp = false
+        resetAppliedAndroidBinauralState()
         try {
             engine?.release()
         } catch (t: Throwable) {
@@ -117,7 +198,10 @@ class PlaybackDspProcessor(
             AppLogger.w(
                 TAG,
                 "DSP: active, factor=$stereoWidenFactor, native=$useNativeDsp, " +
-                    "engine=${nativeDspEngine != null}, ch=$channels, bits=$bitsPerSample"
+                    "engine=${nativeDspEngine != null}, ch=$channels, bits=$bitsPerSample, " +
+                    "rawSpatialRequested=$androidBinauralSpatialRequested, " +
+                    "regularAndroid=${isRegularAndroidOutputActive()}, " +
+                    "packed24=${isPacked24OutputActive()}, float=${isFloatOutputActive()}"
             )
         }
         dspLogTick++
@@ -127,14 +211,126 @@ class PlaybackDspProcessor(
             stereoWidenModule.process(buffer, read, channels, sampleRate, bitsPerSample)
             return
         }
+        applyAndroidBinauralState(force = false)
         if (!engine.hasActiveEffects()) {
             return
         }
 
-        if (bitsPerSample == 16) {
-            processNativeShort(engine, buffer, read, channels)
-        } else if (bitsPerSample > 16) {
-            processNativeFloatOrInt32(engine, buffer, read, channels)
+        when {
+            isPacked24OutputActive() -> {
+                processNativePacked24(engine, buffer, read, channels)
+            }
+            bitsPerSample == 16 -> {
+                processNativeShort(engine, buffer, read, channels)
+            }
+            bitsPerSample > 16 -> {
+                processNativeFloatOrInt32(engine, buffer, read, channels)
+            }
+        }
+    }
+
+    private fun resetAppliedAndroidBinauralState() {
+        appliedAndroidBinauralEnabled = null
+        appliedAndroidBinauralIntensity = Float.NaN
+        appliedAndroidBinauralRoom = Float.NaN
+        appliedAndroidBinauralBrirEnabled = null
+        appliedAndroidBinauralSeparation = Float.NaN
+        appliedAndroidBinauralHeadSize = Float.NaN
+        appliedAndroidBinauralPinna = Float.NaN
+        appliedHeadTrackingEnabled = null
+        appliedHeadQuaternionX = Float.NaN
+        appliedHeadQuaternionY = Float.NaN
+        appliedHeadQuaternionZ = Float.NaN
+        appliedHeadQuaternionW = Float.NaN
+    }
+
+    private fun applyAndroidBinauralState(force: Boolean) {
+        val engine = nativeDspEngine ?: return
+        if (!engine.isInitialized()) return
+
+        val enabled = androidBinauralSpatialRequested && isRegularAndroidOutputActive()
+        val intensity = androidBinauralSpatialIntensity.coerceIn(0f, 100f)
+        val room = androidBinauralSpatialRoom.coerceIn(0f, 100f)
+
+        if (force || intensity != appliedAndroidBinauralIntensity || room != appliedAndroidBinauralRoom) {
+            engine.setAndroidBinauralSpatialParameters(intensity, room)
+            appliedAndroidBinauralIntensity = intensity
+            appliedAndroidBinauralRoom = room
+        }
+        val brirEnabled = androidBinauralBrirEnabled
+        val separation = androidBinauralSeparation.coerceIn(0f, 100f)
+        val headSize = androidBinauralHeadSizeCentimeters.coerceIn(48f, 68f)
+        val pinna = androidBinauralPinnaDetail.coerceIn(0f, 100f)
+        if (
+            force ||
+            brirEnabled != appliedAndroidBinauralBrirEnabled ||
+            separation != appliedAndroidBinauralSeparation ||
+            headSize != appliedAndroidBinauralHeadSize ||
+            pinna != appliedAndroidBinauralPinna
+        ) {
+            engine.setAndroidBinauralSpatialAdvancedParameters(
+                brirEnabled,
+                separation,
+                headSize,
+                pinna
+            )
+            appliedAndroidBinauralBrirEnabled = brirEnabled
+            appliedAndroidBinauralSeparation = separation
+            appliedAndroidBinauralHeadSize = headSize
+            appliedAndroidBinauralPinna = pinna
+        }
+        applyAndroidHeadPose(force)
+        if (force || enabled != appliedAndroidBinauralEnabled) {
+            engine.setAndroidBinauralSpatialEnabled(enabled)
+            appliedAndroidBinauralEnabled = enabled
+            AppLogger.i(
+                TAG,
+                "Android binaural spatial state: requested=$androidBinauralSpatialRequested " +
+                    "androidOutput=${isRegularAndroidOutputActive()} enabled=$enabled " +
+                    "intensity=$intensity room=$room separation=$separation brir=$brirEnabled " +
+                    "headSize=$headSize pinna=$pinna headTracking=$androidBinauralHeadTrackingEnabled " +
+                    "packed24=${isPacked24OutputActive()} float=${isFloatOutputActive()}"
+            )
+        }
+    }
+
+    fun setAndroidBinauralHeadPose(
+        quaternionX: Float,
+        quaternionY: Float,
+        quaternionZ: Float,
+        quaternionW: Float
+    ) {
+        headQuaternionX = quaternionX
+        headQuaternionY = quaternionY
+        headQuaternionZ = quaternionZ
+        headQuaternionW = quaternionW
+        applyAndroidHeadPose(force = false)
+    }
+
+    private fun applyAndroidHeadPose(force: Boolean) {
+        val engine = nativeDspEngine ?: return
+        if (!engine.isInitialized()) return
+        val enabled = androidBinauralHeadTrackingEnabled &&
+            androidBinauralSpatialRequested &&
+            isRegularAndroidOutputActive()
+        val x = headQuaternionX
+        val y = headQuaternionY
+        val z = headQuaternionZ
+        val w = headQuaternionW
+        if (
+            force ||
+            enabled != appliedHeadTrackingEnabled ||
+            x != appliedHeadQuaternionX ||
+            y != appliedHeadQuaternionY ||
+            z != appliedHeadQuaternionZ ||
+            w != appliedHeadQuaternionW
+        ) {
+            engine.setAndroidBinauralHeadPose(enabled, x, y, z, w)
+            appliedHeadTrackingEnabled = enabled
+            appliedHeadQuaternionX = x
+            appliedHeadQuaternionY = y
+            appliedHeadQuaternionZ = z
+            appliedHeadQuaternionW = w
         }
     }
 
@@ -168,6 +364,57 @@ class PlaybackDspProcessor(
             bb.get(buffer, 0, read)
         } else {
             AppLogger.w(TAG, "DSP: Native short process failed (result=$result)")
+        }
+    }
+
+
+    private fun processNativePacked24(
+        engine: NativeDSPEngine,
+        buffer: ByteArray,
+        read: Int,
+        channels: Int
+    ) {
+        val sampleCount = read / 3
+        if (sampleCount <= 0) return
+
+        var floatArr = dspFloatArray
+        if (floatArr == null || floatArr.size < sampleCount) {
+            floatArr = FloatArray(sampleCount)
+            dspFloatArray = floatArr
+        }
+
+        var sourceOffset = 0
+        for (i in 0 until sampleCount) {
+            var value =
+                (buffer[sourceOffset].toInt() and 0xff) or
+                    ((buffer[sourceOffset + 1].toInt() and 0xff) shl 8) or
+                    ((buffer[sourceOffset + 2].toInt() and 0xff) shl 16)
+            if ((value and 0x00800000) != 0) {
+                value = value or -0x01000000
+            }
+            floatArr[i] = value.toFloat() / 8388608.0f
+            sourceOffset += 3
+        }
+
+        val result = engine.processFloat(floatArr, sampleCount, channels)
+        if (result != 0) {
+            AppLogger.w(TAG, "DSP: Native packed-24 process failed (result=$result)")
+            return
+        }
+
+        var destinationOffset = 0
+        for (i in 0 until sampleCount) {
+            val sample = floatArr[i].coerceIn(-1.0f, 1.0f)
+            val scaled = if (sample < 0.0f) {
+                (sample * 8388608.0f).toInt()
+            } else {
+                (sample * 8388607.0f).toInt()
+            }.coerceIn(-8388608, 8388607)
+
+            buffer[destinationOffset] = (scaled and 0xff).toByte()
+            buffer[destinationOffset + 1] = ((scaled ushr 8) and 0xff).toByte()
+            buffer[destinationOffset + 2] = ((scaled ushr 16) and 0xff).toByte()
+            destinationOffset += 3
         }
     }
 

@@ -32,6 +32,7 @@ object LyriconProviderManager {
     private var lastLyricData: com.rawsmusic.core.common.model.LyricData? = null
     private var lastPositionMs: Long = 0L
     private var lastPlaying: Boolean = false
+    private var lastSentPlaying: Boolean? = null
     private var lastSentSignature: String? = null
 
     private fun com.rawsmusic.core.common.model.AudioFile.lyriconStableId(): String {
@@ -72,6 +73,7 @@ object LyriconProviderManager {
                 onConnected { _ ->
                     Log.d(TAG, "Connected to Lyricon")
                     connectionStatus = ConnectionStatus.CONNECTED
+                    lastSentPlaying = null
                     provider?.player?.setPositionUpdateInterval(POSITION_SYNC_INTERVAL_MS)
                     onConnectionStatusChanged?.invoke(connectionStatus)
                     onProviderConnected?.invoke()
@@ -79,6 +81,7 @@ object LyriconProviderManager {
                 onReconnected { _ ->
                     Log.d(TAG, "Reconnected to Lyricon")
                     connectionStatus = ConnectionStatus.CONNECTED
+                    lastSentPlaying = null
                     provider?.player?.setPositionUpdateInterval(POSITION_SYNC_INTERVAL_MS)
                     onConnectionStatusChanged?.invoke(connectionStatus)
                     onProviderConnected?.invoke()
@@ -111,6 +114,7 @@ object LyriconProviderManager {
             provider?.destroy()
             provider = null
             isInitialized = false
+            lastSentPlaying = null
             connectionStatus = ConnectionStatus.DISCONNECTED
         } catch (e: Exception) {
             Log.e(TAG, "Failed to destroy provider", e)
@@ -123,6 +127,7 @@ object LyriconProviderManager {
      */
     fun resendLastSong() {
         lastSentSignature = null  // 强制重发
+        lastSentPlaying = null
         setSong(lastSong, lastLyricData)
     }
 
@@ -160,6 +165,7 @@ object LyriconProviderManager {
             Log.d(TAG, "setSong skipped: duplicate signature, song=${song.title}")
             player.setPosition(lastPositionMs)
             player.setPlaybackState(lastPlaying)
+            lastSentPlaying = lastPlaying
             return
         }
 
@@ -193,12 +199,16 @@ object LyriconProviderManager {
         player.setDisplayRoma(AppPreferences.Lyricon.displayRoma)
         player.setPosition(lastPositionMs)
         player.setPlaybackState(lastPlaying)
+        lastSentPlaying = lastPlaying
     }
 
     fun setPlaybackState(isPlaying: Boolean) {
         lastPlaying = isPlaying
+        if (lastSentPlaying == isPlaying) return
+        val player = provider?.player ?: return
+        lastSentPlaying = isPlaying
         Log.d(TAG, "setPlaybackState: $isPlaying")
-        provider?.player?.setPlaybackState(isPlaying)
+        player.setPlaybackState(isPlaying)
     }
 
     fun setPosition(positionMs: Long) {

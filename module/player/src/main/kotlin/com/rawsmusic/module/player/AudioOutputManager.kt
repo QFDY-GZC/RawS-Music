@@ -644,11 +644,18 @@ object AudioOutputManager {
      * 用于 SCO 已配置但尚未激活时的 AudioTrack 创建，避免外放阶段被降级为通话音频格式。
      */
     fun buildMediaAudioAttributes(context: Context): AudioAttributes {
+        val outputMode = getCurrentOutputMode(context)
         val builder = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
             .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
 
-        when (getCurrentOutputMode(context)) {
+        AndroidSpatialAudio.applyToMediaAttributesBuilder(
+            context = context,
+            builder = builder,
+            outputMode = outputMode
+        )
+
+        when (outputMode) {
             AudioOutputMode.DIRECT -> {
                 if (Build.VERSION.SDK_INT >= 29) {
                     try {
@@ -861,10 +868,14 @@ object AudioOutputManager {
      * SCO 模式必须使用 USAGE_VOICE_COMMUNICATION 才能通过通话信道输出
      */
     fun buildScoAudioAttributes(): AudioAttributes {
-        return AudioAttributes.Builder()
+        val builder = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .build()
+        if (Build.VERSION.SDK_INT >= 32) {
+            builder.setSpatializationBehavior(AudioAttributes.SPATIALIZATION_BEHAVIOR_NEVER)
+            builder.setIsContentSpatialized(false)
+        }
+        return builder.build()
     }
 
     /**

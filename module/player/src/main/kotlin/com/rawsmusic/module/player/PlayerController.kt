@@ -1,19 +1,9 @@
 package com.rawsmusic.module.player
 
-import android.content.BroadcastReceiver
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.database.ContentObserver
-import android.os.Handler
-import android.os.Looper
-import android.os.PowerManager
 import android.os.SystemClock
 import android.hardware.usb.UsbDevice
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
 import android.media.AudioManager
-import android.provider.Settings
 import android.util.Log
 import kotlin.math.abs
 import kotlin.math.pow
@@ -32,6 +22,12 @@ import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.TransitionPreferences
 import com.rawsmusic.module.player.dsp.NativeDSPEngine
 import com.rawsmusic.module.player.dsp.ParametricEQController
+import com.rawsmusic.module.player.dsp.GraphicEQController
+import com.rawsmusic.module.player.dsp.ExperimentalGainController
+import com.rawsmusic.module.player.dsp.LoudnessBalanceController
+import com.rawsmusic.module.player.dsp.MonoBassController
+import com.rawsmusic.module.player.dsp.DynamicEqController
+import com.rawsmusic.module.player.dsp.MoogLadderController
 import com.rawsmusic.module.player.dsp.CompressorController
 import com.rawsmusic.module.player.dsp.BassBoostController
 import com.rawsmusic.module.player.dsp.TrebleBoostController
@@ -64,6 +60,7 @@ import com.rawsmusic.module.player.usb.buildSupportedPcmToDsdModeConfig
 import com.rawsmusic.module.player.usb.buildSupportedDsdSourceDirectModeConfig
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -86,37 +83,8 @@ import com.rawsmusic.module.player.statemachine.PlaybackState as PBS
 class PlayerController private constructor(context: Context) {
 
     private val context = context.applicationContext
-    private val usbPlaybackWakeLock: PowerManager.WakeLock by lazy {
-        (this.context.getSystemService(Context.POWER_SERVICE) as PowerManager)
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RawSMusic:UsbExclusivePlayback").apply {
-                setReferenceCounted(false)
-            }
-    }
-
-    private fun acquireUsbPlaybackWakeLock(reason: String, timeoutMs: Long = 10 * 60 * 1000L) {
-        try {
-            if (!usbPlaybackWakeLock.isHeld) {
-                usbPlaybackWakeLock.acquire(timeoutMs)
-                AppLogger.i(TAG, "USB playback wakelock acquired: reason=$reason timeoutMs=$timeoutMs")
-            } else {
-                // Refresh timeout without releasing.
-                usbPlaybackWakeLock.acquire(timeoutMs)
-                AppLogger.i(TAG, "USB playback wakelock refreshed: reason=$reason timeoutMs=$timeoutMs")
-            }
-        } catch (t: Throwable) {
-            AppLogger.w(TAG, "USB playback wakelock acquire failed: reason=$reason", t)
-        }
-    }
-
-    private fun releaseUsbPlaybackWakeLock(reason: String) {
-        try {
-            if (usbPlaybackWakeLock.isHeld) {
-                usbPlaybackWakeLock.release()
-                AppLogger.i(TAG, "USB playback wakelock released: reason=$reason")
-            }
-        } catch (t: Throwable) {
-            AppLogger.w(TAG, "USB playback wakelock release failed: reason=$reason", t)
-        }
+    private val androidPlaybackServiceController by lazy {
+        AndroidPlaybackServiceController(this.context)
     }
 
     private var usbDetachRecoveryJob: Job? = null
@@ -167,41 +135,8 @@ class PlayerController private constructor(context: Context) {
         return defer
     }
 
-    private fun sendUsbMediaIdentityIntent(
-        reason: String,
-        song: AudioFile? = _currentSong.value,
-        forcePosition: Long = _position.value,
-        playing: Boolean = _playState.value == PlayState.PLAYING
-    ) {
-        try {
-            val intent = Intent(context, PlayerService::class.java).apply {
-                action = PlayerService.ACTION_USB_MEDIA_IDENTITY
-                putExtra("reason", reason)
-                song?.let { audio ->
-                    putExtra("title", audio.title.ifBlank { audio.displayName })
-                    putExtra("artist", audio.artist)
-                    putExtra("album", audio.album)
-                    putExtra("albumArtPath", audio.albumArtPath)
-                    putExtra("duration", audio.duration)
-                    putExtra("path", audio.path)
-                }
-                putExtra("position", forcePosition.coerceAtLeast(0L))
-                putExtra("playing", playing)
-            }
-            if (android.os.Build.VERSION.SDK_INT >= 26) {
-                androidx.core.content.ContextCompat.startForegroundService(context, intent)
-            } else {
-                context.startService(intent)
-            }
-        } catch (t: Throwable) {
-            AppLogger.w(TAG, "sendUsbMediaIdentityIntent failed: reason=$reason", t)
-        }
-    }
-
     companion object {
         private const val TAG = "PlayerController"
-        private const val ACTION_VOLUME_CHANGED = "android.media.VOLUME_CHANGED_ACTION"
-        private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
         @Volatile
         private var instance: PlayerController? = null
 
@@ -238,10 +173,6 @@ class PlayerController private constructor(context: Context) {
     private var usbCriticalStartupUntil = 0L
     @Volatile
     private var lastUsbRemoteVolumeDesired: Boolean? = null
-    @Volatile
-    private var ignoreSystemVolumeObserverUntilMs: Long = 0L
-    @Volatile
-    private var suppressSystemVolumeObserverUntilMs: Long = 0L
 
     private val usbNoDataSafeDb = -35
     private val usbNoDataSafeLinear: Float
@@ -308,9 +239,19 @@ class PlayerController private constructor(context: Context) {
             reason = reason
         )
         if (!serviceAlive) {
-            sendUsbMediaIdentityIntent(reason, song, forcePosition, playing = playing)
+            androidPlaybackServiceController.sendUsbMediaIdentity(
+                reason = reason,
+                song = song,
+                positionMs = forcePosition,
+                playing = playing,
+            )
         } else if (reason.contains("heartbeat").not()) {
-            sendUsbMediaIdentityIntent(reason, song, forcePosition, playing = playing)
+            androidPlaybackServiceController.sendUsbMediaIdentity(
+                reason = reason,
+                song = song,
+                positionMs = forcePosition,
+                playing = playing,
+            )
         }
         AppLogger.i(TAG, "ensureUsbMediaIdentity: reason=$reason pos=$forcePosition title=${song?.title} serviceAlive=$serviceAlive")
     }
@@ -368,16 +309,25 @@ class PlayerController private constructor(context: Context) {
      * 外部（如 EqualizerViewModel）应监听此回调并重新初始化音效引擎
      */
     var onAudioSessionChanged: ((newSessionId: Int) -> Unit)? = null
-    var onPcmWaveformFrame: ((buffer: ByteArray, read: Int, channels: Int, sampleRate: Int, bitsPerSample: Int) -> Unit)? = null
+    var onPcmWaveformFrame: ((buffer: ByteArray, read: Int, channels: Int, sampleRate: Int, validBitsPerSample: Int, sampleEncoding: Int) -> Unit)? = null
 
     // FFmpeg + AudioTrack 播放器
     private var ffmpegPlayer = FfmpegAudioPlayer(context)
     val ffmpegPlayerRef: FfmpegAudioPlayer get() = ffmpegPlayer
+    private val androidSpatialPlaybackController =
+        AndroidSpatialPlaybackController(context, ffmpegPlayer)
 
     init {
         ffmpegPlayer.onDspEngineReinit = {
+            androidSpatialPlaybackController.restoreSettings()
             restoreStereoWidenSettings()
             ensurePEQConnected()
+            ensureGraphicEQConnected()
+            ensureExperimentalGainConnected()
+            ensureLoudnessBalanceConnected()
+            ensureMonoBassConnected()
+            ensureDynamicEqConnected()
+            ensureMoogLadderConnected()
             ensureCompressorConnected()
             ensureBassBoostConnected()
             ensureTrebleBoostConnected()
@@ -389,240 +339,84 @@ class PlayerController private constructor(context: Context) {
         }
     }
 
-    // PEQ 控制器单例（延迟初始化，首次访问时从 DSP 引擎创建）
-    private var _peqController: ParametricEQController? = null
-    val peqController: ParametricEQController
-        get() {
-            if (_peqController == null) {
-                val engine = ffmpegPlayer.dspEngine
-                _peqController = if (engine != null) {
-                    ParametricEQController(engine)
-                } else {
-                    Log.w(TAG, "DSP engine not available for PEQ, creating stub")
-                    ParametricEQController(NativeDSPEngine())
-                }
-            }
-            return _peqController!!
-        }
-
-    /**
-     * 确保 PEQ 控制器已连接到实际的 DSP 引擎
-     * 在进入 PEQ 界面时调用，将 stub 引擎替换为已初始化的真实引擎
-     */
-    fun ensurePEQConnected() {
-        val engine = ffmpegPlayer.dspEngine
-        if (engine != null && engine.isInitialized()) {
-            val controller = _peqController ?: ParametricEQController(engine).also {
-                _peqController = it
-            }
-            controller.connectEngine(engine)
-        }
+    private val dspControllerRegistry by lazy {
+        PlaybackDspControllerRegistry(
+            context = context,
+            scope = scope,
+            engineProvider = { ffmpegPlayer.dspEngine }
+        )
     }
 
-    // ========== FFT 卷积控制器 ==========
-    private var _fftConvolverController: FftConvolverController? = null
-    private var fftConvolverRestoreJob: Job? = null
+    val peqController: ParametricEQController
+        get() = dspControllerRegistry.peqController
+
+    fun ensurePEQConnected() = dspControllerRegistry.ensurePeqConnected()
+
+    val graphicEqController: GraphicEQController
+        get() = dspControllerRegistry.graphicEqController
+
+    fun ensureGraphicEQConnected() = dspControllerRegistry.ensureGraphicEqConnected()
+
+    val experimentalGainController: ExperimentalGainController
+        get() = dspControllerRegistry.experimentalGainController
+
+    fun ensureExperimentalGainConnected() = dspControllerRegistry.ensureExperimentalGainConnected()
+
+    val loudnessBalanceController: LoudnessBalanceController
+        get() = dspControllerRegistry.loudnessBalanceController
+
+    fun ensureLoudnessBalanceConnected() = dspControllerRegistry.ensureLoudnessBalanceConnected()
+
+    val monoBassController: MonoBassController
+        get() = dspControllerRegistry.monoBassController
+
+    fun ensureMonoBassConnected() = dspControllerRegistry.ensureMonoBassConnected()
+
+    val dynamicEqController: DynamicEqController
+        get() = dspControllerRegistry.dynamicEqController
+
+    fun ensureDynamicEqConnected() = dspControllerRegistry.ensureDynamicEqConnected()
+
+    val moogLadderController: MoogLadderController
+        get() = dspControllerRegistry.moogLadderController
+
+    fun ensureMoogLadderConnected() = dspControllerRegistry.ensureMoogLadderConnected()
 
     val fftConvolverController: FftConvolverController
-        get() {
-            if (_fftConvolverController == null) {
-                val engine = ffmpegPlayer.dspEngine
-                _fftConvolverController = if (engine != null) {
-                    FftConvolverController(engine)
-                } else {
-                    Log.w(TAG, "DSP engine not available for FFT convolver, creating stub")
-                    FftConvolverController(NativeDSPEngine())
-                }
-            }
-            return _fftConvolverController!!
-        }
+        get() = dspControllerRegistry.fftConvolverController
 
-    /**
-     * Rebind the standalone convolver controller to the current native DSP engine.
-     * A saved SAF document is restored on Dispatchers.IO and never decoded on the
-     * audio callback thread.
-     */
-    fun ensureFftConvolverConnected() {
-        val engine = ffmpegPlayer.dspEngine
-        if (engine == null || !engine.isInitialized()) return
+    fun ensureFftConvolverConnected() = dspControllerRegistry.ensureFftConvolverConnected()
 
-        val controller = _fftConvolverController ?: FftConvolverController(engine).also {
-            _fftConvolverController = it
-        }
-        controller.connectEngine(engine)
-
-        if (controller.needsPersistedIrRestore()) {
-            fftConvolverRestoreJob?.cancel()
-            fftConvolverRestoreJob = scope.launch(Dispatchers.IO) {
-                controller.restorePersistedIr(context)
-            }
-        }
-    }
-
-    // ========== 压限器控制器 ==========
-    private var _compressorController: CompressorController? = null
     val compressorController: CompressorController
-        get() {
-            if (_compressorController == null) {
-                val engine = ffmpegPlayer.dspEngine
-                _compressorController = if (engine != null) {
-                    CompressorController(engine)
-                } else {
-                    Log.w(TAG, "DSP engine not available for Compressor, creating stub")
-                    CompressorController(NativeDSPEngine())
-                }
-            }
-            return _compressorController!!
-        }
+        get() = dspControllerRegistry.compressorController
 
-    fun ensureCompressorConnected() {
-        val engine = ffmpegPlayer.dspEngine
-        if (engine != null && engine.isInitialized()) {
-            if (_compressorController == null) {
-                _compressorController = CompressorController(engine)
-            } else {
-                _compressorController!!.connectEngine(engine)
-            }
-        }
-    }
+    fun ensureCompressorConnected() = dspControllerRegistry.ensureCompressorConnected()
 
-    // ========== 低音增强控制器 ==========
-    private var _bassBoostController: BassBoostController? = null
     val bassBoostController: BassBoostController
-        get() {
-            if (_bassBoostController == null) {
-                val engine = ffmpegPlayer.dspEngine
-                _bassBoostController = if (engine != null) {
-                    BassBoostController(engine)
-                } else {
-                    Log.w(TAG, "DSP engine not available for BassBoost, creating stub")
-                    BassBoostController(NativeDSPEngine())
-                }
-            }
-            return _bassBoostController!!
-        }
+        get() = dspControllerRegistry.bassBoostController
 
-    fun ensureBassBoostConnected() {
-        val engine = ffmpegPlayer.dspEngine
-        if (engine != null && engine.isInitialized()) {
-            if (_bassBoostController == null) {
-                _bassBoostController = BassBoostController(engine)
-            } else {
-                _bassBoostController!!.connectEngine(engine)
-            }
-        }
-    }
+    fun ensureBassBoostConnected() = dspControllerRegistry.ensureBassBoostConnected()
 
-    // ========== 高音增强控制器 ==========
-    private var _trebleBoostController: TrebleBoostController? = null
     val trebleBoostController: TrebleBoostController
-        get() {
-            if (_trebleBoostController == null) {
-                val engine = ffmpegPlayer.dspEngine
-                _trebleBoostController = if (engine != null) {
-                    TrebleBoostController(engine)
-                } else {
-                    Log.w(TAG, "DSP engine not available for TrebleBoost, creating stub")
-                    TrebleBoostController(NativeDSPEngine())
-                }
-            }
-            return _trebleBoostController!!
-        }
+        get() = dspControllerRegistry.trebleBoostController
 
-    fun ensureTrebleBoostConnected() {
-        val engine = ffmpegPlayer.dspEngine
-        if (engine != null && engine.isInitialized()) {
-            if (_trebleBoostController == null) {
-                _trebleBoostController = TrebleBoostController(engine)
-            } else {
-                _trebleBoostController!!.connectEngine(engine)
-            }
-        }
-    }
-
-    // ========== 扬声器外放：弹性控制器 ==========
-    // UI、偏好持久化与 DSP 重建恢复统一使用这一实例，避免两套控制器
-    // 先后向同一个 Native 效果写入不同状态。
-    private var _speakerOutputElasticityController: SpeakerOutputElasticityController? = null
+    fun ensureTrebleBoostConnected() = dspControllerRegistry.ensureTrebleBoostConnected()
 
     val speakerOutputElasticityController: SpeakerOutputElasticityController
-        get() {
-            if (_speakerOutputElasticityController == null) {
-                val engine = ffmpegPlayer.dspEngine
-                _speakerOutputElasticityController = if (engine != null) {
-                    SpeakerOutputElasticityController(engine)
-                } else {
-                    Log.w(TAG, "DSP engine not available for SpeakerOutputElasticity, creating stub")
-                    SpeakerOutputElasticityController(NativeDSPEngine())
-                }
-            }
-            return _speakerOutputElasticityController!!
-        }
+        get() = dspControllerRegistry.speakerOutputElasticityController
 
-    fun ensureSpeakerOutputElasticityConnected() {
-        val engine = ffmpegPlayer.dspEngine
-        if (engine != null && engine.isInitialized()) {
-            if (_speakerOutputElasticityController == null) {
-                _speakerOutputElasticityController = SpeakerOutputElasticityController(engine)
-            } else {
-                _speakerOutputElasticityController!!.connectEngine(engine)
-            }
-        }
-    }
+    fun ensureSpeakerOutputElasticityConnected() =
+        dspControllerRegistry.ensureSpeakerOutputElasticityConnected()
 
-    // ========== 360° 环绕音控制器 ==========
-    private var _surround360Controller: Surround360Controller? = null
     val surround360Controller: Surround360Controller
-        get() {
-            if (_surround360Controller == null) {
-                val engine = ffmpegPlayer.dspEngine
-                _surround360Controller = if (engine != null) {
-                    Surround360Controller(engine)
-                } else {
-                    Log.w(TAG, "DSP engine not available for Surround360, creating stub")
-                    Surround360Controller(NativeDSPEngine())
-                }
-            }
-            return _surround360Controller!!
-        }
+        get() = dspControllerRegistry.surround360Controller
 
-    fun ensureSurround360Connected() {
-        val engine = ffmpegPlayer.dspEngine
-        if (engine != null && engine.isInitialized()) {
-            if (_surround360Controller == null) {
-                _surround360Controller = Surround360Controller(engine)
-            } else {
-                _surround360Controller!!.connectEngine(engine)
-            }
-        }
-    }
+    fun ensureSurround360Connected() = dspControllerRegistry.ensureSurround360Connected()
 
-    // ========== 360° 全景音控制器 ==========
-    private var _panoramic360Controller: Panoramic360Controller? = null
     val panoramic360Controller: Panoramic360Controller
-        get() {
-            if (_panoramic360Controller == null) {
-                val engine = ffmpegPlayer.dspEngine
-                _panoramic360Controller = if (engine != null) {
-                    Panoramic360Controller(engine)
-                } else {
-                    Log.w(TAG, "DSP engine not available for Panoramic360, creating stub")
-                    Panoramic360Controller(NativeDSPEngine())
-                }
-            }
-            return _panoramic360Controller!!
-        }
+        get() = dspControllerRegistry.panoramic360Controller
 
-    fun ensurePanoramic360Connected() {
-        val engine = ffmpegPlayer.dspEngine
-        if (engine != null && engine.isInitialized()) {
-            if (_panoramic360Controller == null) {
-                _panoramic360Controller = Panoramic360Controller(engine)
-            } else {
-                _panoramic360Controller!!.connectEngine(engine)
-            }
-        }
-    }
+    fun ensurePanoramic360Connected() = dspControllerRegistry.ensurePanoramic360Connected()
 
     val usbExclusiveManager = UsbExclusiveManager(context)
     private val sharedUsbAudioEngine = UsbAudioEngine
@@ -808,215 +602,25 @@ class PlayerController private constructor(context: Context) {
     val outputLatencyMs: Int
         get() = ffmpegPlayer.latencyMs
 
-    @Volatile
-    var isBluetoothOutput: Boolean = false
-        private set
-    @Volatile
-    private var lastDetectedCodecType: Int = -1
-    private var bluetoothLatencyJob: Job? = null
+    var isBluetoothOutput: Boolean
+        get() = androidBluetoothOutputController.isBluetoothOutput
+        private set(_) = Unit
 
-    // 蓝牙 HFP-only 设备检测状态
-    private val _hfpOnlyDeviceDetected = MutableStateFlow(false)
-    val hfpOnlyDeviceDetected: StateFlow<Boolean> = _hfpOnlyDeviceDetected.asStateFlow()
+    val hfpOnlyDeviceDetected: StateFlow<Boolean>
+        get() = androidBluetoothOutputController.hfpOnlyDeviceDetected
 
-    // 缓存 A2DP 代理，避免重复获取
-    private var cachedA2dpProxy: android.bluetooth.BluetoothProfile? = null
-    private var a2dpProxyListener: android.bluetooth.BluetoothProfile.ServiceListener? = null
+    fun getBluetoothLatencyInfo(): String =
+        androidBluetoothOutputController.getLatencyInfo()
 
-    private fun startBluetoothLatencyMonitor() {
-        bluetoothLatencyJob?.cancel()
-        bluetoothLatencyJob = scope.launch(Dispatchers.IO) {
-            Log.d(TAG, "Bluetooth latency monitor started")
-            while (isActive) {
-                try {
-                    checkBluetoothOutput()
-                } catch (e: Exception) {
-                    Log.e(TAG, "checkBluetoothOutput error: ${e.message}")
-                }
-                delay(3000)
-            }
-        }
-    }
+    val repeatMode: StateFlow<RepeatMode>
+        get() = playbackModeController.repeatMode
 
-    private suspend fun checkBluetoothOutput() {
-        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+    val isShuffle: StateFlow<Boolean>
+        get() = playbackModeController.isShuffle
 
-        val isBluetooth = if (android.os.Build.VERSION.SDK_INT >= 23) {
-            val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-            val btDevice = devices.firstOrNull {
-                it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                it.type == 26
-            }
-            if (btDevice != null) {
-                Log.d(TAG, "BT device found: type=${btDevice.type} name=${btDevice.productName}")
-            }
-            btDevice != null
-        } else false
+    val playMode: StateFlow<PlayMode>
+        get() = playbackModeController.playMode
 
-        if (isBluetooth != isBluetoothOutput) {
-            isBluetoothOutput = isBluetooth
-            if (isBluetooth) {
-                val codecType = detectBluetoothCodecTypeAsync()
-                lastDetectedCodecType = codecType
-                Log.d(TAG, "BT connected, codecType=$codecType (${codecTypeName(codecType)}), AudioTrack latency=${ffmpegPlayer.latencyMs}ms")
-
-                // 蓝牙 SCO 自动检测逻辑
-                val scoMode = AppPreferences.Player.bluetoothScoMode
-                if (scoMode == 1) {  // 自动检测模式
-                    val isHfpOnly = AudioOutputManager.isBluetoothHfpOnlyDevice(context)
-                    if (isHfpOnly) {
-                        Log.i(TAG, "HFP-only device detected, SCO mode will be activated on next playback")
-                        // 标记需要在下次播放时启用 SCO
-                        _hfpOnlyDeviceDetected.value = true
-                    }
-                }
-            } else {
-                lastDetectedCodecType = -1
-                releaseA2dpProxy()
-                _hfpOnlyDeviceDetected.value = false
-                Log.d(TAG, "BT disconnected, using AudioTrack latency")
-
-                // 停止 SCO 连接
-                stopBluetoothSco()
-
-                // 蓝牙断开后，如果 AudioTrack 仍使用 SCO 属性（USAGE_VOICE_COMMUNICATION），
-                // 需要重建为 USAGE_MEDIA 属性，否则扬声器无法播放
-                val playerState = ffmpegPlayer.state
-                if (playerState == FfmpegAudioPlayer.State.PLAYING || playerState == FfmpegAudioPlayer.State.PAUSED) {
-                    Log.i(TAG, "BT disconnected, rebuilding AudioTrack with MEDIA attributes, state=$playerState")
-                    scope.launch(Dispatchers.Main) {
-                        try {
-                            ffmpegPlayer.rebuildAudioTrackForScoDisconnected()
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to rebuild AudioTrack after BT disconnect: ${e.message}")
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private fun releaseA2dpProxy() {
-        try {
-            val proxy = cachedA2dpProxy
-            val listener = a2dpProxyListener
-            if (proxy != null && listener != null) {
-                val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
-                adapter?.closeProfileProxy(android.bluetooth.BluetoothProfile.A2DP, proxy)
-            }
-        } catch (_: Exception) {}
-        cachedA2dpProxy = null
-        a2dpProxyListener = null
-    }
-
-    private suspend fun detectBluetoothCodecTypeAsync(): Int {
-        return withContext(Dispatchers.IO) {
-            try {
-                val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
-                if (adapter == null) {
-                    Log.w(TAG, "detectCodec: BluetoothAdapter is null")
-                    return@withContext -1
-                }
-
-                // 优先使用缓存的代理
-                var a2dp = cachedA2dpProxy
-                if (a2dp == null) {
-                    val profileProxy = arrayOfNulls<android.bluetooth.BluetoothProfile>(1)
-                    val lock = java.util.concurrent.CountDownLatch(1)
-
-                    val listener = object : android.bluetooth.BluetoothProfile.ServiceListener {
-                        override fun onServiceConnected(profile: Int, proxy: android.bluetooth.BluetoothProfile) {
-                            profileProxy[0] = proxy
-                            lock.countDown()
-                        }
-                        override fun onServiceDisconnected(profile: Int) {
-                            lock.countDown()
-                        }
-                    }
-
-                    adapter.getProfileProxy(context, listener, android.bluetooth.BluetoothProfile.A2DP)
-
-                    // 缩短超时到 1 秒，减少阻塞
-                    if (!lock.await(1, java.util.concurrent.TimeUnit.SECONDS)) {
-                        Log.w(TAG, "detectCodec: A2DP profile proxy timeout (1s)")
-                        return@withContext -1
-                    }
-
-                    a2dp = profileProxy[0]
-                    if (a2dp != null) {
-                        cachedA2dpProxy = a2dp
-                        a2dpProxyListener = listener
-                    }
-                }
-
-                if (a2dp == null) {
-                    Log.w(TAG, "detectCodec: A2DP proxy is null")
-                    return@withContext -1
-                }
-
-                val connectedDevices = a2dp.connectedDevices
-                if (connectedDevices.isNullOrEmpty()) {
-                    Log.w(TAG, "detectCodec: no connected A2DP devices")
-                    return@withContext -1
-                }
-
-                val codecType = try {
-                    val method = a2dp.javaClass.getMethod("getCodecStatus", android.bluetooth.BluetoothDevice::class.java)
-                    val codecStatus = method.invoke(a2dp, connectedDevices[0])
-                    if (codecStatus != null) {
-                        val getConfig = codecStatus.javaClass.getMethod("getCodecConfig")
-                        val codecConfig = getConfig.invoke(codecStatus)
-                        if (codecConfig != null) {
-                            val getType = codecConfig.javaClass.getMethod("getCodecType")
-                            getType.invoke(codecConfig) as? Int ?: -1
-                        } else -1
-                    } else -1
-                } catch (e: Exception) {
-                    Log.w(TAG, "detectCodec: getCodecStatus failed: ${e.message}")
-                    -1
-                }
-
-                Log.d(TAG, "detectCodec: result=$codecType (${codecTypeName(codecType)})")
-                codecType
-            } catch (e: Exception) {
-                Log.e(TAG, "detectCodec: unexpected error: ${e.message}")
-                -1
-            }
-        }
-    }
-
-    private fun codecTypeName(codecType: Int): String = when (codecType) {
-        0 -> "SBC"
-        1 -> "AAC"
-        2 -> "aptX"
-        3 -> "aptX HD"
-        4 -> "LDAC"
-        5 -> "LHDC"
-        6 -> "LC3"
-        7 -> "aptX Adaptive"
-        8 -> "LHDC V5"
-        1000 -> "LHDC"
-        else -> "Unknown"
-    }
-
-    fun getBluetoothLatencyInfo(): String {
-        if (!isBluetoothOutput) return ""
-        val codecName = codecTypeName(lastDetectedCodecType)
-        val trackLatency = ffmpegPlayer.latencyMs
-        return if (lastDetectedCodecType >= 0) "$codecName" else "BT ${trackLatency}ms"
-    }
-
-    private val _repeatMode = MutableStateFlow(AppPreferences.Player.repeatMode)
-    val repeatMode: StateFlow<RepeatMode> = _repeatMode.asStateFlow()
-
-    private val _isShuffle = MutableStateFlow(AppPreferences.Player.isShuffle)
-    val isShuffle: StateFlow<Boolean> = _isShuffle.asStateFlow()
-
-    private val _playMode = MutableStateFlow(AppPreferences.Player.playMode)
-    val playMode: StateFlow<PlayMode> = _playMode.asStateFlow()
-
-    private var progressJob: Job? = null
     private var usbStartupVolumeJob: Job? = null
     private var usbSelfTestJob: Job? = null
     @Volatile
@@ -1032,9 +636,55 @@ class PlayerController private constructor(context: Context) {
     private var explicitUsbExclusiveSoftwareMuteThisProcess = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val statePersistence = PlayerStatePersistence()
+    private val playbackStatePersistenceController = PlaybackStatePersistenceController(
+        scope = scope,
+        persistence = statePersistence,
+        currentSong = { _currentSong.value },
+        playStateOrdinal = { _playState.value.ordinal },
+        keepUsbExclusive = { _usbExclusiveActive.value || ffmpegPlayer.usbExclusiveMode },
+        positionMs = { ffmpegPlayer.positionMs },
+        queue = { _queue.value },
+    )
     private val shuffleQueueController = ShuffleQueueController(statePersistence)
+    private val playbackModeController = PlaybackModeController(
+        shuffleQueueController = shuffleQueueController,
+        currentQueue = { _queue.value },
+        updateQueue = { _queue.value = it },
+        persistState = { saveState() },
+    )
     private val sleepTimerController = SleepTimerController(scope) { pause() }
     private val playbackStatsTracker = PlaybackStatsTracker(context, scope)
+    private val playbackProgressController = PlaybackProgressController(
+        scope = scope,
+        callbacks = PlaybackProgressController.Callbacks(
+            isReleased = { isReleased },
+            playerPositionMs = { ffmpegPlayer.positionMs },
+            playerDurationMs = { ffmpegPlayer.durationMs },
+            cueOffsetMs = { cachedCueOffsetMs },
+            cueEndMs = { cachedCueEndMs },
+            cueSongDurationMs = { cachedSongDuration },
+            displayedPositionMs = { _position.value },
+            setDisplayedPositionMs = { _position.value = it },
+            displayedDurationMs = { _duration.value },
+            setDisplayedDurationMs = { _duration.value = it },
+            currentSong = { _currentSong.value },
+            onProgress = playbackStatsTracker::onProgress,
+            shouldSyncUsbMediaIdentity = {
+                _usbExclusiveActive.value && _playState.value == PlayState.PLAYING
+            },
+            syncUsbMediaIdentity = { song, positionMs ->
+                PlayerService.syncUsbMediaIdentityFromController(
+                    song = song,
+                    playing = true,
+                    position = positionMs,
+                    reason = "progress_update",
+                )
+            },
+            savePosition = { playbackStatePersistenceController.savePosition() },
+            onCueTrackEnd = { next() },
+        ),
+        logTag = TAG,
+    )
     val sleepTimerRemaining: StateFlow<Long> = sleepTimerController.remainingMs
 
     /** Serialized playback event queue (PlayOpEventHandlerThread). */
@@ -1042,9 +692,6 @@ class PlayerController private constructor(context: Context) {
 
     init {
         eventQueue.start(scope)
-        scope.launch(Dispatchers.IO) {
-            startBluetoothLatencyMonitor()
-        }
     }
 
     @Volatile
@@ -1072,94 +719,68 @@ class PlayerController private constructor(context: Context) {
     private val usbExclusiveFullRecoveryAttemptsMs = java.util.ArrayDeque<Long>()
     @Volatile
     private var stickyUsbHardwareVolumeValidated = false
-    private var wasPlayingBeforeFocusLoss = false
-    private var audioFocusRequest: AudioFocusRequest? = null
-    @Volatile
-    private var audioFocusStartupGraceUntilMs = 0L
-    /** User-initiated cold-start play window. Some OPlus/ColorOS builds dispatch a full LOSS
-     * immediately after the first AudioTrack/MediaSession update even though our session just
-     * became PLAYING. Treat that as stale only inside this short window. */
-    private var userPlayStartFocusGuardUntilMs = 0L
-    /** 音频焦点是否已获得 */
-    private var audioFocusGranted = false
-    /** Duck 模式音量因子 — AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK 时降低到 20% */
-    private var duckVolumeFactor = 1.0f
+    private val androidAudioInterruptionController = AndroidAudioInterruptionController(
+        context = context,
+        scope = scope,
+        callbacks = AndroidAudioInterruptionController.Callbacks(
+            isReleased = { isReleased },
+            isUsbExclusive = { _usbExclusiveActive.value || ffmpegPlayer.usbExclusiveMode },
+            isPlaybackActive = { isPlaybackActiveForAndroidInterruption() },
+            playbackStateSummary = { "${_playState.value}/${ffmpegPlayer.state}" },
+            pauseForInterruption = ::pauseForAndroidInterruption,
+            pauseForNoisyRouteChange = ::pause,
+            resumeAfterInterruption = ::resumeOrStartRememberedSong,
+            onDuckFactorChanged = ::applyComposedVolume,
+            repairRouteAfterNoisy = {
+                ffmpegPlayer.repairAndroidOutputRouteAfterDeviceChange(
+                    "audio_becoming_noisy",
+                    forceRebuild = true,
+                )
+            },
+            shouldUseScoMode = { AudioOutputManager.shouldUseScoMode(context) },
+            rebuildForScoConnected = { ffmpegPlayer.rebuildAudioTrackForSco() },
+            rebuildForScoDisconnected = { ffmpegPlayer.rebuildAudioTrackForScoDisconnected() },
+        ),
+    )
+    private val duckVolumeFactor: Float
+        get() = androidAudioInterruptionController.duckVolumeFactor
+    val scoConnected: StateFlow<Boolean>
+        get() = androidAudioInterruptionController.scoConnected
 
-    // NoisyAudio 耳机拔出检测 — 耳机拔出瞬间自动暂停
-    private val noisyAudioReceiver = object : BroadcastReceiver() {
-        override fun onReceive(ctx: Context, intent: Intent) {
-            if (AudioManager.ACTION_AUDIO_BECOMING_NOISY == intent.action) {
-                Log.w(TAG, "NoisyAudio: headphone unplugged, pausing playback and repairing speaker route")
-                pause()
-                // Some Android 16/HyperOS builds leave the current AudioTrack bound to
-                // the removed wired/USB route.  A USB attach->deny/no-auth->detach bounce
-                // can make speaker audio come back because AudioPolicy re-routes the track.
-                // Do that explicitly so external speaker does not remain silent.
-                scope.launch(Dispatchers.Main) {
-                    delay(220)
-                    ffmpegPlayer.repairAndroidOutputRouteAfterDeviceChange("audio_becoming_noisy", forceRebuild = true)
-                }
-            }
-        }
-    }
-    private var noisyRegistered = false
-
-    // 蓝牙 SCO 状态监听
-    private val scoStateReceiver = object : BroadcastReceiver() {
-        override fun onReceive(ctx: Context, intent: Intent) {
-            if (AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED == intent.action) {
-                val state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, AudioManager.SCO_AUDIO_STATE_ERROR)
-                Log.d(TAG, "SCO state changed: $state")
-                when (state) {
-                    AudioManager.SCO_AUDIO_STATE_CONNECTED -> {
-                        _scoConnected.value = true
-                        Log.i(TAG, "SCO connected, isPlayingNow=${ffmpegPlayer.isPlayingNow}, state=${ffmpegPlayer.state}")
-                        // SCO 连接成功后，重建 AudioTrack 以确保音频路由到 SCO 通道
-                        // 不检查 isPlayingNow，因为 rebuildAudioTrackForSco 内部会检查 _state
-                        if (AudioOutputManager.shouldUseScoMode(context)) {
-                            scope.launch(Dispatchers.Main) {
-                                try {
-                                    ffmpegPlayer.rebuildAudioTrackForSco()
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Failed to rebuild AudioTrack for SCO: ${e.message}")
-                                }
+    private val androidBluetoothOutputController = AndroidBluetoothOutputController(
+        context = context,
+        scope = scope,
+        callbacks = AndroidBluetoothOutputController.Callbacks(
+            currentTrackLatencyMs = { ffmpegPlayer.latencyMs },
+            stopScoWithoutRouteRebuild = {
+                androidAudioInterruptionController.stopBluetoothSco(rebuildRoute = false)
+            },
+            onBluetoothRouteDisconnected = {
+                val state = ffmpegPlayer.state
+                if (
+                    state == FfmpegAudioPlayer.State.PLAYING ||
+                    state == FfmpegAudioPlayer.State.PAUSED
+                ) {
+                    scope.launch(Dispatchers.Main) {
+                        runCatching { ffmpegPlayer.rebuildAudioTrackForScoDisconnected() }
+                            .onFailure { error ->
+                                AppLogger.w(
+                                    TAG,
+                                    "Failed to rebuild media AudioTrack after Bluetooth disconnect",
+                                    error,
+                                )
                             }
-                        }
-                    }
-                    AudioManager.SCO_AUDIO_STATE_DISCONNECTED -> {
-                        _scoConnected.value = false
-                        Log.i(TAG, "SCO disconnected, rebuilding AudioTrack with MEDIA attributes")
-                        // SCO 断开后重建 AudioTrack，切回 USAGE_MEDIA 属性
-                        // 否则 AudioTrack 仍使用 VOICE_COMMUNICATION + SCO preferredDevice，导致无声
-                        scope.launch(Dispatchers.Main) {
-                            try {
-                                ffmpegPlayer.rebuildAudioTrackForScoDisconnected()
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Failed to rebuild AudioTrack after SCO disconnect: ${e.message}")
-                            }
-                        }
-                    }
-                    AudioManager.SCO_AUDIO_STATE_CONNECTING -> {
-                        Log.d(TAG, "SCO connecting...")
-                    }
-                    AudioManager.SCO_AUDIO_STATE_ERROR -> {
-                        _scoConnected.value = false
-                        Log.e(TAG, "SCO error")
                     }
                 }
-            }
-        }
-    }
-    private var scoReceiverRegistered = false
-    private val _scoConnected = MutableStateFlow(false)
-    val scoConnected: StateFlow<Boolean> = _scoConnected.asStateFlow()
+            },
+        ),
+    ).also { it.start() }
 
     private var lastPlayRequestPath: String? = null
     private var lastPlayRequestCueOffset: Long = 0L
     private var lastPlayRequestCueIndex: Int = 0
     private var lastPlayRequestTime = 0L
     private val latestPlayRequestToken = AtomicLong(0L)
-    private var seekJustPerformed = false
     private var previousRestartBypassUntilMs = 0L
 
     /** 切歌/暂停进行中，禁止 applyUsbVolume 写入 */
@@ -1258,7 +879,7 @@ class PlayerController private constructor(context: Context) {
                     )
                     ffmpegPlayer.seekTo(realPositionMs)
                     _position.value = displayPositionMs.coerceAtLeast(0L)
-                    seekJustPerformed = true
+                    playbackProgressController.markSeekPerformed()
                     return@launch
                 }
             }
@@ -1415,14 +1036,22 @@ class PlayerController private constructor(context: Context) {
     init {
         Log.i(TAG, "PlayerController created: ${System.identityHashCode(this)}")
         ffmpegPlayer.listener = playerListener
-        ffmpegPlayer.onPcmWaveformFrame = { buffer, read, channels, sampleRate, bitsPerSample ->
-            onPcmWaveformFrame?.invoke(buffer, read, channels, sampleRate, bitsPerSample)
+        ffmpegPlayer.onPcmWaveformFrame = { buffer, read, channels, sampleRate, validBitsPerSample, sampleEncoding ->
+            onPcmWaveformFrame?.invoke(
+                buffer,
+                read,
+                channels,
+                sampleRate,
+                validBitsPerSample,
+                sampleEncoding
+            )
         }
         ffmpegPlayer.onAndroidUsbAudioRouteAdded = {
             AppLogger.i(TAG, "Android USB audio route callback: wait for USB attach/explicit user action before permission")
         }
         initDspPipeline()
         restoreState()
+        androidAudioInterruptionController.start()
         usbExclusiveManager.onDeviceReady = { device ->
             val playbackNeedsImmediateUsb =
                 _playState.value == PlayState.PLAYING ||
@@ -1911,33 +1540,30 @@ class PlayerController private constructor(context: Context) {
         }
     }
 
-    private val audioManager: AudioManager by lazy {
-        context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    // Lazy by design: early USB activation may call applyVolumeRoute while PlayerController
+    // is still executing property initializers. The Android observer is therefore created only
+    // at the first actual STREAM_MUSIC operation.
+    private var androidSystemVolumeController: AndroidSystemVolumeController? = null
+
+    private fun systemVolumeController(): AndroidSystemVolumeController {
+        return androidSystemVolumeController ?: AndroidSystemVolumeController(
+            context = context,
+            onExternalVolumeChanged = ::handleSystemVolumeChanged,
+        ).also { androidSystemVolumeController = it }
     }
 
-    private fun getSystemMusicVolumeLinear(): Float {
-        val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-        val vol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).coerceIn(0, max)
-        return vol.toFloat() / max.toFloat()
-    }
+    private fun getSystemMusicVolumeLinear(): Float =
+        systemVolumeController().getMusicVolumeLinear()
 
-    private fun setSystemMusicVolumeLinear(linear: Float, flags: Int = AudioManager.FLAG_SHOW_UI) {
-        val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-        val index = (linear.coerceIn(0f, 1f) * max).roundToInt().coerceIn(0, max)
-        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, index, flags)
+    private fun setSystemMusicVolumeLinear(
+        linear: Float,
+        flags: Int = AudioManager.FLAG_SHOW_UI,
+    ) {
+        systemVolumeController().setMusicVolumeLinear(linear, flags)
     }
 
     private fun suppressSystemVolumeObserver(windowMs: Long, reason: String) {
-        val now = SystemClock.elapsedRealtime()
-        suppressSystemVolumeObserverUntilMs = maxOf(
-            suppressSystemVolumeObserverUntilMs,
-            now + windowMs.coerceAtLeast(0L)
-        )
-        AppLogger.i(
-            TAG,
-            "suppressSystemVolumeObserver: until=$suppressSystemVolumeObserverUntilMs " +
-                "windowMs=$windowMs reason=$reason"
-        )
+        systemVolumeController().suppressCallbacks(windowMs, reason)
     }
 
     private fun mirrorUsbExclusiveSoftwareVolumeToSystem(reason: String) {
@@ -1945,12 +1571,16 @@ class PlayerController private constructor(context: Context) {
         val target = AppPreferences.Player.volume.coerceIn(0f, 1f)
         val current = getSystemMusicVolumeLinear().coerceIn(0f, 1f)
         if (abs(current - target) < 0.01f) return
-        ignoreSystemVolumeObserverUntilMs = SystemClock.elapsedRealtime() + 500L
         AppLogger.i(
             TAG,
             "mirrorUsbExclusiveSoftwareVolumeToSystem: current=$current target=$target reason=$reason"
         )
-        setSystemMusicVolumeLinear(target, 0)
+        systemVolumeController().setMusicVolumeLinearIgnoringCallbacks(
+            linear = target,
+            flags = 0,
+            ignoreWindowMs = 500L,
+            reason = "mirrorUsbExclusiveSoftwareVolumeToSystem:$reason",
+        )
     }
 
     private fun isUsbExclusiveSoftwareVolumeActive(): Boolean {
@@ -2242,93 +1872,23 @@ class PlayerController private constructor(context: Context) {
 
     // ======================== 系统音量观察器 ========================
 
-    // Lazy-created to avoid init-order NPE: PlayerController.init{} may trigger
-    // USB auto-activation (scanForUsbDevice → onDeviceReady → activateUsbExclusive)
-    // before this field is initialized if it were a plain val. Using nullable +
-    // lazy creation makes registerSystemVolumeObserver safe at any point.
-    private var systemVolumeObserver: ContentObserver? = null
-
-    private var systemVolumeObserverRegistered = false
-    private var systemVolumeReceiverRegistered = false
-
-    private val systemVolumeChangedReceiver = object : BroadcastReceiver() {
-        override fun onReceive(ctx: Context?, intent: Intent?) {
-            if (intent?.action != ACTION_VOLUME_CHANGED) return
-            val streamType = intent.getIntExtra(EXTRA_VOLUME_STREAM_TYPE, AudioManager.STREAM_MUSIC)
-            if (streamType != AudioManager.STREAM_MUSIC) return
-            onSystemVolumeChanged()
-        }
-    }
-
-    private fun ensureSystemVolumeObserver(): ContentObserver {
-        return systemVolumeObserver ?: object : ContentObserver(Handler(Looper.getMainLooper())) {
-            override fun onChange(selfChange: Boolean) {
-                super.onChange(selfChange)
-                onSystemVolumeChanged()
-            }
-        }.also {
-            systemVolumeObserver = it
-        }
-    }
-
-    private fun registerSystemVolumeObserver() {
-        if (systemVolumeObserverRegistered) return
-        val observer = ensureSystemVolumeObserver()
-        context.contentResolver.registerContentObserver(
-            Settings.System.CONTENT_URI, true, observer
-        )
-        systemVolumeObserverRegistered = true
-        if (!systemVolumeReceiverRegistered) {
-            runCatching {
-                context.registerReceiver(systemVolumeChangedReceiver, IntentFilter(ACTION_VOLUME_CHANGED))
-                systemVolumeReceiverRegistered = true
-            }.onFailure { e ->
-                AppLogger.w(TAG, "System volume broadcast receiver register failed", e)
-            }
-        }
-        AppLogger.i(TAG, "System volume observer registered")
-    }
-
     private fun unregisterSystemVolumeObserver() {
-        if (!systemVolumeObserverRegistered && !systemVolumeReceiverRegistered) return
-        systemVolumeObserver?.let { observer ->
-            runCatching { context.contentResolver.unregisterContentObserver(observer) }
-        }
-        if (systemVolumeReceiverRegistered) {
-            runCatching { context.unregisterReceiver(systemVolumeChangedReceiver) }
-        }
-        systemVolumeObserverRegistered = false
-        systemVolumeReceiverRegistered = false
+        androidSystemVolumeController?.unregister()
     }
 
     private fun syncSystemVolumeObserverForRoute(reason: String) {
         // In USB software-volume mode MediaSession remote volume owns the keys;
-        // observing STREAM_MUSIC here makes the app follow system volume instead
+        // observing STREAM_MUSIC here would make the app follow Android volume instead
         // of the native USB software gain.
         val shouldObserve = _usbExclusiveActive.value &&
             resolveVolumeRoute() == VolumeRoute.SYSTEM &&
             !isUsbExclusiveSoftwareVolumeActive()
-        if (shouldObserve) {
-            registerSystemVolumeObserver()
-        } else {
-            unregisterSystemVolumeObserver()
-        }
-        AppLogger.i(TAG, "syncSystemVolumeObserverForRoute: observe=$shouldObserve reason=$reason")
+        systemVolumeController().syncObservation(shouldObserve, reason)
     }
 
-    private fun onSystemVolumeChanged() {
+    private fun handleSystemVolumeChanged(linear: Float) {
         val route = resolveVolumeRoute()
-        val linear = getSystemMusicVolumeLinear()
-        AppLogger.i(TAG, "onSystemVolumeChanged: route=$route linear=$linear")
-
-        if (SystemClock.elapsedRealtime() < ignoreSystemVolumeObserverUntilMs) {
-            AppLogger.i(TAG, "onSystemVolumeChanged ignored by mirror guard")
-            return
-        }
-        if (SystemClock.elapsedRealtime() < suppressSystemVolumeObserverUntilMs) {
-            AppLogger.i(TAG, "onSystemVolumeChanged ignored by usb transition guard")
-            return
-        }
+        AppLogger.i(TAG, "handleSystemVolumeChanged: route=$route linear=$linear")
 
         when (route) {
             VolumeRoute.USB_FIXED -> {
@@ -2409,23 +1969,9 @@ class PlayerController private constructor(context: Context) {
 
         AppLogger.i(TAG, "activateUsbEngineForPlayback: exclusive=true bitPerfect=$bitPerfect hwVol=$hwVol")
 
-        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
-            if (_usbExclusiveActive.value && ffmpegPlayer.usbExclusiveMode) {
-                return@OnAudioFocusChangeListener
-            }
-            handleAudioFocusChange(focusChange)
-        }
-        audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build()
-            )
-            .setOnAudioFocusChangeListener(focusChangeListener)
-            .build()
-        am.requestAudioFocus(audioFocusRequest!!)
+        // USB exclusive owns the physical endpoint directly. Keep it outside Android's
+        // audio-focus policy until the DAC path has a dedicated, device-safe strategy.
+        abandonAudioFocus()
 
         try {
             ffmpegPlayer.releaseAudioTrackForUsb()
@@ -2549,32 +2095,24 @@ class PlayerController private constructor(context: Context) {
             }
         }
         _usbExclusiveActive.value = true
+        androidSpatialPlaybackController.refreshRoutingState()
         AppPreferences.Player.lastUsbExclusiveActive = true
         syncUsbSystemAudioKeepAlive("usb_exclusive_enabled")
 
         // 切换 MediaSession 到 remote volume 控制（后台音量键可用）
-        try {
-            val intent = android.content.Intent(context, PlayerService::class.java).apply {
-                action = "com.rawsmusic.action.ACTIVATE_USB_REMOTE_VOLUME"
-            }
-            context.startService(intent)
-        } catch (_: Exception) {}
+        androidPlaybackServiceController.setUsbRemoteVolumeActive(
+            active = true,
+            reason = "usb_exclusive_enabled",
+        )
 
         val shouldEnsureUsbForeground =
             _playState.value == PlayState.PLAYING ||
                 ffmpegPlayer.state == FfmpegAudioPlayer.State.PLAYING ||
                 ffmpegPlayer.state == FfmpegAudioPlayer.State.PREPARING
         if (shouldEnsureUsbForeground) {
-            try {
-                val intent = android.content.Intent(context, PlayerService::class.java).apply {
-                    action = PlayerService.ACTION_USB_PLAYBACK_FOREGROUND
-                }
-                if (android.os.Build.VERSION.SDK_INT >= 26) {
-                    androidx.core.content.ContextCompat.startForegroundService(context, intent)
-                } else {
-                    context.startService(intent)
-                }
-            } catch (_: Exception) {}
+            androidPlaybackServiceController.ensureUsbPlaybackForeground(
+                reason = "usb_exclusive_enabled",
+            )
         } else {
             AppLogger.i(TAG, "USB exclusive armed while not playing; skip foreground playback assertion")
         }
@@ -2898,12 +2436,10 @@ class PlayerController private constructor(context: Context) {
         }
 
         // 切回本地音量控制
-        try {
-            val intent = android.content.Intent(context, PlayerService::class.java).apply {
-                action = "com.rawsmusic.action.DEACTIVATE_USB_REMOTE_VOLUME"
-            }
-            context.startService(intent)
-        } catch (_: Exception) {}
+        androidPlaybackServiceController.setUsbRemoteVolumeActive(
+            active = false,
+            reason = "disable_usb_exclusive",
+        )
 
         clearUsbExclusiveState(
             releaseManager = true,
@@ -2972,12 +2508,7 @@ class PlayerController private constructor(context: Context) {
             notifyUsbDetachConfirmed("usb_detached_inactive")
         }
         // 释放 USB WakeLock
-        try {
-            val intent = android.content.Intent(context, PlayerService::class.java).apply {
-                action = "com.rawsmusic.action.RELEASE_USB_WAKELOCK"
-            }
-            context.startService(intent)
-        } catch (_: Exception) {}
+        androidPlaybackServiceController.releaseUsbServiceWakeLock("usb_detached")
     }
 
     private fun scheduleUsbDetachedAutoRecover(
@@ -3109,6 +2640,7 @@ class PlayerController private constructor(context: Context) {
             usbExclusiveManager.release("disableUsbExclusive")
         }
         _usbExclusiveActive.value = false
+        androidSpatialPlaybackController.refreshRoutingState()
         syncUsbSystemAudioKeepAlive("clear_usb_exclusive_state")
         if (clearLastExclusivePreference) {
             AppPreferences.Player.lastUsbExclusiveActive = false
@@ -3120,31 +2652,19 @@ class PlayerController private constructor(context: Context) {
         lastUsbRemoteVolumeDesired = null
         syncUsbRemoteVolumeRoute("clear_usb_exclusive_state", force = true)
 
-        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        try {
-            audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
-            audioFocusRequest = null
-            audioFocusGranted = false
-            duckVolumeFactor = 1.0f
-        } catch (_: Exception) {
-        }
+        abandonAudioFocus()
 
-        releaseUsbPlaybackWakeLock("clear_usb_exclusive_state")
+        androidPlaybackServiceController.releaseUsbPlaybackWakeLock("clear_usb_exclusive_state")
         PlayerService.clearUsbMediaIdentityFromController("clear_usb_exclusive_state", true)
-        sendUsbMediaIdentityIntent(
+        androidPlaybackServiceController.sendUsbMediaIdentity(
             reason = "clear_usb_exclusive_state",
             song = _currentSong.value,
-            forcePosition = _position.value,
-            playing = false
+            positionMs = _position.value,
+            playing = false,
         )
 
         // 释放 USB 专用 WakeLock
-        try {
-            val intent = android.content.Intent(context, PlayerService::class.java).apply {
-                action = "com.rawsmusic.action.RELEASE_USB_WAKELOCK"
-            }
-            context.startService(intent)
-        } catch (_: Exception) {}
+        androidPlaybackServiceController.releaseUsbServiceWakeLock("clear_usb_exclusive_state")
     }
 
     // ========== USB 策略 UI 接口 ==========
@@ -3283,12 +2803,10 @@ class PlayerController private constructor(context: Context) {
                 val step = currentUsbHwStep()
                 setUsbHardwareVolumeStep(step, "hardware_volume_enabled_live")
                 applyVolumeRoute("hardware_volume_enabled_live")
-                try {
-                    val intent = android.content.Intent(context, PlayerService::class.java).apply {
-                        action = "com.rawsmusic.action.ACTIVATE_USB_REMOTE_VOLUME"
-                    }
-                    context.startService(intent)
-                } catch (_: Exception) {}
+                androidPlaybackServiceController.setUsbRemoteVolumeActive(
+                    active = true,
+                    reason = "hardware_volume_enabled_live",
+                )
                 android.widget.Toast.makeText(context, "硬件音量已启用", android.widget.Toast.LENGTH_SHORT).show()
                 return 0
             }
@@ -3303,12 +2821,10 @@ class PlayerController private constructor(context: Context) {
                     AppLogger.i(TAG, "Hardware volume live enable succeeded before restart, applying step=$step db=${usbHwStepToDb(step)}")
                     setUsbHardwareVolumeStep(step, "hardware_volume_live_before_restart")
                     applyVolumeRoute("hardware_volume_live_before_restart")
-                    try {
-                        val intent = android.content.Intent(context, PlayerService::class.java).apply {
-                            action = "com.rawsmusic.action.ACTIVATE_USB_REMOTE_VOLUME"
-                        }
-                        context.startService(intent)
-                    } catch (_: Exception) {}
+                    androidPlaybackServiceController.setUsbRemoteVolumeActive(
+                        active = true,
+                        reason = "hardware_volume_live_before_restart",
+                    )
                     return@launch
                 }
 
@@ -3348,25 +2864,17 @@ class PlayerController private constructor(context: Context) {
                     android.widget.Toast.makeText(context, "硬件音量已关闭", android.widget.Toast.LENGTH_SHORT).show()
                 }
                 applyVolumeRoute("hardware_volume_after_restart")
-                try {
-                    val intent = android.content.Intent(context, PlayerService::class.java).apply {
-                        action = if (canHw) {
-                            "com.rawsmusic.action.ACTIVATE_USB_REMOTE_VOLUME"
-                        } else {
-                            "com.rawsmusic.action.DEACTIVATE_USB_REMOTE_VOLUME"
-                        }
-                    }
-                    context.startService(intent)
-                } catch (_: Exception) {}
+                androidPlaybackServiceController.setUsbRemoteVolumeActive(
+                    active = canHw,
+                    reason = "hardware_volume_after_restart",
+                )
             }
         } else {
             applyVolumeRoute("hardware_volume_changed_non_exclusive")
-            try {
-                val intent = android.content.Intent(context, PlayerService::class.java).apply {
-                    action = "com.rawsmusic.action.DEACTIVATE_USB_REMOTE_VOLUME"
-                }
-                context.startService(intent)
-            } catch (_: Exception) {}
+            androidPlaybackServiceController.setUsbRemoteVolumeActive(
+                active = false,
+                reason = "hardware_volume_changed_non_exclusive",
+            )
             android.widget.Toast.makeText(
                 context,
                 if (enabled) "硬件音量将在下次 USB 初始化后验证" else "硬件音量已关闭",
@@ -3397,37 +2905,15 @@ class PlayerController private constructor(context: Context) {
     /** 后台冷启动保护：在 USB nativeStart 之前确保前台服务 + WakeLock 已就位。 */
     private fun ensureUsbForegroundImmediate(reason: String) {
         AppLogger.i(TAG, "ensureUsbForegroundImmediate: $reason")
-        acquireUsbPlaybackWakeLock(reason)
-        try {
-            val intent = android.content.Intent(context, com.rawsmusic.module.player.PlayerService::class.java).apply {
-                action = PlayerService.ACTION_USB_PLAYBACK_FOREGROUND
-            }
-            if (android.os.Build.VERSION.SDK_INT >= 26) {
-                androidx.core.content.ContextCompat.startForegroundService(context, intent)
-            } else {
-                context.startService(intent)
-            }
-        } catch (t: Throwable) {
-            AppLogger.w(TAG, "Failed to start USB foreground service immediately: reason=$reason", t)
-        }
+        androidPlaybackServiceController.acquireUsbPlaybackWakeLock(reason)
+        androidPlaybackServiceController.ensureUsbPlaybackForeground(reason)
     }
 
     private suspend fun ensureUsbForegroundBeforeStart(reason: String) {
         withContext(Dispatchers.Main.immediate) {
             AppLogger.i(TAG, "ensureUsbForegroundBeforeStart: $reason")
-            acquireUsbPlaybackWakeLock(reason)
-            try {
-                val intent = android.content.Intent(context, com.rawsmusic.module.player.PlayerService::class.java).apply {
-                    action = PlayerService.ACTION_USB_PLAYBACK_FOREGROUND
-                }
-                if (android.os.Build.VERSION.SDK_INT >= 26) {
-                    androidx.core.content.ContextCompat.startForegroundService(context, intent)
-                } else {
-                    context.startService(intent)
-                }
-            } catch (t: Throwable) {
-                AppLogger.w(TAG, "Failed to start USB foreground service before start", t)
-            }
+            androidPlaybackServiceController.acquireUsbPlaybackWakeLock(reason)
+            androidPlaybackServiceController.ensureUsbPlaybackForeground(reason)
         }
         // 给 Service 时间进入 foreground
         kotlinx.coroutines.delay(150)
@@ -4473,18 +3959,10 @@ class PlayerController private constructor(context: Context) {
         lastUsbRemoteVolumeDesired = desired
 
         AppLogger.i(TAG, "syncUsbRemoteVolumeRoute: desired=$desired reason=$reason")
-        try {
-            val intent = Intent(context, PlayerService::class.java).apply {
-                action = if (desired) {
-                    "com.rawsmusic.action.ACTIVATE_USB_REMOTE_VOLUME"
-                } else {
-                    "com.rawsmusic.action.DEACTIVATE_USB_REMOTE_VOLUME"
-                }
-            }
-            context.startService(intent)
-        } catch (e: Exception) {
-            AppLogger.w(TAG, "syncUsbRemoteVolumeRoute failed: reason=$reason", e)
-        }
+        androidPlaybackServiceController.setUsbRemoteVolumeActive(
+            active = desired,
+            reason = reason,
+        )
     }
 
     fun seedUsbHardwareVolumeStepFromUiVolume(): Int {
@@ -4563,7 +4041,7 @@ class PlayerController private constructor(context: Context) {
                     applyUsbExclusiveSoftwareUserVolume(old + delta, "ui_button_system delta=$deltaStep")
                 } else {
                     val direction = if (deltaStep > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
-                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI)
+                    systemVolumeController().adjustMusicVolume(direction, AudioManager.FLAG_SHOW_UI)
                     applyVolumeRoute("ui_button_system delta=$deltaStep")
                 }
             }
@@ -4635,7 +4113,7 @@ class PlayerController private constructor(context: Context) {
                     applyUsbExclusiveSoftwareUserVolume(old + delta, "$reason system direction=$direction")
                 } else {
                     val adjust = if (direction > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
-                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, adjust, AudioManager.FLAG_SHOW_UI)
+                    systemVolumeController().adjustMusicVolume(adjust, AudioManager.FLAG_SHOW_UI)
                     applyVolumeRoute("$reason system direction=$direction")
                 }
             }
@@ -5389,200 +4867,120 @@ class PlayerController private constructor(context: Context) {
         }
     }
 
-    // ==================== 全路径音频焦点管理 ====================
+    // ==================== Android system-audio interruption coordinator ====================
 
-    private fun requestAudioFocus(): Boolean {
-        if (audioFocusGranted) return true
-        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-            .build()
-        val listener = AudioManager.OnAudioFocusChangeListener { fc -> handleAudioFocusChange(fc) }
-        val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-            .setAudioAttributes(attrs)
-            .setOnAudioFocusChangeListener(listener)
-            .setAcceptsDelayedFocusGain(true)
-            .build()
-        val result = am.requestAudioFocus(req)
-        audioFocusRequest = req
-        audioFocusGranted = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
-        if (audioFocusGranted) {
-            // Some OEM builds can deliver a stale/full LOSS from the previous focus owner in the
-            // first seconds of a cold-start play request.  Keep this slightly longer than the
-            // AudioTrack + MediaSession bootstrap because ColorOS can emit LOSS after PLAYING.
-            audioFocusStartupGraceUntilMs = SystemClock.elapsedRealtime() + 2_500L
-        } else {
-            Log.w(TAG, "AudioFocus: denied (result=$result)")
-        }
-        return audioFocusGranted
-    }
+    private fun requestAudioFocus(): Boolean =
+        androidAudioInterruptionController.requestAudioFocus()
 
     private fun abandonAudioFocus() {
-        if (!audioFocusGranted) return
-        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
-        audioFocusRequest = null
-        audioFocusGranted = false
-        duckVolumeFactor = 1.0f
-        wasPlayingBeforeFocusLoss = false
+        androidAudioInterruptionController.abandonAudioFocus()
     }
 
-    private fun handleAudioFocusChange(focusChange: Int) {
-        if (_usbExclusiveActive.value || ffmpegPlayer.usbExclusiveMode) {
-            AppLogger.w(TAG, "AudioFocus: USB exclusive active, ignore focusChange=$focusChange")
-            duckVolumeFactor = 1.0f
+    private fun clearAutomaticFocusResume(reason: String) {
+        androidAudioInterruptionController.clearAutomaticFocusResume(reason)
+    }
+
+    private fun isPlaybackActiveForAndroidInterruption(): Boolean =
+        ffmpegPlayer.isPlayingNow ||
+            ffmpegPlayer.state == FfmpegAudioPlayer.State.PLAYING ||
+            ffmpegPlayer.state == FfmpegAudioPlayer.State.PREPARING ||
+            _playState.value == PlayState.PLAYING ||
+            _playState.value == PlayState.PREPARING
+
+    /**
+     * Decoder/state mutation stays in PlayerController; AndroidAudioInterruptionController
+     * owns only the platform policy and automatic-resume bookkeeping.
+     */
+    private fun pauseForAndroidInterruption(reason: String) {
+        if (_usbExclusiveActive.value || ffmpegPlayer.usbExclusiveMode ||
+            !isPlaybackActiveForAndroidInterruption()
+        ) return
+        ffmpegPlayer.pause()
+        smTransition(PlayState.PAUSED, "audio_focus_$reason")
+        stopProgressUpdate()
+        savePosition()
+        saveState()
+    }
+
+    private fun resumeOrStartRememberedSong(reason: String) {
+        if (isReleased || isPlaybackActiveForAndroidInterruption()) return
+        val song = _currentSong.value ?: restoreLastSong() ?: return
+        AppLogger.i(TAG, "AudioFocus: automatic playback reason=$reason title=${song.title}")
+        if (ffmpegPlayer.state == FfmpegAudioPlayer.State.PAUSED) {
+            resume()
             return
         }
-        when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                Log.d(TAG, "AudioFocus: DUCK -> 0.2")
-                duckVolumeFactor = 0.2f
-                applyComposedVolume()
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                Log.d(TAG, "AudioFocus: LOSS_TRANSIENT, pause")
-                wasPlayingBeforeFocusLoss = ffmpegPlayer.isPlayingNow
-                ffmpegPlayer.pause()
-                smTransition(PlayState.PAUSED, "auto_pause_url_check")
-            }
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                val now = SystemClock.elapsedRealtime()
-                val playerState = ffmpegPlayer.state
-                val playState = _playState.value
-                val insideStartupGuard = now < audioFocusStartupGraceUntilMs
-                val insideUserStartGuard = now < userPlayStartFocusGuardUntilMs
+        val queueSnapshot = _queue.value
+        val songs = queueSnapshot.songs.ifEmpty { listOf(song) }
+        val index = songs.indexOfFirst { candidate -> samePlaybackItem(candidate, song) }
+            .takeIf { it >= 0 }
+            ?: queueSnapshot.currentIndex.coerceIn(0, songs.lastIndex)
+        play(songs[index], songs, index)
+    }
 
-                // ColorOS/OPlus can dispatch a full LOSS right after our first MediaSession/
-                // AudioTrack update during a user-initiated cold start.  In the logs this happens
-                // after PLAYING is already reported, so checking PREPARING only is not enough.
-                if ((insideStartupGuard || insideUserStartGuard) &&
-                    (playerState == FfmpegAudioPlayer.State.PREPARING ||
-                        playerState == FfmpegAudioPlayer.State.PLAYING ||
-                        playState == PlayState.PREPARING ||
-                        playState == PlayState.PLAYING ||
-                        ffmpegPlayer.isPlayingNow)
-                ) {
-                    Log.w(
-                        TAG,
-                        "AudioFocus: LOSS ignored during user start guard " +
-                            "playerState=$playerState playState=$playState " +
-                            "startupRemaining=${audioFocusStartupGraceUntilMs - now}ms " +
-                            "userRemaining=${userPlayStartFocusGuardUntilMs - now}ms"
-                    )
-                    return
-                }
-                Log.d(TAG, "AudioFocus: LOSS, pause permanently")
-                wasPlayingBeforeFocusLoss = false
-                ffmpegPlayer.pause()
-                smTransition(PlayState.PAUSED, "auto_pause_bluetooth")
-            }
-            AudioManager.AUDIOFOCUS_GAIN -> {
-                Log.d(TAG, "AudioFocus: GAIN, wasPlaying=$wasPlayingBeforeFocusLoss")
-                duckVolumeFactor = 1.0f
-                applyComposedVolume()
-                if (wasPlayingBeforeFocusLoss) {
-                    val usbBlocked = _usbExclusiveActive.value &&
-                        !usbExclusiveManager.isDeviceConnected()
-                    if (usbBlocked) {
-                        AppLogger.w(TAG, "AudioFocus: GAIN but USB disconnected, skip resume")
-                        wasPlayingBeforeFocusLoss = false
-                    } else {
-                        wasPlayingBeforeFocusLoss = false
-                        ffmpegPlayer.resume()
-                        smTransition(PlayState.PLAYING, "auto_resume")
-                    }
-                }
-            }
-        }
+    /** Delegates Android-output spatialization policy to its extracted coordinator. */
+    fun setAndroidSpatialAudioEnabled(enabled: Boolean): Boolean =
+        androidSpatialPlaybackController.setPlatformSpatialEnabled(enabled)
+
+    fun setAndroidBinauralSpatialEnabled(enabled: Boolean): Boolean =
+        androidSpatialPlaybackController.setBinauralEnabled(enabled)
+
+    fun setAndroidBinauralSpatialParameters(intensity: Float, room: Float) {
+        androidSpatialPlaybackController.setBasicParameters(intensity, room)
+    }
+
+    fun setAndroidBinauralAdvancedParameters(
+        brirEnabled: Boolean,
+        separation: Float,
+        headSizeCentimeters: Float,
+        pinnaDetail: Float,
+    ) {
+        androidSpatialPlaybackController.setAdvancedParameters(
+            brirEnabled = brirEnabled,
+            separation = separation,
+            headSizeCentimeters = headSizeCentimeters,
+            pinnaDetail = pinnaDetail,
+        )
+    }
+
+    fun setAndroidBinauralHeadTrackingEnabled(enabled: Boolean): Boolean =
+        androidSpatialPlaybackController.setHeadTrackingEnabled(enabled)
+
+    fun recenterAndroidBinauralHeadTracking() {
+        androidSpatialPlaybackController.recenterHeadTracking()
+    }
+
+    fun androidBinauralHeadTrackingCapability(): AndroidSpatialHeadTracker.Capability =
+        androidSpatialPlaybackController.headTrackingCapability()
+
+    fun refreshAudioFocusSettings() {
+        androidAudioInterruptionController.refreshSettings()
+    }
+
+    internal fun ensureAudioFocusForService(reason: String): Boolean {
+        val granted = androidAudioInterruptionController.requestAudioFocus()
+        AppLogger.d(TAG, "AudioFocus: service request reason=$reason granted=$granted")
+        return granted
+    }
+
+    internal fun releaseAudioFocusForService(reason: String) {
+        AppLogger.d(TAG, "AudioFocus: service abandon reason=$reason")
+        androidAudioInterruptionController.abandonAudioFocus()
     }
 
     private fun registerNoisyReceiver() {
-        if (noisyRegistered) return
-        try {
-            context.registerReceiver(
-                noisyAudioReceiver,
-                IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
-            )
-            noisyRegistered = true
-            Log.d(TAG, "NoisyAudio: registered")
-        } catch (e: Exception) {
-            Log.w(TAG, "NoisyAudio: register failed", e)
-        }
+        androidAudioInterruptionController.registerNoisyReceiver()
     }
 
     private fun unregisterNoisyReceiver() {
-        if (!noisyRegistered) return
-        try { context.unregisterReceiver(noisyAudioReceiver) } catch (_: Exception) {}
-        noisyRegistered = false
+        androidAudioInterruptionController.unregisterNoisyReceiver()
     }
 
-    private fun registerScoReceiver() {
-        if (scoReceiverRegistered) return
-        try {
-            context.registerReceiver(
-                scoStateReceiver,
-                IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
-            )
-            scoReceiverRegistered = true
-            Log.d(TAG, "SCO receiver: registered")
-        } catch (e: Exception) {
-            Log.w(TAG, "SCO receiver: register failed", e)
-        }
-    }
+    fun startBluetoothSco(): Boolean =
+        androidAudioInterruptionController.startBluetoothSco()
 
-    private fun unregisterScoReceiver() {
-        if (!scoReceiverRegistered) return
-        try { context.unregisterReceiver(scoStateReceiver) } catch (_: Exception) {}
-        scoReceiverRegistered = false
-    }
-
-    /**
-     * 启动蓝牙 SCO 连接（主线程调用）
-     * @return true 如果成功启动
-     */
-    fun startBluetoothSco(): Boolean {
-        return try {
-            val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
-            if (!am.isBluetoothScoAvailableOffCall) {
-                Log.w(TAG, "startBluetoothSco: SCO not available off call")
-                return false
-            }
-            // 先注册 SCO 状态监听
-            registerScoReceiver()
-            // 启动 SCO
-            am.startBluetoothSco()
-            am.isBluetoothScoOn = true
-            Log.i(TAG, "startBluetoothSco: SCO start requested")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "startBluetoothSco failed: ${e.message}")
-            false
-        }
-    }
-
-    /**
-     * 停止蓝牙 SCO 连接
-     */
     fun stopBluetoothSco() {
-        try {
-            val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
-            am.stopBluetoothSco()
-            am.isBluetoothScoOn = false
-            unregisterScoReceiver()
-            _scoConnected.value = false
-            Log.i(TAG, "stopBluetoothSco: SCO stopped")
-            // SCO 停止后重建 AudioTrack，切回 USAGE_MEDIA 属性
-            scope.launch(Dispatchers.Main) {
-                try {
-                    ffmpegPlayer.rebuildAudioTrackForScoDisconnected()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to rebuild AudioTrack after SCO stop: ${e.message}")
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "stopBluetoothSco failed: ${e.message}")
-        }
+        androidAudioInterruptionController.stopBluetoothSco()
     }
 
     private fun setupNextSongForGapless() {
@@ -5628,6 +5026,7 @@ class PlayerController private constructor(context: Context) {
     }
 
     fun play(song: AudioFile, queue: List<AudioFile> = emptyList(), index: Int = 0) {
+        clearAutomaticFocusResume("explicit_play")
         val token = latestPlayRequestToken.incrementAndGet()
         eventQueue.submit(PE.PlayEvent(song, queue, index) { s, q, i ->
             if (token != latestPlayRequestToken.get()) {
@@ -5636,16 +5035,18 @@ class PlayerController private constructor(context: Context) {
                 transportMutex.withLock {
                     if (token != latestPlayRequestToken.get()) {
                         AppLogger.w(TAG, "play() skipped stale request after mutex: title=${s.title} token=$token latest=${latestPlayRequestToken.get()}")
-                    } else if (shouldRouteExplicitPlayThroughManualSwitch(s)) {
-                        val (switchQueue, switchIndex) = resolveExplicitPlayQueue(s, q, i)
-                        AppLogger.w(
-                            TAG,
-                            "play(): routing explicit song selection through manual switch " +
-                                "title=${s.title} index=$switchIndex queueSize=${switchQueue.size}"
-                        )
-                        playManualSwitchFromStartLocked(s, switchQueue, switchIndex, "manual_select")
                     } else {
-                        playInternal(s, q, i)
+                        val (resolvedQueue, resolvedIndex) = resolveExplicitPlayQueue(s, q, i)
+                        if (shouldRouteExplicitPlayThroughManualSwitch(s)) {
+                            AppLogger.w(
+                                TAG,
+                                "play(): routing explicit song selection through manual switch " +
+                                    "title=${s.title} index=$resolvedIndex queueSize=${resolvedQueue.size}"
+                            )
+                            playManualSwitchFromStartLocked(s, resolvedQueue, resolvedIndex, "manual_select")
+                        } else {
+                            playInternal(s, resolvedQueue, resolvedIndex)
+                        }
                     }
                 }
             }
@@ -5664,7 +5065,24 @@ class PlayerController private constructor(context: Context) {
     ): Pair<List<AudioFile>, Int> {
         if (queue.isNotEmpty()) {
             val safeIndex = index.coerceIn(0, queue.lastIndex)
-            return queue to safeIndex
+            if (samePlaybackItem(queue[safeIndex], song)) {
+                return queue to safeIndex
+            }
+            val identityIndex = queue.indexOfFirst { samePlaybackItem(it, song) }
+            if (identityIndex >= 0) {
+                AppLogger.w(
+                    TAG,
+                    "play queue index corrected: requested=$index resolved=$identityIndex " +
+                        "title=${song.title} queueSize=${queue.size}"
+                )
+                return queue to identityIndex
+            }
+            AppLogger.w(
+                TAG,
+                "play queue snapshot does not contain requested item; isolating selection " +
+                    "title=${song.title} path=${song.path} requested=$index queueSize=${queue.size}"
+            )
+            return listOf(song) to 0
         }
         val currentQueue = _queue.value.songs
         val existingIndex = currentQueue.indexOfFirst { samePlaybackItem(it, song) }
@@ -5905,13 +5323,7 @@ class PlayerController private constructor(context: Context) {
             }
         }
 
-        try {
-            val intent = android.content.Intent(context, PlayerService::class.java).apply {
-                action = PlayerService.ACTION_ENSURE_WAKELOCK
-            }
-            context.startService(intent)
-        } catch (_: Exception) {
-        }
+        androidPlaybackServiceController.ensurePlaybackWakeLock("play_request")
 
         val isRemoteUrl = song.path.startsWith("http://") || song.path.startsWith("https://")
         if (song.path.isBlank() || (!isRemoteUrl && !java.io.File(song.path).exists())) {
@@ -5938,8 +5350,8 @@ class PlayerController private constructor(context: Context) {
                 val safeIndex = index.coerceIn(0, queue.size - 1)
                 _queue.value = PlayQueue(songs = queue, currentIndex = safeIndex)
                 // 新队列，shuffle 模式下重新初始化随机顺序
-                if (_isShuffle.value) {
-                    enableShuffle()
+                if (playbackModeController.isShuffleEnabled) {
+                    playbackModeController.rebuildShuffleForCurrentQueue()
                 }
             } else {
                 val currentQueue = _queue.value.songs.toMutableList()
@@ -6080,7 +5492,7 @@ class PlayerController private constructor(context: Context) {
 
             // 蓝牙 SCO 模式：启动 SCO 连接（异步，不阻塞主线程）
             // AudioTrack 会立即使用 SCO AudioAttributes 创建
-            // SCO 连接成功后 scoStateReceiver 会重建 AudioTrack 确保路由正确
+            // SCO 连接成功后 AndroidAudioInterruptionController 会重建 AudioTrack 确保路由正确
             if (AudioOutputManager.shouldUseScoMode(context)) {
                 Log.i(TAG, "SCO mode enabled, starting Bluetooth SCO...")
                 if (startBluetoothSco()) {
@@ -6139,7 +5551,7 @@ class PlayerController private constructor(context: Context) {
 
             scope.launch {
                 delay(1000)
-                checkBluetoothOutput()
+                androidBluetoothOutputController.refreshNow()
             }
 
             if (song.cueOffsetMs > 0) {
@@ -6157,7 +5569,7 @@ class PlayerController private constructor(context: Context) {
                         ffmpegPlayer.state == FfmpegAudioPlayer.State.PREPARING) {
                         ffmpegPlayer.seekTo(cueOffset)
                         _position.value = 0L
-                        seekJustPerformed = true
+                        playbackProgressController.markSeekPerformed()
                     }
                 }
             } else if (pendingSeekPosition > 0) {
@@ -6182,8 +5594,8 @@ class PlayerController private constructor(context: Context) {
         val safeIndex = startIndex.coerceIn(0, songs.size - 1)
         _queue.value = PlayQueue(songs = songs, currentIndex = safeIndex)
         // 新队列，shuffle 模式下重新初始化随机顺序
-        if (_isShuffle.value) {
-            enableShuffle()
+        if (playbackModeController.isShuffleEnabled) {
+            playbackModeController.rebuildShuffleForCurrentQueue()
         }
         play(songs[safeIndex], songs, safeIndex)
     }
@@ -6196,7 +5608,7 @@ class PlayerController private constructor(context: Context) {
         if (!com.rawsmusic.module.data.prefs.AppPreferences.Player.gaplessPlaybackEnabled) return
         val q = _queue.value
         if (q.songs.isEmpty()) return
-        val nextIdx = if (_isShuffle.value) {
+        val nextIdx = if (playbackModeController.isShuffleEnabled) {
             q.songs.indices.filter { it != q.currentIndex }.randomOrNull() ?: return
         } else {
             (q.currentIndex + 1) % q.songs.size
@@ -6279,9 +5691,6 @@ class PlayerController private constructor(context: Context) {
                     val seedSong = resolvePlayPauseSeedSong()
                     Log.w(TAG, "=== playPause: stale PREPARING (${preparingAgeMs}ms), forcing restart song=${seedSong?.path} ===")
                     if (seedSong != null) {
-                        val now = SystemClock.elapsedRealtime()
-                        userPlayStartFocusGuardUntilMs = now + 2_800L
-                        audioFocusStartupGraceUntilMs = maxOf(audioFocusStartupGraceUntilMs, now + 2_800L)
                         smForceTransition(PlayState.PREPARING, "play_pause_stale_preparing_retry")
                         play(seedSong)
                     } else {
@@ -6293,9 +5702,6 @@ class PlayerController private constructor(context: Context) {
                 Log.w(TAG, "=== playPause: state=$state, falling back to play() ===")
                 val seedSong = resolvePlayPauseSeedSong()
                 if (seedSong != null) {
-                    val now = SystemClock.elapsedRealtime()
-                    userPlayStartFocusGuardUntilMs = now + 2_800L
-                    audioFocusStartupGraceUntilMs = maxOf(audioFocusStartupGraceUntilMs, now + 2_800L)
                     smTransition(PlayState.PREPARING, "play_pause_start")
                     play(seedSong)
                 } else {
@@ -6308,6 +5714,7 @@ class PlayerController private constructor(context: Context) {
 
     fun pause() {
         if (isReleased) return
+        clearAutomaticFocusResume("explicit_pause")
         Log.w(TAG, "=== pause() called, state=${ffmpegPlayer.state} usbExclusive=${_usbExclusiveActive.value} ===")
 
         if (_usbExclusiveActive.value && _playState.value == PlayState.PLAYING) {
@@ -6345,11 +5752,11 @@ class PlayerController private constructor(context: Context) {
                         position = _position.value.coerceAtLeast(0L),
                         reason = "manual_pause_warm"
                     )
-                    sendUsbMediaIdentityIntent(
+                    androidPlaybackServiceController.sendUsbMediaIdentity(
                         reason = "manual_pause_warm",
                         song = _currentSong.value,
-                        forcePosition = _position.value,
-                        playing = false
+                        positionMs = _position.value,
+                        playing = false,
                     )
                     stopProgressUpdate()
                     savePosition()
@@ -6462,7 +5869,7 @@ class PlayerController private constructor(context: Context) {
         sharedUsbAudioEngine.setBackgroundPlaybackActiveSafely(true, "reinforceUsbBackgroundPlayback:$reason")
         syncUsbSystemAudioKeepAlive(reason)
         ensureUsbMediaIdentity(reason, _currentSong.value, _position.value)
-        acquireUsbPlaybackWakeLock(reason)
+        androidPlaybackServiceController.acquireUsbPlaybackWakeLock(reason)
 
         val now = SystemClock.elapsedRealtime()
         if (now - lastUsbBackgroundReinforceElapsedMs >= 10_000L) {
@@ -6477,6 +5884,7 @@ class PlayerController private constructor(context: Context) {
 
     fun resume() {
         if (isReleased) return
+        clearAutomaticFocusResume("explicit_resume")
         appInBackground = false
         Log.w(TAG, "=== resume() called, state=${ffmpegPlayer.state} usbExclusive=${_usbExclusiveActive.value} nativeState=${sharedUsbAudioEngine.getNativeStreamState()} ===")
 
@@ -6619,31 +6027,20 @@ class PlayerController private constructor(context: Context) {
      */
     fun onAppForegroundResumed() {
         if (isReleased) return
+        val returningFromBackground = appInBackground
         Log.i(TAG, "App resumed from background, ensuring WakeLock")
         appInBackground = false
         sharedUsbAudioEngine.setBackgroundPlaybackActiveSafely(false, "app_foreground_resumed")
         tryActivateDeferredUsbExclusiveOnForeground("app_foreground_resumed")
 
         // 1. 确保 WakeLock 持有
-        try {
-            val intent = android.content.Intent(context, PlayerService::class.java).apply {
-                action = PlayerService.ACTION_ENSURE_WAKELOCK
-            }
-            context.startService(intent)
-        } catch (_: Exception) {}
+        androidPlaybackServiceController.ensurePlaybackWakeLock("app_foreground_resumed")
 
         // 2. USB 独占模式：确保 USB WakeLock 持有
         if (_usbExclusiveActive.value) {
-            try {
-                val intent = android.content.Intent(context, PlayerService::class.java).apply {
-                    action = PlayerService.ACTION_USB_PLAYBACK_FOREGROUND
-                }
-                if (android.os.Build.VERSION.SDK_INT >= 26) {
-                    androidx.core.content.ContextCompat.startForegroundService(context, intent)
-                } else {
-                    context.startService(intent)
-                }
-            } catch (_: Exception) {}
+            androidPlaybackServiceController.ensureUsbPlaybackForeground(
+                reason = "app_foreground_resumed",
+            )
             recoverDeferredUsbOnForegroundIfNeeded()
         } else if (AppPreferences.Player.lastUsbExclusiveActive) {
             val song = _currentSong.value
@@ -6658,6 +6055,7 @@ class PlayerController private constructor(context: Context) {
                 AppLogger.i(TAG, "App foreground rearm deferred: last USB exclusive active but no current song yet")
             }
         }
+        androidAudioInterruptionController.maybeResumeOnAppForeground(returningFromBackground)
     }
 
     private fun recoverDeferredUsbOnForegroundIfNeeded() {
@@ -6773,16 +6171,81 @@ class PlayerController private constructor(context: Context) {
 
         val displaySeekMs = if (song.cueOffsetMs > 0) positionMs else realSeekMs
 
+        // Update UI immediately. The backend request is serialized behind an in-flight pause so a
+        // lyric click during the pause fade cannot be overwritten by the old decoder position.
         _position.value = displaySeekMs
-        seekJustPerformed = true
+        playbackProgressController.markSeekPerformed()
 
-        AppLogger.i(TAG, "seekTo: pos=$positionMs real=$realSeekMs usbExclusive=${_usbExclusiveActive.value} keepPaused=$keepPaused")
+        if (keepPaused && eventQueue.isRunning) {
+            val requestedSong = song
+            eventQueue.submit(
+                PE.SeekEvent(
+                    positionMs = realSeekMs,
+                    songPath = song.path,
+                ) handler@{ queuedRealSeekMs, _ ->
+                    val current = _currentSong.value
+                    if (!isSameSongIdentity(current, requestedSong)) {
+                        AppLogger.i(TAG, "paused seek dropped: song changed target=${requestedSong.path}")
+                        return@handler
+                    }
+                    executePausedSeekRequest(
+                        song = requestedSong,
+                        realSeekMs = queuedRealSeekMs,
+                        displaySeekMs = displaySeekMs,
+                    )
+                }
+            )
+            return
+        }
+
+        executeSeekRequest(
+            song = song,
+            realSeekMs = realSeekMs,
+            displaySeekMs = displaySeekMs,
+            keepPaused = keepPaused,
+        )
+    }
+
+    private suspend fun executePausedSeekRequest(
+        song: AudioFile,
+        realSeekMs: Long,
+        displaySeekMs: Long,
+    ) {
+        if (isReleased || !isSameSongIdentity(_currentSong.value, song)) return
+        if (_usbExclusiveActive.value && isUsbSeekRuntimeReady()) {
+            usbSeekJob?.cancel()
+            transportMutex.withLock {
+                seekUsbExclusiveInternal(realSeekMs, displaySeekMs, keepPaused = true)
+            }
+            return
+        }
+        executeSeekRequest(
+            song = song,
+            realSeekMs = realSeekMs,
+            displaySeekMs = displaySeekMs,
+            keepPaused = true,
+        )
+    }
+
+    private fun executeSeekRequest(
+        song: AudioFile,
+        realSeekMs: Long,
+        displaySeekMs: Long,
+        keepPaused: Boolean,
+    ) {
+        if (isReleased || !isSameSongIdentity(_currentSong.value, song)) return
+
+        AppLogger.i(
+            TAG,
+            "seekTo execute: display=$displaySeekMs real=$realSeekMs " +
+                "usbExclusive=${_usbExclusiveActive.value} keepPaused=$keepPaused"
+        )
 
         if (_usbExclusiveActive.value) {
             if (!isUsbSeekRuntimeReady()) {
                 AppLogger.w(
                     TAG,
-                    "seekTo deferred: pos=$positionMs real=$realSeekMs handle=0x${
+                    "seekTo deferred: display=$displaySeekMs real=$realSeekMs handle=0x${
                         java.lang.Long.toUnsignedString(sharedUsbAudioEngine.currentHandle, 16)
                     } playState=${_playState.value} ffmpegState=${ffmpegPlayer.state}"
                 )
@@ -6808,7 +6271,7 @@ class PlayerController private constructor(context: Context) {
         if (keepPaused) {
             scope.launch(Dispatchers.Main) {
                 delay(80)
-                if (!isReleased && _currentSong.value?.path == song.path &&
+                if (!isReleased && isSameSongIdentity(_currentSong.value, song) &&
                     ffmpegPlayer.state == FfmpegAudioPlayer.State.PLAYING
                 ) {
                     ffmpegPlayer.pause()
@@ -6847,7 +6310,7 @@ class PlayerController private constructor(context: Context) {
             ffmpegPlayer.seekTo(realSeekMs, usbPrepareAlreadyDone = usbPrepared, keepPaused = keepPaused)
 
             _position.value = displaySeekMs
-            seekJustPerformed = true
+            playbackProgressController.markSeekPerformed()
 
             if (!keepPaused) {
                 smTransition(PlayState.PLAYING, "seek_resumed")
@@ -6935,7 +6398,12 @@ class PlayerController private constructor(context: Context) {
                 // next file is not mix-compatible, fall back to an immediate cut with the
                 // new track fading in, instead of blocking the UI/audio handoff for the full
                 // fade-out duration.
-                val inlineStarted = ffmpegPlayer.requestManualCrossfadeTo(
+                val current = _currentSong.value
+                val pathOnlyCrossfadeIsSafe = current != null &&
+                    current.path != song.path &&
+                    current.cueOffsetMs == 0L && current.cueTrackIndex == 0 &&
+                    song.cueOffsetMs == 0L && song.cueTrackIndex == 0
+                val inlineStarted = pathOnlyCrossfadeIsSafe && ffmpegPlayer.requestManualCrossfadeTo(
                     nextPath = song.path,
                     durationMs = manualShortFadeMs,
                     reason = reason
@@ -6945,7 +6413,11 @@ class PlayerController private constructor(context: Context) {
                     AppLogger.i(TAG, "manual switch inline crossfade started: title=${song.title} fadeMs=$manualShortFadeMs reason=$reason")
                 } else {
                     ffmpegPlayer.armNextStartFadeIn(manualShortFadeMs, reason)
-                    AppLogger.i(TAG, "manual switch immediate cut + next fade-in: title=${song.title} fadeMs=$manualShortFadeMs reason=$reason")
+                    AppLogger.i(
+                        TAG,
+                        "manual switch immediate cut + next fade-in: title=${song.title} " +
+                            "fadeMs=$manualShortFadeMs pathOnlySafe=$pathOnlyCrossfadeIsSafe reason=$reason"
+                    )
                 }
             }
 
@@ -6996,7 +6468,7 @@ class PlayerController private constructor(context: Context) {
         val q = _queue.value
         if (q.songs.isEmpty()) return null
 
-        val nextIndex = when (_playMode.value) {
+        val nextIndex = when (playbackModeController.currentPlayMode) {
             PlayMode.SEQUENTIAL -> (q.currentIndex + 1) % q.songs.size
             PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> {
                 shuffleQueueController.nextIndex(q)
@@ -7042,7 +6514,7 @@ class PlayerController private constructor(context: Context) {
             return prev
         }
 
-        val prevIndex = when (_playMode.value) {
+        val prevIndex = when (playbackModeController.currentPlayMode) {
             PlayMode.SEQUENTIAL -> {
                 if (q.currentIndex > 0) q.currentIndex - 1 else q.songs.size - 1
             }
@@ -7068,7 +6540,7 @@ class PlayerController private constructor(context: Context) {
         priorityQueue.firstOrNull()?.let { return it }
         val q = _queue.value
         if (q.songs.isEmpty()) return null
-        val index = when (_playMode.value) {
+        val index = when (playbackModeController.currentPlayMode) {
             PlayMode.SEQUENTIAL -> (q.currentIndex + 1) % q.songs.size
             PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> shuffleQueueController.peekNextIndex(q)
             PlayMode.REPEAT_ONE -> q.currentIndex
@@ -7080,7 +6552,7 @@ class PlayerController private constructor(context: Context) {
         playHistory.lastOrNull()?.let { return it }
         val q = _queue.value
         if (q.songs.isEmpty()) return null
-        val index = when (_playMode.value) {
+        val index = when (playbackModeController.currentPlayMode) {
             PlayMode.SEQUENTIAL -> if (q.currentIndex > 0) q.currentIndex - 1 else q.songs.lastIndex
             PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> shuffleQueueController.peekPreviousIndex(q)
             PlayMode.REPEAT_ONE -> q.currentIndex
@@ -7089,57 +6561,23 @@ class PlayerController private constructor(context: Context) {
     }
 
     fun toggleRepeatMode() {
-        val modes = RepeatMode.entries
-        val currentIndex = modes.indexOf(_repeatMode.value)
-        val nextMode = modes[(currentIndex + 1) % modes.size]
-        _repeatMode.value = nextMode
-        AppPreferences.Player.repeatMode = nextMode
+        playbackModeController.toggleRepeatMode()
     }
 
     fun setRepeatMode(mode: RepeatMode) {
-        _repeatMode.value = mode
-        AppPreferences.Player.repeatMode = mode
+        playbackModeController.setRepeatMode(mode)
     }
 
     fun toggleShuffle() {
-        val newShuffle = !_isShuffle.value
-        _isShuffle.value = newShuffle
-        AppPreferences.Player.isShuffle = newShuffle
-        _playMode.value = PlayMode.from(
-            ShuffleMode.fromBoolean(newShuffle),
-            _repeatMode.value
-        )
-        AppPreferences.Player.playMode = _playMode.value
-        if (newShuffle) {
-            enableShuffle()
-        } else {
-            disableShuffle()
-        }
+        playbackModeController.toggleShuffle()
     }
 
     fun cyclePlayMode() {
-        val newMode = PlayMode.cycle(_playMode.value)
-        setPlayMode(newMode)
+        playbackModeController.cyclePlayMode()
     }
 
     fun setPlayMode(mode: PlayMode) {
-        _playMode.value = mode
-        AppPreferences.Player.playMode = mode
-        applyPlayMode(mode)
-    }
-
-    private fun applyPlayMode(mode: PlayMode) {
-        val wasShuffle = _isShuffle.value
-        _isShuffle.value = mode.shuffleMode.isOn
-        _repeatMode.value = mode.repeatMode
-        AppPreferences.Player.isShuffle = _isShuffle.value
-        AppPreferences.Player.repeatMode = _repeatMode.value
-
-        if (_isShuffle.value && !wasShuffle && _queue.value.songs.size > 1) {
-            enableShuffle()
-        } else if (!_isShuffle.value && wasShuffle) {
-            disableShuffle()
-        }
+        playbackModeController.setPlayMode(mode)
     }
 
     fun setVolume(volume: Float) {
@@ -7280,7 +6718,7 @@ class PlayerController private constructor(context: Context) {
             pause()
             return
         }
-        when (_repeatMode.value) {
+        when (playbackModeController.currentRepeatMode) {
             RepeatMode.ONE -> {
                 _currentSong.value?.let { play(it) }
             }
@@ -7319,29 +6757,6 @@ class PlayerController private constructor(context: Context) {
     fun isSleepTimerActive(): Boolean = sleepTimerController.isActive()
 
     fun getSleepTimerMode(): Int = sleepTimerController.mode()
-
-    /**
-     * 开启 Shuffle
-     * 1. 保存当前原始队列顺序
-     * 2. 当前歌曲移到队首
-     * 3. 其余歌曲用 BitSet+Random 无放回采样随机排列
-     * 4. 初始化 shuffle 索引历史
-     */
-    private fun enableShuffle() {
-        val shuffledQueue = shuffleQueueController.enable(_queue.value, _repeatMode.value) ?: return
-        _queue.value = shuffledQueue
-        saveState()
-    }
-
-    /**
-     * 关闭 Shuffle — 恢复原始队列顺序
-     */
-    private fun disableShuffle() {
-        shuffleQueueController.disable(_queue.value, _repeatMode.value)?.let { restoredQueue ->
-            _queue.value = restoredQueue
-        }
-        saveState()
-    }
 
     /** 根据歌曲 ReplayGain 标签和用户设置，计算并应用增益因子 */
     private fun applyReplayGain(song: AudioFile) {
@@ -7442,120 +6857,29 @@ class PlayerController private constructor(context: Context) {
     }
 
     private fun startProgressUpdate() {
-        stopProgressUpdate()
-        progressJob = scope.launch {
-            var saveCounter = 0
-            var logCounter = 0
-            var lastLoggedPos = -1L
-            var stableCount = 0
-            while (isActive && !isReleased) {
-                try {
-                    val playerPos = ffmpegPlayer.positionMs
-                    val isCue = cachedCueEndMs > 0
-
-                    val displayPos = if (isCue && cachedCueOffsetMs > 0) {
-                        (playerPos - cachedCueOffsetMs).coerceAtLeast(0L)
-                    } else {
-                        playerPos
-                    }
-
-                    if (seekJustPerformed) {
-                        val targetSeek = _position.value
-                        val diff = kotlin.math.abs(displayPos - targetSeek)
-                        if (diff < 500) {
-                            seekJustPerformed = false
-                        } else {
-                            stableCount++
-                            if (stableCount > 20) {
-                                seekJustPerformed = false
-                                stableCount = 0
-                            }
-                        }
-                    } else {
-                        _position.value = displayPos
-                    }
-
-                    if (isCue) {
-                        if (_duration.value != cachedSongDuration) {
-                            _duration.value = cachedSongDuration
-                        }
-                    } else {
-                        val ffDur = ffmpegPlayer.durationMs
-                        if (ffDur > 0 && _duration.value != ffDur) {
-                            _duration.value = ffDur
-                        }
-                    }
-
-                    playbackStatsTracker.onProgress(_currentSong.value, displayPos, _duration.value)
-
-                    logCounter++
-                    if (logCounter >= 4 || kotlin.math.abs(playerPos - lastLoggedPos) > 2000) {
-                        logCounter = 0
-                        if (playerPos != lastLoggedPos) {
-                            Log.w(TAG, ">>> progressUpdate: ffmpegPos=$playerPos, displayPos=$displayPos, cueEnd=$cachedCueEndMs")
-                            lastLoggedPos = playerPos
-                        }
-                    }
-                    if (_usbExclusiveActive.value && _playState.value == PlayState.PLAYING && logCounter == 0) {
-                        PlayerService.syncUsbMediaIdentityFromController(
-                            song = _currentSong.value,
-                            playing = true,
-                            position = displayPos.coerceAtLeast(0L),
-                            reason = "progress_update"
-                        )
-                    }
-
-                    saveCounter++
-                    if (saveCounter >= 25) {
-                        saveCounter = 0
-                        savePosition()
-                    }
-                    if (isCue && playerPos >= cachedCueEndMs) {
-                        Log.d(TAG, "CUE track end reached: pos=$playerPos >= cueEndMs=$cachedCueEndMs, advancing to next")
-                        next()
-                        break
-                    }
-                } catch (e: Exception) {
-                    break
-                }
-                delay(50)
-            }
-        }
+        playbackProgressController.start()
     }
 
     private fun stopProgressUpdate() {
-        progressJob?.cancel()
-        progressJob = null
+        playbackProgressController.stop()
     }
 
-    private var saveStateJob: Job? = null
-
     private fun saveState() {
-        _currentSong.value?.let(statePersistence::saveSongSnapshot)
-        statePersistence.saveRuntime(
-            playStateOrdinal = _playState.value.ordinal,
-            keepUsbExclusive = _usbExclusiveActive.value || ffmpegPlayer.usbExclusiveMode
-        )
-        savePosition()
-        val q = _queue.value
-        val songsSnapshot = q.songs.toList()
-        val currentIndex = q.currentIndex
-        saveStateJob?.cancel()
-        saveStateJob = scope.launch(Dispatchers.IO) {
-            try {
-                statePersistence.saveQueue(songsSnapshot, currentIndex)
-            } catch (_: Exception) {}
-        }
+        playbackStatePersistenceController.saveState()
+    }
+
+    /** Persist a complete snapshot synchronously when the OS is preparing to kill the process. */
+    fun persistForMemoryTermination(): Boolean {
+        return playbackStatePersistenceController.persistForMemoryTermination()
     }
 
     private fun savePosition() {
-        try {
-            statePersistence.savePosition(ffmpegPlayer.positionMs)
-        } catch (_: Exception) {}
+        playbackStatePersistenceController.savePosition()
     }
 
     private fun restoreState() {
         applyComposedVolume()
+        androidSpatialPlaybackController.restoreSettings()
         // 恢复立体声扩展设置
         restoreStereoWidenSettings()
         // 恢复互馈设置
@@ -7567,7 +6891,7 @@ class PlayerController private constructor(context: Context) {
      */
     fun restoreLastSong(): AudioFile? {
         val restoreStartMs = SystemClock.elapsedRealtime()
-        val restored = statePersistence.restore()
+        val restored = playbackStatePersistenceController.restore()
         if (restored == null) {
             PowerTraceLogger.playerStartup(
                 stage = "restore_last_song_empty",
@@ -7608,17 +6932,23 @@ class PlayerController private constructor(context: Context) {
         clearReleasedInstance(this)
         saveState()
         stopProgressUpdate()
-        unregisterNoisyReceiver()
-        abandonAudioFocus()
+        androidAudioInterruptionController.release()
+        androidBluetoothOutputController.release()
         scope.cancel()
         onAudioSessionChanged = null
         equalizerController?.release()
         equalizerController = null
 
         disableUsbExclusive()
+        androidPlaybackServiceController.release("controller_release")
+        androidSystemVolumeController?.release()
+        androidSystemVolumeController = null
         usbSystemAudioKeepAlive.stop("controller_release")
         try { usbExclusiveManager.unregister() } catch (_: Exception) {}
 
+        try {
+            androidSpatialPlaybackController.close()
+        } catch (_: Exception) {}
         try {
             ffmpegPlayer.release()
         } catch (_: Exception) {}

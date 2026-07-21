@@ -5,14 +5,13 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.hardware.usb.UsbDevice
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -36,6 +35,7 @@ import com.rawsmusic.core.common.artwork.EmbeddedArtworkRegion
 import com.rawsmusic.core.common.model.RepeatMode
 import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.prefs.AudioFocusPreferences
 import com.rawsmusic.module.player.lyrics.BluetoothLyricBridge
 import com.rawsmusic.module.player.lyrics.PlaybackTickerState
 import com.rawsmusic.module.player.lyrics.PlayerServiceProxy
@@ -58,10 +58,12 @@ import java.net.URLDecoder
 class PlayerService : LifecycleService() {
 
     companion object {
-        const val CHANNEL_ID = "rawsmusic_player_channel"
+        const val CHANNEL_ID = "rawsmusic_player_channel_silent_v2"
+        private const val LEGACY_CHANNEL_ID = "rawsmusic_player_channel"
         const val NOTIFICATION_ID = 1001
         const val ACTION_PLAY = "com.rawsmusic.action.PLAY"
         const val ACTION_PAUSE = "com.rawsmusic.action.PAUSE"
+        const val ACTION_TOGGLE_PLAYBACK = "com.rawsmusic.action.TOGGLE_PLAYBACK"
         const val ACTION_NEXT = "com.rawsmusic.action.NEXT"
         const val ACTION_PREVIOUS = "com.rawsmusic.action.PREVIOUS"
         const val ACTION_STOP = "com.rawsmusic.action.STOP"
@@ -366,9 +368,10 @@ class PlayerService : LifecycleService() {
     private var wakeLock: PowerManager.WakeLock? = null
     /** USB 独占播放专用 WakeLock — 在 usbExclusiveMode 期间持有，防止 OTG 被系统关闭 */
     private var usbWakeLock: PowerManager.WakeLock? = null
-    /** Service-owned AudioFocus: ColorOS/Hans recognizes importance=audioFocus only when the playback service owns focus. */
-    private var serviceAudioFocusRequest: AudioFocusRequest? = null
+    /** Cached result only. PlayerController is the single owner of Android audio focus. */
     private var serviceAudioFocusGranted = false
+    private var lastPlaybackWidgetSignature = ""
+    private var lastPlaybackWidgetProgressElapsed = 0L
     /** USB 硬件音量 VolumeProvider — 接收系统音量键事件 */
     private var usbVolumeProvider: UsbHardwareVolumeProvider? = null
     /** WifiLock. Even for local playback, some OEM schedulers classify
@@ -477,6 +480,7 @@ class PlayerService : LifecycleService() {
 
         // 启动前台通知
         startForegroundCompat(NOTIFICATION_ID, buildNotification())
+        notifyPlaybackWidgetIfChanged(force = true)
 
         TickerBridge.init(this)
         PlayerServiceProxy.setUpdateCallback {
@@ -631,10 +635,16 @@ class PlayerService : LifecycleService() {
             return
         }
 
-        val restoredState = controller.playState.value.takeIf { it != PlayState.IDLE }
-            ?: PlayState.entries.getOrElse(AppPreferences.Player.lastPlayStateOrdinal) {
-                PlayState.IDLE
+        val actualControllerState = controller.playState.value
+        val persistedState = PlayState.entries.getOrElse(AppPreferences.Player.lastPlayStateOrdinal) {
+            PlayState.IDLE
+        }
+        val restoredState = actualControllerState.takeIf { it != PlayState.IDLE }
+            ?: persistedState.takeUnless {
+                (it == PlayState.PLAYING || it == PlayState.PREPARING) &&
+                    !AudioFocusPreferences.resumeOnStart
             }
+            ?: PlayState.PAUSED
 
         currentSong = controllerSong
         currentPlayState = restoredState
@@ -690,8 +700,16 @@ class PlayerService : LifecycleService() {
             return
         }
 
-        val restoredState = PlayState.entries.getOrElse(AppPreferences.Player.lastPlayStateOrdinal) {
+        val persistedState = PlayState.entries.getOrElse(AppPreferences.Player.lastPlayStateOrdinal) {
             PlayState.IDLE
+        }
+        val restoredState = if (!autoResume &&
+            !AudioFocusPreferences.resumeOnStart &&
+            (persistedState == PlayState.PLAYING || persistedState == PlayState.PREPARING)
+        ) {
+            PlayState.PAUSED
+        } else {
+            persistedState
         }
         val shouldProtectUsb = AppPreferences.Player.lastUsbExclusiveActive || controller.isUsbExclusiveActive()
 
@@ -814,19 +832,31 @@ class PlayerService : LifecycleService() {
         when (action) {
             ACTION_PLAY -> {
                 notifyActivity(action)
-                playerController.resume()
+                if (playerController.playState.value != PlayState.PLAYING &&
+                    playerController.playState.value != PlayState.PREPARING
+                ) {
+                    playerController.playPause()
+                }
+                schedulePlaybackWidgetRefresh()
             }
             ACTION_PAUSE -> {
                 notifyActivity(action)
                 playerController.pause()
+                schedulePlaybackWidgetRefresh()
+            }
+            ACTION_TOGGLE_PLAYBACK -> {
+                playerController.playPause()
+                schedulePlaybackWidgetRefresh()
             }
             ACTION_NEXT -> {
                 notifyActivity(action)
                 playerController.next()
+                schedulePlaybackWidgetRefresh(delayMs = 320L)
             }
             ACTION_PREVIOUS -> {
                 notifyActivity(action)
                 playerController.previous()
+                schedulePlaybackWidgetRefresh(delayMs = 320L)
             }
             ACTION_STOP -> {
                 notifyActivity(action)
@@ -1091,28 +1121,9 @@ class PlayerService : LifecycleService() {
     }
 
     private fun requestServiceAudioFocus(reason: String): Boolean {
-        if (serviceAudioFocusGranted) return true
         return try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val attrs = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build()
-            val listener = AudioManager.OnAudioFocusChangeListener { focusChange ->
-                Log.i("PlayerService", "AudioFocus changed: focus=$focusChange reason=$reason state=$currentPlayState")
-                // USB exclusive should not be paused merely because Activity went to background.
-                // PlayerController owns the real pause/duck policy.
-            }
-            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(attrs)
-                .setOnAudioFocusChangeListener(listener)
-                .setAcceptsDelayedFocusGain(false)
-                .setWillPauseWhenDucked(true)
-                .build()
-            val result = am.requestAudioFocus(req)
-            serviceAudioFocusRequest = req
-            serviceAudioFocusGranted = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-            Log.i("PlayerService", "requestServiceAudioFocus: reason=$reason result=$result granted=$serviceAudioFocusGranted")
+            serviceAudioFocusGranted = playerController.ensureAudioFocusForService(reason)
+            Log.i("PlayerService", "requestServiceAudioFocus: delegated reason=$reason granted=$serviceAudioFocusGranted")
             serviceAudioFocusGranted
         } catch (t: Throwable) {
             Log.w("PlayerService", "requestServiceAudioFocus failed: reason=$reason ${t.message}")
@@ -1121,15 +1132,12 @@ class PlayerService : LifecycleService() {
     }
 
     private fun abandonServiceAudioFocus(reason: String) {
-        if (!serviceAudioFocusGranted) return
         try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            serviceAudioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
-            Log.i("PlayerService", "abandonServiceAudioFocus: reason=$reason")
+            playerController.releaseAudioFocusForService(reason)
+            Log.i("PlayerService", "abandonServiceAudioFocus: delegated reason=$reason")
         } catch (t: Throwable) {
             Log.w("PlayerService", "abandonServiceAudioFocus failed: reason=$reason ${t.message}")
         } finally {
-            serviceAudioFocusRequest = null
             serviceAudioFocusGranted = false
         }
     }
@@ -1624,9 +1632,50 @@ class PlayerService : LifecycleService() {
             isForegroundStarted = true
         } else {
             // 后续更新使用 notify()，避免 startForeground() 可能的封面图更新问题
-            val nm = getSystemService(NotificationManager::class.java) ?: return
-            nm.notify(NOTIFICATION_ID, notification)
+            getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification)
         }
+        notifyPlaybackWidgetIfChanged()
+    }
+
+    private fun schedulePlaybackWidgetRefresh(delayMs: Long = 180L) {
+        lifecycleScope.launch {
+            delay(delayMs)
+            notifyPlaybackWidgetIfChanged(force = true)
+        }
+    }
+
+    private fun notifyPlaybackWidgetIfChanged(force: Boolean = false) {
+        val controllerSong = playerController.currentSong.value
+        val song = currentSong ?: controllerSong
+        val controllerState = playerController.playState.value
+        val resolvedState = if (controllerState != PlayState.IDLE) controllerState else currentPlayState
+        val signature = buildString {
+            append(song?.mediaArtworkIdentity().orEmpty())
+            append('|')
+            append(song?.title.orEmpty())
+            append('|')
+            append(song?.artist.orEmpty())
+            append('|')
+            append(song?.albumArtPath.orEmpty())
+            append('|')
+            append(resolvedState.name)
+        }
+        if (!force && signature == lastPlaybackWidgetSignature) return
+        lastPlaybackWidgetSignature = signature
+        val refresh = Intent("com.rawsmusic.action.REFRESH_PLAYBACK_WIDGET").setComponent(
+            ComponentName(this, "com.rawsmusic.widget.PlaybackWidgetProvider")
+        )
+        sendBroadcast(refresh)
+    }
+
+    private fun notifyPlaybackWidgetProgress() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastPlaybackWidgetProgressElapsed < 2_000L) return
+        lastPlaybackWidgetProgressElapsed = now
+        val progress = Intent("com.rawsmusic.action.PROGRESS_PLAYBACK_WIDGET").setComponent(
+            ComponentName(this, "com.rawsmusic.widget.PlaybackWidgetProvider")
+        )
+        sendBroadcast(progress)
     }
 
     private fun startForegroundCompat(id: Int, notification: Notification) {
@@ -1676,18 +1725,30 @@ class PlayerService : LifecycleService() {
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Music Playback",
-                NotificationManager.IMPORTANCE_DEFAULT
-            ).apply {
-                description = "Music playback controls"
-                setShowBadge(false)
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-            }
-            val manager = getSystemService(NotificationManager::class.java) ?: return
-            manager.createNotificationChannel(channel)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "Music Playback",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Music playback controls"
+            setSound(null, null)
+            enableVibration(false)
+            enableLights(false)
+            setShowBadge(false)
+            setBypassDnd(false)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        }
+        manager.createNotificationChannel(channel)
+
+        // Android notification-channel sound/importance settings are immutable after the
+        // channel is created.  Older RawSMusic builds used an IMPORTANCE_DEFAULT channel,
+        // so keep the legacy channel only as a settings-history entry and post all playback
+        // notifications through this new permanently silent channel.
+        if (manager.getNotificationChannel(LEGACY_CHANNEL_ID) != null) {
+            Log.i("PlayerService", "Playback notification migrated to silent channel=$CHANNEL_ID")
         }
     }
 
@@ -1728,7 +1789,15 @@ class PlayerService : LifecycleService() {
             .setSmallIcon(notificationSmallIcon)
             .setOngoing(true)
             .setContentIntent(contentIntent)
-            .setOnlyAlertOnce(false)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setCategory(Notification.CATEGORY_TRANSPORT)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setPriority(Notification.PRIORITY_LOW)
+            .setDefaults(0)
+            .setSound(null)
+            .setVibrate(null)
+
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
@@ -1908,6 +1977,14 @@ class PlayerService : LifecycleService() {
                 notification.flags = notification.flags or 0x1000000 or 0x2000000
             }
         }
+
+        // Some vendor SystemUI builds partially ignore Builder flags when a foreground
+        // media notification is rebuilt after pause/next/previous.  Re-assert the silent
+        // policy on the built object as well so an update can never inherit defaults.
+        notification.flags = notification.flags or Notification.FLAG_ONLY_ALERT_ONCE
+        notification.defaults = 0
+        notification.sound = null
+        notification.vibrate = null
 
         return notification
     }
@@ -2316,6 +2393,7 @@ class PlayerService : LifecycleService() {
                         val duration = currentSong?.duration ?: 0L
                         if (duration > 0 && estimatedPosition <= duration) {
                             updateMediaSessionPlaybackState(PlayState.PLAYING, estimatedPosition)
+                            notifyPlaybackWidgetProgress()
                         }
                     }
                 }
