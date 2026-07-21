@@ -39,6 +39,56 @@ class NativeDSPEngine {
         nativeSetStereoWiden(nativeHandle, safeFactor)
     }
 
+    /** RawSMusic-owned binaural renderer for regular Android stereo output. */
+    fun setAndroidBinauralSpatialEnabled(enabled: Boolean) {
+        if (nativeHandle == 0L) return
+        nativeSetAndroidBinauralSpatialEnabled(nativeHandle, enabled)
+    }
+
+    fun setAndroidBinauralSpatialParameters(intensityPercent: Float, roomPercent: Float) {
+        if (nativeHandle == 0L) return
+        nativeSetAndroidBinauralSpatialParameters(
+            nativeHandle,
+            intensityPercent.coerceIn(0f, 100f),
+            roomPercent.coerceIn(0f, 100f)
+        )
+    }
+
+
+    fun setAndroidBinauralSpatialAdvancedParameters(
+        brirEnabled: Boolean,
+        separationPercent: Float,
+        headSizeCentimeters: Float,
+        pinnaDetailPercent: Float
+    ) {
+        if (nativeHandle == 0L) return
+        nativeSetAndroidBinauralSpatialAdvancedParameters(
+            nativeHandle,
+            brirEnabled,
+            separationPercent.coerceIn(0f, 100f),
+            headSizeCentimeters.coerceIn(48f, 68f),
+            pinnaDetailPercent.coerceIn(0f, 100f)
+        )
+    }
+
+    fun setAndroidBinauralHeadPose(
+        enabled: Boolean,
+        quaternionX: Float,
+        quaternionY: Float,
+        quaternionZ: Float,
+        quaternionW: Float
+    ) {
+        if (nativeHandle == 0L) return
+        nativeSetAndroidBinauralHeadPose(
+            nativeHandle,
+            enabled,
+            quaternionX,
+            quaternionY,
+            quaternionZ,
+            quaternionW
+        )
+    }
+
     fun process(buffer: ShortArray, length: Int, channels: Int): Int {
         if (nativeHandle == 0L) return -1
         return nativeProcess(nativeHandle, buffer, length, channels)
@@ -62,6 +112,120 @@ class NativeDSPEngine {
     fun setPEQEnabled(enabled: Boolean) {
         if (nativeHandle == 0L) return
         nativeSetPEQEnabled(nativeHandle, enabled)
+    }
+
+    /** Enable the independent graphic-EQ bank. Native enforces PEQ/GEQ exclusivity. */
+    fun setGraphicEQEnabled(enabled: Boolean) {
+        if (nativeHandle == 0L) return
+        nativeSetGraphicEQEnabled(nativeHandle, enabled)
+    }
+
+    fun setGraphicEQFilter(
+        index: Int,
+        frequency: Float,
+        gainDB: Float,
+        Q: Float,
+        enabled: Boolean
+    ) {
+        if (nativeHandle == 0L || index !in 0 until MAX_PEQ_FILTERS) return
+        nativeSetGraphicEQFilter(
+            nativeHandle,
+            index,
+            frequency.coerceIn(20f, 20000f),
+            gainDB.coerceIn(-12f, 12f),
+            Q.coerceIn(0.05f, 24f),
+            enabled
+        )
+    }
+
+    fun clearGraphicEQFilters() {
+        if (nativeHandle == 0L) return
+        nativeClearGraphicEQFilters(nativeHandle)
+    }
+
+    fun setGraphicEQPreamp(gainDB: Float) {
+        if (nativeHandle == 0L) return
+        nativeSetGraphicEQPreamp(nativeHandle, gainDB.coerceIn(-12f, 12f))
+    }
+
+    fun setExperimentalGainEnabled(enabled: Boolean) {
+        if (nativeHandle == 0L) return
+        nativeSetExperimentalGainEnabled(nativeHandle, enabled)
+    }
+
+    fun setExperimentalGainDb(gainDb: Float) {
+        if (nativeHandle == 0L) return
+        nativeSetExperimentalGainDb(nativeHandle, gainDb.coerceIn(0f, 30f))
+    }
+
+    fun setLoudnessBalanceEnabled(enabled: Boolean) {
+        if (nativeHandle != 0L) nativeSetLoudnessBalanceEnabled(nativeHandle, enabled)
+    }
+
+    fun setLoudnessBalanceParameters(loudnessPercent: Float, balance: Float) {
+        if (nativeHandle != 0L) {
+            nativeSetLoudnessBalanceParameters(
+                nativeHandle,
+                loudnessPercent.coerceIn(0f, 100f),
+                balance.coerceIn(-1f, 1f)
+            )
+        }
+    }
+
+    fun setMonoBassEnabled(enabled: Boolean) {
+        if (nativeHandle != 0L) nativeSetMonoBassEnabled(nativeHandle, enabled)
+    }
+
+    fun setMonoBassParameters(crossoverHz: Float, amountPercent: Float) {
+        if (nativeHandle != 0L) {
+            nativeSetMonoBassParameters(
+                nativeHandle,
+                crossoverHz.coerceIn(60f, 300f),
+                amountPercent.coerceIn(0f, 100f)
+            )
+        }
+    }
+
+    fun setDynamicEqEnabled(enabled: Boolean) {
+        if (nativeHandle != 0L) nativeSetDynamicEqEnabled(nativeHandle, enabled)
+    }
+
+    fun setDynamicEqParameters(
+        intensityPercent: Float,
+        deEsserPercent: Float,
+        deEsserFrequencyHz: Float
+    ) {
+        if (nativeHandle != 0L) {
+            nativeSetDynamicEqParameters(
+                nativeHandle,
+                intensityPercent.coerceIn(0f, 100f),
+                deEsserPercent.coerceIn(0f, 100f),
+                deEsserFrequencyHz.coerceIn(4000f, 10000f)
+            )
+        }
+    }
+
+    fun setMoogLadderEnabled(enabled: Boolean) {
+        if (nativeHandle != 0L) nativeSetMoogLadderEnabled(nativeHandle, enabled)
+    }
+
+    fun setMoogLadderParameters(
+        mode: Int,
+        cutoffHz: Float,
+        resonancePercent: Float,
+        driveDb: Float,
+        mixPercent: Float
+    ) {
+        if (nativeHandle != 0L) {
+            nativeSetMoogLadderParameters(
+                nativeHandle,
+                mode.coerceIn(0, 4),
+                cutoffHz.coerceIn(20f, 20000f),
+                resonancePercent.coerceIn(0f, 100f),
+                driveDb.coerceIn(0f, 18f),
+                mixPercent.coerceIn(0f, 100f)
+            )
+        }
     }
 
     /**
@@ -129,12 +293,12 @@ class NativeDSPEngine {
         nativeClearPEQFilters(nativeHandle)
     }
 
-    /** 设置前置放大器增益 (dB)，范围 -12 到 12 */
+    /** 设置实际 DSP 前级增益。负向扩展范围用于 PEQ 自动余量补偿。 */
     fun setPreamp(gainDB: Float) {
         if (nativeHandle == 0L) return
 
         val safeGain = if (gainDB.isFinite()) {
-            gainDB.coerceIn(-12f, 12f)
+            gainDB.coerceIn(-96f, 12f)
         } else {
             0f
         }
@@ -195,6 +359,28 @@ class NativeDSPEngine {
 
     private external fun nativeCreate(sampleRate: Int, channels: Int): Long
     private external fun nativeSetStereoWiden(handle: Long, factor: Float)
+    private external fun nativeSetAndroidBinauralSpatialEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetAndroidBinauralSpatialParameters(
+        handle: Long,
+        intensityPercent: Float,
+        roomPercent: Float
+    )
+
+    private external fun nativeSetAndroidBinauralSpatialAdvancedParameters(
+        handle: Long,
+        brirEnabled: Boolean,
+        separationPercent: Float,
+        headSizeCentimeters: Float,
+        pinnaDetailPercent: Float
+    )
+    private external fun nativeSetAndroidBinauralHeadPose(
+        handle: Long,
+        enabled: Boolean,
+        quaternionX: Float,
+        quaternionY: Float,
+        quaternionZ: Float,
+        quaternionW: Float
+    )
     private external fun nativeProcess(handle: Long, buffer: ShortArray, length: Int, channels: Int): Int
     private external fun nativeProcessFloat(handle: Long, buffer: FloatArray, length: Int, channels: Int): Int
     private external fun nativeHasActiveEffects(handle: Long): Boolean
@@ -202,6 +388,39 @@ class NativeDSPEngine {
 
     // PEQ JNI 方法
     private external fun nativeSetPEQEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetGraphicEQEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetGraphicEQFilter(
+        handle: Long,
+        index: Int,
+        frequency: Float,
+        gainDB: Float,
+        Q: Float,
+        enabled: Boolean
+    )
+    private external fun nativeClearGraphicEQFilters(handle: Long)
+    private external fun nativeSetGraphicEQPreamp(handle: Long, gainDB: Float)
+    private external fun nativeSetExperimentalGainEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetExperimentalGainDb(handle: Long, gainDb: Float)
+    private external fun nativeSetLoudnessBalanceEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetLoudnessBalanceParameters(handle: Long, loudnessPercent: Float, balance: Float)
+    private external fun nativeSetMonoBassEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetMonoBassParameters(handle: Long, crossoverHz: Float, amountPercent: Float)
+    private external fun nativeSetDynamicEqEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetDynamicEqParameters(
+        handle: Long,
+        intensityPercent: Float,
+        deEsserPercent: Float,
+        deEsserFrequencyHz: Float
+    )
+    private external fun nativeSetMoogLadderEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetMoogLadderParameters(
+        handle: Long,
+        mode: Int,
+        cutoffHz: Float,
+        resonancePercent: Float,
+        driveDb: Float,
+        mixPercent: Float
+    )
     private external fun nativeSetPEQFilter(handle: Long, index: Int, type: Int, frequency: Float, gainDB: Float, Q: Float, enabled: Boolean)
     private external fun nativeRemovePEQFilter(handle: Long, index: Int)
     private external fun nativeClearPEQFilters(handle: Long)
@@ -220,37 +439,6 @@ class NativeDSPEngine {
     fun setCompressorEnabled(enabled: Boolean) {
         if (nativeHandle == 0L) return
         nativeSetCompressorEnabled(nativeHandle, enabled)
-    }
-
-    /**
-     * 设置压限器参数
-     * @param thresholdDB 阈值 (dB)，范围 -60 ~ 0
-     * @param ratio 压缩比，范围 1 ~ 20
-     * @param attackMs 启动时间 (ms)，范围 0.1 ~ 100
-     * @param releaseMs 释放时间 (ms)，范围 10 ~ 1000
-     * @param makeupGainDB 补偿增益 (dB)，范围 0 ~ 24
-     */
-    fun setCompressorParams(thresholdDB: Float, ratio: Float, attackMs: Float, releaseMs: Float, makeupGainDB: Float) {
-        if (nativeHandle == 0L) return
-        nativeSetCompressorParams(nativeHandle, thresholdDB, ratio, attackMs, releaseMs, makeupGainDB)
-    }
-
-    /**
-     * 设置压限器拐点宽度
-     * @param kneeWidthDB 拐点宽度 (dB)，范围 0 ~ 30，0为硬拐点
-     */
-    fun setCompressorKneeWidth(kneeWidthDB: Float) {
-        if (nativeHandle == 0L) return
-        nativeSetCompressorKneeWidth(nativeHandle, kneeWidthDB)
-    }
-
-    /**
-     * 设置压限器检测模式
-     * @param mode 0=Peak, 1=RMS
-     */
-    fun setCompressorDetectionMode(mode: Int) {
-        if (nativeHandle == 0L) return
-        nativeSetCompressorDetectionMode(nativeHandle, mode)
     }
 
     /**
@@ -304,9 +492,6 @@ class NativeDSPEngine {
 
     // Compressor JNI 方法
     private external fun nativeSetCompressorEnabled(handle: Long, enabled: Boolean)
-    private external fun nativeSetCompressorParams(handle: Long, thresholdDB: Float, ratio: Float, attackMs: Float, releaseMs: Float, makeupGainDB: Float)
-    private external fun nativeSetCompressorKneeWidth(handle: Long, kneeWidthDB: Float)
-    private external fun nativeSetCompressorDetectionMode(handle: Long, mode: Int)
     private external fun nativeGetCompressorGR(handle: Long): Float
 
     // BassBoost JNI 方法

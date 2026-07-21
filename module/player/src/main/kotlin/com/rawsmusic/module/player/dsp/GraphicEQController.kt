@@ -1,230 +1,173 @@
 package com.rawsmusic.module.player.dsp
 
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import com.rawsmusic.module.data.prefs.AppPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlin.math.abs
 
-/**
- * 图形均衡器控制器
- * 包装 ParametricEQController，将固定频率/Q 的 PEQ 滤波器暴露为"只调增益"的图形 EQ
- */
-class GraphicEQController(private val peqController: ParametricEQController) {
-
+/** Independent fixed-band equalizer backed by its own native filter bank. */
+class GraphicEQController(private var nativeEngine: NativeDSPEngine) {
     companion object {
         private const val TAG = "GraphicEQController"
         private const val CUSTOM_PRESET_NAME = "Custom"
+        private const val PERSIST_DEBOUNCE_MS = 250L
     }
 
-    // 段数（与 PEQ 共享）
-    val bandCount: StateFlow<Int> = peqController.bandCount
+    private val persistHandler = Handler(Looper.getMainLooper())
+    private val persistGainsRunnable = Runnable {
+        AppPreferences.GraphicEQ.gains = _gains.value
+    }
 
-    // 启用状态（与 PEQ 共享）
-    val isEnabled: StateFlow<Boolean> = peqController.isEnabled
+    private val _bandCount = MutableStateFlow(AppPreferences.GraphicEQ.bandCount)
+    val bandCount: StateFlow<Int> = _bandCount.asStateFlow()
 
-    // 前级增益（与 PEQ 共享）
-    val preamp: StateFlow<Float> = peqController.preamp
+    private val _isEnabled = MutableStateFlow(AppPreferences.GraphicEQ.isEnabled)
+    val isEnabled: StateFlow<Boolean> = _isEnabled.asStateFlow()
 
-    // 当前每段增益
-    private val _gains = MutableStateFlow<List<Float>>(emptyList())
+    private val _preamp = MutableStateFlow(AppPreferences.GraphicEQ.preamp)
+    val preamp: StateFlow<Float> = _preamp.asStateFlow()
+
+    private val _gains = MutableStateFlow(normalizeSavedGains(AppPreferences.GraphicEQ.gains, _bandCount.value))
     val gains: StateFlow<List<Float>> = _gains.asStateFlow()
 
-    // 当前预设名
-    private val _presetName = MutableStateFlow("Normal")
+    private val _presetName = MutableStateFlow(AppPreferences.GraphicEQ.presetName)
     val presetName: StateFlow<String> = _presetName.asStateFlow()
 
-    // 内置预设列表
-    private val _presets = MutableStateFlow<List<GraphicEQPreset>>(emptyList())
+    private val _presets = MutableStateFlow(GraphicEQPreset.builtInPresetsForCount(_bandCount.value))
     val presets: StateFlow<List<GraphicEQPreset>> = _presets.asStateFlow()
 
+    /** Called before GEQ is enabled so the owner can disable PEQ state. */
+    var onExclusiveEnable: (() -> Unit)? = null
+
     init {
-        // 初始化：从当前 PEQ 状态同步增益
-        syncGainsFromPEQ()
-        refreshPresets()
+        if (nativeEngine.isInitialized()) syncAllToNative()
     }
 
-
-    /**
-     * Refresh the graphic facade after the shared PEQ was edited from the
-     * parametric workspace, AutoEq import or file import.
-     */
-    fun refreshFromParametricState() {
-        syncGainsFromPEQ()
-        refreshPresets()
-        resolvePresetNameFromCurrentState()
+    fun connectEngine(engine: NativeDSPEngine) {
+        nativeEngine = engine
+        syncAllToNative()
     }
 
-    /**
-     * 切换启用/禁用
-     */
     fun setEnabled(enabled: Boolean) {
-        peqController.setEnabled(enabled)
+        if (enabled) onExclusiveEnable?.invoke()
+        _isEnabled.value = enabled
+        AppPreferences.GraphicEQ.isEnabled = enabled
+        if (nativeEngine.isInitialized()) {
+            if (enabled) syncFiltersToNative()
+            nativeEngine.setGraphicEQEnabled(enabled)
+        }
     }
 
-    /**
-     * 设置前级增益
-     */
+    internal fun disableForMutualExclusion() {
+        if (!_isEnabled.value) return
+        _isEnabled.value = false
+        AppPreferences.GraphicEQ.isEnabled = false
+        if (nativeEngine.isInitialized()) nativeEngine.setGraphicEQEnabled(false)
+    }
+
     fun setPreamp(gainDB: Float) {
-        peqController.setPreamp(gainDB)
+        val safeGain = gainDB.coerceIn(-12f, 12f)
+        _preamp.value = safeGain
+        AppPreferences.GraphicEQ.preamp = safeGain
+        if (nativeEngine.isInitialized()) nativeEngine.setGraphicEQPreamp(safeGain)
     }
 
-    /**
-     * 切换段数
-     */
     fun setBandCount(count: Int) {
         val target = count.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
-        if (target == bandCount.value) return
+        if (target == _bandCount.value) return
 
-        peqController.setBandCount(target)
-        syncGainsFromPEQ()
-        refreshPresets()
+        val converted = GraphicEQPreset.resamplePreset(
+            GraphicEQPreset(CUSTOM_PRESET_NAME, _bandCount.value, _gains.value.toFloatArray()),
+            target
+        )
+        _bandCount.value = target
+        _gains.value = converted.gains.toList()
         _presetName.value = CUSTOM_PRESET_NAME
-
+        _presets.value = GraphicEQPreset.builtInPresetsForCount(target)
+        persistAll()
+        syncAllToNative()
         Log.d(TAG, "Band count changed to $target")
     }
 
-    /**
-     * 设置单段增益
-     */
     fun setGain(index: Int, gainDB: Float) {
         val current = _gains.value.toMutableList()
-        if (index < 0 || index >= current.size) return
+        if (index !in current.indices) return
 
-        current[index] = gainDB.coerceIn(-12f, 12f)
+        val safeGain = gainDB.coerceIn(-12f, 12f)
+        current[index] = safeGain
         _gains.value = current
         _presetName.value = CUSTOM_PRESET_NAME
-
-        // 转换为 PEQ 滤波器写入
-        val freqs = PEQFilter.defaultFreqsForCount(bandCount.value)
-        val q = PEQFilter.qForGraphicBand(bandCount.value)
-        val filter = PEQFilter(
-            type = FilterType.PEAK,
-            frequency = freqs[index],
-            gainDB = gainDB,
-            Q = q,
-            enabled = true
-        )
-        peqController.updateFilter(index, filter)
+        AppPreferences.GraphicEQ.presetName = CUSTOM_PRESET_NAME
+        persistHandler.removeCallbacks(persistGainsRunnable)
+        persistHandler.postDelayed(persistGainsRunnable, PERSIST_DEBOUNCE_MS)
+        syncBandToNative(index, safeGain)
     }
 
-    /**
-     * 重置单段到 0dB
-     */
-    fun resetBand(index: Int) {
-        setGain(index, 0f)
-    }
+    fun resetBand(index: Int) = setGain(index, 0f)
 
-    /**
-     * 重置全部到平坦
-     */
     fun resetToFlat() {
-        val count = bandCount.value
-        val freqs = PEQFilter.defaultFreqsForCount(count)
-        val q = PEQFilter.qForGraphicBand(count)
-
-        val filters = freqs.map { freq ->
-            PEQFilter(
-                type = FilterType.PEAK,
-                frequency = freq,
-                gainDB = 0f,
-                Q = q,
-                enabled = true
-            )
-        }
-        peqController.importFilters(filters, "Normal")
-        _gains.value = List(count) { 0f }
+        _gains.value = List(_bandCount.value) { 0f }
         _presetName.value = "Normal"
-
-        Log.d(TAG, "Reset to flat, bandCount=$count")
+        persistAll()
+        syncAllToNative()
     }
 
-    /**
-     * 应用预设
-     */
     fun applyPreset(preset: GraphicEQPreset) {
-        val targetCount = bandCount.value
-
-        // 如果预设段数不同，先重采样
-        val resampled = if (preset.bandCount != targetCount) {
-            GraphicEQPreset.resamplePreset(preset, targetCount)
-        } else {
+        val resolved = if (preset.bandCount == _bandCount.value) {
             preset
+        } else {
+            GraphicEQPreset.resamplePreset(preset, _bandCount.value)
         }
-
-        val freqs = PEQFilter.defaultFreqsForCount(targetCount)
-        val q = PEQFilter.qForGraphicBand(targetCount)
-
-        val filters = resampled.gains.mapIndexed { i, gain ->
-            PEQFilter(
-                type = FilterType.PEAK,
-                frequency = freqs[i],
-                gainDB = gain,
-                Q = q,
-                enabled = true
-            )
-        }
-
-        peqController.importFilters(filters, resampled.name)
-        _gains.value = resampled.gains.toList()
-        _presetName.value = resampled.name
-
-        Log.d(TAG, "Applied preset: ${resampled.name}, bands=$targetCount")
+        _gains.value = resolved.gains.map { it.coerceIn(-12f, 12f) }
+        _presetName.value = resolved.name
+        persistAll()
+        syncAllToNative()
+        Log.d(TAG, "Applied preset: ${resolved.name}, bands=${_bandCount.value}")
     }
 
-    /**
-     * 从 PEQ 状态同步增益
-     */
-    private fun syncGainsFromPEQ() {
-        val filters = peqController.filters.value
-        val count = bandCount.value
-        val newGains = MutableList(count) { 0f }
-
-        for (i in 0 until minOf(count, filters.size)) {
-            if (filters[i].enabled) {
-                newGains[i] = filters[i].gainDB
-            }
-        }
-
-        _gains.value = newGains
+    private fun syncAllToNative() {
+        if (!nativeEngine.isInitialized()) return
+        syncFiltersToNative()
+        nativeEngine.setGraphicEQPreamp(_preamp.value)
+        nativeEngine.setGraphicEQEnabled(_isEnabled.value)
     }
 
-    /**
-     * 刷新预设列表
-     */
-    private fun refreshPresets() {
-        _presets.value = GraphicEQPreset.builtInPresetsForCount(bandCount.value)
+    private fun syncFiltersToNative() {
+        nativeEngine.clearGraphicEQFilters()
+        _gains.value.forEachIndexed(::syncBandToNative)
     }
 
+    private fun syncBandToNative(index: Int, gainDB: Float) {
+        if (!nativeEngine.isInitialized()) return
+        val frequencies = PEQFilter.defaultFreqsForCount(_bandCount.value)
+        if (index !in frequencies.indices) return
+        nativeEngine.setGraphicEQFilter(
+            index = index,
+            frequency = frequencies[index],
+            gainDB = gainDB,
+            Q = PEQFilter.qForGraphicBand(_bandCount.value),
+            enabled = abs(gainDB) > 0.0001f
+        )
+    }
 
-    private fun resolvePresetNameFromCurrentState() {
-        val count = bandCount.value
-        val filters = peqController.filters.value.take(count)
-        val expectedFreqs = PEQFilter.defaultFreqsForCount(count)
-        val expectedQ = PEQFilter.qForGraphicBand(count)
-        val isGraphicLayout = filters.size == count && filters.indices.all { index ->
-            val filter = filters[index]
-            filter.type == FilterType.PEAK &&
-                kotlin.math.abs(filter.frequency - expectedFreqs[index]) <=
-                    (expectedFreqs[index] * 0.01f).coerceAtLeast(1f) &&
-                kotlin.math.abs(filter.Q - expectedQ) <= 0.12f
-        }
+    private fun persistAll() {
+        persistHandler.removeCallbacks(persistGainsRunnable)
+        AppPreferences.GraphicEQ.bandCount = _bandCount.value
+        AppPreferences.GraphicEQ.preamp = _preamp.value
+        AppPreferences.GraphicEQ.presetName = _presetName.value
+        AppPreferences.GraphicEQ.gains = _gains.value
+    }
 
-        if (!isGraphicLayout) {
-            _presetName.value = CUSTOM_PRESET_NAME
-            return
-        }
-
-        val match = _presets.value.firstOrNull { preset ->
-            val candidate = if (preset.bandCount == count) {
-                preset
-            } else {
-                GraphicEQPreset.resamplePreset(preset, count)
-            }
-            candidate.gains.size == _gains.value.size &&
-                candidate.gains.indices.all { index ->
-                    kotlin.math.abs(candidate.gains[index] - _gains.value[index]) <= 0.05f
-                }
-        }
-        _presetName.value = match?.name ?: CUSTOM_PRESET_NAME
+    private fun normalizeSavedGains(saved: List<Float>, count: Int): List<Float> {
+        if (saved.isEmpty()) return List(count) { 0f }
+        if (saved.size == count) return saved.map { it.coerceIn(-12f, 12f) }
+        return GraphicEQPreset.resamplePreset(
+            GraphicEQPreset(CUSTOM_PRESET_NAME, saved.size, saved.toFloatArray()),
+            count
+        ).gains.map { it.coerceIn(-12f, 12f) }
     }
 }
