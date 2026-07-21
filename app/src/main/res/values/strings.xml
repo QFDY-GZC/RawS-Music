@@ -1,4 +1,68 @@
 <resources>
+    <string name="shortcut_play_short">Play</string>
+    <string name="shortcut_play_long">Resume playback</string>
+    <string name="shortcut_search_short">Search</string>
+    <string name="shortcut_search_long">Search the music library</string>
+    <string name="shortcut_shuffle_short">Shuffle</string>
+    <string name="shortcut_shuffle_long">Shuffle all songs</string>
+    <string name="settings_lyric_effects_section">Lyric effects</string>
+    <string name="settings_lyric_karaoke_glow">Word-by-word lyric glow</string>
+    <string name="settings_lyric_karaoke_lift">Word-by-word lyric lift</string>
+    <string name="settings_lyrico_section">Lyrico</string>
+    <string name="settings_lyrico_sources_section">Lyrico sources</string>
+    <string name="settings_lyrico_runtime_title">Built-in source runtime</string>
+    <string name="settings_lyrico_runtime_checking">Checking QuickJS runtime…</string>
+    <string name="settings_lyrico_runtime_ready">Ready. Compatible Lyrico source plugins can run inside RawSMusic.</string>
+    <string name="settings_lyrico_runtime_failed">Runtime self-test failed. Imported sources are disabled.</string>
+    <string name="settings_lyrico_import_plugin">Import source plugin</string>
+    <string name="settings_lyrico_import_plugin_summary">Select a Lyrico plugin ZIP; files are validated before installation</string>
+    <string name="settings_lyrico_no_plugins">No source plugins</string>
+    <string name="settings_lyrico_no_plugins_summary">Import a Lyrico API v3 source plugin to search online lyrics</string>
+    <string name="settings_lyrico_plugin_label">%1$s · %2$s</string>
+    <string name="settings_lyrico_plugin_imported">Imported %1$s</string>
+    <string name="settings_lyrico_plugins_imported">Imported %1$d lyric sources</string>
+    <string name="settings_lyrico_plugins_imported_partial">Imported %1$d sources; %2$d failed: %3$s</string>
+    <string name="settings_lyrico_plugin_import_failed">Import failed: %1$s</string>
+    <string name="settings_lyrico_title">Lyrico integration</string>
+    <string name="settings_lyrico_installed">Installed. You can edit lyrics and tags from the player lyric menu.</string>
+    <string name="settings_lyrico_not_installed">Not installed. Open the project page to install Lyrico.</string>
+    <string name="settings_lyrico_open">Open Lyrico</string>
+    <string name="settings_lyrico_open_summary">Open the app, or visit its project page when it is not installed</string>
+    <string name="lyrico_no_current_song">No song is currently playing</string>
+    <string name="lyrico_not_installed">Lyrico is not installed</string>
+    <string name="lyrico_audio_uri_unavailable">This audio file cannot be shared with Lyrico</string>
+    <string name="lyrico_open_failed">Unable to open Lyrico</string>
+    <string name="lyrico_refresh_complete">Lyrics and metadata refreshed</string>
+    <string name="lyrico_search_title">Online lyric match</string>
+    <string name="lyrico_search_query_section">Search</string>
+    <string name="lyrico_search_query_hint">Song title and artist</string>
+    <string name="lyrico_search_action">Search enabled sources</string>
+    <string name="lyrico_search_action_summary">Search using imported Lyrico plugins</string>
+    <string name="lyrico_search_searching">Searching…</string>
+    <string name="lyrico_search_empty">No matching lyrics found</string>
+    <string name="lyrico_search_count">Found %1$d candidates</string>
+    <string name="lyrico_search_no_sources">No enabled sources. Import one in Lyrics settings.</string>
+    <string name="lyrico_search_results_section">Results</string>
+    <string name="lyrico_search_source_all">All</string>
+    <string name="lyrico_search_source_empty">This source returned no matching results</string>
+    <string name="lyrico_search_unknown_title">Unknown title</string>
+    <string name="lyrico_search_applying">Applying selected content…</string>
+    <string name="lyrico_search_applied">Selected content applied</string>
+    <string name="lyrico_search_apply_failed">Unable to apply: %1$s</string>
+    <string name="lyrico_search_status_title">Source status</string>
+    <string name="lyrico_preview_title">Preview and apply</string>
+    <string name="lyrico_preview_cover">Album artwork from this source</string>
+    <string name="lyrico_preview_write_cover">Write album artwork</string>
+    <string name="lyrico_preview_write_lyrics">Write lyrics</string>
+    <string name="lyrico_preview_lyric_type">Lyric type</string>
+    <string name="lyrico_preview_word_by_word">Word by word</string>
+    <string name="lyrico_preview_line_by_line">Line by line</string>
+    <string name="lyrico_preview_translation">Translation</string>
+    <string name="lyrico_preview_romanization">Romanization</string>
+    <string name="lyrico_preview_loading">Loading lyric preview…</string>
+    <string name="lyrico_preview_cancel">Cancel</string>
+    <string name="lyrico_preview_apply">Apply</string>
+    <string name="lyrico_preview_cover_only">Artwork only</string>
     <string name="app_name">RawSMusic</string>
     <string name="songs">Songs</string>
     <string name="albums">Albums</string>
@@ -104,42 +168,42 @@
     <string name="settings_section_lyrics">Lyrics</string>
     <string name="settings_section_media_library">Media library</string>
     <string name="settings_section_data">Data</string>
-    <string name="settings_audio_quality_title">Audio quality</string>
-    <string name="settings_audio_quality_summary">Sample rate, bit depth, output mode, and resampling</string>
-    <string name="settings_audio_quality_keywords">sample rate bit depth output mode resampling</string>
+    <string name="settings_audio_quality_title">Playback &amp; output</string>
+    <string name="settings_audio_quality_summary">Output engine, sample rate, bit depth, gapless playback, normalization, and Bluetooth compatibility</string>
+    <string name="settings_audio_quality_keywords">playback output sample rate bit depth ReplayGain gapless crossfade Bluetooth SCO</string>
     <string name="settings_usb_dac_title">USB DAC</string>
     <string name="settings_usb_dac_summary">USB exclusive mode, DAC status, PCM output, and DSD</string>
     <string name="settings_usb_dac_keywords">USB exclusive DAC PCM DSD decoder</string>
     <string name="settings_audio_effects_title">Audio effects</string>
     <string name="settings_audio_effects_summary">EQ, spatial effects, dynamics, and frequency enhancement</string>
     <string name="settings_audio_effects_keywords">equalizer EQ reverb bass treble</string>
-    <string name="settings_player_interface_title">Interface</string>
+    <string name="settings_player_interface_title">Player interface</string>
     <string name="settings_player_interface_summary">Default background, immersive mode, persistent cover, and visualization</string>
     <string name="settings_player_interface_keywords">player album art controls buttons</string>
     <string name="settings_appearance_title">Appearance</string>
     <string name="settings_appearance_summary">Theme mode, colors, and display style</string>
-    <string name="settings_appearance_keywords">theme font color dark mode</string>
-    <string name="settings_lyric_management_title">Lyrics</string>
-    <string name="settings_lyric_management_summary">Lyric sources, lyric font settings, and lyric display</string>
-    <string name="settings_lyric_management_keywords">lyrics font size lrc lyric</string>
-    <string name="settings_status_bar_lyric_title">Status-bar lyrics</string>
-    <string name="settings_status_bar_lyric_summary">Flyme, Samsung, Bluetooth, and Lyric Getter</string>
-    <string name="settings_status_bar_lyric_keywords">status bar notification lyric</string>
+    <string name="settings_appearance_keywords">theme color palette dark mode appearance</string>
+    <string name="settings_lyric_management_title">Lyrics display &amp; extensions</string>
+    <string name="settings_lyric_management_summary">Karaoke display, lyric-source plugins, Lyrico, and Lyricon</string>
+    <string name="settings_lyric_management_keywords">lyric source plugin karaoke Lyrico Lyricon extension</string>
+    <string name="settings_status_bar_lyric_title">External lyric output</string>
+    <string name="settings_status_bar_lyric_summary">Flyme, Samsung, Lyric Getter, and Bluetooth car lyrics</string>
+    <string name="settings_status_bar_lyric_keywords">external lyrics status bar Flyme Samsung Lyric Getter Bluetooth car</string>
     <string name="settings_global_font_title">Global font</string>
     <string name="settings_global_font_summary">Font size, weight, italic style, and global display</string>
     <string name="settings_global_font_keywords">font typeface global</string>
     <string name="settings_album_art_title">Album art</string>
-    <string name="settings_album_art_summary">Quality, high-resolution covers, 24-bit RGB, downloads, and animation</string>
+    <string name="settings_album_art_summary">Decode quality, high-resolution covers, default artwork, display rules, and transitions</string>
     <string name="settings_album_art_keywords">cover cache high resolution album art</string>
-    <string name="settings_webdav_backup_title">WebDAV backup</string>
+    <string name="settings_webdav_backup_title">WebDAV backup &amp; restore</string>
     <string name="settings_webdav_backup_summary">Back up and restore playlists, statistics, and app configuration</string>
     <string name="settings_webdav_backup_keywords">backup restore cloud sync</string>
     <string name="settings_about_raws_music_title">About RawS Music</string>
     <string name="settings_about_raws_music_summary">Version, core features, project page, and open-source components</string>
     <string name="settings_about_keywords">about version project open source</string>
-    <string name="settings_scan_settings_title">Scan settings</string>
-    <string name="settings_scan_settings_summary">Music folders, rescans, short-track filtering, play counts, and progress restore</string>
-    <string name="settings_scan_settings_keywords">scan folder rescan short track play count progress</string>
+    <string name="settings_scan_settings_title">Scan &amp; library</string>
+    <string name="settings_scan_settings_summary">Music folders, access permissions, rescanning, and file filters</string>
+    <string name="settings_scan_settings_keywords">scan folder permission rescan short track video filter library</string>
     <string name="settings_album_art_quality">Quality</string>
     <string name="settings_album_art_force_argb_switch">24-bit RGB (ARGB_8888)</string>
     <string name="settings_album_art_force_argb_title">Force ARGB_8888 decoding</string>
@@ -201,7 +265,7 @@
     <string name="settings_effects_dynamic">Dynamics</string>
     <string name="settings_effects_enable_compressor">Enable compressor</string>
     <string name="settings_effects_compressor_title">Compressor</string>
-    <string name="settings_effects_compressor_desc">Threshold, ratio, attack, release, and makeup gain</string>
+    <string name="settings_effects_compressor_desc">Automatically detects final-output peaks and protects all linked channels</string>
     <string name="settings_effects_frequency">Frequency enhancement</string>
     <string name="settings_effects_bass_treble_title">Bass / treble boost</string>
     <string name="settings_effects_bass_treble_desc">Low shelf, high shelf, and crossover frequency</string>
@@ -221,7 +285,7 @@
     <string name="settings_player_immersive">Immersive mode</string>
     <string name="settings_player_immersive_desc">Show album-art background on the playback screen</string>
     <string name="settings_player_visualizer">Audio visualization</string>
-    <string name="settings_player_visualizer_desc">Show audio spectrum animation at the bottom of the playback screen</string>
+    <string name="settings_player_visualizer_desc">Show a realtime mirrored spectrum on the album artwork; it moves above the cover after two seconds and stays locked until closed</string>
     <string name="settings_player_main_section">Main screen</string>
     <string name="settings_player_mini_cover">Persistent mini cover</string>
     <string name="settings_player_mini_cover_desc">Show album art in the main-screen capsule bar</string>
@@ -292,6 +356,24 @@
     <string name="settings_audio_sample_rate">Sample rate</string>
     <string name="settings_audio_bit_depth">Bit depth</string>
     <string name="settings_audio_playback_options">Playback options</string>
+    <string name="settings_audio_focus_title">Audio focus</string>
+    <string name="settings_audio_focus_summary">Calls, temporary interruptions, ducking, and automatic playback recovery</string>
+    <string name="settings_audio_focus_resume_section">Playback recovery</string>
+    <string name="settings_audio_focus_changes_section">Focus changes</string>
+    <string name="settings_audio_focus_resume_after_call">Resume after a call ends</string>
+    <string name="settings_audio_focus_resume_after_call_summary">Continue playback after hanging up.</string>
+    <string name="settings_audio_focus_resume_on_start">Resume playback on startup</string>
+    <string name="settings_audio_focus_resume_on_start_summary">Resume the previous playing session when RawS Music starts.</string>
+    <string name="settings_audio_focus_resume_on_resume">Play when reopened</string>
+    <string name="settings_audio_focus_resume_on_resume_summary">Continue playback when RawS Music returns from the background.</string>
+    <string name="settings_audio_focus_transient">Temporary audio-focus changes and calls</string>
+    <string name="settings_audio_focus_transient_summary">Pause or duck for calls, navigation prompts, voice assistants, and other short interruptions.</string>
+    <string name="settings_audio_focus_resume_on_gain">Resume after focus returns</string>
+    <string name="settings_audio_focus_resume_on_gain_summary">Continue playback when a temporary interruption releases audio focus.</string>
+    <string name="settings_audio_focus_allow_duck">Allow lower volume during short focus changes</string>
+    <string name="settings_audio_focus_allow_duck_summary">Lower the music volume instead of pausing when the other app allows ducking.</string>
+    <string name="settings_audio_focus_permanent_loss">Pause on long-term audio-focus loss</string>
+    <string name="settings_audio_focus_permanent_loss_summary">Pause when another app takes audio focus for an extended time.</string>
     <string name="settings_audio_volume_normalization">Volume normalization</string>
     <string name="settings_audio_volume_normalization_desc">Automatically adjusts playback loudness from song loudness metadata for more consistent perceived volume.</string>
     <string name="settings_audio_gapless">Gapless playback</string>
@@ -499,7 +581,7 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_speaker_output_peak_ceiling">Peak-aware ceiling</string>
     <string name="settings_speaker_output_peak_ceiling_desc">Requested lift is reduced when recent peaks approach this dBFS level.</string>
     <string name="settings_compressor_title">Compressor</string>
-    <string name="settings_compressor_enable">Enable compressor</string>
+    <string name="settings_compressor_enable">Enable automatic limiting</string>
     <string name="settings_compressor_gain_reduction">Gain reduction</string>
     <string name="settings_compressor_threshold">Threshold</string>
     <string name="settings_compressor_ratio">Ratio</string>
@@ -531,7 +613,28 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_direction_right">Right</string>
     <string name="settings_direction_back">Back</string>
     <string name="settings_direction_left">Left</string>
-    <string name="settings_spatial_title">Stereo expansion</string>
+    <string name="settings_spatial_title">Spatial audio</string>
+    <string name="settings_android_spatial_section">Android system spatial audio</string>
+    <string name="settings_android_spatial_enable">Use the system Spatializer</string>
+    <string name="settings_android_spatial_status_android_12_required">Requires Android 12L / API 32 or newer.</string>
+    <string name="settings_android_spatial_status_not_supported">This device does not expose a platform spatial-audio renderer.</string>
+    <string name="settings_android_spatial_status_backend_unsupported">The current %1$s backend has no per-stream spatialization switch. Use AAudio or AudioTrack.</string>
+    <string name="settings_android_spatial_status_off">Off. RawSMusic asks Android not to spatialize the regular output stream.</string>
+    <string name="settings_android_spatial_status_route_unavailable">Requested, but the current headphones, speaker, or route is not spatial-audio compatible.</string>
+    <string name="settings_android_spatial_status_system_disabled">Requested, but spatial audio is disabled in system settings.</string>
+    <string name="settings_android_spatial_status_stereo_not_supported">The device supports spatial audio, but its current policy does not spatialize stereo music streams.</string>
+    <string name="settings_android_spatial_status_active">The current route and stereo format are eligible for the platform Spatializer.</string>
+    <string name="settings_android_spatial_status_active_head_tracking">The current route is eligible for the platform Spatializer and exposes a head tracker.</string>
+    <string name="settings_android_spatial_status_requested">Platform spatialization requested. Status follows the connected output device and system setting.</string>
+    <string name="settings_android_spatial_status_custom_active">RawSMusic binaural spatial audio is active, so the platform Spatializer is disabled to prevent double processing.</string>
+    <string name="settings_raw_spatial_section">RawSMusic spatial audio</string>
+    <string name="settings_raw_spatial_enable">Binaural spatial renderer</string>
+    <string name="settings_raw_spatial_status_on">Active for AudioTrack, AAudio, OpenSL ES, and Direct stereo PCM. Only USB exclusive remains untouched; legacy width, crossfeed, and 360° effects are bypassed.</string>
+    <string name="settings_raw_spatial_status_off">Off. Enable for a stable front centre, virtual front speakers, diffuse rear ambience, and short room reflections. Headphones recommended.</string>
+    <string name="settings_raw_spatial_intensity_title">Spatial intensity</string>
+    <string name="settings_raw_spatial_intensity_summary">Controls the blend between the original stereo mix and the virtual binaural scene.</string>
+    <string name="settings_raw_spatial_room_title">Room reflections</string>
+    <string name="settings_raw_spatial_room_summary">Adds short high-passed early reflections without adding long reverb or bass buildup.</string>
     <string name="settings_spatial_expand_section">Stereo expansion</string>
     <string name="settings_spatial_expand_enable">Enable stereo expansion</string>
     <string name="settings_spatial_strength_title">Strength</string>
@@ -614,9 +717,10 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="immersive_progress_settings_title">Immersive progress</string>
     <string name="immersive_progress_style">Progress style</string>
     <string name="immersive_progress_style_classic">Classic</string>
-    <string name="immersive_progress_style_waveform">Waveform</string>
+    <string name="immersive_progress_style_waveform">Window waveform</string>
+    <string name="immersive_progress_style_seconds">Second spectrum</string>
     <string name="immersive_climax_point">Climax point</string>
-    <string name="immersive_climax_point_desc">Highlight detected climax only when waveform style is enabled.</string>
+    <string name="immersive_climax_point_desc">Highlight detected climax only in the window waveform style.</string>
     <string name="immersive_waveform_colors">Waveform colors</string>
     <string name="immersive_waveform_remaining_color">Remaining</string>
     <string name="immersive_waveform_played_color">Played</string>
@@ -646,9 +750,9 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="folder_filter_sd_card">SD 卡</string>
     <string name="settings_audio_engine_audiotrack_hint">System mixer · High compatibility · PCM ≤ 48kHz / 24bit / Stereo</string>
     <string name="settings_personalization_title">Personalization</string>
-    <string name="settings_personalization_summary">Motion and interaction preferences</string>
-    <string name="settings_personalization_keywords">personalization predictive back animation gesture motion</string>
-    <string name="settings_personalization_motion_section">Motion</string>
+    <string name="settings_personalization_summary">Interaction, performance, and interface layout</string>
+    <string name="settings_personalization_keywords">interaction performance predictive back animation gesture motion bottom navigation tabs categories icons</string>
+    <string name="settings_personalization_motion_section">Interaction &amp; performance</string>
     <string name="settings_predictive_back_title">Predictive back animation</string>
     <string name="settings_predictive_back_summary">Preview the destination while swiping back</string>
     <string name="settings_performance_mode_title">Performance mode</string>
@@ -687,41 +791,30 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="metadata_unknown">Unknown</string>
     <string name="scan_complete_no_changes">Scan complete: no changes, %1$d tracks total, %2$.1f s</string>
     <string name="scan_complete_summary">Scan complete: %1$d added, %2$d updated, %3$d removed; %4$d unchanged, %5$d total, %6$.1f s</string>
-    <string name="update_dialog_title">RawS Music %1$s</string>
-    <string name="update_dialog_time">Updated: July 14, 2026</string>
+    <string name="update_dialog_title">RawS Music v%1$s</string>
+    <string name="update_dialog_time">Updated: July 21, 2026</string>
     <string name="update_developer_message_title">A word from the developer</string>
     <string name="update_join_qq_group">点击链接加入群聊【RawS Music交流群】：https://qm.qq.com/q/bOvqTQPABi</string>
     <string name="update_close">Close</string>
     <string-array name="update_notes">
-        <item>Fixed crashes caused by some options in the audio-effects screen opened from the player.</item>
-        <item>Fixed lyric lag in streaming playback caused by rounding differences between wall-clock and actual positions.</item>
-        <item>Fixed progress display mismatching natural playback position.</item>
-        <item>Fixed UI and audio mismatching after shuffle track changes in the standard player.</item>
-        <item>Fixed Previous restarting the current track after seeking.</item>
-        <item>Fixed status-bar lyric artwork mismatching the current track.</item>
-        <item>Fixed default artwork not appearing in the player when a track has no artwork.</item>
-        <item>Fixed global font settings not taking effect.</item>
-        <item>Fixed default artwork not being passed to system metadata.</item>
-        <item>Fixed inconsistent backgrounds in some areas.</item>
-        <item>Fixed globally scaled fonts overflowing their intended regions.</item>
-        <item>Simplified the top region of every list.</item>
-        <item>Improved animations in other library categories.</item>
-        <item>Improved and refined category features.</item>
-        <item>Improved liquid-glass effects for the mini player and navigation bar.</item>
-        <item>Improved Previous and Next handling that could mismatch audio and UI.</item>
-        <item>Unified entrance animations and removed the duplicate animation style.</item>
-        <item>Refined the About page and added Halcyon to open-source libraries.</item>
-        <item>Adjusted the locate button position.</item>
-        <item>Added Shuffle to the top menu.</item>
-        <item>Added the playback queue screen.</item>
-        <item>Added the recently added screen.</item>
-        <item>Added editable metadata fields with direct keyboard input.</item>
-        <item>Added long-press copying for song information in lists and the player.</item>
-        <item>Added current-track information to the top menu.</item>
-        <item>Added a performance setting for users who do not need liquid-glass effects.</item>
-        <item>Added update detection with an optional disable setting.</item>
-        <item>Added marquee lyrics to the mini player.</item>
-        <item>Improved lyric-screen animations.</item>
+        <item>Fixed category-detail sort selections not being persisted, which caused the selected sort order to be lost after the page was recreated.</item>
+        <item>Fixed notification sounds occurring on some devices when using controls such as Next Track.</item>
+        <item>Fixed seeking not taking effect when tapping a non-current lyric line while playback was paused.</item>
+        <item>Fixed spacing issues in immersive-mode mini lyrics.</item>
+        <item>Fixed the fullscreen queue background in immersive mode.</item>
+        <item>Fixed audio stuttering after seeking following a real track change triggered by crossfade.</item>
+        <item>Fixed cases where an external JPG was shown even though the current track had embedded artwork.</item>
+        <item>Improved the liquid-glass effect.</item>
+        <item>Improved bottom spacing at the end of the lyrics.</item>
+        <item>Improved animations between the lyrics screen and player screen.</item>
+        <item>Improved the transition area between the lyrics top bar and the lyric content.</item>
+        <item>Improved natural dragging animation in the lyrics view with a complete rewrite.</item>
+        <item>Added Android system spatial audio; most devices may not support it.</item>
+        <item>Added lyrics-view styles under Settings – Lyrics Display &amp; Extensions.</item>
+        <item>Added RawS Music custom spatial audio, recommended for headphone listening.</item>
+        <item>Added head tracking when supported by the device.</item>
+        <item>Added customizable lyric bottom spacing.</item>
+        <item>Added bottom-bar personalization under Settings – Personalization, allowing custom entries or hiding the bar; the Settings screen can also be shown on the home screen.</item>
     </string-array>
     <string-array name="update_developer_quotes">
         <item>“永远快乐”这句话，不但渺茫得不能实现，并且荒谬得不能成立。快过的决不会永久；我们说永远快乐，正好像说四方的圆形、静止的动作，同样地自相矛盾。在高兴的时候，我们空对瞬息即逝的时间喊着说：“逗留一会儿吧！你太美了！”那有什么用？你要永久，你该向痛苦里去找。不讲别的，只要一个失眠的晚上，或者有约不来的下午，或者一课沉闷的听讲，这许多比一切宗教信仰更有效力，能使你尝到什么叫做“永生”的滋味。人生的刺就在这里：留恋着不肯快走的，偏是你所不留恋的东西。</item>
@@ -731,4 +824,183 @@ When disabled, the system tries to output at the original sample rate; some devi
         <item>最近被一个叫微信支付的盯上了，太有手段了。我吃饭扣我钱，我喝奶茶扣我钱，我买皮肤也扣我钱，动不动就扣我钱。你很会做局呀，你很会阴我啊，成天藏在网络里，有本事咱们现实碰一碰。我这个人不怕事，也不来事儿，也不怕来事。小小的老子要是真发威了，你后悔就来不及了。再搞我钱包，我真要来事儿了，收手吧你。</item>
         <item>自在极意豪，我有幸进入过。那是不可求的机遇，当我沉浸其中时，不会觉得有任何问题。直到某天，可能过了几天，也可能是十年、一辈子，你的思绪突然回到当时情景，以一种不自主的状态，被以前的自己击中。这时才明白，我追求一辈子的自在极意豪，原来一开始我就会了。此后我不再追求，不再刻意为之，只追寻内心的感觉，放任身体，发掘内心本来就存在的力量。</item>
     </string-array>
+    <string name="settings_effect_card_expand">Expand controls</string>
+    <string name="settings_effect_card_collapse">Collapse controls</string>
+    <string name="settings_experimental_gain_title">Lab · Total gain</string>
+    <string name="settings_experimental_gain_summary">Independent final-stage gain with static soft clipping</string>
+    <string name="settings_experimental_gain_level">Total gain</string>
+    <string name="settings_experimental_gain_level_summary">Applies 0–30 dB after all other effects</string>
+    <string name="settings_experimental_gain_warning">Experimental: high gain intentionally changes waveform peaks. No limiter or automatic gain reduction is used.</string>
+    <string name="settings_experimental_gain_unavailable">The native DSP engine is unavailable</string>
+    <string name="settings_db_value_positive_one_decimal">+%1$.1f dB</string>
+    <string name="settings_compressor_auto_mode">Automatic safety limiting</string>
+    <string name="settings_compressor_auto_mode_summary">Monitors the final output after all effects and only reduces peaks that approach clipping.</string>
+    <string name="settings_compressor_auto_mode_active">Linked gain is calculated from the final output peak; no manual threshold, timing, or makeup controls are required.</string>
+
+    <!-- Settings responsibility model -->
+    <string name="settings_section_playback_audio">Playback &amp; audio</string>
+    <string name="settings_section_interface_display">Interface &amp; display</string>
+    <string name="settings_section_lyrics_extensions">Lyrics &amp; extensions</string>
+    <string name="settings_section_library_data">Library &amp; data</string>
+    <string name="settings_section_help_diagnostics">Help &amp; diagnostics</string>
+    <string name="settings_lyric_font_summary">Typeface, weight, scale, and lyric typography</string>
+    <string name="settings_lyric_font_keywords">lyrics font typeface weight scale typography</string>
+    <string name="settings_log_viewer_title">Log analysis</string>
+    <string name="settings_log_viewer_summary">View, filter, and export runtime logs</string>
+    <string name="settings_log_viewer_keywords">log debug export error diagnostics</string>
+    <string name="settings_playback_history_section">Playback history &amp; resume</string>
+    <string name="settings_track_progress_memory_title">Resume track position</string>
+    <string name="settings_track_progress_memory_summary">Continue a track from the last stopped position</string>
+    <string name="settings_play_count_title">Track play counts</string>
+    <string name="settings_play_count_summary">Count a play after the listening threshold is reached</string>
+    <string name="settings_play_count_threshold_title">Play-count threshold</string>
+    <string name="settings_play_count_threshold_summary">Count a play only after this percentage is played</string>
+    <string name="widget_name">RawS Music Player</string>
+    <string name="widget_description">Album artwork player controls for the home screen</string>
+    <string name="widget_compact_name">RawS Music Player 2×2</string>
+    <string name="widget_compact_description">Compact 2×2 album artwork player</string>
+    <string name="widget_nothing_playing">RawS Music</string>
+    <string name="widget_unknown_artist">Unknown artist</string>
+    <string name="widget_tap_to_open">Tap to open the player</string>
+    <string name="widget_open_player">Open player</string>
+    <string name="widget_play">Play</string>
+    <string name="widget_pause">Pause</string>
+    <string name="widget_previous">Previous</string>
+    <string name="widget_next">Next</string>
+    <string name="widget_playlist">Playback queue</string>
+    <string name="widget_add_to_playlist">Add to playlist</string>
+    <string name="landscape_player_back">Back</string>
+    <string name="landscape_player_preferences">Player preferences</string>
+    <string name="landscape_player_more">More</string>
+    <string name="landscape_player_translation">Translation</string>
+    <string name="landscape_player_romanization">Romanization</string>
+    <string name="landscape_player_lyric_blur">Lyric depth blur</string>
+    <string name="landscape_player_highlight_all">Highlight all lyrics</string>
+    <string name="landscape_player_on">On</string>
+    <string name="landscape_player_off">Off</string>
+    <string name="global_search_title">Search</string>
+    <string name="global_search_hint">Search albums, artists, folders, genres, years, composers, and songs</string>
+    <string name="global_search_back">Back</string>
+    <string name="global_search_clear_query">Clear query</string>
+    <string name="global_search_remove_filter">Remove filter</string>
+    <string name="global_search_category_album">Albums</string>
+    <string name="global_search_category_artist">Artists</string>
+    <string name="global_search_category_folder">Folders</string>
+    <string name="global_search_category_genre">Genres</string>
+    <string name="global_search_category_year">Years</string>
+    <string name="global_search_category_composer">Composers</string>
+    <string name="global_search_category_songs">All songs</string>
+    <string name="global_search_shuffle">Shuffle results</string>
+    <string name="global_search_sort">Sort and layout</string>
+    <string name="global_search_sort_title">Sort and layout</string>
+    <string name="global_search_sort_section">Sort</string>
+    <string name="global_search_layout_section">Layout</string>
+    <string name="global_search_sort_relevance">By relevance</string>
+    <string name="global_search_sort_name">By name</string>
+    <string name="global_search_sort_song_count">By song count</string>
+    <string name="global_search_sort_reverse">Reverse order</string>
+    <string name="global_search_layout_compact">Compact list</string>
+    <string name="global_search_layout_standard">Standard list</string>
+    <string name="global_search_layout_large">Large-cover list</string>
+    <string name="global_search_layout_grid_4">Four-column grid</string>
+    <string name="global_search_layout_grid_3">Three-column grid</string>
+    <string name="global_search_layout_grid_2">Two-column grid</string>
+    <string name="global_search_result_density_hint">Pinch to resize results</string>
+    <string name="global_search_history">Search history</string>
+    <string name="global_search_clear_history">Clear history</string>
+    <string name="global_search_no_history">No search history yet</string>
+    <string name="global_search_no_results">No matching results</string>
+    <string name="global_search_unknown_album">Unknown album</string>
+    <string name="global_search_unknown_artist">Unknown artist</string>
+    <string name="global_search_unknown_genre">Unknown genre</string>
+    <string name="global_search_unknown_year">Unknown year</string>
+    <string name="global_search_unknown_composer">Unknown composer</string>
+    <string name="global_search_music">Music</string>
+    <plurals name="global_search_song_count">
+        <item quantity="one">%1$d song</item>
+        <item quantity="other">%1$d songs</item>
+    </plurals>
+    <string name="settings_core_audio_enhancements">Core audio enhancement</string>
+    <string name="settings_loudness_balance_title">Loudness and channel balance</string>
+    <string name="settings_loudness_balance_summary">Restore low and high detail at quieter listening levels and adjust channel balance</string>
+    <string name="settings_loudness_amount">Loudness compensation</string>
+    <string name="settings_channel_balance">Channel balance</string>
+    <string name="settings_balance_left">Left %1$d%%</string>
+    <string name="settings_balance_right">Right %1$d%%</string>
+    <string name="settings_balance_center">Center</string>
+    <string name="settings_mono_bass_title">Bass centering</string>
+    <string name="settings_mono_bass_summary">Center only the bass range while retaining stereo detail above the crossover</string>
+    <string name="settings_crossover_frequency">Crossover frequency</string>
+    <string name="settings_mono_amount">Centering amount</string>
+    <string name="settings_dynamic_eq_title">Dynamic EQ and de-esser</string>
+    <string name="settings_dynamic_eq_summary">Adapt tonal body to programme energy and reduce sharp sibilance</string>
+    <string name="settings_dynamic_eq_intensity">Dynamic EQ intensity</string>
+    <string name="settings_deesser_amount">De-esser amount</string>
+    <string name="settings_deesser_frequency">Sibilance frequency</string>
+    <string name="settings_moog_section">Analog filter</string>
+    <string name="settings_moog_title">Moog four-pole ladder filter</string>
+    <string name="settings_moog_summary">Zero-delay-feedback four-stage ladder with resonance and analog drive</string>
+    <string name="settings_moog_variant">Filter variant</string>
+    <string name="settings_moog_mode_lp24">Low-pass 24 dB/oct</string>
+    <string name="settings_moog_mode_lp12">Low-pass 12 dB/oct</string>
+    <string name="settings_moog_mode_hp24">High-pass 24 dB/oct</string>
+    <string name="settings_moog_mode_bp12">Band-pass 12 dB/oct</string>
+    <string name="settings_moog_mode_notch">Notch</string>
+    <string name="settings_moog_mode_lp24_summary">Classic four-pole Moog-style low-pass response</string>
+    <string name="settings_moog_mode_lp12_summary">Gentler two-pole low-pass derived from the same ladder</string>
+    <string name="settings_moog_mode_hp24_summary">Four-pole high-pass response with resonant cutoff</string>
+    <string name="settings_moog_mode_bp12_summary">Focused band-pass response for rhythmic and vocal effects</string>
+    <string name="settings_moog_mode_notch_summary">Rejects the cutoff region while retaining lows and highs</string>
+    <string name="settings_moog_cutoff">Cutoff frequency</string>
+    <string name="settings_moog_cutoff_summary">Uses a logarithmic scale from 20 Hz to 20 kHz</string>
+    <string name="settings_moog_resonance">Resonance</string>
+    <string name="settings_moog_resonance_summary">Emphasises the cutoff frequency; high settings approach self-oscillation</string>
+    <string name="settings_moog_drive">Analog drive</string>
+    <string name="settings_moog_drive_summary">Adds input-stage saturation before the ladder feedback loop</string>
+    <string name="settings_moog_mix">Dry / wet mix</string>
+
+    <string name="settings_raw_spatial_brir_title">Compact BRIR room renderer</string>
+    <string name="settings_raw_spatial_brir_summary">Adds asymmetric early reflections and a short damped binaural room tail after HOA/HRTF rendering.</string>
+    <string name="settings_raw_spatial_separation_title">Scene separation</string>
+    <string name="settings_raw_spatial_separation_summary">Controls adaptive vocal-centre extraction, transient protection, and how strongly diffuse ambience is moved behind and above.</string>
+    <string name="settings_raw_spatial_head_size_title">Head width model</string>
+    <string name="settings_raw_spatial_head_size_summary">Adjusts interaural delay and acoustic shadow in the parametric HRTF. Start near your measured head width.</string>
+    <string name="settings_raw_spatial_pinna_title">Pinna detail</string>
+    <string name="settings_raw_spatial_pinna_summary">Adjusts front/back and height spectral cues in the parametric HRTF model.</string>
+    <string name="settings_raw_spatial_head_tracking_title">Headphone head tracking</string>
+    <string name="settings_raw_spatial_head_tracking_available">World-locked scene using the dynamic head tracker reported by %1$s.</string>
+    <string name="settings_raw_spatial_head_tracking_unavailable">No app-accessible headphone head tracker is connected. Phone motion sensors are intentionally not used.</string>
+    <string name="settings_raw_spatial_recenter">Recenter forward</string>
+    <string name="settings_centimeter_value_one_decimal">%1$.1f cm</string>
+
+    <string name="settings_personalization_layout_section">Interface layout</string>
+    <string name="settings_bottom_navigation_title">Bottom navigation bar</string>
+    <string name="settings_bottom_navigation_summary">Choose, arrange, and preview the main navigation entries</string>
+    <string name="settings_bottom_navigation_preview_section">Preview</string>
+    <string name="settings_bottom_navigation_selected_section">Selected entries and order</string>
+    <string name="settings_bottom_navigation_entries_section">Available entries</string>
+    <string name="settings_bottom_navigation_entries_summary">Choose 2–5 entries. The main screen is always retained. Category icons use the supplied SVG artwork.</string>
+    <string name="settings_bottom_navigation_count">%1$d of %2$d entries selected</string>
+    <string name="settings_bottom_navigation_home_required">Required main-screen entry</string>
+    <string name="settings_bottom_navigation_position">Position %1$d</string>
+    <string name="settings_bottom_navigation_remove">Remove</string>
+    <string name="settings_bottom_navigation_settings_fallback_title">Settings shortcut moved to the main screen</string>
+    <string name="settings_bottom_navigation_settings_fallback_summary">Because Settings is not in the bottom bar, a Settings button will appear to the right of the flowing-background button on the main screen.</string>
+    <string name="settings_bottom_navigation_reset">Restore default navigation</string>
+    <string name="settings_lyric_layout_section">Lyric layout</string>
+    <string name="settings_lyric_top_style_title">Lyric top area style</string>
+    <string name="settings_lyric_top_style_current">Current full header</string>
+    <string name="settings_lyric_top_style_current_summary">Keep album art, song details, and actions fixed above the lyrics.</string>
+    <string name="settings_lyric_top_style_scroll">Header scrolls with lyrics</string>
+    <string name="settings_lyric_top_style_scroll_summary">Place the full header in the lyric list so it scrolls away. Once its artwork leaves the viewport, returning uses a whole-page scale and fade instead of the artwork shared transition.</string>
+    <string name="settings_lyric_top_style_title_only">Fixed title only</string>
+    <string name="settings_lyric_top_style_title_only_summary">Keep only a compact single-line title and action button fixed at the top.</string>
+    <string name="settings_lyric_bottom_padding_title">Bottom spacing after lyrics</string>
+    <string name="settings_lyric_bottom_padding_summary">Adjust the empty space below the final lyric line from 40 dp to 220 dp.</string>
+    <string name="settings_lyric_bottom_padding_value">%1$d dp</string>
+    <string name="settings_bottom_navigation_visibility_section">Visibility</string>
+    <string name="settings_bottom_navigation_enabled_title">Show bottom navigation bar</string>
+    <string name="settings_bottom_navigation_enabled_summary">Turn this off to remove the navigation bar. A Settings shortcut will appear on the main screen.</string>
+    <string name="settings_bottom_navigation_disabled_fallback_title">Bottom navigation is disabled</string>
+    <string name="settings_bottom_navigation_disabled_fallback_summary">The navigation entries are unavailable while the bar is hidden. Use the Settings button on the main screen to return here.</string>
 </resources>

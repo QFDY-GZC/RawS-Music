@@ -7,6 +7,7 @@
     <string name="settings_peq_engine_unavailable">参量均衡器引擎不可用</string>
     <string name="settings_peq_workspace_summary">%1$d 段 · 已启用 %2$d 段</string>
     <string name="settings_peq_preamp_summary">在所有参量滤波器之前调整余量</string>
+    <string name="settings_peq_auto_headroom_active">自动防削波已额外衰减 %1$.1f dB</string>
     <string name="settings_peq_band_layout_hint">智能转换当前滤波器</string>
     <string name="settings_peq_presets_and_tools">预设与工具</string>
     <string name="settings_peq_autoeq_card_summary">搜索并导入耳机校正</string>

@@ -1,5 +1,69 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="shortcut_play_short">播放</string>
+    <string name="shortcut_play_long">继续播放音乐</string>
+    <string name="shortcut_search_short">搜索</string>
+    <string name="shortcut_search_long">搜索本地音乐库</string>
+    <string name="shortcut_shuffle_short">随机播放</string>
+    <string name="shortcut_shuffle_long">随机播放所有歌曲</string>
+    <string name="settings_lyric_effects_section">歌词效果</string>
+    <string name="settings_lyric_karaoke_glow">逐字歌词发光</string>
+    <string name="settings_lyric_karaoke_lift">逐字歌词字词抬升</string>
+    <string name="settings_lyrico_section">Lyrico</string>
+    <string name="settings_lyrico_sources_section">Lyrico 歌词源</string>
+    <string name="settings_lyrico_runtime_title">内置歌词源运行时</string>
+    <string name="settings_lyrico_runtime_checking">正在检查 QuickJS 运行时…</string>
+    <string name="settings_lyrico_runtime_ready">运行正常，可在 RawSMusic 内运行兼容的 Lyrico 歌词源插件</string>
+    <string name="settings_lyrico_runtime_failed">运行时自检失败，已停用导入的歌词源</string>
+    <string name="settings_lyrico_import_plugin">导入歌词源插件</string>
+    <string name="settings_lyrico_import_plugin_summary">选择 Lyrico 插件 ZIP，校验安全性后安装</string>
+    <string name="settings_lyrico_no_plugins">尚未导入歌词源</string>
+    <string name="settings_lyrico_no_plugins_summary">导入 Lyrico API v3 歌词源后即可在线匹配歌词</string>
+    <string name="settings_lyrico_plugin_label">%1$s · %2$s</string>
+    <string name="settings_lyrico_plugin_imported">已导入 %1$s</string>
+    <string name="settings_lyrico_plugins_imported">已导入 %1$d 个歌词源</string>
+    <string name="settings_lyrico_plugins_imported_partial">已导入 %1$d 个歌词源，%2$d 个失败：%3$s</string>
+    <string name="settings_lyrico_plugin_import_failed">导入失败：%1$s</string>
+    <string name="settings_lyrico_title">Lyrico 接入</string>
+    <string name="settings_lyrico_installed">已安装，可从播放歌词页的更多菜单编辑歌词与标签</string>
+    <string name="settings_lyrico_not_installed">尚未安装，点击下方入口可前往 Lyrico 项目页</string>
+    <string name="settings_lyrico_open">打开 Lyrico</string>
+    <string name="settings_lyrico_open_summary">已安装时打开应用，未安装时前往项目页</string>
+    <string name="lyrico_no_current_song">当前没有正在播放的歌曲</string>
+    <string name="lyrico_not_installed">尚未安装 Lyrico</string>
+    <string name="lyrico_audio_uri_unavailable">无法将该音频文件授权给 Lyrico</string>
+    <string name="lyrico_open_failed">无法打开 Lyrico</string>
+    <string name="lyrico_refresh_complete">歌词与元数据已刷新</string>
+    <string name="lyrico_search_title">在线匹配歌词</string>
+    <string name="lyrico_search_query_section">搜索</string>
+    <string name="lyrico_search_query_hint">歌曲标题与艺术家</string>
+    <string name="lyrico_search_action">搜索已启用歌词源</string>
+    <string name="lyrico_search_action_summary">使用已导入的 Lyrico 插件进行搜索</string>
+    <string name="lyrico_search_searching">正在搜索…</string>
+    <string name="lyrico_search_empty">没有找到匹配歌词</string>
+    <string name="lyrico_search_count">找到 %1$d 个候选结果</string>
+    <string name="lyrico_search_no_sources">没有启用的歌词源，请先在歌词设置中导入</string>
+    <string name="lyrico_search_results_section">搜索结果</string>
+    <string name="lyrico_search_source_all">全部</string>
+    <string name="lyrico_search_source_empty">该歌词源没有匹配结果</string>
+    <string name="lyrico_search_unknown_title">未知标题</string>
+    <string name="lyrico_search_applying">正在应用所选内容…</string>
+    <string name="lyrico_search_applied">所选内容已应用</string>
+    <string name="lyrico_search_apply_failed">应用失败：%1$s</string>
+    <string name="lyrico_search_status_title">歌词源状态</string>
+    <string name="lyrico_preview_title">预览并应用</string>
+    <string name="lyrico_preview_cover">该源提供的专辑图</string>
+    <string name="lyrico_preview_write_cover">同时写入专辑图</string>
+    <string name="lyrico_preview_write_lyrics">写入歌词</string>
+    <string name="lyrico_preview_lyric_type">歌词类型</string>
+    <string name="lyrico_preview_word_by_word">逐字歌词</string>
+    <string name="lyrico_preview_line_by_line">逐行歌词</string>
+    <string name="lyrico_preview_translation">翻译</string>
+    <string name="lyrico_preview_romanization">音译</string>
+    <string name="lyrico_preview_loading">正在加载歌词预览…</string>
+    <string name="lyrico_preview_cancel">取消</string>
+    <string name="lyrico_preview_apply">应用</string>
+    <string name="lyrico_preview_cover_only">仅写入专辑图</string>
     <string name="app_name">RawSMusic</string>
     <string name="songs">歌曲</string>
     <string name="albums">专辑</string>
@@ -104,42 +168,42 @@
     <string name="settings_section_lyrics">歌词</string>
     <string name="settings_section_media_library">媒体库</string>
     <string name="settings_section_data">数据</string>
-    <string name="settings_audio_quality_title">音质设置</string>
-    <string name="settings_audio_quality_summary">采样率、位深、输出模式与重采样</string>
-    <string name="settings_audio_quality_keywords">采样率 位深 输出模式 重采样 sample rate</string>
+    <string name="settings_audio_quality_title">播放与输出</string>
+    <string name="settings_audio_quality_summary">输出引擎、采样率、位深、无缝播放、音量标准化与蓝牙兼容</string>
+    <string name="settings_audio_quality_keywords">播放 输出 采样率 位深 ReplayGain 无缝 交叉淡入淡出 蓝牙 SCO</string>
     <string name="settings_usb_dac_title">USB DAC</string>
     <string name="settings_usb_dac_summary">USB 独占、DAC 状态、PCM 输出与 DSD</string>
     <string name="settings_usb_dac_keywords">USB 独占 DAC PCM DSD 解码器</string>
     <string name="settings_audio_effects_title">音频效果</string>
     <string name="settings_audio_effects_summary">均衡器、空间音效、动态处理和频率增强</string>
     <string name="settings_audio_effects_keywords">均衡器 EQ 混响 reverb bass treble</string>
-    <string name="settings_player_interface_title">界面设置</string>
+    <string name="settings_player_interface_title">播放器界面</string>
     <string name="settings_player_interface_summary">默认背景、沉浸模式、常驻封面、音频可视化</string>
     <string name="settings_player_interface_keywords">播放器 专辑图 控制 按钮 player</string>
     <string name="settings_appearance_title">外观主题</string>
     <string name="settings_appearance_summary">主题模式、界面色彩与显示风格</string>
-    <string name="settings_appearance_keywords">主题 字体 颜色 暗色 深色 dark theme</string>
-    <string name="settings_lyric_management_title">歌词管理</string>
-    <string name="settings_lyric_management_summary">歌词源、歌词字体设置与歌词显示</string>
-    <string name="settings_lyric_management_keywords">歌词 字体 大小 lrc lyric</string>
-    <string name="settings_status_bar_lyric_title">状态栏歌词</string>
-    <string name="settings_status_bar_lyric_summary">Flyme、三星、蓝牙、Lyric Getter</string>
-    <string name="settings_status_bar_lyric_keywords">状态栏 通知 lyric status bar</string>
+    <string name="settings_appearance_keywords">主题 配色 颜色 暗色 深色 dark theme</string>
+    <string name="settings_lyric_management_title">歌词显示与扩展</string>
+    <string name="settings_lyric_management_summary">卡拉 OK 显示、歌词源插件、Lyrico 与 Lyricon</string>
+    <string name="settings_lyric_management_keywords">歌词源 插件 卡拉OK Lyrico Lyricon 扩展</string>
+    <string name="settings_status_bar_lyric_title">外部歌词输出</string>
+    <string name="settings_status_bar_lyric_summary">Flyme、三星、Lyric Getter 与蓝牙车载歌词</string>
+    <string name="settings_status_bar_lyric_keywords">外部歌词 状态栏 Flyme 三星 Lyric Getter 蓝牙 车载 lyric</string>
     <string name="settings_global_font_title">全局字体</string>
     <string name="settings_global_font_summary">字体大小、字重、斜体与全局显示</string>
     <string name="settings_global_font_keywords">字体 font typeface global</string>
     <string name="settings_album_art_title">专辑图</string>
-    <string name="settings_album_art_summary">画质、高清封面、24位 RGB、封面下载与动画</string>
+    <string name="settings_album_art_summary">画质、高清解码、默认封面、显示规则与切换动画</string>
     <string name="settings_album_art_keywords">封面 缓存 高清 album art cover</string>
-    <string name="settings_webdav_backup_title">WebDAV 备份</string>
+    <string name="settings_webdav_backup_title">WebDAV 备份与恢复</string>
     <string name="settings_webdav_backup_summary">备份与恢复歌单、统计数据和应用配置</string>
     <string name="settings_webdav_backup_keywords">备份 恢复 云同步 backup restore</string>
     <string name="settings_about_raws_music_title">关于 RawS Music</string>
     <string name="settings_about_raws_music_summary">版本、核心功能、项目主页与开源组件</string>
     <string name="settings_about_keywords">关于 版本 项目 开源 about version</string>
-    <string name="settings_scan_settings_title">扫描设置</string>
-    <string name="settings_scan_settings_summary">音乐文件夹、重新扫描、短曲过滤、播放次数和进度恢复</string>
-    <string name="settings_scan_settings_keywords">扫描 文件夹 重新扫描 短曲 播放次数 进度 scan folder</string>
+    <string name="settings_scan_settings_title">扫描与媒体库</string>
+    <string name="settings_scan_settings_summary">音乐文件夹、访问权限、重新扫描与文件过滤</string>
+    <string name="settings_scan_settings_keywords">扫描 文件夹 权限 重新扫描 短曲 视频过滤 scan folder</string>
     <string name="settings_album_art_quality">画质</string>
     <string name="settings_album_art_force_argb_switch">24位 RGB (ARGB_8888)</string>
     <string name="settings_album_art_force_argb_title">强制使用 ARGB_8888 解码</string>
@@ -201,7 +265,7 @@
     <string name="settings_effects_dynamic">动态</string>
     <string name="settings_effects_enable_compressor">启用压限器</string>
     <string name="settings_effects_compressor_title">压限器</string>
-    <string name="settings_effects_compressor_desc">阈值、压缩比、启动释放、补偿增益</string>
+    <string name="settings_effects_compressor_desc">自动检测最终输出峰值并联动保护所有声道</string>
     <string name="settings_effects_frequency">频率增强</string>
     <string name="settings_effects_bass_treble_title">低音 / 高音增强</string>
     <string name="settings_effects_bass_treble_desc">低频架、高频架和转折频率</string>
@@ -221,7 +285,7 @@
     <string name="settings_player_immersive">沉浸模式</string>
     <string name="settings_player_immersive_desc">进入播放界面时显示专辑封面背景</string>
     <string name="settings_player_visualizer">音频可视化</string>
-    <string name="settings_player_visualizer_desc">播放界面底部显示音频频谱动画</string>
+    <string name="settings_player_visualizer_desc">在专辑图上显示实时镜像频谱；普通模式两秒后锁定到上层，可手动关闭</string>
     <string name="settings_player_main_section">主界面</string>
     <string name="settings_player_mini_cover">主界面常驻封面</string>
     <string name="settings_player_mini_cover_desc">在主界面胶囊栏显示专辑封面</string>
@@ -292,6 +356,24 @@
     <string name="settings_audio_sample_rate">采样率</string>
     <string name="settings_audio_bit_depth">位深</string>
     <string name="settings_audio_playback_options">播放选项</string>
+    <string name="settings_audio_focus_title">音频焦点</string>
+    <string name="settings_audio_focus_summary">管理通话、短暂打断、降低音量与自动恢复播放</string>
+    <string name="settings_audio_focus_resume_section">播放恢复</string>
+    <string name="settings_audio_focus_changes_section">焦点变化</string>
+    <string name="settings_audio_focus_resume_after_call">结束通话后继续播放</string>
+    <string name="settings_audio_focus_resume_after_call_summary">挂断后继续播放。</string>
+    <string name="settings_audio_focus_resume_on_start">启动时恢复播放</string>
+    <string name="settings_audio_focus_resume_on_start_summary">在 RawS Music 启动时恢复上次仍在播放的会话。</string>
+    <string name="settings_audio_focus_resume_on_resume">重新打开时播放</string>
+    <string name="settings_audio_focus_resume_on_resume_summary">RawS Music 从后台重新打开时继续播放。</string>
+    <string name="settings_audio_focus_transient">短暂音频焦点变化、通话</string>
+    <string name="settings_audio_focus_transient_summary">通话、导航播报、语音助手等短暂打断时暂停或降低音乐音量。</string>
+    <string name="settings_audio_focus_resume_on_gain">恢复焦点后继续</string>
+    <string name="settings_audio_focus_resume_on_gain_summary">短暂打断释放音频焦点后继续播放。</string>
+    <string name="settings_audio_focus_allow_duck">允许在短音频焦点降低音量</string>
+    <string name="settings_audio_focus_allow_duck_summary">其他应用允许降低音量时，仅降低音乐音量而不暂停。</string>
+    <string name="settings_audio_focus_permanent_loss">长时间音频焦点变化时暂停</string>
+    <string name="settings_audio_focus_permanent_loss_summary">其他应用长时间占用音频焦点时暂停播放。</string>
     <string name="settings_audio_volume_normalization">音量标准化</string>
     <string name="settings_audio_volume_normalization_desc">根据歌曲的响度元数据自动调整播放音量，使不同歌曲的听感音量趋于一致。</string>
     <string name="settings_audio_gapless">无缝播放</string>
@@ -499,7 +581,7 @@
     <string name="settings_speaker_output_peak_ceiling">峰值保护上限</string>
     <string name="settings_speaker_output_peak_ceiling_desc">近期峰值接近该 dBFS 电平时自动减少请求的提升。</string>
     <string name="settings_compressor_title">压限器</string>
-    <string name="settings_compressor_enable">启用压限器</string>
+    <string name="settings_compressor_enable">启用自动压限</string>
     <string name="settings_compressor_gain_reduction">增益衰减</string>
     <string name="settings_compressor_threshold">阈值</string>
     <string name="settings_compressor_ratio">压缩比</string>
@@ -531,7 +613,28 @@
     <string name="settings_direction_right">右</string>
     <string name="settings_direction_back">后</string>
     <string name="settings_direction_left">左</string>
-    <string name="settings_spatial_title">立体声扩展</string>
+    <string name="settings_spatial_title">空间音频</string>
+    <string name="settings_android_spatial_section">Android 系统空间音频</string>
+    <string name="settings_android_spatial_enable">使用系统 Spatializer</string>
+    <string name="settings_android_spatial_status_android_12_required">需要 Android 12L / API 32 或更高版本。</string>
+    <string name="settings_android_spatial_status_not_supported">当前设备没有系统空间音频能力。</string>
+    <string name="settings_android_spatial_status_backend_unsupported">当前输出引擎 %1$s 不支持应用级开关；请切换到 AAudio 或 AudioTrack。</string>
+    <string name="settings_android_spatial_status_off">已关闭。RawSMusic 会要求系统不要空间化当前普通输出流。</string>
+    <string name="settings_android_spatial_status_route_unavailable">已请求，但当前耳机、扬声器或路由不可用于空间音频。</string>
+    <string name="settings_android_spatial_status_system_disabled">已请求，但系统设置中的空间音频当前关闭。</string>
+    <string name="settings_android_spatial_status_stereo_not_supported">设备支持空间音频，但当前系统不允许对立体声音乐流进行空间化。</string>
+    <string name="settings_android_spatial_status_active">当前路由和立体声格式满足系统 Spatializer 的生效条件。</string>
+    <string name="settings_android_spatial_status_active_head_tracking">当前路由满足系统 Spatializer 的生效条件，并提供头部跟踪器。</string>
+    <string name="settings_android_spatial_status_requested">已请求系统空间化；状态会随输出设备和系统设置自动变化。</string>
+    <string name="settings_android_spatial_status_custom_active">RawSMusic 自有双耳空间音频已开启，为避免二次空间化，系统 Spatializer 已关闭。</string>
+    <string name="settings_raw_spatial_section">RawSMusic 空间音频</string>
+    <string name="settings_raw_spatial_enable">双耳空间渲染</string>
+    <string name="settings_raw_spatial_status_on">作用于 AudioTrack、AAudio、OpenSL ES 和 Direct 立体声 PCM；仅 USB 独占保持不动。开启时旧立体声扩展、互馈和 360° 音效自动旁路。</string>
+    <string name="settings_raw_spatial_status_off">关闭。开启后提供稳定前方中心、虚拟左右音箱、扩散后方环境声和短早期反射；建议使用耳机。</string>
+    <string name="settings_raw_spatial_intensity_title">空间强度</string>
+    <string name="settings_raw_spatial_intensity_summary">控制原始立体声与虚拟双耳声场之间的混合比例。</string>
+    <string name="settings_raw_spatial_room_title">房间反射</string>
+    <string name="settings_raw_spatial_room_summary">加入经过高通处理的短早期反射，不增加长混响和低频堆积。</string>
     <string name="settings_spatial_expand_section">立体声扩展</string>
     <string name="settings_spatial_expand_enable">启用立体声扩展</string>
     <string name="settings_spatial_strength_title">强度</string>
@@ -614,9 +717,10 @@
     <string name="immersive_progress_settings_title">沉浸进度条</string>
     <string name="immersive_progress_style">进度条样式</string>
     <string name="immersive_progress_style_classic">普通</string>
-    <string name="immersive_progress_style_waveform">可视化</string>
+    <string name="immersive_progress_style_waveform">普通窗口级</string>
+    <string name="immersive_progress_style_seconds">秒级频谱</string>
     <string name="immersive_climax_point">高潮点</string>
-    <string name="immersive_climax_point_desc">仅在可视化进度条中高亮检测到的高潮段。</string>
+    <string name="immersive_climax_point_desc">仅在普通窗口级进度条中高亮检测到的高潮段。</string>
     <string name="immersive_waveform_colors">可视化颜色</string>
     <string name="immersive_waveform_remaining_color">未播放</string>
     <string name="immersive_waveform_played_color">已播放</string>
@@ -626,9 +730,9 @@
     <string name="immersive_waveform_color_debug_title">颜色调试板</string>
     <string name="settings_audio_engine_audiotrack_hint">系统混音 · 高兼容 · PCM ≤ 48kHz / 24bit / Stereo</string>
     <string name="settings_personalization_title">个性化</string>
-    <string name="settings_personalization_summary">动画与交互偏好</string>
-    <string name="settings_personalization_keywords">个性化 预测性返回 返回动画 手势 动画</string>
-    <string name="settings_personalization_motion_section">动画</string>
+    <string name="settings_personalization_summary">交互、性能与界面布局</string>
+    <string name="settings_personalization_keywords">个性化 交互 性能 预测性返回 返回动画 手势 动画 底部导航 导航栏 分类 图标 performance</string>
+    <string name="settings_personalization_motion_section">交互与性能</string>
     <string name="settings_predictive_back_title">预测性返回动画</string>
     <string name="settings_predictive_back_summary">返回手势过程中预览即将返回的页面</string>
     <string name="settings_performance_mode_title">性能模式</string>
@@ -667,41 +771,30 @@
     <string name="metadata_unknown">未知</string>
     <string name="scan_complete_no_changes">扫描完成：未发现变化，共 %1$d 首，用时 %2$.1f 秒</string>
     <string name="scan_complete_summary">扫描完成：新增 %1$d 首，更新 %2$d 首，移除 %3$d 首；未变化 %4$d 首，共 %5$d 首，用时 %6$.1f 秒</string>
-    <string name="update_dialog_title">RawS Music %1$s 更新</string>
-    <string name="update_dialog_time">更新时间：2026 年 7 月 14 日</string>
+    <string name="update_dialog_title">RawS Music v%1$s 更新</string>
+    <string name="update_dialog_time">更新时间：2026 年 7 月 21 日</string>
     <string name="update_developer_message_title">开发者的话</string>
     <string name="update_join_qq_group">点击链接加入群聊【RawS Music交流群】：https://qm.qq.com/q/bOvqTQPABi</string>
     <string name="update_close">关闭</string>
     <string-array name="update_notes">
-        <item>修复通过播放界面调出的音效界面后，点击某些选项会造成界面崩溃的问题。</item>
-        <item>修复流式播放下，由于真实墙钟与实际位置相差，出现取整误差，导致歌词进度落后的问题。</item>
-        <item>修复自然播放下，进度条显示与实际播放进度不吻合的问题。</item>
-        <item>修复普通播放模式下，使用随机播放切歌导致 UI 与实际声音不匹配的问题。</item>
-        <item>修复 seek 后，点击上一首会导致重新播放而不是真实上一首的问题。</item>
-        <item>修复词幕状态栏的专辑图与当前播放专辑图不一致的问题。</item>
-        <item>修复当前歌曲没有专辑图且使用播放器默认专辑图后，在播放界面不显示默认专辑图的问题。</item>
-        <item>修复字体设置不生效的问题。</item>
-        <item>修复默认专辑图不传递给系统 metadata 的问题。</item>
-        <item>修复部分区域背景不统一的问题。</item>
-        <item>修复全局字体生效后，字体超出对应区域导致区域效果叠加的问题。</item>
-        <item>优化所有列表的顶部区域，不再冗余。</item>
-        <item>优化其他分类的动画交互。</item>
-        <item>优化其他分类的功能调试。</item>
-        <item>优化播放栏与导航栏液态玻璃效果。</item>
-        <item>优化部分播放内进行上一首与下一首操作时，可能导致声音与当前 UI 显示不一致的问题。</item>
-        <item>统一入场动画，不再出现两套不同的入场动画。</item>
-        <item>优化关于页，调整卡片与背景，将 Halcyon 加入开源库。</item>
-        <item>调整定位图标的位置。</item>
-        <item>新增顶部菜单栏的随机播放。</item>
-        <item>新增播放队列界面。</item>
-        <item>新增最近添加界面。</item>
-        <item>新增元数据窗口，可调整元数据信息，点击对应文本即可调用键盘。</item>
-        <item>新增长按列表及播放界面区域文本复制歌曲信息的功能。</item>
-        <item>新增顶部菜单栏的当前播放歌曲。</item>
-        <item>新增性能设置，如果不在乎液态玻璃等其他效果，请酌情关闭。</item>
-        <item>新增更新检测，可主观关闭。</item>
-        <item>新增播放栏的跑马灯歌词。</item>
-        <item>优化歌词界面的动画效果。</item>
+        <item>修复分类详情界面的排序图标里的排序没有被持久化的问题，导致重建页面后选择丢失</item>
+        <item>修复在进行下一首等控制操作会导致部分设备发生通知音的问题</item>
+        <item>修复暂停阶段，在歌词视图下，点击非当前行下，理应出现进度跳变但实际没有生效的问题</item>
+        <item>修复沉浸模式下迷你歌词空间问题</item>
+        <item>修复沉浸模式下全屏队列背景显示问题</item>
+        <item>修复交叉淡入淡出下，当次功能真正触发且真实切歌后，再进行seek操作后，会出现音卡顿的问题</item>
+        <item>修复某些情况下，当前歌曲明明有内嵌专辑图，但仍显示外置jpg的问题</item>
+        <item>优化液态玻璃效果</item>
+        <item>优化歌词末尾底部边距</item>
+        <item>优化歌词界面与播放界面的动画效果</item>
+        <item>优化歌词界面的顶栏与歌词的交界处的处理</item>
+        <item>优化歌词视图的拖动自然动画（完全重写）</item>
+        <item>新增Android系统空间音频，这个对大部分设备可能都不支持</item>
+        <item>新增歌词界面的视图样式，在设置界面-歌词显示与扩展</item>
+        <item>新增RawS Music自研空间音效（推荐开，戴耳机听）</item>
+        <item>新增头部追踪（前提设备支持）</item>
+        <item>新增自定义歌词底部边距</item>
+        <item>新增设置界面-个性化新增底栏个性化设置，可以自定义入口，也可以隐藏该底栏，设置界面会在主界面呈现</item>
     </string-array>
     <string-array name="update_developer_quotes">
         <item>“永远快乐”这句话，不但渺茫得不能实现，并且荒谬得不能成立。快过的决不会永久；我们说永远快乐，正好像说四方的圆形、静止的动作，同样地自相矛盾。在高兴的时候，我们空对瞬息即逝的时间喊着说：“逗留一会儿吧！你太美了！”那有什么用？你要永久，你该向痛苦里去找。不讲别的，只要一个失眠的晚上，或者有约不来的下午，或者一课沉闷的听讲，这许多比一切宗教信仰更有效力，能使你尝到什么叫做“永生”的滋味。人生的刺就在这里：留恋着不肯快走的，偏是你所不留恋的东西。</item>
@@ -711,4 +804,182 @@
         <item>最近被一个叫微信支付的盯上了，太有手段了。我吃饭扣我钱，我喝奶茶扣我钱，我买皮肤也扣我钱，动不动就扣我钱。你很会做局呀，你很会阴我啊，成天藏在网络里，有本事咱们现实碰一碰。我这个人不怕事，也不来事儿，也不怕来事。小小的老子要是真发威了，你后悔就来不及了。再搞我钱包，我真要来事儿了，收手吧你。</item>
         <item>自在极意豪，我有幸进入过。那是不可求的机遇，当我沉浸其中时，不会觉得有任何问题。直到某天，可能过了几天，也可能是十年、一辈子，你的思绪突然回到当时情景，以一种不自主的状态，被以前的自己击中。这时才明白，我追求一辈子的自在极意豪，原来一开始我就会了。此后我不再追求，不再刻意为之，只追寻内心的感觉，放任身体，发掘内心本来就存在的力量。</item>
     </string-array>
+    <string name="settings_effect_card_expand">展开参数</string>
+    <string name="settings_effect_card_collapse">收束参数</string>
+    <string name="settings_experimental_gain_title">实验室 · 总增益</string>
+    <string name="settings_experimental_gain_summary">独立的末级增益，使用静态软削波优化失真</string>
+    <string name="settings_experimental_gain_level">总增益</string>
+    <string name="settings_experimental_gain_level_summary">在所有音效之后增加 0–30 dB</string>
+    <string name="settings_experimental_gain_warning">实验功能：高增益会主动改变波峰形状，不使用压限器或自动增益回收。</string>
+    <string name="settings_experimental_gain_unavailable">Native DSP 引擎不可用</string>
+    <string name="settings_db_value_positive_one_decimal">+%1$.1f dB</string>
+    <string name="settings_compressor_auto_mode">自动安全限幅</string>
+    <string name="settings_compressor_auto_mode_summary">监测所有音效处理后的最终输出，只在峰值接近爆音时回收到安全临界点。</string>
+    <string name="settings_compressor_auto_mode_active">根据最终输出峰值自动计算联动增益，不提供需要手动调节的阈值、时间或补偿参数。</string>
+
+    <!-- Settings responsibility model -->
+    <string name="settings_section_playback_audio">播放与音频</string>
+    <string name="settings_section_interface_display">界面与显示</string>
+    <string name="settings_section_lyrics_extensions">歌词与扩展</string>
+    <string name="settings_section_library_data">媒体库与数据</string>
+    <string name="settings_section_help_diagnostics">帮助与诊断</string>
+    <string name="settings_lyric_font_summary">字体、字重、缩放与歌词排版</string>
+    <string name="settings_lyric_font_keywords">歌词 字体 字重 缩放 排版 lyric font</string>
+    <string name="settings_log_viewer_title">日志分析</string>
+    <string name="settings_log_viewer_summary">查看、筛选与导出运行日志</string>
+    <string name="settings_log_viewer_keywords">日志 调试 导出 错误 log debug</string>
+    <string name="settings_playback_history_section">播放记录与恢复</string>
+    <string name="settings_track_progress_memory_title">恢复播放进度</string>
+    <string name="settings_track_progress_memory_summary">再次播放曲目时从上次停止的位置继续</string>
+    <string name="settings_play_count_title">记录播放次数</string>
+    <string name="settings_play_count_summary">达到统计阈值后计入歌曲播放次数</string>
+    <string name="settings_play_count_threshold_title">播放次数统计阈值</string>
+    <string name="settings_play_count_threshold_summary">播放超过此比例后才计入一次播放</string>
+    <string name="widget_name">RawS Music 播放器</string>
+    <string name="widget_description">在桌面显示专辑图、歌曲信息与播放控制</string>
+    <string name="widget_compact_name">RawS Music 播放器 2×2</string>
+    <string name="widget_compact_description">紧凑的 2×2 专辑图播放器</string>
+    <string name="widget_nothing_playing">RawS Music</string>
+    <string name="widget_unknown_artist">未知艺术家</string>
+    <string name="widget_tap_to_open">点击打开播放器</string>
+    <string name="widget_open_player">打开播放器</string>
+    <string name="widget_play">播放</string>
+    <string name="widget_pause">暂停</string>
+    <string name="widget_previous">上一首</string>
+    <string name="widget_next">下一首</string>
+    <string name="widget_playlist">播放列表</string>
+    <string name="widget_add_to_playlist">收藏至歌单</string>
+    <string name="landscape_player_back">返回</string>
+    <string name="landscape_player_preferences">播放界面偏好</string>
+    <string name="landscape_player_more">更多</string>
+    <string name="landscape_player_translation">显示歌词翻译</string>
+    <string name="landscape_player_romanization">显示歌词注音</string>
+    <string name="landscape_player_lyric_blur">歌词景深模糊</string>
+    <string name="landscape_player_highlight_all">所有歌词高亮</string>
+    <string name="landscape_player_on">开启</string>
+    <string name="landscape_player_off">关闭</string>
+    <string name="global_search_title">全局搜索</string>
+    <string name="global_search_hint">搜索专辑、艺术家、文件夹、流派、年份、作曲家和歌曲</string>
+    <string name="global_search_back">返回</string>
+    <string name="global_search_clear_query">清空搜索内容</string>
+    <string name="global_search_remove_filter">移除分类筛选</string>
+    <string name="global_search_category_album">专辑</string>
+    <string name="global_search_category_artist">艺术家</string>
+    <string name="global_search_category_folder">文件夹</string>
+    <string name="global_search_category_genre">流派</string>
+    <string name="global_search_category_year">年份</string>
+    <string name="global_search_category_composer">作曲家</string>
+    <string name="global_search_category_songs">所有歌曲</string>
+    <string name="global_search_shuffle">随机播放结果</string>
+    <string name="global_search_sort">排序与布局</string>
+    <string name="global_search_sort_title">排序与布局</string>
+    <string name="global_search_sort_section">排序</string>
+    <string name="global_search_layout_section">布局</string>
+    <string name="global_search_sort_relevance">根据相关度</string>
+    <string name="global_search_sort_name">根据名称</string>
+    <string name="global_search_sort_song_count">根据歌曲数</string>
+    <string name="global_search_sort_reverse">倒序</string>
+    <string name="global_search_layout_compact">紧凑列表</string>
+    <string name="global_search_layout_standard">标准列表</string>
+    <string name="global_search_layout_large">大封面列表</string>
+    <string name="global_search_layout_grid_4">四列网格</string>
+    <string name="global_search_layout_grid_3">三列网格</string>
+    <string name="global_search_layout_grid_2">双列网格</string>
+    <string name="global_search_result_density_hint">双指缩放结果</string>
+    <string name="global_search_history">搜索历史</string>
+    <string name="global_search_clear_history">清空搜索历史</string>
+    <string name="global_search_no_history">暂无搜索历史</string>
+    <string name="global_search_no_results">没有匹配的搜索结果</string>
+    <string name="global_search_unknown_album">未知专辑</string>
+    <string name="global_search_unknown_artist">未知艺术家</string>
+    <string name="global_search_unknown_genre">未知流派</string>
+    <string name="global_search_unknown_year">未知年份</string>
+    <string name="global_search_unknown_composer">未知作曲家</string>
+    <string name="global_search_music">音乐</string>
+    <plurals name="global_search_song_count">
+        <item quantity="other">%1$d 首</item>
+    </plurals>
+    <string name="settings_core_audio_enhancements">核心音频增强</string>
+    <string name="settings_loudness_balance_title">等响度补偿与声道平衡</string>
+    <string name="settings_loudness_balance_summary">在较低听音音量下恢复低频与高频细节，并调整左右声道平衡</string>
+    <string name="settings_loudness_amount">等响度补偿</string>
+    <string name="settings_channel_balance">声道平衡</string>
+    <string name="settings_balance_left">左 %1$d%%</string>
+    <string name="settings_balance_right">右 %1$d%%</string>
+    <string name="settings_balance_center">居中</string>
+    <string name="settings_mono_bass_title">低频居中</string>
+    <string name="settings_mono_bass_summary">仅将分频点以下的低频居中，保留中高频立体声细节</string>
+    <string name="settings_crossover_frequency">分频频率</string>
+    <string name="settings_mono_amount">居中强度</string>
+    <string name="settings_dynamic_eq_title">动态均衡与齿音抑制</string>
+    <string name="settings_dynamic_eq_summary">根据音乐能量动态整理音色厚度，并抑制尖锐齿音</string>
+    <string name="settings_dynamic_eq_intensity">动态均衡强度</string>
+    <string name="settings_deesser_amount">齿音抑制强度</string>
+    <string name="settings_deesser_frequency">齿音频率</string>
+    <string name="settings_moog_section">模拟滤波</string>
+    <string name="settings_moog_title">穆格四阶梯形滤波</string>
+    <string name="settings_moog_summary">带共振与模拟驱动的四级零延迟反馈梯形滤波器</string>
+    <string name="settings_moog_variant">滤波变体</string>
+    <string name="settings_moog_mode_lp24">低通 24 dB/oct</string>
+    <string name="settings_moog_mode_lp12">低通 12 dB/oct</string>
+    <string name="settings_moog_mode_hp24">高通 24 dB/oct</string>
+    <string name="settings_moog_mode_bp12">带通 12 dB/oct</string>
+    <string name="settings_moog_mode_notch">陷波</string>
+    <string name="settings_moog_mode_lp24_summary">经典四极穆格式低通响应</string>
+    <string name="settings_moog_mode_lp12_summary">从同一梯形级取得的柔和二极低通响应</string>
+    <string name="settings_moog_mode_hp24_summary">在截止点带共振的四极高通响应</string>
+    <string name="settings_moog_mode_bp12_summary">聚焦中间频段，适合节奏与人声效果</string>
+    <string name="settings_moog_mode_notch_summary">抑制截止点附近，同时保留低频和高频</string>
+    <string name="settings_moog_cutoff">截止频率</string>
+    <string name="settings_moog_cutoff_summary">采用 20 Hz 至 20 kHz 对数刻度</string>
+    <string name="settings_moog_resonance">共振</string>
+    <string name="settings_moog_resonance_summary">突出截止频率，高档位接近自激振荡</string>
+    <string name="settings_moog_drive">模拟驱动</string>
+    <string name="settings_moog_drive_summary">在梯形反馈环之前加入输入级饱和</string>
+    <string name="settings_moog_mix">干湿比</string>
+
+    <string name="settings_raw_spatial_brir_title">紧凑 BRIR 房间渲染</string>
+    <string name="settings_raw_spatial_brir_summary">在 HOA/HRTF 渲染后加入非对称早期反射与短时阻尼双耳房间尾声。</string>
+    <string name="settings_raw_spatial_separation_title">场景分离</string>
+    <string name="settings_raw_spatial_separation_summary">控制自适应人声中心提取、瞬态保护，以及扩散环境声向后方和上方移动的程度。</string>
+    <string name="settings_raw_spatial_head_size_title">头部宽度模型</string>
+    <string name="settings_raw_spatial_head_size_summary">调整参数化 HRTF 的双耳时间差和头部声影；可从实际测得的头宽附近开始。</string>
+    <string name="settings_raw_spatial_pinna_title">耳廓细节</string>
+    <string name="settings_raw_spatial_pinna_summary">调整参数化 HRTF 中的前后与高度频谱提示。</string>
+    <string name="settings_raw_spatial_head_tracking_title">耳机头部跟踪</string>
+    <string name="settings_raw_spatial_head_tracking_available">使用 %1$s 上报的动态头部跟踪器，将声场锁定在现实空间。</string>
+    <string name="settings_raw_spatial_head_tracking_unavailable">当前没有应用可访问的耳机头部跟踪器；不会使用手机自身运动传感器冒充。</string>
+    <string name="settings_raw_spatial_recenter">重新校准正前方</string>
+    <string name="settings_centimeter_value_one_decimal">%1$.1f 厘米</string>
+
+    <string name="settings_personalization_layout_section">界面布局</string>
+    <string name="settings_bottom_navigation_title">底部导航栏</string>
+    <string name="settings_bottom_navigation_summary">选择、排序并预览主界面的导航入口</string>
+    <string name="settings_bottom_navigation_preview_section">导航栏预览</string>
+    <string name="settings_bottom_navigation_selected_section">已选择入口与顺序</string>
+    <string name="settings_bottom_navigation_entries_section">可选入口</string>
+    <string name="settings_bottom_navigation_entries_summary">可选择 2～5 个入口，主界面固定保留；分类入口使用你提供的 SVG 图标。</string>
+    <string name="settings_bottom_navigation_count">已选择 %1$d / %2$d 个入口</string>
+    <string name="settings_bottom_navigation_home_required">主界面入口固定保留</string>
+    <string name="settings_bottom_navigation_position">第 %1$d 个位置</string>
+    <string name="settings_bottom_navigation_remove">移除</string>
+    <string name="settings_bottom_navigation_settings_fallback_title">设置入口已转移到主界面</string>
+    <string name="settings_bottom_navigation_settings_fallback_summary">底部栏未选择“设置”时，设置按钮会显示在主界面“流光背景”按钮的右侧。</string>
+    <string name="settings_bottom_navigation_reset">恢复默认导航栏</string>
+    <string name="settings_lyric_layout_section">歌词布局</string>
+    <string name="settings_lyric_top_style_title">歌词顶部样式</string>
+    <string name="settings_lyric_top_style_current">当前完整顶部</string>
+    <string name="settings_lyric_top_style_current_summary">专辑图、歌曲信息与菜单固定在歌词上方。</string>
+    <string name="settings_lyric_top_style_scroll">顶部随歌词滚动</string>
+    <string name="settings_lyric_top_style_scroll_summary">完整顶部与歌词处于同一滚动层，向上滑动时一起消失；专辑图滑出可视区后，返回播放页会改用整页缩放淡入。</string>
+    <string name="settings_lyric_top_style_title_only">仅标题固定</string>
+    <string name="settings_lyric_top_style_title_only_summary">顶部只保留紧凑的单行标题与菜单按钮，并适当收束顶部边距。</string>
+    <string name="settings_lyric_bottom_padding_title">歌词尾部底边距</string>
+    <string name="settings_lyric_bottom_padding_summary">调整最后一行歌词下方的留白，可在 40 dp～220 dp 之间动态设置。</string>
+    <string name="settings_lyric_bottom_padding_value">%1$d dp</string>
+    <string name="settings_bottom_navigation_visibility_section">显示状态</string>
+    <string name="settings_bottom_navigation_enabled_title">显示底部导航栏</string>
+    <string name="settings_bottom_navigation_enabled_summary">关闭后底部导航入口将不可用，主界面会自动显示设置按钮。</string>
+    <string name="settings_bottom_navigation_disabled_fallback_title">底部导航栏已关闭</string>
+    <string name="settings_bottom_navigation_disabled_fallback_summary">关闭后无法通过导航栏切换入口，请使用主界面自动显示的设置按钮返回此页面。</string>
 </resources>

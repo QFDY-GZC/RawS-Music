@@ -7,6 +7,7 @@
     <string name="settings_peq_engine_unavailable">The parametric equalizer engine is unavailable</string>
     <string name="settings_peq_workspace_summary">%1$d bands · %2$d enabled</string>
     <string name="settings_peq_preamp_summary">Adjust headroom before all parametric filters</string>
+    <string name="settings_peq_auto_headroom_active">Auto headroom is attenuating an additional %1$.1f dB</string>
     <string name="settings_peq_band_layout_hint">Smartly converts the current filters</string>
     <string name="settings_peq_presets_and_tools">Presets and tools</string>
     <string name="settings_peq_autoeq_card_summary">Search and import headphone corrections</string>
