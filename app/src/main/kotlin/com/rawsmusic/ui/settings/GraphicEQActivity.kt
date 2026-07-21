@@ -16,8 +16,8 @@ class GraphicEQActivity : BaseSettingsActivity() {
         super.onCreate(savedInstanceState)
 
         val controller = try {
-            playerController?.ensurePEQConnected()
-            playerController?.peqController?.let(::GraphicEQController)
+            playerController?.ensureGraphicEQConnected()
+            playerController?.graphicEqController
         } catch (e: Exception) {
             Log.e("GraphicEQActivity", "Failed to get GEQ controller", e)
             null

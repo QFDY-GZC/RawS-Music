@@ -27,6 +27,11 @@ import com.rawsmusic.module.player.dsp.BassBoostController
 import com.rawsmusic.module.player.dsp.CompressorController
 import com.rawsmusic.module.player.dsp.FftConvolverController
 import com.rawsmusic.module.player.dsp.GraphicEQController
+import com.rawsmusic.module.player.dsp.ExperimentalGainController
+import com.rawsmusic.module.player.dsp.LoudnessBalanceController
+import com.rawsmusic.module.player.dsp.MonoBassController
+import com.rawsmusic.module.player.dsp.DynamicEqController
+import com.rawsmusic.module.player.dsp.MoogLadderController
 import com.rawsmusic.module.player.dsp.Panoramic360Controller
 import com.rawsmusic.module.player.dsp.ParametricEQController
 import com.rawsmusic.module.player.dsp.Surround360Controller
@@ -41,6 +46,11 @@ fun LiquidGlassAudioEffectsScreen(
     onTogglePEQ: (Boolean) -> Unit = {},
     peqController: ParametricEQController? = null,
     graphicEqController: GraphicEQController? = null,
+    experimentalGainController: ExperimentalGainController? = null,
+    loudnessBalanceController: LoudnessBalanceController? = null,
+    monoBassController: MonoBassController? = null,
+    dynamicEqController: DynamicEqController? = null,
+    moogLadderController: MoogLadderController? = null,
     fftConvolverController: FftConvolverController? = null,
     compressorController: CompressorController? = null,
     bassBoostController: BassBoostController? = null,
@@ -55,9 +65,7 @@ fun LiquidGlassAudioEffectsScreen(
     onBack: () -> Unit
 ) {
     var fallbackPeqEnabled by remember { mutableStateOf(AppPreferences.PEQ.isEnabled) }
-    val sharedPeqEnabledState = peqController?.isEnabled?.collectAsState()
-        ?: graphicEqController?.isEnabled?.collectAsState()
-    val peqEnabled = sharedPeqEnabledState?.value ?: fallbackPeqEnabled
+    val peqEnabled = peqController?.isEnabled?.collectAsState()?.value ?: fallbackPeqEnabled
 
     val dimensions = AudioEffectDimension.entries
     val pagerState = rememberPagerState(pageCount = { dimensions.size })
@@ -144,6 +152,12 @@ fun LiquidGlassAudioEffectsScreen(
                     AudioEffectDimension.ADVANCED -> AudioEffectsDimensionList(
                         state = advancedListState
                     ) {
+                        CoreAudioEnhancementSettingsContent(
+                            loudnessBalanceController = loudnessBalanceController,
+                            monoBassController = monoBassController,
+                            dynamicEqController = dynamicEqController
+                        )
+                        MoogLadderSettingsCard(controller = moogLadderController)
                         SpeakerOutputElasticitySettingsContent(
                             controller = speakerOutputElasticityController
                         )
@@ -152,6 +166,7 @@ fun LiquidGlassAudioEffectsScreen(
                             bassController = bassBoostController,
                             trebleController = trebleBoostController
                         )
+                        ExperimentalGainSettingsCard(controller = experimentalGainController)
                     }
                 }
             }

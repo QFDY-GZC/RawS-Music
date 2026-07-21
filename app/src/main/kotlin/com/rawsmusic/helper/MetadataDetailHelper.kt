@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -41,20 +42,17 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.R
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.isDsdSourceFile
 import com.rawsmusic.core.common.model.isLossyCodec
 import com.rawsmusic.core.common.utils.AudioUtils
-import com.rawsmusic.core.ui.widget.predictiveDialogMotion
-import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 import com.rawsmusic.module.player.PlayerController
 import io.github.proify.lyricon.lyric.model.Song
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
 
 class MetadataDetailHelper(
     @Suppress("UNUSED_PARAMETER") private val context: Context,
@@ -279,43 +277,14 @@ fun MetadataDetailOverlay(
     helper: MetadataDetailHelper,
     modifier: Modifier = Modifier
 ) {
-    if (!helper.isVisible) return
     val scheme = MiuixTheme.colorScheme
-    val scrimInteraction = remember { MutableInteractionSource() }
-    val cardInteraction = remember { MutableInteractionSource() }
-    val dismissProgress = rememberPredictiveDialogProgress(enabled = true, onDismissRequest = helper::close)
-
-    Dialog(
+    RawMiuixOverlayDialog(
+        show = helper.isVisible,
+        modifier = modifier.fillMaxWidth().heightIn(max = 620.dp),
+        backgroundColor = scheme.surface,
         onDismissRequest = helper::close,
-        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = false)
+        renderInRootScaffold = true
     ) {
-        Box(
-            modifier = modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.38f))
-                .clickable(
-                    interactionSource = scrimInteraction,
-                    indication = null,
-                    onClick = helper::close
-                )
-                .padding(horizontal = 24.dp, vertical = 44.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 620.dp)
-                    .fillMaxHeight(0.86f)
-                    .predictiveDialogMotion(dismissProgress)
-                    .clickable(
-                        interactionSource = cardInteraction,
-                        indication = null,
-                        onClick = {}
-                    ),
-                color = scheme.surface,
-                shape = RoundedCornerShape(30.dp),
-                shadowElevation = 10.dp
-            ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -404,8 +373,6 @@ fun MetadataDetailOverlay(
                         }
                     }
                 }
-            }
-        }
     }
 }
 

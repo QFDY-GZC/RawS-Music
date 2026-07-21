@@ -38,9 +38,9 @@ class MiniPlayerCoordinator(
         currentSong = song
         title = song?.title ?: noMusicText()
         artist = song?.artist.orEmpty()
-        if (song != null) {
-            coverPath = resolveCover(song).ifBlank { song.albumArtPath ?: "" }
-        }
+        coverPath = song?.let { current ->
+            resolveCover(current).ifBlank { current.coverKey }
+        }?.takeIf { it.isNotBlank() }
     }
 
     fun updatePlaybackState(playing: Boolean) {

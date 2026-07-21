@@ -2,13 +2,11 @@ package com.rawsmusic.ui.settings
 
 import android.os.Bundle
 
-class AudioSettingsActivity : BaseSettingsActivity() {
+class BottomNavigationSettingsActivity : BaseSettingsActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            LiquidGlassAudioSettingsScreen(
-                onBack = { finish() }
-            )
+            BottomNavigationSettingsScreen(onBack = { finish() })
         }
     }
 }

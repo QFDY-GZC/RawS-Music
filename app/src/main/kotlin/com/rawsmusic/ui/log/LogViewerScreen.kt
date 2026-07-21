@@ -41,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import com.rawsmusic.R
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppLogStore
 import com.rawsmusic.module.data.prefs.LogEntry
@@ -86,7 +88,7 @@ fun LogViewerScreen(onBack: () -> Unit) {
 
     val availableTags = remember(allEntries) { AppLogStore.getTags() }
 
-    SettingsPage(title = "日志分析", onBack = onBack) {
+    SettingsPage(title = stringResource(R.string.settings_log_viewer_title), onBack = onBack) {
         if (isLoading) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = colors.primary)

@@ -184,9 +184,14 @@ class LyricsCoordinator(
         val prefs = AppPreferences.Lyricon
         val newState = !prefs.displayTranslation
         prefs.displayTranslation = newState
-        prefs.displayRoma = !newState
         displayTranslation = newState
-        displayRoma = !newState
+    }
+
+    fun toggleRoma() {
+        val prefs = AppPreferences.Lyricon
+        val newState = !prefs.displayRoma
+        prefs.displayRoma = newState
+        displayRoma = newState
     }
 
     fun resendToLyricon() {

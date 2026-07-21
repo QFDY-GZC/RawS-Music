@@ -581,14 +581,16 @@ class AudioInfoCapsuleHelper(
         val peqFilters = readPeqFilters()
         val activePeqFilters = peqFilters.count { it.enabled }
         val peqName = AppPreferences.PEQ.presetName.ifBlank { "自定义" }
-        val peqState = if (AppPreferences.PEQ.isEnabled) {
-            "参量均衡器：$peqName，$activePeqFilters 个滤波器，Preamp ${formatDb(AppPreferences.PEQ.preamp)}"
-        } else {
-            "参量均衡器：关闭"
+        val equalizerState = when {
+            AppPreferences.PEQ.isEnabled ->
+                "参量均衡器：$peqName，$activePeqFilters 个滤波器，Preamp ${formatDb(AppPreferences.PEQ.preamp)}"
+            AppPreferences.GraphicEQ.isEnabled ->
+                "图形均衡器：${AppPreferences.GraphicEQ.presetName}，${AppPreferences.GraphicEQ.bandCount} 段，Preamp ${formatDb(AppPreferences.GraphicEQ.preamp)}"
+            else -> "均衡器：关闭"
         }
         lines += InfoLine("处理格式：${formatOutputBitDepth(outputBits, AppPreferences.Player.targetBitDepth)} / ${formatSampleRate(outputSr)}")
         lines += InfoLine("均衡器", isLabel = true)
-        lines += InfoLine(peqState, R.id.nav_peq, true)
+        lines += InfoLine(equalizerState, R.id.nav_audio_effects, true)
         lines += InfoLine("音效", isLabel = true)
         val enabledEffects = mutableListOf<String>()
         if (AppPreferences.BassBoost.isEnabled) enabledEffects += "低音 ${formatDb(AppPreferences.BassBoost.gainDB)}"
@@ -608,12 +610,21 @@ class AudioInfoCapsuleHelper(
         )
         lines += InfoLine("增益", isLabel = true)
         val totalPositiveGain = listOf(
-            AppPreferences.PEQ.preamp,
+            when {
+                AppPreferences.PEQ.isEnabled -> AppPreferences.PEQ.preamp
+                AppPreferences.GraphicEQ.isEnabled -> AppPreferences.GraphicEQ.preamp
+                else -> 0f
+            },
             if (AppPreferences.BassBoost.isEnabled) AppPreferences.BassBoost.gainDB else 0f,
             if (AppPreferences.TrebleBoost.isEnabled) AppPreferences.TrebleBoost.gainDB else 0f,
-            if (AppPreferences.Compressor.isEnabled) AppPreferences.Compressor.makeupGainDB else 0f
+            if (AppPreferences.ExperimentalGain.isEnabled) AppPreferences.ExperimentalGain.gainDb else 0f
         ).filter { it > 0f }.sum()
-        lines += InfoLine("叠加正增益 ${formatDb(totalPositiveGain)}，回放增益 ${if (AppPreferences.Player.replayGainEnabled) "开启" else "关闭"}")
+        val experimentalGain = if (AppPreferences.ExperimentalGain.isEnabled) {
+            "，实验总增益 ${formatDb(AppPreferences.ExperimentalGain.gainDb)}"
+        } else {
+            ""
+        }
+        lines += InfoLine("叠加正增益 ${formatDb(totalPositiveGain)}$experimentalGain，回放增益 ${if (AppPreferences.Player.replayGainEnabled) "开启" else "关闭"}")
         lines += InfoLine("音量控制", isLabel = true)
         lines += InfoLine("软件音量 ${"%.0f".format(AppPreferences.Player.volume * 100f)}%，硬件 Feature Unit ${if (AppPreferences.Player.hardwareFeatureUnitEnabled) "开启" else "关闭"}")
         lines += InfoLine("交叉淡入淡出", isLabel = true)

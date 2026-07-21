@@ -1,6 +1,7 @@
 package com.rawsmusic.ui.settings
 
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -40,6 +41,7 @@ abstract class BaseSettingsActivity : ComponentActivity() {
     private var activityWindowHasFocus = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, true)
     }

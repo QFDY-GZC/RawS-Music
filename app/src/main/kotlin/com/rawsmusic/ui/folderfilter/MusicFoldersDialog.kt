@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -53,8 +54,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.rawsmusic.R
 import com.rawsmusic.core.common.utils.AppLogger
-import com.rawsmusic.core.ui.widget.predictiveDialogMotion
-import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.scanner.ScanScheduler
 import com.rawsmusic.module.scanner.SafUtils
@@ -66,8 +65,7 @@ import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
 import java.io.File
 
 private const val TAG = "MusicFoldersDialog"
@@ -294,48 +292,19 @@ fun MusicFoldersDialog(
         }
     }
 
-    val dismissProgress = rememberPredictiveDialogProgress(enabled = true, onDismissRequest = onDismiss)
-
-    Dialog(
+    RawMiuixOverlayDialog(
+        show = true,
+        title = stringResource(R.string.folder_filter_title),
+        summary = stringResource(R.string.folder_filter_summary),
+        backgroundColor = MiuixTheme.colorScheme.surfaceContainerHigh,
         onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnBackPress = false,
-            dismissOnClickOutside = true
-        )
+        renderInRootScaffold = true
     ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .heightIn(min = 420.dp, max = 680.dp)
-                .predictiveDialogMotion(dismissProgress),
-            shape = RoundedCornerShape(28.dp),
-            color = MiuixTheme.colorScheme.surfaceContainerHigh,
-            tonalElevation = 6.dp,
-            shadowElevation = 12.dp
-        ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp)
+                .heightIn(min = 380.dp, max = 620.dp)
         ) {
-            Text(
-                text = stringResource(R.string.folder_filter_title),
-                color = MiuixTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(Modifier.height(4.dp))
-
-            Text(
-                text = stringResource(R.string.folder_filter_summary),
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                style = MaterialTheme.typography.bodySmall
-            )
-
-            Spacer(Modifier.height(16.dp))
-
             FolderPickerHeader(
                 selectedCount = normalizedSelected.size,
                 rootCount = roots.size,
@@ -425,8 +394,7 @@ fun MusicFoldersDialog(
                 onSaveAndScan = { saveAndScan() }
             )
         }
-        }
-    }
+}
 }
 
 @Composable

@@ -5,6 +5,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import com.rawsmusic.core.common.artwork.EmbeddedArtworkRegion
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.isFileBackedArtworkSource
 import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
@@ -37,9 +38,9 @@ class CoverUriResolver(
      * 返回给 BitmapProvider 使用的 key。
      *
      * 优先级：
-     * 1. albumArtPath = file:// 且存在
-     * 2. 歌曲真实路径，让 BitmapProvider 解内嵌封面 / folder.jpg / FFmpeg fallback
-     * 3. albumArtPath = content:// 仅作为无真实路径时的兜底
+     * 1. 歌曲真实路径：BitmapProvider 必须先完成内嵌封面探测
+     * 2. albumArtPath = file://：仅在没有真实音频路径时使用
+     * 3. albumArtPath = content://：仅作为无真实路径时的兜底
      *
      * MIUI / MediaStore albumart content URI often returns a tiny provider thumbnail first and may
      * make the high-res path go through an extra album-id query. For the player surface we want the
@@ -48,19 +49,20 @@ class CoverUriResolver(
     fun resolveCoverUri(song: AudioFile): String {
         val cacheKey = stableSongCacheKey(song)
 
+        // Check the real audio identity before any resolver cache. Legacy extraction callbacks and
+        // scanner updates may have cached a file:// URI, but they must not replace the provider key
+        // for a song that still has a real audio source.
+        if (song.path.isFileBackedArtworkSource()) {
+            val stableKey = song.coverKey
+            coverKeyCache[cacheKey] = stableKey
+            return stableKey
+        }
+
         coverKeyCache[cacheKey]?.let { cached ->
             if (cached.isNotBlank()) return cached
         }
 
         val albumArtPath = song.albumArtPath.trim()
-        val ext = song.path.substringAfterLast('.', "").lowercase()
-        val preferEmbedded = ext in setOf("dsf", "dff", "wav", "aiff", "aif", "ape")
-
-        if (preferEmbedded && song.path.isNotBlank()) {
-            val stableKey = "audio://${song.path}|${song.fileSize}|${song.dateModified}"
-            coverKeyCache[cacheKey] = stableKey
-            return stableKey
-        }
 
         if (albumArtPath.startsWith("file://")) {
             val filePath = albumArtPath.removePrefix("file://")
@@ -68,12 +70,6 @@ class CoverUriResolver(
                 coverKeyCache[cacheKey] = albumArtPath
                 return albumArtPath
             }
-        }
-
-        if (song.path.isNotBlank()) {
-            val stableKey = "audio://${song.path}|${song.fileSize}|${song.dateModified}"
-            coverKeyCache[cacheKey] = stableKey
-            return stableKey
         }
 
         if (albumArtPath.startsWith("content://")) {
@@ -95,8 +91,9 @@ class CoverUriResolver(
         coverUri: String
     ) {
         val stableKey = stableSongCacheKey(song)
-        val previous = coverKeyCache.put(stableKey, coverUri)
-        if (previous != coverUri) {
+        val resolvedKey = if (song.path.isFileBackedArtworkSource()) song.coverKey else coverUri
+        val previous = coverKeyCache.put(stableKey, resolvedKey)
+        if (previous != resolvedKey) {
             BitmapProvider.invalidateArtworkForSong(
                 path = song.path,
                 fileSize = song.fileSize,
@@ -167,7 +164,7 @@ class CoverUriResolver(
             }
 
             if (!result.isNullOrBlank()) {
-                coverKeyCache[stableKey] = result
+                coverKeyCache[stableKey] = if (song.path.isFileBackedArtworkSource()) song.coverKey else result
             }
 
             withContext(Dispatchers.Main) {
@@ -180,7 +177,7 @@ class CoverUriResolver(
                         reason = "cover_async_extract_done"
                     )
                 }
-                _coverExtractedEvent.value = song.path to (result ?: resolveCoverUri(song))
+                _coverExtractedEvent.value = song.path to resolveCoverUri(song)
             }
         }
     }

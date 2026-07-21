@@ -7,11 +7,6 @@ import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -138,11 +133,7 @@ internal fun FftConvolverSettingsCard(
             onCheckedChange = controller::setEnabled
         )
 
-        AnimatedVisibility(
-            visible = enabled,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut()
-        ) {
+        ExpandableEffectContent(enabled = enabled) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()

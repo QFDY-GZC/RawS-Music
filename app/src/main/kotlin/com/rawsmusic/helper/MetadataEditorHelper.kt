@@ -415,12 +415,27 @@ class MetadataEditorHelper(
                     throw IllegalStateException("无法清理旧的元数据临时文件")
                 }
 
-                // Keep the temporary output beside the source. The final rename then stays on the
-                // same filesystem and can be rolled back without ever truncating the audio file.
-                val ret = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.writeMetadata(
-                    filePath,
-                    ffmpegMeta,
-                    parentDir.absolutePath
+                // TagLib edits a same-filesystem copy and never remuxes the encoded audio frames.
+                // Raw ADTS AAC is not a TagLib container, so it uses the FFmpeg path below.
+                val tagLibSupported = com.rawsmusic.core.common.taglib.TagLibBridge.isSupported(filePath)
+                val ret = if (tagLibSupported) {
+                    originalFile.inputStream().buffered().use { input ->
+                        tempFile.outputStream().buffered().use { output -> input.copyTo(output) }
+                    }
+                    if (com.rawsmusic.core.common.taglib.TagLibBridge.writeMetadata(
+                            tempFile.absolutePath,
+                            ffmpegMeta
+                        )) 0 else -1
+                } else {
+                    com.rawsmusic.core.common.ffmpeg.FFmpegBridge.writeMetadata(
+                        filePath,
+                        ffmpegMeta,
+                        parentDir.absolutePath
+                    )
+                }
+                AppLogger.d(
+                    "EditMetadata",
+                    "Metadata writer=${if (tagLibSupported) "taglib" else "ffmpeg"} ext=$extension ret=$ret"
                 )
 
                 if (ret != 0) {
@@ -444,7 +459,10 @@ class MetadataEditorHelper(
                 val tempSize = tempFile.length()
                 val originalSize = originalFile.length()
                 val tempDuration = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.probeDuration(tempFile.absolutePath)
-                val durationLooksValid = updatedSong.duration <= 0L ||
+                // FFmpeg duration probing is unreliable for DSF/DFF and some lossless containers.
+                // TagLib has edited an exact byte-for-byte copy, so size + successful save are the
+                // appropriate integrity checks for that path.
+                val durationLooksValid = tagLibSupported || updatedSong.duration <= 0L ||
                     (tempDuration > 0L && kotlin.math.abs(tempDuration - updatedSong.duration) <= 2_000L)
                 AppLogger.d(
                     "EditMetadata",

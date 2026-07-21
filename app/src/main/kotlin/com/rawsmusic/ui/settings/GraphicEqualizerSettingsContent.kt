@@ -1,10 +1,5 @@
 package com.rawsmusic.ui.settings
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,7 +15,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -48,8 +42,6 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private val graphicEqExpandEnter = expandVertically() + fadeIn()
-private val graphicEqExpandExit = shrinkVertically() + fadeOut()
 private val graphicEqBandCounts = listOf(10, 31, 40)
 private const val GRAPHIC_EQ_MIN_GAIN = -12f
 private const val GRAPHIC_EQ_MAX_GAIN = 12f
@@ -91,10 +83,6 @@ internal fun GraphicEqualizerSettingsContent(
     val presets by controller.presets.collectAsState()
     val frequencies = PEQFilter.defaultFreqsForCount(bandCount).toList()
 
-    LaunchedEffect(controller, bandCount) {
-        controller.refreshFromParametricState()
-    }
-
     SettingsCard {
         SwitchPreference(
             title = stringResource(R.string.settings_effects_graphic_eq_title),
@@ -107,11 +95,7 @@ internal fun GraphicEqualizerSettingsContent(
             onCheckedChange = controller::setEnabled
         )
 
-        AnimatedVisibility(
-            visible = enabled,
-            enter = graphicEqExpandEnter,
-            exit = graphicEqExpandExit
-        ) {
+        ExpandableEffectContent(enabled = enabled) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()

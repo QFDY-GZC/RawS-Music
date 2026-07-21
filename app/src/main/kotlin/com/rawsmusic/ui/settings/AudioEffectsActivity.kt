@@ -8,6 +8,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.rawsmusic.module.player.dsp.GraphicEQController
+import com.rawsmusic.module.player.dsp.ExperimentalGainController
+import com.rawsmusic.module.player.dsp.LoudnessBalanceController
+import com.rawsmusic.module.player.dsp.MonoBassController
+import com.rawsmusic.module.player.dsp.DynamicEqController
+import com.rawsmusic.module.player.dsp.MoogLadderController
 import com.rawsmusic.module.player.dsp.NativeDSPEngine
 import com.rawsmusic.module.player.dsp.ParametricEQController
 import com.rawsmusic.module.player.dsp.SpeakerOutputElasticityController
@@ -29,8 +34,16 @@ class AudioEffectsActivity : BaseSettingsActivity() {
      */
     private var speakerOutputElasticityController
         by mutableStateOf<SpeakerOutputElasticityController?>(null)
+    private var loudnessBalanceController by mutableStateOf<LoudnessBalanceController?>(null)
+    private var monoBassController by mutableStateOf<MonoBassController?>(null)
+    private var dynamicEqController by mutableStateOf<DynamicEqController?>(null)
+    private var moogLadderController by mutableStateOf<MoogLadderController?>(null)
 
     private var disconnectedSpeakerController: SpeakerOutputElasticityController? = null
+    private var disconnectedLoudnessController: LoudnessBalanceController? = null
+    private var disconnectedMonoBassController: MonoBassController? = null
+    private var disconnectedDynamicEqController: DynamicEqController? = null
+    private var disconnectedMoogLadderController: MoogLadderController? = null
 
     private val peqExportLauncher = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -55,10 +68,18 @@ class AudioEffectsActivity : BaseSettingsActivity() {
             null
         }
         val graphicEqController = try {
-            peqController?.let(::GraphicEQController)
+            playerController?.ensureGraphicEQConnected()
+            playerController?.graphicEqController
         } catch (_: Exception) {
             null
         }
+        val experimentalGainController: ExperimentalGainController? = try {
+            playerController?.ensureExperimentalGainConnected()
+            playerController?.experimentalGainController
+        } catch (_: Exception) {
+            null
+        }
+        refreshCoreAudioEnhancementControllers()
         val fftConvolverController = try {
             playerController?.ensureFftConvolverConnected()
             playerController?.fftConvolverController
@@ -103,6 +124,11 @@ class AudioEffectsActivity : BaseSettingsActivity() {
                 onTogglePEQ = { enabled -> peqController?.setEnabled(enabled) },
                 peqController = peqController,
                 graphicEqController = graphicEqController,
+                experimentalGainController = experimentalGainController,
+                loudnessBalanceController = loudnessBalanceController,
+                monoBassController = monoBassController,
+                dynamicEqController = dynamicEqController,
+                moogLadderController = moogLadderController,
                 fftConvolverController = fftConvolverController,
                 compressorController = compressorController,
                 bassBoostController = bassBoostController,
@@ -128,7 +154,57 @@ class AudioEffectsActivity : BaseSettingsActivity() {
 
     override fun onResume() {
         super.onResume()
+        refreshCoreAudioEnhancementControllers()
         refreshSpeakerOutputElasticityController()
+    }
+
+    private fun refreshCoreAudioEnhancementControllers() {
+        val runtime = playerController
+        if (runtime != null) {
+            runCatching {
+                runtime.ensureLoudnessBalanceConnected()
+                runtime.ensureMonoBassConnected()
+                runtime.ensureDynamicEqConnected()
+                runtime.ensureMoogLadderConnected()
+                loudnessBalanceController = runtime.loudnessBalanceController
+                monoBassController = runtime.monoBassController
+                dynamicEqController = runtime.dynamicEqController
+                moogLadderController = runtime.moogLadderController
+            }.onSuccess {
+                disconnectedLoudnessController = null
+                disconnectedMonoBassController = null
+                disconnectedDynamicEqController = null
+                disconnectedMoogLadderController = null
+                return
+            }.onFailure { error ->
+                Log.e("AudioEffectsActivity", "Unable to connect core audio enhancements", error)
+            }
+        }
+
+        if (loudnessBalanceController == null) {
+            loudnessBalanceController = disconnectedLoudnessController
+                ?: LoudnessBalanceController(NativeDSPEngine()).also {
+                    disconnectedLoudnessController = it
+                }
+        }
+        if (monoBassController == null) {
+            monoBassController = disconnectedMonoBassController
+                ?: MonoBassController(NativeDSPEngine()).also {
+                    disconnectedMonoBassController = it
+                }
+        }
+        if (dynamicEqController == null) {
+            dynamicEqController = disconnectedDynamicEqController
+                ?: DynamicEqController(NativeDSPEngine()).also {
+                    disconnectedDynamicEqController = it
+                }
+        }
+        if (moogLadderController == null) {
+            moogLadderController = disconnectedMoogLadderController
+                ?: MoogLadderController(NativeDSPEngine()).also {
+                    disconnectedMoogLadderController = it
+                }
+        }
     }
 
     private fun refreshSpeakerOutputElasticityController() {

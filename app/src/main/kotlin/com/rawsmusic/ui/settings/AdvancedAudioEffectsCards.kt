@@ -1,10 +1,5 @@
 package com.rawsmusic.ui.settings
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,13 +25,9 @@ import com.rawsmusic.module.player.dsp.CompressorController
 import com.rawsmusic.module.player.dsp.TrebleBoostController
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.preference.RadioButtonPreference
 import top.yukonga.miuix.kmp.preference.SliderPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-
-private val effectExpandEnter = expandVertically() + fadeIn()
-private val effectExpandExit = shrinkVertically() + fadeOut()
 
 /**
  * Reusable MIUIX compressor content shared by the advanced workspace and the
@@ -66,16 +57,8 @@ internal fun CompressorSettingsContent(
     }
 
     val enabled by controller.isEnabled.collectAsState()
-    val thresholdDb by controller.thresholdDB.collectAsState()
-    val ratio by controller.ratio.collectAsState()
-    val attackMs by controller.attackMs.collectAsState()
-    val releaseMs by controller.releaseMs.collectAsState()
-    val makeupGainDb by controller.makeupGainDB.collectAsState()
-    val kneeWidthDb by controller.kneeWidthDB.collectAsState()
-    val detectionMode by controller.detectionMode.collectAsState()
     val currentGr by controller.currentGR.collectAsState()
 
-    // Poll only while this content is composed and the compressor is active.
     LaunchedEffect(controller, enabled) {
         while (enabled) {
             controller.updateGR()
@@ -87,95 +70,22 @@ internal fun CompressorSettingsContent(
     SettingsCard {
         SwitchPreference(
             title = stringResource(R.string.settings_compressor_enable),
-            summary = stringResource(R.string.settings_effects_compressor_desc),
+            summary = stringResource(R.string.settings_compressor_auto_mode_summary),
             checked = enabled,
             onCheckedChange = controller::setEnabled
         )
 
-        AnimatedVisibility(
-            visible = enabled,
-            enter = effectExpandEnter,
-            exit = effectExpandExit
-        ) {
+        ExpandableEffectContent(enabled = enabled) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 6.dp)
             ) {
                 CompressorGainReductionMeter(currentGr = currentGr)
-
-                SliderPreference(
-                    title = stringResource(R.string.settings_compressor_threshold),
-                    summary = null,
-                    valueText = stringResource(R.string.settings_db_value_one_decimal, thresholdDb),
-                    value = thresholdDb.coerceIn(-60f, 0f),
-                    onValueChange = controller::setThreshold,
-                    valueRange = -60f..0f
+                SettingsInfoEntry(
+                    title = stringResource(R.string.settings_compressor_auto_mode),
+                    description = stringResource(R.string.settings_compressor_auto_mode_active)
                 )
-                SliderPreference(
-                    title = stringResource(R.string.settings_compressor_ratio),
-                    summary = null,
-                    valueText = stringResource(R.string.settings_ratio_value, ratio),
-                    value = ratio.coerceIn(1f, 20f),
-                    onValueChange = controller::setRatio,
-                    valueRange = 1f..20f
-                )
-                SliderPreference(
-                    title = stringResource(R.string.settings_compressor_attack),
-                    summary = null,
-                    valueText = stringResource(R.string.settings_ms_value_one_decimal, attackMs),
-                    value = attackMs.coerceIn(0.1f, 100f),
-                    onValueChange = controller::setAttack,
-                    valueRange = 0.1f..100f
-                )
-                SliderPreference(
-                    title = stringResource(R.string.settings_compressor_release),
-                    summary = null,
-                    valueText = stringResource(R.string.settings_ms_value_integer, releaseMs.toInt()),
-                    value = releaseMs.coerceIn(10f, 1000f),
-                    onValueChange = controller::setRelease,
-                    valueRange = 10f..1000f
-                )
-                SliderPreference(
-                    title = stringResource(R.string.settings_compressor_makeup_gain),
-                    summary = null,
-                    valueText = stringResource(R.string.settings_db_value_one_decimal, makeupGainDb),
-                    value = makeupGainDb.coerceIn(0f, 24f),
-                    onValueChange = controller::setMakeupGain,
-                    valueRange = 0f..24f
-                )
-                SliderPreference(
-                    title = stringResource(R.string.settings_compressor_knee),
-                    summary = null,
-                    valueText = stringResource(R.string.settings_db_value_one_decimal, kneeWidthDb),
-                    value = kneeWidthDb.coerceIn(0f, 30f),
-                    onValueChange = controller::setKneeWidth,
-                    valueRange = 0f..30f
-                )
-
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 6.dp)
-                ) {
-                    Text(
-                        text = stringResource(R.string.settings_compressor_detection_mode),
-                        color = MiuixTheme.colorScheme.onBackground,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                    )
-                    RadioButtonPreference(
-                        title = stringResource(R.string.settings_compressor_peak),
-                        selected = detectionMode == 0,
-                        onClick = { controller.setDetectionMode(0) }
-                    )
-                    RadioButtonPreference(
-                        title = stringResource(R.string.settings_compressor_rms),
-                        selected = detectionMode == 1,
-                        onClick = { controller.setDetectionMode(1) }
-                    )
-                }
             }
         }
     }
@@ -265,11 +175,7 @@ private fun BassBoostSettingsCard(controller: BassBoostController?) {
             checked = enabled,
             onCheckedChange = controller::setEnabled
         )
-        AnimatedVisibility(
-            visible = enabled,
-            enter = effectExpandEnter,
-            exit = effectExpandExit
-        ) {
+        ExpandableEffectContent(enabled = enabled) {
             Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
                 SliderPreference(
                     title = stringResource(R.string.settings_effect_gain),
@@ -318,11 +224,7 @@ private fun TrebleBoostSettingsCard(controller: TrebleBoostController?) {
             checked = enabled,
             onCheckedChange = controller::setEnabled
         )
-        AnimatedVisibility(
-            visible = enabled,
-            enter = effectExpandEnter,
-            exit = effectExpandExit
-        ) {
+        ExpandableEffectContent(enabled = enabled) {
             Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
                 SliderPreference(
                     title = stringResource(R.string.settings_effect_gain),

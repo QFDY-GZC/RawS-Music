@@ -14,19 +14,23 @@ class AudioPermissionHelper(
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(
                 Manifest.permission.READ_MEDIA_AUDIO,
                 Manifest.permission.POST_NOTIFICATIONS,
-                Manifest.permission.RECORD_AUDIO,
                 Manifest.permission.BLUETOOTH_CONNECT
             )
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> arrayOf(
                 Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.RECORD_AUDIO,
                 Manifest.permission.BLUETOOTH_CONNECT
             )
             else -> arrayOf(
-                Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.RECORD_AUDIO
+                Manifest.permission.READ_EXTERNAL_STORAGE
             )
         }
+    }
+
+    fun isVisualizerPermissionGranted(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     fun areGranted(permissions: Array<String>): Boolean {
