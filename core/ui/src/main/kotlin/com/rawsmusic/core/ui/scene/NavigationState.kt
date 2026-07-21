@@ -48,6 +48,7 @@ class NavigationState {
 
     private val _backStack = mutableStateListOf(NavScene.HOME)
     val backStack: List<NavScene> get() = _backStack
+    private val argumentStack = mutableStateListOf("")
 
     // ==================== 过渡动画状态 ====================
 
@@ -113,6 +114,7 @@ class NavigationState {
         }
         if (scene == currentScene) return
         _backStack.add(scene)
+        argumentStack.add(argument)
         currentArgument = argument
         currentScene = scene
     }
@@ -130,11 +132,13 @@ class NavigationState {
                 // SETTINGS 已在栈中，裁剪到它
                 while (_backStack.lastIndex > rootIndex) {
                     _backStack.removeAt(_backStack.lastIndex)
+                    argumentStack.removeAt(argumentStack.lastIndex)
                 }
             } else {
                 // SETTINGS 不在栈中，只加一次
                 if (currentScene != NavScene.SETTINGS) {
                     _backStack.add(NavScene.SETTINGS)
+                    argumentStack.add("")
                 }
             }
             currentArgument = ""
@@ -145,9 +149,11 @@ class NavigationState {
         // 非 SETTINGS 的子场景
         if (currentScene !in settingsScenes && _backStack.lastOrNull() != NavScene.SETTINGS) {
             _backStack.add(NavScene.SETTINGS)
+            argumentStack.add("")
         }
         if (scene != currentScene) {
             _backStack.add(scene)
+            argumentStack.add("")
             currentArgument = ""
             currentScene = scene
         }
@@ -161,7 +167,9 @@ class NavigationState {
         if (isTransitioning) return false
         if (!canNavigateBack()) return false
         _backStack.removeAt(_backStack.lastIndex)
+        argumentStack.removeAt(argumentStack.lastIndex)
         currentScene = _backStack.last()
+        currentArgument = argumentStack.lastOrNull().orEmpty()
         return true
     }
 
@@ -214,7 +222,9 @@ class NavigationState {
         isAnimatingBack = false
         animatingBackProgress = 0f
         _backStack.removeAt(_backStack.lastIndex)
+        argumentStack.removeAt(argumentStack.lastIndex)
         currentScene = _backStack.last()
+        currentArgument = argumentStack.lastOrNull().orEmpty()
     }
 
     /**
@@ -224,6 +234,9 @@ class NavigationState {
         if (isTransitioning) return
         _backStack.clear()
         _backStack.add(NavScene.HOME)
+        argumentStack.clear()
+        argumentStack.add("")
+        currentArgument = ""
         currentScene = NavScene.HOME
     }
 
@@ -274,6 +287,9 @@ class NavigationState {
 
         _backStack.clear()
         _backStack.addAll(safeStack)
+        argumentStack.clear()
+        repeat(safeStack.size.coerceAtLeast(1)) { argumentStack.add("") }
+        argumentStack[argumentStack.lastIndex] = argument
 
         currentScene = scene
         currentArgument = argument

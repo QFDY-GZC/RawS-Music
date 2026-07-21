@@ -85,20 +85,8 @@ fun ScanSettingsPage(
         mutableStateOf(AppPreferences.Scanner.minTrackDurationSeconds.coerceIn(0, 60))
     }
 
-    var trackProgressMemoryEnabled by remember {
-        mutableStateOf(AppPreferences.Player.trackProgressMemoryEnabled)
-    }
-
     var ignoreVideoFormats by remember {
         mutableStateOf(AppPreferences.Scanner.ignoreVideoFormats)
-    }
-
-    var playCountEnabled by remember {
-        mutableStateOf(AppPreferences.Player.playCountEnabled)
-    }
-
-    var playCountThresholdPercent by remember {
-        mutableStateOf(AppPreferences.Player.playCountThresholdPercent.coerceIn(1, 100))
     }
 
     // 生命周期监听：从系统权限页返回时同步状态
@@ -265,43 +253,6 @@ fun ScanSettingsPage(
                     onCheckedChange = { checked: Boolean ->
                         ignoreVideoFormats = checked
                         AppPreferences.Scanner.ignoreVideoFormats = checked
-                    }
-                )
-            }
-
-            // ── 播放记录 ──
-            SmallTitle(text = stringResource(R.string.scan_settings_history_section))
-            CardGroup {
-                SwitchPreference(
-                    title = stringResource(R.string.scan_settings_track_progress_title),
-                    checked = trackProgressMemoryEnabled,
-                    onCheckedChange = { checked: Boolean ->
-                        trackProgressMemoryEnabled = checked
-                        AppPreferences.Player.trackProgressMemoryEnabled = checked
-                        if (!checked) AppPreferences.Player.lastPosition = 0L
-                    }
-                )
-                MiuixDivider()
-                SwitchPreference(
-                    title = stringResource(R.string.scan_settings_play_count_title),
-                    checked = playCountEnabled,
-                    onCheckedChange = { checked: Boolean ->
-                        playCountEnabled = checked
-                        AppPreferences.Player.playCountEnabled = checked
-                    }
-                )
-                MiuixDivider()
-                SliderRow(
-                    title = stringResource(R.string.scan_settings_play_count_threshold_title),
-                    valueLabel = stringResource(R.string.scan_settings_percent_value, playCountThresholdPercent),
-                    description = stringResource(R.string.scan_settings_play_count_threshold_summary),
-                    value = playCountThresholdPercent.toFloat(),
-                    valueRange = 1f..100f,
-                    steps = 98,
-                    enabled = playCountEnabled,
-                    onValueChange = { playCountThresholdPercent = it.roundToInt().coerceIn(1, 100) },
-                    onValueChangeFinished = {
-                        AppPreferences.Player.playCountThresholdPercent = playCountThresholdPercent
                     }
                 )
             }

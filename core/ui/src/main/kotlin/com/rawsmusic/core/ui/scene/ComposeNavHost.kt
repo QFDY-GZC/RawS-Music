@@ -53,7 +53,7 @@ data class NavCallbacks(
     val onRecentlyAddedClick: (AudioFile, Int) -> Unit = { _, _ -> },
     val onPlayAll: (List<AudioFile>) -> Unit = {},
     val onShuffleAll: (List<AudioFile>) -> Unit = {},
-    val onSearchClick: () -> Unit = {},
+    val onSearchClick: (GlobalSearchScope?) -> Unit = {},
     val onNavigateToPlayer: () -> Unit = {},
     val onMiniPlayerPlayPause: () -> Unit = {},
     val onMiniPlayerPrevious: () -> Unit = {},
@@ -114,7 +114,9 @@ fun ComposeNavHost(
     callbacks: NavCallbacks,
     data: NavData,
     modifier: Modifier = Modifier,
-    externalPageRenderer: ExternalPageRenderer? = null
+    externalPageRenderer: ExternalPageRenderer? = null,
+    showHomeSettingsShortcut: Boolean = false,
+    onSettingsClick: () -> Unit = {},
 ) {
     val homeListState = rememberLazyListState()
     val songsPowerListState = rememberComposePowerListState("songs")
@@ -133,7 +135,9 @@ fun ComposeNavHost(
                 data.playbackDurationMs > 0L &&
                 (data.playbackDurationMs - data.playbackPositionMs) in 1L..10_000L &&
                 data.nextSongTitle.isNotBlank(),
-            onSearch = callbacks.onSearchClick,
+            onSearch = {
+                callbacks.onSearchClick(GlobalSearchScope.fromScene(state.currentScene))
+            },
             onOpenFolderPicker = callbacks.onOpenFolderPicker,
             currentSortOrder = data.currentSortOrder,
             onSortSelected = callbacks.onSongSortSelected
@@ -153,7 +157,9 @@ fun ComposeNavHost(
                 playCounts = data.playCounts,
                 listState = homeListState,
                 onNavigate = { targetScene -> state.navigateTo(targetScene) },
-                onSearchClick = callbacks.onSearchClick,
+                onSearchClick = { callbacks.onSearchClick(null) },
+                showSettingsShortcut = showHomeSettingsShortcut,
+                onSettingsClick = onSettingsClick,
                 onSongClick = callbacks.onSongClick,
                 onPlayQueue = callbacks.onPlayQueue
             )
@@ -187,6 +193,7 @@ fun ComposeNavHost(
                 onMiniPlayerPrevious = callbacks.onMiniPlayerPrevious,
                 onMiniPlayerNext = callbacks.onMiniPlayerNext,
                 onOpenFolderPicker = callbacks.onOpenFolderPicker,
+                onOpenGlobalSearch = { callbacks.onSearchClick(GlobalSearchScope.SONG) },
                 onSortClick = callbacks.onSortClick,
                 onShuffleAll = callbacks.onShuffleAll,
                 onSortSelected = callbacks.onSongSortSelected,
@@ -213,6 +220,9 @@ fun ComposeNavHost(
                     )
                 },
                 onPlayQueue = callbacks.onPlayQueue,
+                onShuffle = callbacks.onShuffleAll,
+                onOpenFolder = callbacks.onOpenFolderPicker,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.FOLDER) },
                 powerListState = foldersPowerListState
             )
             NavScene.ALBUMS -> AlbumsPage(
@@ -226,6 +236,9 @@ fun ComposeNavHost(
                     )
                 },
                 onPlayQueue = callbacks.onPlayQueue,
+                onShuffle = callbacks.onShuffleAll,
+                onOpenFolder = callbacks.onOpenFolderPicker,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.ALBUM) },
                 powerListState = albumsPowerListState
             )
 
@@ -241,6 +254,9 @@ fun ComposeNavHost(
                 },
                 onBack = onBack,
                 onPlayQueue = callbacks.onPlayQueue,
+                onShuffle = callbacks.onShuffleAll,
+                onOpenFolder = callbacks.onOpenFolderPicker,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.ARTIST) },
                 powerListState = artistsPowerListState
             )
 
@@ -276,6 +292,9 @@ fun ComposeNavHost(
                     state.navigateTo(NavScene.GENRE_DETAIL, Uri.encode(genreKey))
                 },
                 onPlayQueue = callbacks.onPlayQueue,
+                onShuffle = callbacks.onShuffleAll,
+                onOpenFolder = callbacks.onOpenFolderPicker,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.GENRE) },
                 powerListState = genresPowerListState
             )
 
@@ -287,6 +306,9 @@ fun ComposeNavHost(
                     state.navigateTo(NavScene.YEAR_DETAIL, Uri.encode(yearKey))
                 },
                 onPlayQueue = callbacks.onPlayQueue,
+                onShuffle = callbacks.onShuffleAll,
+                onOpenFolder = callbacks.onOpenFolderPicker,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.YEAR) },
                 powerListState = yearsPowerListState
             )
 
@@ -298,6 +320,9 @@ fun ComposeNavHost(
                     state.navigateTo(NavScene.COMPOSER_DETAIL, Uri.encode(composerKey))
                 },
                 onPlayQueue = callbacks.onPlayQueue,
+                onShuffle = callbacks.onShuffleAll,
+                onOpenFolder = callbacks.onOpenFolderPicker,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.COMPOSER) },
                 powerListState = composersPowerListState
             )
 
@@ -312,6 +337,9 @@ fun ComposeNavHost(
                     )
                 },
                 onPlayQueue = callbacks.onPlayQueue,
+                onShuffle = callbacks.onShuffleAll,
+                onOpenFolder = callbacks.onOpenFolderPicker,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.FOLDER) },
                 powerListState = foldersPowerListState
             )
 
@@ -326,6 +354,9 @@ fun ComposeNavHost(
                     )
                 },
                 onPlayQueue = callbacks.onPlayQueue,
+                onShuffle = callbacks.onShuffleAll,
+                onOpenFolder = callbacks.onOpenFolderPicker,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.ALBUM) },
                 powerListState = albumsPowerListState
             )
 
@@ -341,6 +372,9 @@ fun ComposeNavHost(
                 },
                 onBack = onBack,
                 onPlayQueue = callbacks.onPlayQueue,
+                onShuffle = callbacks.onShuffleAll,
+                onOpenFolder = callbacks.onOpenFolderPicker,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.ARTIST) },
                 powerListState = artistsPowerListState
             )
 
@@ -352,6 +386,9 @@ fun ComposeNavHost(
                     state.navigateTo(NavScene.GENRE_DETAIL, Uri.encode(genreKey))
                 },
                 onPlayQueue = callbacks.onPlayQueue,
+                onShuffle = callbacks.onShuffleAll,
+                onOpenFolder = callbacks.onOpenFolderPicker,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.GENRE) },
                 powerListState = genresPowerListState
             )
 
@@ -363,6 +400,9 @@ fun ComposeNavHost(
                     state.navigateTo(NavScene.YEAR_DETAIL, Uri.encode(yearKey))
                 },
                 onPlayQueue = callbacks.onPlayQueue,
+                onShuffle = callbacks.onShuffleAll,
+                onOpenFolder = callbacks.onOpenFolderPicker,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.YEAR) },
                 powerListState = yearsPowerListState
             )
 
@@ -374,6 +414,9 @@ fun ComposeNavHost(
                     state.navigateTo(NavScene.COMPOSER_DETAIL, Uri.encode(composerKey))
                 },
                 onPlayQueue = callbacks.onPlayQueue,
+                onShuffle = callbacks.onShuffleAll,
+                onOpenFolder = callbacks.onOpenFolderPicker,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.COMPOSER) },
                 powerListState = composersPowerListState
             )
 

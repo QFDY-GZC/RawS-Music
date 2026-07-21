@@ -9,7 +9,6 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -84,6 +83,8 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InputField
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Settings
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -94,26 +95,14 @@ fun HomePage(
     listState: LazyListState = rememberLazyListState(),
     onNavigate: (NavScene) -> Unit,
     onSearchClick: () -> Unit,
+    showSettingsShortcut: Boolean = false,
+    onSettingsClick: () -> Unit = {},
     onSongClick: (AudioFile, Int) -> Unit,
     onPlayQueue: (List<AudioFile>, Int) -> Unit
 ) {
-    var searchExpanded by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
     var showFlowModeDialog by remember { mutableStateOf(false) }
     val rawFlowMode = LocalRawFlowMode.current
     val setRawFlowMode = LocalRawFlowModeSetter.current
-
-    val filteredSongs = remember(searchQuery, songs) {
-        if (searchQuery.isBlank()) emptyList()
-        else {
-            val q = searchQuery.lowercase()
-            songs.filter {
-                it.title.lowercase().contains(q) ||
-                    it.artist.lowercase().contains(q) ||
-                    it.album.lowercase().contains(q)
-            }
-        }
-    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         HomePageContent(
@@ -122,30 +111,13 @@ fun HomePage(
             playCounts = playCounts,
             listState = listState,
             onNavigate = onNavigate,
-            onSearchClick = { searchExpanded = true },
+            onSearchClick = onSearchClick,
             onFlowBackgroundClick = { showFlowModeDialog = true },
+            showSettingsShortcut = showSettingsShortcut,
+            onSettingsClick = onSettingsClick,
             onSongClick = onSongClick,
             onPlayQueue = onPlayQueue
         )
-
-        if (searchExpanded) {
-            SearchOverlay(
-                query = searchQuery,
-                onQueryChange = { searchQuery = it },
-                onDismiss = {
-                    searchExpanded = false
-                    searchQuery = ""
-                },
-                filteredSongs = filteredSongs,
-                allSongs = songs,
-                onSongClick = { song ->
-                    val idx = songs.indexOf(song).coerceAtLeast(0)
-                    onSongClick(song, idx)
-                    searchExpanded = false
-                    searchQuery = ""
-                }
-            )
-        }
 
         RawFlowModeDialog(
             show = showFlowModeDialog,
@@ -153,155 +125,6 @@ fun HomePage(
             onSelectMode = setRawFlowMode,
             onDismissRequest = { showFlowModeDialog = false }
         )
-    }
-}
-
-@Composable
-private fun SearchOverlay(
-    query: String,
-    onQueryChange: (String) -> Unit,
-    onDismiss: () -> Unit,
-    filteredSongs: List<AudioFile>,
-    allSongs: List<AudioFile>,
-    onSongClick: (AudioFile) -> Unit
-) {
-    val backgroundColor = MiuixTheme.colorScheme.background
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-    ) {
-        SearchBar(
-            inputField = {
-                InputField(
-                    query = query,
-                    onQueryChange = onQueryChange,
-                    onSearch = {},
-                    expanded = true,
-                    onExpandedChange = { expanded -> if (!expanded) onDismiss() },
-                    label = stringResource(R.string.search_hint)
-                )
-            },
-            onExpandedChange = { expanded -> if (!expanded) onDismiss() },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            expanded = true,
-            content = {}
-        )
-
-        if (query.isBlank()) {
-            Box(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    VectorIcon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = null,
-                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        modifier = Modifier.size(56.dp)
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        "输入关键词开始搜索",
-                        fontSize = 16.sp,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary
-                    )
-                }
-            }
-        } else if (filteredSongs.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        "未找到相关结果",
-                        fontSize = 16.sp,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary
-                    )
-                }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(horizontal = 16.dp)
-            ) {
-                item {
-                    Text(
-                        "${filteredSongs.size} 首歌曲",
-                        fontSize = 14.sp,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        modifier = Modifier.padding(vertical = 8.dp)
-                    )
-                }
-                items(filteredSongs) { song ->
-                    val index = allSongs.indexOf(song).coerceAtLeast(0)
-                    SearchResultSongRow(
-                        song = song,
-                        onClick = { onSongClick(song) }
-                    )
-                }
-                item {
-                    Spacer(Modifier.height(100.dp))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SearchResultSongRow(
-    song: AudioFile,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(64.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(pastelColorFor(song.title))
-        ) {
-            if (song.coverKey.isNotBlank()) {
-                BitmapImage(
-                    key = song.coverKey,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                    targetWidth = 128,
-                    targetHeight = 128
-                )
-            }
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                song.displayName,
-                fontSize = 16.sp,
-                color = MiuixTheme.colorScheme.onBackground,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                "${song.artist.ifBlank { "未知艺术家" }} · ${song.album.ifBlank { "未知专辑" }}",
-                fontSize = 13.sp,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
     }
 }
 
@@ -315,6 +138,8 @@ private fun HomePageContent(
     onNavigate: (NavScene) -> Unit,
     onSearchClick: () -> Unit,
     onFlowBackgroundClick: () -> Unit,
+    showSettingsShortcut: Boolean,
+    onSettingsClick: () -> Unit,
     onSongClick: (AudioFile, Int) -> Unit,
     onPlayQueue: (List<AudioFile>, Int) -> Unit
 ) {
@@ -382,12 +207,23 @@ private fun HomePageContent(
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary
                         )
                     }
-                    IconButton(onClick = onFlowBackgroundClick) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_palette),
-                            contentDescription = stringResource(R.string.flow_background_action),
-                            tint = MiuixTheme.colorScheme.onSurface
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onFlowBackgroundClick) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_palette),
+                                contentDescription = stringResource(R.string.flow_background_action),
+                                tint = MiuixTheme.colorScheme.onSurface
+                            )
+                        }
+                        if (showSettingsShortcut) {
+                            IconButton(onClick = onSettingsClick) {
+                                Icon(
+                                    imageVector = MiuixIcons.Regular.Settings,
+                                    contentDescription = stringResource(R.string.bottom_nav_settings),
+                                    tint = MiuixTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
                     }
                 }
                 Spacer(Modifier.height(14.dp))
@@ -663,7 +499,6 @@ fun Daily20Page(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FeatureCard(
     title: String,
@@ -696,7 +531,7 @@ private fun FeatureCard(
                         fontSize = 16.sp,
                         color = Color.White,
                         maxLines = 1,
-                        modifier = Modifier.basicMarquee()
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         song?.artist?.takeIf { it.isNotBlank() } ?: "RawSMusic",

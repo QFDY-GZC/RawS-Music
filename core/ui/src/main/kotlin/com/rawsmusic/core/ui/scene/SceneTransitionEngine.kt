@@ -3,12 +3,12 @@ package com.rawsmusic.core.ui.scene
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Easing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -31,7 +31,6 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastFirstOrNull
 import androidx.compose.ui.util.lerp
@@ -39,9 +38,17 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.max
+import kotlin.math.cos
 import kotlin.math.roundToInt
 
 private const val NORMAL_ANIM_MS = 320
+private const val POWER_LIST_COMMIT_MS = 250
+private const val POWER_LIST_CANCEL_MS = 500
+private const val POWER_LIST_COMMIT_MIN_MS = 100
+private const val POWER_LIST_CANCEL_MIN_MS = 166
+private const val POWER_LIST_COMMIT_PROGRESS = 0.3f
+private const val POWER_LIST_VELOCITY_DP_PER_S = 500f
+private const val SHARED_PAIR_WAIT_FRAMES = 6
 private const val SETTINGS_FRAGMENT_ANIM_MS = 300
 private const val DRAG_ANIM_MS = 500
 private const val COMMIT_PROGRESS_THRESHOLD = 0.8f
@@ -55,6 +62,10 @@ private const val SCALE_MAX = 1.25f
 private val Decelerate2 = CubicBezierEasing(0f, 0f, 0.2f, 1f)
 private val FragmentFastOutExtraSlowIn = FragmentSceneEasing
 private val transitionTween = tween<Float>(NORMAL_ANIM_MS, easing = Decelerate2)
+private val powerListTransitionTween = tween<Float>(
+    durationMillis = POWER_LIST_COMMIT_MS,
+    easing = PowerListAccelerateDecelerate
+)
 private val settingsFragmentTween = tween<Float>(SETTINGS_FRAGMENT_ANIM_MS, easing = FragmentFastOutExtraSlowIn)
 
 private enum class PageMotion {
@@ -146,6 +157,66 @@ private fun settleDurationMillis(start: Float, target: Float, velocityPxPerSecon
     return (seconds * 1000f).toInt().coerceIn(80, DRAG_ANIM_MS)
 }
 
+private suspend fun awaitSharedLayouts(
+    coverRegistry: SharedCoverRegistry,
+    itemRegistry: PowerListSceneTransitionRegistry,
+    fromScene: NavScene,
+    toScene: NavScene,
+    transitionKey: String,
+    allowRememberedTarget: Boolean = false
+) {
+    repeat(SHARED_PAIR_WAIT_FRAMES) {
+        withFrameNanos { }
+        val pairs = coverRegistry.findPairs(
+            fromSceneId = fromScene.name,
+            toSceneId = toScene.name,
+            allowRememberedTarget = allowRememberedTarget
+        )
+        val bothScenesMeasured = itemRegistry.hasScene(fromScene.name) &&
+            (itemRegistry.hasScene(toScene.name) ||
+                (allowRememberedTarget && itemRegistry.hasRememberedScene(toScene.name)))
+        if (pairs.isNotEmpty() && bothScenesMeasured) {
+            pairs.forEach { (from, to) ->
+                coverRegistry.freeze(from)
+                coverRegistry.freeze(to)
+                if (!allowRememberedTarget) coverRegistry.rememberReturnTarget(from)
+            }
+            itemRegistry.freezeTransition(
+                transitionKey = transitionKey,
+                fromSceneId = fromScene.name,
+                toSceneId = toScene.name,
+                anchorItemId = pairs.first().first.elementId,
+                allowRememberedTarget = allowRememberedTarget,
+                anchorFromBounds = pairs.first().first.boundsInWindow,
+                anchorToBounds = pairs.first().second.boundsInWindow
+            )
+            return
+        }
+    }
+    val pairs = coverRegistry.findPairs(
+        fromSceneId = fromScene.name,
+        toSceneId = toScene.name,
+        allowRememberedTarget = allowRememberedTarget
+    )
+    pairs.forEach { (from, to) ->
+        coverRegistry.freeze(from)
+        coverRegistry.freeze(to)
+        if (!allowRememberedTarget) coverRegistry.rememberReturnTarget(from)
+    }
+    itemRegistry.freezeTransition(
+        transitionKey = transitionKey,
+        fromSceneId = fromScene.name,
+        toSceneId = toScene.name,
+        anchorItemId = pairs.firstOrNull()
+            ?.first
+            ?.elementId
+            .orEmpty(),
+        allowRememberedTarget = allowRememberedTarget,
+        anchorFromBounds = pairs.firstOrNull()?.first?.boundsInWindow,
+        anchorToBounds = pairs.firstOrNull()?.second?.boundsInWindow
+    )
+}
+
 @Composable
 fun SceneTransitionHost(
     state: NavigationState,
@@ -162,6 +233,8 @@ fun SceneTransitionHost(
     var pageMotion by remember { mutableStateOf(PageMotion.Generic) }
     var screenWidthPx by remember { mutableFloatStateOf(0f) }
     val prevSceneRef = remember { mutableStateOf(state.currentScene) }
+    val sharedCoverRegistry = remember { SharedCoverRegistry() }
+    val powerListSceneRegistry = remember { PowerListSceneTransitionRegistry() }
 
     // 共享元素专用 from/to（独立于渲染用的 fromScene/displayedScene）
     var sharedFromScene by remember { mutableStateOf(state.currentScene) }
@@ -205,10 +278,24 @@ fun SceneTransitionHost(
         isAnimating = true
         animProgress.snapTo(1f)
         displayedScene = newScene
-        withFrameNanos { }
+        if (pageMotion == PageMotion.FolderSharedForward) {
+            awaitSharedLayouts(
+                coverRegistry = sharedCoverRegistry,
+                itemRegistry = powerListSceneRegistry,
+                fromScene = oldScene,
+                toScene = newScene,
+                transitionKey = "${oldScene.name}->${newScene.name}"
+            )
+        } else {
+            withFrameNanos { }
+        }
         animProgress.animateTo(
             0f,
-            if (pageMotion == PageMotion.SettingsForward) settingsFragmentTween else transitionTween
+            when (pageMotion) {
+                PageMotion.FolderSharedForward -> powerListTransitionTween
+                PageMotion.SettingsForward -> settingsFragmentTween
+                else -> transitionTween
+            }
         )
         isAnimating = false
     }
@@ -230,10 +317,25 @@ fun SceneTransitionHost(
         }
         isAnimating = true
         animProgress.snapTo(0f)
-        withFrameNanos { }
+        if (pageMotion == PageMotion.FolderSharedBack) {
+            awaitSharedLayouts(
+                coverRegistry = sharedCoverRegistry,
+                itemRegistry = powerListSceneRegistry,
+                fromScene = state.currentScene,
+                toScene = targetScene,
+                transitionKey = "${state.currentScene.name}->${targetScene.name}",
+                allowRememberedTarget = true
+            )
+        } else {
+            withFrameNanos { }
+        }
         animProgress.animateTo(
             1f,
-            if (pageMotion == PageMotion.SettingsBack) settingsFragmentTween else transitionTween
+            when (pageMotion) {
+                PageMotion.FolderSharedBack -> powerListTransitionTween
+                PageMotion.SettingsBack -> settingsFragmentTween
+                else -> transitionTween
+            }
         )
         prevSceneRef.value = targetScene
         displayedScene = targetScene
@@ -242,21 +344,35 @@ fun SceneTransitionHost(
         animProgress.snapTo(0f)
     }
 
-    LaunchedEffect(state.isDraggingBack, state.dragBackProgress) {
+    LaunchedEffect(state.isDraggingBack) {
         if (!state.isDraggingBack) return@LaunchedEffect
         val targetScene = state.getPreviousScene() ?: return@LaunchedEffect
-        if (!isGestureActive) {
-            fromScene = targetScene
-            sharedFromScene = state.currentScene
-            sharedToScene = targetScene
-            pageMotion = when {
-                usesSharedCoverMotion(state.currentScene, targetScene) -> PageMotion.FolderSharedBack
-                usesSettingsFragmentMotion(state.currentScene, targetScene) -> PageMotion.SettingsBack
-                else -> PageMotion.Generic
-            }
-            isGestureActive = true
-            animProgress.snapTo(0f)
+        fromScene = targetScene
+        sharedFromScene = state.currentScene
+        sharedToScene = targetScene
+        pageMotion = when {
+            usesSharedCoverMotion(state.currentScene, targetScene) -> PageMotion.FolderSharedBack
+            usesSettingsFragmentMotion(state.currentScene, targetScene) -> PageMotion.SettingsBack
+            else -> PageMotion.Generic
         }
+        isGestureActive = true
+        animProgress.snapTo(0f)
+        if (pageMotion == PageMotion.FolderSharedBack) {
+            awaitSharedLayouts(
+                coverRegistry = sharedCoverRegistry,
+                itemRegistry = powerListSceneRegistry,
+                fromScene = state.currentScene,
+                toScene = targetScene,
+                transitionKey = "${state.currentScene.name}->${targetScene.name}",
+                allowRememberedTarget = true
+            )
+        } else {
+            withFrameNanos { }
+        }
+    }
+
+    LaunchedEffect(state.isDraggingBack, state.dragBackProgress, isGestureActive) {
+        if (!state.isDraggingBack || !isGestureActive) return@LaunchedEffect
         animProgress.snapTo(dampProgress(state.dragBackProgress))
     }
 
@@ -265,11 +381,55 @@ fun SceneTransitionHost(
         val start = dampProgress(state.dragBackReleaseProgress).coerceIn(0f, 1f)
         val commit = state.dragBackReleaseCommit
         val target = if (commit) 1f else 0f
-        val duration = settleDurationMillis(start, target, state.dragBackReleaseVelocity)
+        val sharedPowerListSettle = pageMotion == PageMotion.FolderSharedBack
+        if (sharedPowerListSettle) {
+            val targetScene = state.getPreviousScene()
+            val transitionKey = targetScene?.let { "${state.currentScene.name}->${it.name}" }.orEmpty()
+            if (targetScene != null && !powerListSceneRegistry.isPrepared(transitionKey)) {
+                awaitSharedLayouts(
+                    coverRegistry = sharedCoverRegistry,
+                    itemRegistry = powerListSceneRegistry,
+                    fromScene = state.currentScene,
+                    toScene = targetScene,
+                    transitionKey = transitionKey,
+                    allowRememberedTarget = true
+                )
+            }
+        }
+        val normalizedVelocity = state.dragBackReleaseVelocity / screenWidthPx.coerceAtLeast(1f)
+        val carryVelocity = sharedPowerListSettle && if (commit) {
+            start > 0.8f && normalizedVelocity > 0f
+        } else {
+            start < 0.2f && normalizedVelocity < 0f
+        }
+        val duration = when {
+            carryVelocity && commit -> {
+                val velocity = normalizedVelocity.coerceIn(4f, 8f)
+                (((1f - start) / velocity) * 1000f).roundToInt().coerceAtLeast(1)
+            }
+            carryVelocity -> {
+                val velocity = normalizedVelocity.coerceIn(-8f, -3.5f)
+                ((start / -velocity) * 1000f).roundToInt().coerceAtLeast(1)
+            }
+            sharedPowerListSettle && commit -> {
+                ((1f - start) * POWER_LIST_COMMIT_MS).roundToInt()
+                    .coerceAtLeast(POWER_LIST_COMMIT_MIN_MS)
+            }
+            sharedPowerListSettle -> {
+                (start * POWER_LIST_CANCEL_MS).roundToInt()
+                    .coerceAtLeast(POWER_LIST_CANCEL_MIN_MS)
+            }
+            else -> settleDurationMillis(start, target, state.dragBackReleaseVelocity)
+        }
+        val settleEasing = when {
+            carryVelocity -> LinearEasing
+            sharedPowerListSettle -> PowerListAccelerateDecelerate
+            else -> Decelerate2
+        }
         isGestureActive = false
         isAnimating = true
         animProgress.snapTo(start)
-        animProgress.animateTo(target, tween(duration, easing = Decelerate2))
+        animProgress.animateTo(target, tween(duration, easing = settleEasing))
         if (commit) {
             val targetScene = fromScene
             prevSceneRef.value = targetScene
@@ -290,6 +450,7 @@ fun SceneTransitionHost(
             if (isAnimating || state.isDraggingBack) return@awaitEachGesture
             val localWidthPx = size.width.toFloat().coerceAtLeast(1f)
             val prev = state.getPreviousScene() ?: return@awaitEachGesture
+            val sharedPowerListBack = usesSharedCoverMotion(state.currentScene, prev)
             val allowContentDrag = allowsContentBackDrag(state.currentScene, prev)
             var direction = when {
                 down.position.x <= edgeWidthPx -> 1f
@@ -346,9 +507,18 @@ fun SceneTransitionHost(
                 if (dragging) {
                     val signedVelocity = velocityX * direction
                     val releaseProgress = rawProgress.coerceIn(0f, 1f)
-                    val reversing = signedVelocity < CANCEL_REVERSE_VELOCITY_PX_PER_S || rawProgress <= 0f
-                    val commit = !reversing &&
-                        (releaseProgress > COMMIT_PROGRESS_THRESHOLD || signedVelocity > COMMIT_VELOCITY_PX_PER_S)
+                    val commit = if (sharedPowerListBack) {
+                        val velocityDpPerSecond = signedVelocity / density
+                        if (abs(velocityDpPerSecond) >= POWER_LIST_VELOCITY_DP_PER_S) {
+                            velocityDpPerSecond > 0f
+                        } else {
+                            releaseProgress > POWER_LIST_COMMIT_PROGRESS
+                        }
+                    } else {
+                        val reversing = signedVelocity < CANCEL_REVERSE_VELOCITY_PX_PER_S || rawProgress <= 0f
+                        !reversing &&
+                            (releaseProgress > COMMIT_PROGRESS_THRESHOLD || signedVelocity > COMMIT_VELOCITY_PX_PER_S)
+                    }
                     state.releaseBackDrag(commit = commit, velocity = signedVelocity)
             }
         }
@@ -389,9 +559,9 @@ fun SceneTransitionHost(
         val sharedActive = inTransition && sharedFromScene != sharedToScene
         val transitionKey = "${sharedFromScene.name}->${sharedToScene.name}"
 
-        val sharedCoverRegistry = remember { SharedCoverRegistry() }
         if (!sharedActive) {
             sharedCoverRegistry.clearFrozen()
+            powerListSceneRegistry.clearTransition()
         }
 
         val sharedSpec = SharedTransitionSpec(
@@ -405,6 +575,7 @@ fun SceneTransitionHost(
 
         CompositionLocalProvider(
             LocalSharedCoverRegistry provides sharedCoverRegistry,
+            LocalPowerListSceneTransitionRegistry provides powerListSceneRegistry,
             LocalSharedTransitionSpec provides sharedSpec
         ) {
             if (inTransition && fromScene != displayedScene) {
@@ -594,44 +765,48 @@ private fun SharedCoverOverlay(
         if (pairs.isEmpty()) return@Box
 
         for ((rawFrom, rawTo) in pairs) {
-            registry.freeze(rawFrom.sceneId, rawFrom.elementId)
-            registry.freeze(rawTo.sceneId, rawTo.elementId)
+            if (registry.getFrozen(rawFrom.sceneId, rawFrom.elementId) == null) {
+                registry.freeze(rawFrom.sceneId, rawFrom.elementId)
+            }
+            if (registry.getFrozen(rawTo.sceneId, rawTo.elementId) == null) {
+                registry.freeze(rawTo.sceneId, rawTo.elementId)
+            }
 
             val from = registry.getFrozen(rawFrom.sceneId, rawFrom.elementId) ?: rawFrom
             val to = registry.getFrozen(rawTo.sceneId, rawTo.elementId) ?: rawTo
             val progress = spec.progress.coerceIn(0f, 1f)
 
-            val overlayAlpha = sharedCoverOverlayAlpha(
-                fromSceneId = spec.fromSceneId,
-                toSceneId = spec.toSceneId,
-                progress = progress
-            )
-
             val leftPx = lerp(from.boundsInWindow.left, to.boundsInWindow.left, progress) - overlayOrigin.x
             val topPx = lerp(from.boundsInWindow.top, to.boundsInWindow.top, progress) - overlayOrigin.y
             val widthPx = lerp(from.boundsInWindow.width, to.boundsInWindow.width, progress).coerceAtLeast(1f)
             val heightPx = lerp(from.boundsInWindow.height, to.boundsInWindow.height, progress).coerceAtLeast(1f)
+            val baseWidthPx = max(from.boundsInWindow.width, to.boundsInWindow.width).coerceAtLeast(1f)
+            val baseHeightPx = max(from.boundsInWindow.height, to.boundsInWindow.height).coerceAtLeast(1f)
             val radiusDp = lerp(from.radiusDp, to.radiusDp, progress)
             val coverKey = if (to.coverKey.isNotBlank()) to.coverKey else from.coverKey
             if (coverKey.isBlank()) continue
+            val scaleX = widthPx / baseWidthPx
+            val scaleY = heightPx / baseHeightPx
+            val visualScale = minOf(scaleX, scaleY).coerceAtLeast(0.001f)
 
             com.rawsmusic.core.ui.widget.bitmaps.CrossfadeAlbumArt(
                 key = coverKey,
                 modifier = Modifier
-                    .offset {
-                        IntOffset(
-                            x = leftPx.roundToInt(),
-                            y = topPx.roundToInt()
-                        )
-                    }
                     .requiredSize(
-                        width = with(density) { widthPx.toDp() },
-                        height = with(density) { heightPx.toDp() }
+                        width = with(density) { baseWidthPx.toDp() },
+                        height = with(density) { baseHeightPx.toDp() }
                     )
                     .graphicsLayer {
-                        alpha = overlayAlpha.coerceIn(0f, 1f)
+                        translationX = leftPx
+                        translationY = topPx
+                        this.scaleX = scaleX
+                        this.scaleY = scaleY
+                        transformOrigin = TransformOrigin(0f, 0f)
+                        alpha = 1f
                         clip = true
-                        shape = RoundedCornerShape(radiusDp.dp)
+                        // The layer is clipped before it is scaled. Compensate so the visible
+                        // corner radius, rather than the pre-scale radius, follows the interpolation.
+                        shape = RoundedCornerShape((radiusDp / visualScale).dp)
                     },
                 contentScale = ContentScale.Crop,
                 showPlaceholder = false,
@@ -702,58 +877,9 @@ private fun cubic(p0: Float, p1: Float, p2: Float, p3: Float, t: Float): Float {
         t * t * t * p3
 }
 
-private const val SHARED_COVER_ENTER_HANDOFF_START = 0.58f
-private const val SHARED_COVER_ENTER_HANDOFF_END = 0.86f
-
-private const val SHARED_COVER_LEAVE_HANDOFF_START = 0.04f
-private const val SHARED_COVER_LEAVE_HANDOFF_END = 0.22f
-
-private fun sharedCoverOverlayAlpha(
-    fromSceneId: String,
-    toSceneId: String,
-    progress: Float
-): Float {
-    return when {
-        isForwardSharedCoverMotion(fromSceneId, toSceneId) -> {
-            1f - smoothStepLocal(
-                SHARED_COVER_ENTER_HANDOFF_START,
-                SHARED_COVER_ENTER_HANDOFF_END,
-                progress
-            )
-        }
-
-        isBackSharedCoverMotion(fromSceneId, toSceneId) -> {
-            smoothStepLocal(
-                SHARED_COVER_LEAVE_HANDOFF_START,
-                SHARED_COVER_LEAVE_HANDOFF_END,
-                progress
-            )
-        }
-
-        else -> 1f
+private object PowerListAccelerateDecelerate : Easing {
+    override fun transform(fraction: Float): Float {
+        val x = fraction.coerceIn(0f, 1f)
+        return (cos((x + 1f) * Math.PI).toFloat() * 0.5f) + 0.5f
     }
-}
-
-private fun isForwardSharedCoverMotion(fromSceneId: String, toSceneId: String): Boolean {
-    return (fromSceneId == NavScene.FOLDERS.name && toSceneId == NavScene.FOLDER_HIERARCHY.name) ||
-        (fromSceneId == NavScene.ALBUMS.name && toSceneId == NavScene.ALBUM_DETAIL.name) ||
-        (fromSceneId == NavScene.ARTISTS.name && toSceneId == NavScene.ARTIST_DETAIL.name) ||
-        (fromSceneId == NavScene.GENRE.name && toSceneId == NavScene.GENRE_DETAIL.name) ||
-        (fromSceneId == NavScene.YEAR.name && toSceneId == NavScene.YEAR_DETAIL.name) ||
-        (fromSceneId == NavScene.COMPOSER.name && toSceneId == NavScene.COMPOSER_DETAIL.name)
-}
-
-private fun isBackSharedCoverMotion(fromSceneId: String, toSceneId: String): Boolean {
-    return (fromSceneId == NavScene.FOLDER_HIERARCHY.name && toSceneId == NavScene.FOLDERS.name) ||
-        (fromSceneId == NavScene.ALBUM_DETAIL.name && toSceneId == NavScene.ALBUMS.name) ||
-        (fromSceneId == NavScene.ARTIST_DETAIL.name && toSceneId == NavScene.ARTISTS.name) ||
-        (fromSceneId == NavScene.GENRE_DETAIL.name && toSceneId == NavScene.GENRE.name) ||
-        (fromSceneId == NavScene.YEAR_DETAIL.name && toSceneId == NavScene.YEAR.name) ||
-        (fromSceneId == NavScene.COMPOSER_DETAIL.name && toSceneId == NavScene.COMPOSER.name)
-}
-
-private fun smoothStepLocal(edge0: Float, edge1: Float, x: Float): Float {
-    if (edge0 == edge1) return if (x >= edge1) 1f else 0f
-    val t = ((x - edge0) / (edge1 - edge0)).coerceIn(0f, 1f)
-    return t * t * (3f - 2f * t)
 }

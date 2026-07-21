@@ -19,6 +19,9 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -36,12 +39,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.SortOrder
 import com.rawsmusic.core.ui.scene.LocalSharedCoverRegistry
 import com.rawsmusic.core.ui.scene.LocalSharedTransitionSpec
 import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.scene.SharedCoverSnapshot
 import com.rawsmusic.core.ui.widget.bitmaps.CrossfadeAlbumArt
+import com.rawsmusic.core.ui.widget.index.RawAlphabetIndex
+import com.rawsmusic.core.ui.widget.index.rememberAdaptiveAlphabetIndexData
 import com.rawsmusic.core.ui.widget.powerlist.ComposeGenericPowerList
 import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
 import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListState
@@ -58,10 +65,6 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.io.File
 import kotlin.math.roundToInt
 
-private val FolderHeroCoverHeight = 330.dp
-private val FolderHeroMetaHeight = 76.dp
-private val FolderHeroTotalHeight = FolderHeroCoverHeight + FolderHeroMetaHeight
-
 @Composable
 fun FoldersPage(
     songs: List<AudioFile> = emptyList(),
@@ -69,6 +72,9 @@ fun FoldersPage(
     onBack: () -> Unit,
     onFolderClick: (String) -> Unit = {},
     onPlayQueue: (List<AudioFile>, Int) -> Unit = { _, _ -> },
+    onShuffle: (List<AudioFile>) -> Unit = {},
+    onOpenFolder: () -> Unit = {},
+    onSearch: () -> Unit = {},
     powerListState: ComposePowerListState = rememberComposePowerListState("folders"),
     modifier: Modifier = Modifier
 ) {
@@ -76,13 +82,18 @@ fun FoldersPage(
     val folders by remember(songs) {
         derivedStateOf { songs.toFolderGroups() }
     }
+    var sortOrder by rememberSaveable { mutableStateOf(SortOrder.TITLE_ASC) }
+    val sortedFolders = remember(folders, sortOrder) { folders.sortedFor(sortOrder) }
 
     if (selectedFolderPath.isNullOrBlank()) {
         FolderListPage(
-            folders = folders,
+            folders = sortedFolders,
             state = powerListState,
             onBack = onBack,
             onFolderClick = onFolderClick,
+            onShuffle = { onShuffle(sortedFolders.flatMap { it.songs }) },
+            sortOrder = sortOrder,
+            onSortOrderChange = { sortOrder = it },
             modifier = modifier
         )
     } else {
@@ -95,6 +106,9 @@ fun FoldersPage(
             songListState = folderDetailSongsState,
             onBack = onBack,
             onPlayQueue = onPlayQueue,
+            onOpenFolder = onOpenFolder,
+            onShuffle = onShuffle,
+            onSearch = onSearch,
             modifier = modifier
         )
     }
@@ -106,6 +120,9 @@ private fun FolderListPage(
     state: ComposePowerListState,
     onBack: () -> Unit,
     onFolderClick: (String) -> Unit,
+    onShuffle: () -> Unit,
+    sortOrder: SortOrder,
+    onSortOrderChange: (SortOrder) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val coverRegistry = LocalSharedCoverRegistry.current
@@ -122,12 +139,23 @@ private fun FolderListPage(
             )
         }
     }
+    val alphabetIndexData = rememberAdaptiveAlphabetIndexData(items) { it.title }
 
     LibraryListScaffold(
         title = stringResource(com.rawsmusic.core.ui.R.string.library_title_folders),
         sceneId = NavScene.FOLDERS.name,
         onBack = onBack,
         powerListState = state,
+        onShuffle = onShuffle,
+        currentSortOrder = sortOrder,
+        onSortSelected = onSortOrderChange,
+        sortOptions = listOf(
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_name) to SortOrder.TITLE_ASC,
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_path) to SortOrder.PATH_ASC,
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_modified) to SortOrder.DATE_ADDED_ASC,
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_duration) to SortOrder.DURATION_ASC,
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_song_count) to SortOrder.PLAYBACK_INFO
+        ),
         modifier = modifier
     ) { topPadding, backdropSource ->
         ComposeGenericPowerList(
@@ -147,6 +175,21 @@ private fun FolderListPage(
                 onFolderClick(folder.path)
             }
         )
+
+        RawAlphabetIndex(
+            data = alphabetIndexData,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(top = 92.dp, bottom = 118.dp, end = 0.dp)
+                .then(backdropSource)
+                .zIndex(30f),
+            onTopSelect = {
+                state.requestScrollToIndex(0)
+            },
+            onSelect = { _, index ->
+                state.requestScrollToIndex(index)
+            }
+        )
     }
 }
 
@@ -156,329 +199,31 @@ private fun FolderDetailPage(
     songListState: ComposePowerListState,
     onBack: () -> Unit,
     onPlayQueue: (List<AudioFile>, Int) -> Unit,
+    onOpenFolder: () -> Unit,
+    onShuffle: (List<AudioFile>) -> Unit,
+    onSearch: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val density = LocalDensity.current
-
-    val headerHeightPx = with(density) { FolderHeroTotalHeight.toPx() }
-    val headerOffsetPx = -songListState.viewportScrollYPx.coerceIn(0f, headerHeightPx)
-
-    Box(
+    CollectionHeroDetailPage(
+        hero = CollectionHeroData(
+            stableKey = folder.path,
+            sharedElementId = folder.sharedElementId,
+            coverKey = folder.coverKey,
+            title = folder.name,
+            subtitle = folder.parentName,
+            meta = "${folder.songCount} | ${formatDuration(folder.totalDurationMs)}",
+            songs = folder.songs
+        ),
+        listScene = NavScene.FOLDERS,
+        detailScene = NavScene.FOLDER_HIERARCHY,
+        songListState = songListState,
+        onBack = onBack,
+        onPlayQueue = onPlayQueue,
+        onOpenFolder = onOpenFolder,
+        onShuffle = onShuffle,
+        onSearch = onSearch,
         modifier = modifier
-            .fillMaxSize()
-    ) {
-        ComposePowerListFull(
-            songs = folder.songs,
-            state = songListState,
-            contentTopPadding = FolderHeroTotalHeight,
-            modifier = Modifier
-                .fillMaxSize()
-                .clipToBounds(),
-            onSongClick = { _, index ->
-                onPlayQueue(folder.songs, index)
-            }
-        )
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(FolderHeroTotalHeight)
-                .offset { IntOffset(0, headerOffsetPx.roundToInt()) }
-        ) {
-            FolderHeroHeader(
-                folder = folder,
-                songListState = songListState,
-                onBack = onBack
-            )
-        }
-    }
-}
-
-@Composable
-private fun FolderHeroHeader(
-    folder: FolderGroupUi,
-    songListState: ComposePowerListState,
-    onBack: () -> Unit
-) {
-    val spec = LocalSharedTransitionSpec.current
-    val coverRegistry = LocalSharedCoverRegistry.current
-
-    val onBg = MiuixTheme.colorScheme.onBackground
-    val onBgVariant = MiuixTheme.colorScheme.onSurfaceVariantSummary
-
-    val folderSharedTransition = spec.active && isFolderCoverSharedTransition(
-        fromSceneId = spec.fromSceneId,
-        toSceneId = spec.toSceneId
     )
-
-    val enteringFolder =
-        folderSharedTransition &&
-            spec.fromSceneId == NavScene.FOLDERS.name &&
-            spec.toSceneId == NavScene.FOLDER_HIERARCHY.name
-
-    val leavingFolder =
-        folderSharedTransition &&
-            spec.fromSceneId == NavScene.FOLDER_HIERARCHY.name &&
-            spec.toSceneId == NavScene.FOLDERS.name
-
-    val sceneProgress = spec.progress.coerceIn(0f, 1f)
-
-    val handoff = when {
-        enteringFolder -> smoothStep(
-            FOLDER_ENTER_HANDOFF_START,
-            FOLDER_ENTER_HANDOFF_END,
-            sceneProgress
-        )
-        leavingFolder -> smoothStep(
-            FOLDER_LEAVE_HANDOFF_START,
-            FOLDER_LEAVE_HANDOFF_END,
-            sceneProgress
-        )
-        else -> 1f
-    }
-
-    val sceneAlpha = when {
-        enteringFolder -> handoff
-        leavingFolder -> 1f - handoff
-        else -> 1f
-    }
-
-    val sceneScale = when {
-        enteringFolder -> 0.92f + handoff * 0.08f
-        leavingFolder -> 1f + handoff * 0.10f
-        else -> 1f
-    }
-
-    // PowerList 缩放手势：轻微淡出/放大，不把 Hero 打到 0
-    val powerListGestureActive =
-        songListState.isTransitioning || songListState.isPinching
-
-    val powerListProgress = if (powerListGestureActive) {
-        songListState.transitionProgress.coerceIn(0f, 1f)
-    } else {
-        0f
-    }
-
-    val gestureFade = smoothStep(0.08f, 0.72f, powerListProgress)
-    val gestureAlpha = 1f - gestureFade * 0.34f
-    val gestureScale = 1f + gestureFade * 0.08f
-
-    val finalAlpha = (sceneAlpha * gestureAlpha).coerceIn(0f, 1f)
-    val finalScale = sceneScale * gestureScale
-
-    val metaAlpha = when {
-        enteringFolder -> smoothStep(0.50f, 0.88f, sceneProgress)
-        leavingFolder -> 1f - smoothStep(0.00f, 0.18f, sceneProgress)
-        else -> 1f
-    }.coerceIn(0f, 1f) * gestureAlpha
-
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(FolderHeroCoverHeight)
-                .clipToBounds()
-        ) {
-            // 视觉层：graphicsLayer 控制 alpha，内部不再自己淡入
-            CrossfadeAlbumArt(
-                key = folder.coverKey,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        alpha = finalAlpha
-                        scaleX = finalScale
-                        scaleY = finalScale
-                        transformOrigin = TransformOrigin(0.5f, 0.5f)
-                        clip = true
-                    },
-                contentScale = ContentScale.Crop,
-                showPlaceholder = false
-            )
-
-            // 登记层：只给 SharedCoverOverlay 提供终点 bounds
-            FolderSharedCover(
-                scene = NavScene.FOLDER_HIERARCHY,
-                folder = folder,
-                radiusDp = 0f,
-                drawContent = false,
-                modifier = Modifier.fillMaxSize()
-            )
-
-            IconButton(
-                onClick = {
-                    coverRegistry.freeze(
-                        sceneId = NavScene.FOLDER_HIERARCHY.name,
-                        elementId = folder.sharedElementId
-                    )
-                    onBack()
-                },
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(start = 12.dp, top = 12.dp)
-                    .graphicsLayer {
-                        alpha = metaAlpha
-                    }
-            ) {
-                Icon(
-                    imageVector = MiuixIcons.Regular.Back,
-                    contentDescription = "返回",
-                    tint = onBg
-                )
-            }
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(FolderHeroMetaHeight)
-                .graphicsLayer {
-                    alpha = metaAlpha
-                    scaleX = 0.97f + metaAlpha * 0.03f
-                    scaleY = 0.97f + metaAlpha * 0.03f
-                    transformOrigin = TransformOrigin(0.5f, 0f)
-                }
-                .padding(horizontal = 28.dp, vertical = 18.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(18.dp)
-        ) {
-            Text(
-                text = folder.name,
-                color = onBg,
-                fontSize = 26.sp,
-                fontWeight = FontWeight.Black,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false)
-            )
-
-            Text(
-                text = folder.parentName,
-                color = onBgVariant,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false)
-            )
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-                Icon(
-                    imageVector = MiuixIcons.Regular.Music,
-                    contentDescription = null,
-                    tint = onBgVariant,
-                    modifier = Modifier.size(16.dp)
-                )
-
-                Text(
-                    text = "${folder.songCount} | ${formatDuration(folder.totalDurationMs)}",
-                    color = onBgVariant,
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun FolderSharedCover(
-    scene: NavScene,
-    folder: FolderGroupUi,
-    radiusDp: Float,
-    modifier: Modifier = Modifier,
-    drawContent: Boolean = true
-) {
-    val coverRegistry = LocalSharedCoverRegistry.current
-    val spec = LocalSharedTransitionSpec.current
-    val sceneId = scene.name
-    val elementId = folder.sharedElementId
-    val shouldTrack = spec.shouldTrackScene(sceneId)
-
-    DisposableEffect(sceneId, elementId, shouldTrack) {
-        if (!shouldTrack) coverRegistry.unregister(sceneId, elementId)
-        onDispose { coverRegistry.unregister(sceneId, elementId) }
-    }
-
-    val isFolderSharedTransition = isFolderCoverSharedTransition(
-        fromSceneId = spec.fromSceneId,
-        toSceneId = spec.toSceneId
-    )
-
-    val isEndpoint =
-        spec.active &&
-            isFolderSharedTransition &&
-            (sceneId == spec.fromSceneId || sceneId == spec.toSceneId)
-
-    val shouldHide = isEndpoint && coverRegistry.hasPair(
-        fromSceneId = spec.fromSceneId,
-        toSceneId = spec.toSceneId,
-        elementId = elementId
-    )
-
-    if (drawContent) {
-        CrossfadeAlbumArt(
-            key = folder.coverKey,
-            modifier = modifier
-                .onGloballyPositioned { coordinates ->
-                    if (!shouldTrack) return@onGloballyPositioned
-                    val position = coordinates.positionInWindow()
-                    val size = coordinates.size
-                    coverRegistry.register(
-                        sceneId = sceneId,
-                        elementId = elementId,
-                        snapshot = SharedCoverSnapshot(
-                            sceneId = sceneId,
-                            elementId = elementId,
-                            boundsInWindow = Rect(
-                                left = position.x,
-                                top = position.y,
-                                right = position.x + size.width,
-                                bottom = position.y + size.height
-                            ),
-                            coverKey = folder.coverKey,
-                            radiusDp = radiusDp
-                        )
-                    )
-                }
-                .then(if (shouldHide) Modifier.alpha(0f) else Modifier)
-                .graphicsLayer {
-                    clip = true
-                    shape = RoundedCornerShape(radiusDp.dp)
-                },
-            contentScale = ContentScale.Crop
-        )
-    } else {
-        // 只注册 bounds，不绘制内容
-        Box(
-            modifier = modifier
-                .onGloballyPositioned { coordinates ->
-                    if (!shouldTrack) return@onGloballyPositioned
-                    val position = coordinates.positionInWindow()
-                    val size = coordinates.size
-                    coverRegistry.register(
-                        sceneId = sceneId,
-                        elementId = elementId,
-                        snapshot = SharedCoverSnapshot(
-                            sceneId = sceneId,
-                            elementId = elementId,
-                            boundsInWindow = Rect(
-                                left = position.x,
-                                top = position.y,
-                                right = position.x + size.width,
-                                bottom = position.y + size.height
-                            ),
-                            coverKey = folder.coverKey,
-                            radiusDp = radiusDp
-                        )
-                    )
-                }
-        )
-    }
 }
 
 @Stable
@@ -534,6 +279,25 @@ private fun List<AudioFile>.toFolderGroups(): List<FolderGroupUi> {
         )
 }
 
+private fun List<FolderGroupUi>.sortedFor(order: SortOrder): List<FolderGroupUi> {
+    val ascending = when (order) {
+        SortOrder.TITLE_DESC, SortOrder.FILE_NAME_DESC, SortOrder.PATH_DESC,
+        SortOrder.DATE_ADDED_DESC, SortOrder.DURATION_DESC, SortOrder.YEAR_DESC,
+        SortOrder.ARTIST_DESC, SortOrder.ALBUM_DESC, SortOrder.PLAYBACK_INFO_DESC -> false
+        else -> true
+    }
+    val comparator = when (order) {
+        SortOrder.PATH_ASC, SortOrder.PATH_DESC -> compareBy<FolderGroupUi> { it.path.lowercase() }
+        SortOrder.DURATION_ASC, SortOrder.DURATION_DESC -> compareBy { it.totalDurationMs }
+        SortOrder.DATE_ADDED_ASC, SortOrder.DATE_ADDED_DESC -> compareBy { group ->
+            group.songs.maxOfOrNull { it.dateModified } ?: 0L
+        }
+        SortOrder.PLAYBACK_INFO, SortOrder.PLAYBACK_INFO_DESC -> compareBy { it.songCount }
+        else -> compareBy<FolderGroupUi> { it.name.lowercase() }.thenBy { it.path.lowercase() }
+    }
+    return sortedWith(if (ascending) comparator else comparator.reversed())
+}
+
 private fun AudioFile.coverKey(): String {
     return this.coverKey
 }
@@ -550,24 +314,3 @@ private fun formatDuration(ms: Long): String {
     return if (hours > 0L) "%d:%02d:%02d".format(hours, minutes, seconds)
     else "%d:%02d".format(minutes, seconds)
 }
-
-private const val FOLDER_ENTER_HANDOFF_START = 0.58f
-private const val FOLDER_ENTER_HANDOFF_END = 0.86f
-
-private const val FOLDER_LEAVE_HANDOFF_START = 0.04f
-private const val FOLDER_LEAVE_HANDOFF_END = 0.22f
-
-private fun isFolderCoverSharedTransition(
-    fromSceneId: String,
-    toSceneId: String
-): Boolean {
-    return (
-        fromSceneId == NavScene.FOLDERS.name &&
-            toSceneId == NavScene.FOLDER_HIERARCHY.name
-        ) || (
-        fromSceneId == NavScene.FOLDER_HIERARCHY.name &&
-            toSceneId == NavScene.FOLDERS.name
-        )
-}
-
-// smoothStep 已在 CollectionHeroLayout.kt 中定义为 internal

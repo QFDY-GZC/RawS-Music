@@ -56,6 +56,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val PROJECT_URL = "https://github.com/QFDY-GZC/RawS-Music"
 private const val HALCYON_URL = "https://github.com/Kifranei/Halcyon"
+private const val LYRICO_URL = "https://github.com/Replica0110/Lyrico"
 private const val QQ_GROUP_URL = "https://qm.qq.com/q/bOvqTQPABi"
 
 @Composable
@@ -167,6 +168,7 @@ fun AboutPage(onBack: () -> Unit) {
                     AboutLibrary("TagLib", R.string.about_taglib_summary, "https://taglib.org")
                     AboutLibrary("Coil", R.string.about_coil_summary, "https://github.com/coil-kt/coil")
                     AboutLibrary("Lyricon", R.string.about_lyricon_summary, "https://github.com/proify/lyricon")
+                    AboutLibrary("Lyrico", R.string.about_lyrico_summary, LYRICO_URL)
                     AboutLibrary("AndroidX / Kotlin Coroutines", R.string.about_androidx_summary, "https://developer.android.com/jetpack/androidx")
                 }
             }

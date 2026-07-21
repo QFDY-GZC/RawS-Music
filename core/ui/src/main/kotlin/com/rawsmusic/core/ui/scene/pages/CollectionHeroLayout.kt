@@ -1,6 +1,8 @@
 package com.rawsmusic.core.ui.scene.pages
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,29 +10,37 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.SortOrder
+import com.rawsmusic.module.data.prefs.CollectionSortPreferences
+import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.scene.LocalSharedCoverRegistry
 import com.rawsmusic.core.ui.scene.LocalSharedTransitionSpec
 import com.rawsmusic.core.ui.scene.NavScene
@@ -43,19 +53,17 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
+import top.yukonga.miuix.kmp.icon.extended.Folder
 import top.yukonga.miuix.kmp.icon.extended.Music
+import top.yukonga.miuix.kmp.icon.extended.Search
+import top.yukonga.miuix.kmp.icon.extended.Sort
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import kotlin.math.abs
-import kotlin.math.roundToInt
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 
 internal val CollectionHeroCoverHeight = 330.dp
-internal val CollectionHeroMetaHeight = 76.dp
+internal val CollectionHeroMetaHeight = 146.dp
 internal val CollectionHeroTotalHeight = CollectionHeroCoverHeight + CollectionHeroMetaHeight
-
-private const val COLLECTION_ENTER_HANDOFF_START = 0.58f
-private const val COLLECTION_ENTER_HANDOFF_END = 0.86f
-private const val COLLECTION_LEAVE_HANDOFF_START = 0.04f
-private const val COLLECTION_LEAVE_HANDOFF_END = 0.22f
 
 @Stable
 internal data class CollectionHeroData(
@@ -76,47 +84,77 @@ internal fun CollectionHeroDetailPage(
     songListState: ComposePowerListState,
     onBack: () -> Unit,
     onPlayQueue: (List<AudioFile>, Int) -> Unit,
+    onOpenFolder: () -> Unit = {},
+    onShuffle: (List<AudioFile>) -> Unit = {},
+    onSearch: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val density = LocalDensity.current
-    val headerHeightPx = with(density) { CollectionHeroTotalHeight.toPx() }
-    val headerOffsetPx = -songListState.viewportScrollYPx.coerceIn(0f, headerHeightPx)
+    val persistedSortOwner = detailScene.tag
+    var sortOrder by rememberSaveable(persistedSortOwner, hero.stableKey) {
+        mutableStateOf(
+            CollectionSortPreferences.read(
+                ownerTag = persistedSortOwner,
+                stableKey = hero.stableKey,
+                default = SortOrder.PLAYBACK_INFO,
+            )
+        )
+    }
+    var showSortLayout by rememberSaveable(hero.stableKey) { mutableStateOf(false) }
+    val sortedSongs = remember(hero.songs, sortOrder) { hero.songs.sortedForCollection(sortOrder) }
+    val sortedHero = remember(hero, sortedSongs) { hero.copy(songs = sortedSongs) }
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-    ) {
+    Box(modifier = modifier.fillMaxSize()) {
         ComposePowerListFull(
-            songs = hero.songs,
+            songs = sortedSongs,
             state = songListState,
-            contentTopPadding = CollectionHeroTotalHeight,
+            persistentHeaderHeight = CollectionHeroTotalHeight,
+            persistentHeaderVisibilityHeight = CollectionHeroCoverHeight,
+            persistentHeaderSceneItemId = hero.sharedElementId,
+            persistentHeaderContent = { visible ->
+                CollectionHeroHeader(
+                    hero = sortedHero,
+                    listScene = listScene,
+                    detailScene = detailScene,
+                    headerVisible = visible,
+                    freezeArtworkUpdates = songListState.isTransitioning,
+                    onBack = onBack,
+                    onSort = { showSortLayout = true },
+                    onOpenFolder = onOpenFolder,
+                    onShuffle = { onShuffle(sortedSongs) },
+                    onSearch = onSearch
+                )
+            },
             modifier = Modifier
                 .fillMaxSize()
                 .clipToBounds(),
-            onSongClick = { _, index ->
-                onPlayQueue(hero.songs, index)
-            }
+            sharedCoverSceneId = detailScene.name,
+            sharedCoverElementIdProvider = { song, index ->
+                "${detailScene.name}:song:${song.id}:${song.path}:$index"
+            },
+            onSongClick = { _, index -> onPlayQueue(sortedSongs, index) }
         )
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(CollectionHeroTotalHeight)
-                .offset {
-                    IntOffset(
-                        x = 0,
-                        y = headerOffsetPx.roundToInt()
-                    )
-                }
-        ) {
-            CollectionHeroHeader(
-                hero = hero,
-                listScene = listScene,
-                detailScene = detailScene,
-                songListState = songListState,
-                onBack = onBack
-            )
-        }
+        SongsSortLayoutSheet(
+            visible = showSortLayout,
+            currentSortOrder = sortOrder,
+            powerListState = songListState,
+            onSortSelected = { selectedOrder ->
+                sortOrder = selectedOrder
+                CollectionSortPreferences.write(
+                    ownerTag = persistedSortOwner,
+                    stableKey = hero.stableKey,
+                    value = selectedOrder,
+                )
+            },
+            sortOptions = listOf(
+                stringResource(R.string.queue_sort_original) to SortOrder.PLAYBACK_INFO,
+                stringResource(R.string.sort_by_name) to SortOrder.TITLE_ASC,
+                stringResource(R.string.sort_by_artist) to SortOrder.ARTIST_ASC,
+                stringResource(R.string.queue_sort_album) to SortOrder.ALBUM_ASC,
+                stringResource(R.string.sort_by_duration) to SortOrder.DURATION_ASC
+            ),
+            onDismiss = { showSortLayout = false }
+        )
     }
 }
 
@@ -125,8 +163,13 @@ private fun CollectionHeroHeader(
     hero: CollectionHeroData,
     listScene: NavScene,
     detailScene: NavScene,
-    songListState: ComposePowerListState,
-    onBack: () -> Unit
+    headerVisible: Boolean,
+    freezeArtworkUpdates: Boolean,
+    onBack: () -> Unit,
+    onSort: () -> Unit,
+    onOpenFolder: () -> Unit,
+    onShuffle: () -> Unit,
+    onSearch: () -> Unit
 ) {
     val spec = LocalSharedTransitionSpec.current
     val coverRegistry = LocalSharedCoverRegistry.current
@@ -140,95 +183,58 @@ private fun CollectionHeroHeader(
         detailScene = detailScene
     )
 
-    val entering = collectionTransition &&
-        spec.fromSceneId == listScene.name &&
-        spec.toSceneId == detailScene.name
-
-    val leaving = collectionTransition &&
-        spec.fromSceneId == detailScene.name &&
-        spec.toSceneId == listScene.name
-
-    val p = spec.progress.coerceIn(0f, 1f)
-    val handoff = when {
-        entering -> smoothStep(COLLECTION_ENTER_HANDOFF_START, COLLECTION_ENTER_HANDOFF_END, p)
-        leaving -> smoothStep(COLLECTION_LEAVE_HANDOFF_START, COLLECTION_LEAVE_HANDOFF_END, p)
-        else -> 1f
-    }
-
-    val sceneAlpha = when {
-        entering -> handoff
-        leaving -> 1f - handoff
-        else -> 1f
-    }
-
-    val sceneScale = when {
-        entering -> 0.92f + handoff * 0.08f
-        leaving -> 1f + handoff * 0.10f
-        else -> 1f
-    }
-
-    val gesturePulse = rememberCollectionHeroZoomPulse(songListState)
-    val gestureAlpha = 1f - gesturePulse * 0.34f
-    val gestureScale = 1f + gesturePulse * 0.08f
-
-    val finalAlpha = (sceneAlpha * gestureAlpha).coerceIn(0f, 1f)
-    val finalScale = sceneScale * gestureScale
-
-    val metaSceneAlpha = when {
-        entering -> smoothStep(0.50f, 0.88f, p)
-        leaving -> 1f - smoothStep(0.00f, 0.18f, p)
-        else -> 1f
-    }
-    val metaAlpha = (metaSceneAlpha * gestureAlpha).coerceIn(0f, 1f)
+    // Hide the real item only after both layout records exist. This avoids the
+    // one-frame hole between target measurement and shared-overlay composition.
+    val sharedPairReady = collectionTransition && coverRegistry.hasPair(
+        fromSceneId = spec.fromSceneId,
+        toSceneId = spec.toSceneId,
+        elementId = hero.sharedElementId
+    )
+    val coverAlpha = if (sharedPairReady) 0f else 1f
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(CollectionHeroCoverHeight)
-                .clipToBounds()
+                .clip(RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp))
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MiuixTheme.colorScheme.background)
-            )
-
             CrossfadeAlbumArt(
                 key = hero.coverKey,
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        alpha = finalAlpha
-                        scaleX = finalScale
-                        scaleY = finalScale
-                        transformOrigin = TransformOrigin(0.5f, 0.5f)
+                        alpha = coverAlpha
                         clip = true
                     },
                 contentScale = ContentScale.Crop,
-                showPlaceholder = false
+                showPlaceholder = false,
+                fadeMillis = 0,
+                freezeBitmapUpdates = freezeArtworkUpdates || sharedPairReady
             )
 
             CollectionSharedCoverAnchor(
                 scene = detailScene,
                 elementId = hero.sharedElementId,
                 coverKey = hero.coverKey,
-                radiusDp = 0f,
+                radiusDp = 14f,
+                enabled = headerVisible,
                 modifier = Modifier.fillMaxSize()
             )
 
             IconButton(
                 onClick = {
-                    coverRegistry.freeze(
-                        sceneId = detailScene.name,
-                        elementId = hero.sharedElementId
-                    )
+                    if (headerVisible) {
+                        coverRegistry.freeze(
+                            sceneId = detailScene.name,
+                            elementId = hero.sharedElementId
+                        )
+                    }
                     onBack()
                 },
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(start = 12.dp, top = 12.dp)
-                    .graphicsLayer { alpha = metaAlpha }
             ) {
                 Icon(
                     imageVector = MiuixIcons.Regular.Back,
@@ -242,35 +248,55 @@ private fun CollectionHeroHeader(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(CollectionHeroMetaHeight)
-                .graphicsLayer {
-                    alpha = metaAlpha
-                    scaleX = 0.97f + metaAlpha * 0.03f
-                    scaleY = 0.97f + metaAlpha * 0.03f
-                    transformOrigin = TransformOrigin(0.5f, 0f)
-                }
-                .padding(horizontal = 28.dp, vertical = 18.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(18.dp)
+                .padding(horizontal = 28.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = hero.title,
-                color = onBg,
-                fontSize = 26.sp,
-                fontWeight = FontWeight.Black,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false)
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = hero.title,
+                    color = onBg,
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
 
-            Text(
-                text = hero.subtitle,
-                color = onBgVariant,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false)
-            )
+                Text(
+                    text = hero.subtitle,
+                    color = onBgVariant,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Row(
+                    modifier = Modifier.padding(top = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp)
+                ) {
+                    CollectionHeroActionBubble(
+                        imageVector = MiuixIcons.Regular.Sort,
+                        contentDescription = stringResource(R.string.library_action_sort),
+                        onClick = onSort
+                    )
+                    CollectionHeroActionBubble(
+                        imageVector = MiuixIcons.Regular.Folder,
+                        contentDescription = stringResource(R.string.library_action_folder),
+                        onClick = onOpenFolder
+                    )
+                    CollectionHeroResourceActionBubble(
+                        iconRes = R.drawable.ic_shuffle_custom,
+                        contentDescription = stringResource(R.string.library_action_shuffle),
+                        onClick = onShuffle
+                    )
+                    CollectionHeroActionBubble(
+                        imageVector = MiuixIcons.Regular.Search,
+                        contentDescription = stringResource(R.string.library_action_search),
+                        onClick = onSearch
+                    )
+                }
+            }
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -297,27 +323,18 @@ private fun CollectionHeroHeader(
 }
 
 @Composable
-private fun rememberCollectionHeroZoomPulse(
-    state: ComposePowerListState
-): Float {
-    val active = state.isTransitioning || state.isPinching
-    if (!active) return 0f
-    val p = state.transitionProgress.coerceIn(0f, 1f)
-    return 1f - abs(p * 2f - 1f)
-}
-
-@Composable
 internal fun CollectionSharedCoverAnchor(
     scene: NavScene,
     elementId: String,
     coverKey: String,
     radiusDp: Float,
+    enabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val coverRegistry = LocalSharedCoverRegistry.current
     val spec = LocalSharedTransitionSpec.current
     val sceneId = scene.name
-    val shouldTrack = spec.shouldTrackScene(sceneId)
+    val shouldTrack = enabled && spec.shouldTrackScene(sceneId)
 
     DisposableEffect(sceneId, elementId, shouldTrack) {
         if (!shouldTrack) coverRegistry.unregister(sceneId, elementId)
@@ -361,12 +378,68 @@ internal fun isCollectionSharedCoverTransition(
         (fromSceneId == detailScene.name && toSceneId == listScene.name)
 }
 
-internal fun smoothStep(
-    edge0: Float,
-    edge1: Float,
-    x: Float
-): Float {
-    if (edge0 == edge1) return if (x >= edge1) 1f else 0f
-    val t = ((x - edge0) / (edge1 - edge0)).coerceIn(0f, 1f)
-    return t * t * (3f - 2f * t)
+@Composable
+private fun CollectionHeroActionBubble(
+    imageVector: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit
+) {
+    val scheme = MiuixTheme.colorScheme
+    Box(
+        modifier = Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .background(scheme.surfaceContainerHigh.copy(alpha = 0.72f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = imageVector,
+            contentDescription = contentDescription,
+            tint = scheme.onBackground,
+            modifier = Modifier.size(21.dp)
+        )
+    }
+}
+
+@Composable
+private fun CollectionHeroResourceActionBubble(
+    iconRes: Int,
+    contentDescription: String,
+    onClick: () -> Unit
+) {
+    val scheme = MiuixTheme.colorScheme
+    Box(
+        modifier = Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .background(scheme.surfaceContainerHigh.copy(alpha = 0.72f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(iconRes),
+            contentDescription = contentDescription,
+            colorFilter = ColorFilter.tint(scheme.onBackground),
+            modifier = Modifier.size(21.dp)
+        )
+    }
+}
+
+private fun List<AudioFile>.sortedForCollection(order: SortOrder): List<AudioFile> {
+    val comparator = when (order) {
+        SortOrder.TITLE_ASC, SortOrder.TITLE_DESC -> compareBy<AudioFile> { it.displayName.lowercase() }
+        SortOrder.ARTIST_ASC, SortOrder.ARTIST_DESC -> compareBy<AudioFile> { it.artist.lowercase() }
+            .thenBy { it.displayName.lowercase() }
+        SortOrder.ALBUM_ASC, SortOrder.ALBUM_DESC -> compareBy<AudioFile> { it.album.lowercase() }
+            .thenBy { it.discNumber }
+            .thenBy { it.trackNumber }
+        SortOrder.DURATION_ASC, SortOrder.DURATION_DESC -> compareBy<AudioFile> { it.duration }
+        else -> return this
+    }
+    val descending = order == SortOrder.TITLE_DESC ||
+        order == SortOrder.ARTIST_DESC ||
+        order == SortOrder.ALBUM_DESC ||
+        order == SortOrder.DURATION_DESC
+    return sortedWith(if (descending) comparator.reversed() else comparator)
 }

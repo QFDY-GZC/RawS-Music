@@ -47,6 +47,8 @@ class SharedCoverRegistry {
 
     private val _elements = mutableStateMapOf<String, SharedCoverSnapshot>()
     private val _frozenElements = mutableStateMapOf<String, SharedCoverSnapshot>()
+    private val _rememberedElements = mutableMapOf<String, SharedCoverSnapshot>()
+    private val _returnTargets = mutableMapOf<String, SharedCoverSnapshot>()
 
     val elements: Map<String, SharedCoverSnapshot> get() = _elements
 
@@ -56,7 +58,13 @@ class SharedCoverRegistry {
 
     fun register(sceneId: String, elementId: String, snapshot: SharedCoverSnapshot) {
         if (sceneId.isBlank() || elementId.isBlank()) return
-        _elements[key(sceneId, elementId)] = snapshot
+        val key = key(sceneId, elementId)
+        _elements[key] = snapshot
+        // Once a transition endpoint is frozen, transformed descendants may continue reporting
+        // window bounds. Keep the pre-transition endpoint instead of memorizing those moving bounds.
+        if (key !in _frozenElements) {
+            _rememberedElements[key] = snapshot
+        }
     }
 
     fun unregister(sceneId: String, elementId: String) {
@@ -73,6 +81,14 @@ class SharedCoverRegistry {
         _elements[k]?.let { _frozenElements[k] = it }
     }
 
+    fun freeze(snapshot: SharedCoverSnapshot) {
+        _frozenElements[key(snapshot.sceneId, snapshot.elementId)] = snapshot
+    }
+
+    fun rememberReturnTarget(snapshot: SharedCoverSnapshot) {
+        _returnTargets[key(snapshot.sceneId, snapshot.elementId)] = snapshot
+    }
+
     fun getFrozen(sceneId: String, elementId: String): SharedCoverSnapshot? {
         return _frozenElements[key(sceneId, elementId)]
     }
@@ -87,7 +103,11 @@ class SharedCoverRegistry {
         return from != null && to != null
     }
 
-    fun findPairs(fromSceneId: String, toSceneId: String): List<Pair<SharedCoverSnapshot, SharedCoverSnapshot>> {
+    fun findPairs(
+        fromSceneId: String,
+        toSceneId: String,
+        allowRememberedTarget: Boolean = false
+    ): List<Pair<SharedCoverSnapshot, SharedCoverSnapshot>> {
         val prefix = "$fromSceneId::"
         val ids = (_elements.keys + _frozenElements.keys)
             .asSequence()
@@ -98,7 +118,11 @@ class SharedCoverRegistry {
 
         return ids.mapNotNull { elementId ->
             val from = getFrozen(fromSceneId, elementId) ?: get(fromSceneId, elementId)
-            val to = getFrozen(toSceneId, elementId) ?: get(toSceneId, elementId)
+            val toKey = key(toSceneId, elementId)
+            val to = _returnTargets[toKey].takeIf { allowRememberedTarget }
+                ?: getFrozen(toSceneId, elementId)
+                ?: get(toSceneId, elementId)
+                ?: _rememberedElements[toKey].takeIf { allowRememberedTarget }
             if (from != null && to != null) from to to else null
         }
     }

@@ -8,7 +8,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,41 +17,34 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.key
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.ui.graphics.vector.rememberVectorPainter
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
-import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.widget.ComposeMiniPlayer
+import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.core.ui.widget.flow.ProvideRawFlowMode
 import com.rawsmusic.core.ui.widget.flow.RawFlowBackground
 import com.rawsmusic.core.ui.widget.flow.rememberRawFlowModeState
 import com.rawsmusic.core.ui.widget.bottombar.LiquidBottomTab
 import com.rawsmusic.core.ui.widget.bottombar.LiquidBottomTabs
+import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import com.rawsmusic.core.ui.systemui.rawNavigationBarsPadding
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Music
-import top.yukonga.miuix.kmp.icon.extended.Search
-import top.yukonga.miuix.kmp.icon.extended.Settings
 
 internal val LocalAppHazeState = staticCompositionLocalOf<HazeState?> { null }
 
@@ -75,66 +67,26 @@ fun AppMainLayout(
 
     val isLightTheme = !isSystemInDarkTheme()
     val contentColor = if (isLightTheme) Color.Black else Color.White
-    val selectedContentColor = if (isLightTheme) Color(0xFF087DDE) else Color(0xFF63B3FF)
 
-    // 5 个主 Tab 对应的 NavScene，音效固定在中间。
-    val tabScenes = remember { listOf(NavScene.HOME, NavScene.SONGS, NavScene.AUDIO_EFFECTS, NavScene.SEARCH, NavScene.SETTINGS) }
+    val bottomNavigationEnabled by PersonalizationPreferences.bottomNavigationEnabled.collectAsState()
+    val configuredTabTags by PersonalizationPreferences.bottomNavigationSceneTags.collectAsState()
+    val tabScenes = remember(configuredTabTags) {
+        resolveBottomNavigationScenes(configuredTabTags)
+    }
 
-    // 根据当前场景推导选中 Tab 索引
-    val selectedTabIndex by remember {
+    val selectedTabIndex by remember(tabScenes) {
         derivedStateOf {
-            val scene = navState.currentScene
-            when (scene) {
-                NavScene.HOME -> 0
-                NavScene.SONGS,
-                NavScene.FOLDERS,
-                NavScene.FOLDER_HIERARCHY,
-                NavScene.ALBUMS,
-                NavScene.ALBUM_DETAIL,
-                NavScene.ARTISTS,
-                NavScene.ARTIST_DETAIL,
-                NavScene.PLAYLISTS,
-                NavScene.PLAYLIST_DETAIL,
-                NavScene.QUEUE,
-                NavScene.RECENTLY_ADDED,
-                NavScene.WEBDAV,
-                NavScene.SONG_STATS,
-                NavScene.LOG_VIEWER,
-                NavScene.ANALYTICS,
-                NavScene.PLAYLIST_LIST,
-                NavScene.PLAYLIST_DETAIL_PAGE,
-                NavScene.DAILY_20,
-                NavScene.GENRE,
-                NavScene.YEAR,
-                NavScene.COMPOSER,
-                NavScene.GENRE_DETAIL,
-                NavScene.YEAR_DETAIL,
-                NavScene.COMPOSER_DETAIL -> 1
-                NavScene.AUDIO_EFFECTS,
-                NavScene.BASS_TREBLE_BOOST,
-                NavScene.COMPRESSOR,
-                NavScene.PANORAMIC_360,
-                NavScene.PEQ,
-                NavScene.SPATIAL_SOUND,
-                NavScene.SURROUND_360 -> 2
-                NavScene.SEARCH -> 3
-                NavScene.SETTINGS,
-                NavScene.APPEARANCE,
-                NavScene.PERSONALIZATION_SETTINGS,
-                NavScene.AUDIO_SETTINGS,
-                NavScene.ALBUM_ART_SETTINGS,
-                NavScene.GLOBAL_FONT_SETTINGS,
-                NavScene.LYRIC_FONT_SETTINGS,
-                NavScene.LYRIC_MANAGEMENT,
-                NavScene.PLAYER_INTERFACE,
-                NavScene.STATUS_BAR_LYRIC,
-                NavScene.USB_DAC_SETTINGS,
-                NavScene.WEBDAV_BACKUP,
-                NavScene.SCAN_SETTINGS,
-                NavScene.TRANSITION_SETTINGS,
-                NavScene.ABOUT -> 4
+            val rootScene = navState.currentScene.bottomNavigationRoot()
+            val exactIndex = tabScenes.indexOf(rootScene)
+            if (exactIndex >= 0) {
+                exactIndex
+            } else {
+                tabScenes.indexOf(NavScene.HOME).coerceAtLeast(0)
             }
         }
+    }
+    val showHomeSettingsShortcut by remember(tabScenes, bottomNavigationEnabled) {
+        derivedStateOf { !bottomNavigationEnabled || NavScene.SETTINGS !in tabScenes }
     }
     val isSettingsScene by remember {
         derivedStateOf { navState.currentScene.isSettingsScene() }
@@ -220,7 +172,9 @@ fun AppMainLayout(
                         callbacks = navCallbacks,
                         data = navData,
                         modifier = Modifier.fillMaxSize(),
-                        externalPageRenderer = externalPageRenderer
+                        externalPageRenderer = externalPageRenderer,
+                        showHomeSettingsShortcut = showHomeSettingsShortcut,
+                        onSettingsClick = onSettingsClick ?: { navState.navigateToSettings() },
                     )
                 }
             }
@@ -231,7 +185,7 @@ fun AppMainLayout(
             val showBottomChrome = !navData.bottomChromeHidden
             val chromeHidden = bottomChromeScrollState.hidden
             val miniPlayerOffsetY by animateDpAsState(
-                targetValue = if (chromeHidden) (-4).dp else (-68).dp,
+                targetValue = if (chromeHidden || !bottomNavigationEnabled) (-4).dp else (-68).dp,
                 animationSpec = tween(durationMillis = 240),
                 label = "mini-player-chrome-offset"
             )
@@ -248,9 +202,9 @@ fun AppMainLayout(
                 exit = fadeOut() + slideOutVertically { it },
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) {
-                val miniCoverPath = navData.currentSong?.path?.takeIf { it.isLocalArtworkSource() }
-                    ?: navData.currentSong?.albumArtPath?.takeIf { it.isNotBlank() }
-                    ?: navData.miniPlayerCoverPath?.takeIf { it.isNotBlank() }
+                val miniCoverPath = navData.currentSong.resolvePlaybackArtworkKey(
+                    navData.miniPlayerCoverPath
+                )
 
                 ComposeMiniPlayer(
                     title = navData.miniPlayerTitle,
@@ -275,107 +229,53 @@ fun AppMainLayout(
             }
 
             AnimatedVisibility(
-                visible = showBottomChrome,
+                visible = showBottomChrome && bottomNavigationEnabled,
                 enter = fadeIn() + slideInVertically { it },
                 exit = fadeOut() + slideOutVertically { it },
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) {
-                LiquidBottomTabs(
-                    selectedTabIndex = { selectedTabIndex },
-                    onTabSelected = { index ->
-                        val targetScene = tabScenes[index]
-                        if (targetScene == NavScene.SETTINGS && onSettingsClick != null) {
-                            onSettingsClick()
-                        } else if (navState.currentScene != targetScene) {
-                            if (targetScene == NavScene.SETTINGS) {
-                                navState.navigateToSettings()
-                            } else {
-                                navState.navigateTo(targetScene)
+                key(tabScenes.joinToString(separator = "|") { it.tag }) {
+                    LiquidBottomTabs(
+                        selectedTabIndex = { selectedTabIndex },
+                        onTabSelected = { index ->
+                            tabScenes.getOrNull(index)?.let { targetScene ->
+                                if (targetScene == NavScene.SETTINGS) {
+                                    onSettingsClick?.invoke() ?: navState.navigateToSettings()
+                                } else if (navState.currentScene.bottomNavigationRoot() != targetScene) {
+                                    navState.navigateTo(targetScene)
+                                }
+                            }
+                        },
+                        backdrop = backdrop,
+                        tabsCount = tabScenes.size,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp)
+                            .offset(y = bottomTabsOffsetY)
+                            .rawNavigationBarsPadding(reduceBy = 12.dp)
+                    ) {
+                        tabScenes.forEach { scene ->
+                            LiquidBottomTab(
+                                onClick = {
+                                    if (scene == NavScene.SETTINGS) {
+                                        onSettingsClick?.invoke() ?: navState.navigateToSettings()
+                                    } else if (navState.currentScene.bottomNavigationRoot() != scene) {
+                                        navState.navigateTo(scene)
+                                    }
+                                }
+                            ) {
+                                BottomNavigationEntryIcon(
+                                    scene = scene,
+                                    tint = contentColor,
+                                    modifier = Modifier.size(24.dp),
+                                )
+                                BasicText(
+                                    scene.bottomNavigationLabel(),
+                                    style = TextStyle(contentColor, 10.sp, FontWeight.SemiBold)
+                                )
                             }
                         }
-                    },
-                    backdrop = backdrop,
-                    tabsCount = 5,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp)
-                        .offset(y = bottomTabsOffsetY)
-                        .rawNavigationBarsPadding(reduceBy = 12.dp)
-                ) {
-                // Tab 0: 主界面
-                LiquidBottomTab({ navState.navigateTo(NavScene.HOME) }) {
-                    val color = if (selectedTabIndex == 0) selectedContentColor else contentColor
-                    Image(
-                        painter = rememberVectorPainter(Icons.Default.Home),
-                        contentDescription = stringResource(R.string.bottom_nav_home),
-                        modifier = Modifier.size(24.dp),
-                        colorFilter = ColorFilter.tint(color)
-                    )
-                    BasicText(
-                        stringResource(R.string.bottom_nav_home),
-                        style = TextStyle(color, 10.sp, FontWeight.SemiBold)
-                    )
-                }
-
-                // Tab 1: 音乐库
-                LiquidBottomTab({ navState.navigateTo(NavScene.SONGS) }) {
-                    val color = if (selectedTabIndex == 1) selectedContentColor else contentColor
-                    Image(
-                        painter = rememberVectorPainter(MiuixIcons.Regular.Music),
-                        contentDescription = stringResource(R.string.bottom_nav_library),
-                        modifier = Modifier.size(24.dp),
-                        colorFilter = ColorFilter.tint(color)
-                    )
-                    BasicText(
-                        stringResource(R.string.bottom_nav_library),
-                        style = TextStyle(color, 10.sp, FontWeight.SemiBold)
-                    )
-                }
-
-                // Tab 2: 音效
-                LiquidBottomTab({ navState.navigateTo(NavScene.AUDIO_EFFECTS) }) {
-                    val color = if (selectedTabIndex == 2) selectedContentColor else contentColor
-                    Image(
-                        painter = painterResource(R.drawable.ic_equalizer_bars),
-                        contentDescription = stringResource(R.string.bottom_nav_effects),
-                        modifier = Modifier.size(24.dp),
-                        colorFilter = ColorFilter.tint(color)
-                    )
-                    BasicText(
-                        stringResource(R.string.bottom_nav_effects),
-                        style = TextStyle(color, 10.sp, FontWeight.SemiBold)
-                    )
-                }
-
-                // Tab 3: 搜索
-                LiquidBottomTab({ navState.navigateTo(NavScene.SEARCH) }) {
-                    val color = if (selectedTabIndex == 3) selectedContentColor else contentColor
-                    Image(
-                        painter = rememberVectorPainter(MiuixIcons.Regular.Search),
-                        contentDescription = stringResource(R.string.bottom_nav_search),
-                        modifier = Modifier.size(24.dp),
-                        colorFilter = ColorFilter.tint(color)
-                    )
-                    BasicText(
-                        stringResource(R.string.bottom_nav_search),
-                        style = TextStyle(color, 10.sp, FontWeight.SemiBold)
-                    )
-                }
-
-                // Tab 4: 设置
-                LiquidBottomTab({ onSettingsClick?.invoke() ?: navState.navigateToSettings() }) {
-                    val color = if (selectedTabIndex == 4) selectedContentColor else contentColor
-                    Image(
-                        painter = rememberVectorPainter(MiuixIcons.Regular.Settings),
-                        contentDescription = stringResource(R.string.bottom_nav_settings),
-                        modifier = Modifier.size(24.dp),
-                        colorFilter = ColorFilter.tint(color)
-                    )
-                    BasicText(
-                        stringResource(R.string.bottom_nav_settings),
-                        style = TextStyle(color, 10.sp, FontWeight.SemiBold)
-                    )
-                }
+                    }
                 }
             }
         }
@@ -428,10 +328,4 @@ private fun NavScene.isSettingsScene(): Boolean {
         NavScene.ABOUT -> true
         else -> false
     }
-}
-
-private fun String.isLocalArtworkSource(): Boolean {
-    return isNotBlank() &&
-        !startsWith("http://", ignoreCase = true) &&
-        !startsWith("https://", ignoreCase = true)
 }

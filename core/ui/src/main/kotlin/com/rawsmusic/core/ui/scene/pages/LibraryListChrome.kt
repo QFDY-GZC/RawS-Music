@@ -34,7 +34,10 @@ import dev.chrisbanes.haze.rememberHazeState
 
 internal val LIBRARY_TOOLBAR_CONTENT_HEIGHT = 72.dp
 internal val LIBRARY_SEARCH_TOOLBAR_CONTENT_HEIGHT = 120.dp
-internal val LIBRARY_CONTENT_OVERLAP = 40.dp
+// Keep the toolbar spacer inside the scroll geometry. At index 0 the first real row must start
+// below the glass controls; the backdrop source still fills the window, so blur does not need a
+// row to be deliberately hidden behind the toolbar.
+internal val LIBRARY_CONTENT_OVERLAP = 0.dp
 internal val LIBRARY_CONTENT_MIN_INSET = 8.dp
 
 @Immutable
@@ -60,6 +63,9 @@ fun LibraryListScaffold(
     onShuffle: (() -> Unit)? = null,
     onCreatePlaylist: (() -> Unit)? = null,
     onImportPlaylist: (() -> Unit)? = null,
+    currentSortOrder: SortOrder? = null,
+    onSortSelected: ((SortOrder) -> Unit)? = null,
+    sortOptions: List<Pair<String, SortOrder>>? = null,
     contentOverlap: Dp = LIBRARY_CONTENT_OVERLAP,
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.(contentTopPadding: Dp, backdropSource: Modifier) -> Unit
@@ -130,12 +136,13 @@ fun LibraryListScaffold(
         powerListState?.let { state ->
             SongsSortLayoutSheet(
                 visible = showSortSheet,
-                currentSortOrder = chromeInfo.currentSortOrder,
+                currentSortOrder = currentSortOrder ?: chromeInfo.currentSortOrder,
                 powerListState = state,
                 onSortSelected = { order ->
-                    chromeInfo.onSortSelected(order)
+                    (onSortSelected ?: chromeInfo.onSortSelected)(order)
                     showSortSheet = false
                 },
+                sortOptions = sortOptions,
                 onDismiss = { showSortSheet = false }
             )
         }

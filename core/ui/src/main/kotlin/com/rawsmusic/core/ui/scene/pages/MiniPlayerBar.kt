@@ -88,7 +88,6 @@ fun MiniPlayerBar(
             MiniPlayerArtwork(
                 mode = artworkMode,
                 coverPath = coverPath,
-                coverBitmap = null,
                 isPlaying = isPlaying,
                 contentDescription = title,
                 onCoverBoundsChanged = {},

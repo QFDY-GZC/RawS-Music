@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -70,8 +71,6 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.scaleIn
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.SortOrder
@@ -100,6 +99,7 @@ import dev.chrisbanes.haze.blur.blurEffect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
@@ -138,6 +138,7 @@ fun SongsPage(
     onMiniPlayerPrevious: () -> Unit,
     onMiniPlayerNext: () -> Unit,
     onOpenFolderPicker: () -> Unit,
+    onOpenGlobalSearch: () -> Unit,
     onSortClick: () -> Unit,
     onShuffleAll: (List<AudioFile>) -> Unit,
     onSortSelected: (SortOrder) -> Unit = {},
@@ -152,8 +153,6 @@ fun SongsPage(
     onRevealCoverTargetResolved: (CoverTransitionTarget?) -> Unit = {},
     onMiniPlayerCoverBoundsChanged: (android.graphics.RectF?) -> Unit = {}
 ) {
-    var searchQuery by remember { mutableStateOf("") }
-    var isSearchActive by remember { mutableStateOf(false) }
     var showSortSheet by remember { mutableStateOf(false) }
     var selectionMode by remember { mutableStateOf(false) }
     var selectedSongIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
@@ -167,15 +166,7 @@ fun SongsPage(
     val localSongsListHazeState = rememberHazeState()
     val songsListHazeState = LocalAppHazeState.current ?: localSongsListHazeState
 
-    val visibleSongs = remember(songs, searchQuery) {
-        if (searchQuery.isBlank()) songs
-        else songs.filter {
-            it.displayName.contains(searchQuery, ignoreCase = true) ||
-                it.artist.contains(searchQuery, ignoreCase = true) ||
-                it.album.contains(searchQuery, ignoreCase = true) ||
-                it.path.substringAfterLast('/').contains(searchQuery, ignoreCase = true)
-        }
-    }
+    val visibleSongs = songs
 
     val selectedSongs = remember(visibleSongs, selectedSongIds) {
         if (selectedSongIds.isEmpty()) emptyList() else visibleSongs.filter { it.id in selectedSongIds }
@@ -192,12 +183,12 @@ fun SongsPage(
     }
 
     val emptyAlphabetIndexData = remember { RawAlphabetIndexData(emptyList(), emptyMap(), RawIndexMode.AUTO) }
-    val alphabetIndexCacheKey = remember(visibleSongs, searchQuery, currentSortOrder) {
-        RawAlphabetIndexCache.keyForSongs(visibleSongs, searchQuery)
+    val alphabetIndexCacheKey = remember(visibleSongs, currentSortOrder) {
+        RawAlphabetIndexCache.keyForSongs(visibleSongs, "")
     }
-    val firstFrameAlphabetIndexData = remember(alphabetIndexCacheKey, visibleSongs, searchQuery) {
+    val firstFrameAlphabetIndexData = remember(alphabetIndexCacheKey, visibleSongs) {
         RawAlphabetIndexCache.get(alphabetIndexCacheKey)
-            ?: RawAlphabetIndexCache.quickBuild(visibleSongs, searchQuery)
+            ?: RawAlphabetIndexCache.quickBuild(visibleSongs, "")
             .takeIf { it.targets.isNotEmpty() }
             ?: emptyAlphabetIndexData
     }
@@ -214,7 +205,7 @@ fun SongsPage(
             return@produceState
         }
         if (value.targets.isEmpty()) {
-            value = RawAlphabetIndexCache.quickBuild(visibleSongs, searchQuery)
+            value = RawAlphabetIndexCache.quickBuild(visibleSongs, "")
         }
         val exact = withContext(Dispatchers.Default) {
             RawAlphabetIndexCache.getOrBuild(alphabetIndexCacheKey, visibleSongs)
@@ -227,11 +218,7 @@ fun SongsPage(
         .asPaddingValues()
         .calculateTopPadding()
 
-    val toolbarContentHeight = if (isSearchActive && !selectionMode) {
-        LIBRARY_SEARCH_TOOLBAR_CONTENT_HEIGHT
-    } else {
-        LIBRARY_TOOLBAR_CONTENT_HEIGHT
-    }
+    val toolbarContentHeight = LIBRARY_TOOLBAR_CONTENT_HEIGHT
     val toolbarTotalHeight = statusBarTop + toolbarContentHeight
     // 让列表内容真实经过顶部栏背后，模糊层才能采样到封面与文字。
     // 只保留少量起始留白，首项会像系统媒体列表一样部分进入顶部玻璃区域。
@@ -335,14 +322,11 @@ fun SongsPage(
                 nowPlayingTitle = miniPlayerTitle,
                 nextSongTitle = nextSongTitle,
                 showNextQueueHint = showNextQueueHint,
-                isSearchActive = isSearchActive && !selectionMode,
-                searchQuery = searchQuery,
-                onSearchQueryChange = { searchQuery = it },
-                onToggleSearch = { isSearchActive = !isSearchActive },
-                onCancelSearch = {
-                    searchQuery = ""
-                    isSearchActive = false
-                },
+                isSearchActive = false,
+                searchQuery = "",
+                onSearchQueryChange = {},
+                onToggleSearch = onOpenGlobalSearch,
+                onCancelSearch = {},
                 selectionMode = selectionMode,
                 selectedCount = selectedSongIds.size,
                 onCancelSelection = {
@@ -593,7 +577,7 @@ internal fun SongsTopMenuBar(
                                 modifier = Modifier
                                     .weight(1f)
                                     .basicMarquee(
-                                        iterations = Int.MAX_VALUE,
+                                        iterations = 1,
                                         repeatDelayMillis = 1_000
                                     )
                             )
@@ -829,10 +813,9 @@ internal fun SongsSortLayoutSheet(
     currentSortOrder: SortOrder,
     powerListState: ComposePowerListState,
     onSortSelected: (SortOrder) -> Unit,
+    sortOptions: List<Pair<String, SortOrder>>? = null,
     onDismiss: () -> Unit
 ) {
-    if (!visible) return
-
     val scope = rememberCoroutineScope()
     val interaction = remember { MutableInteractionSource() }
     val scrollState = rememberScrollState()
@@ -840,71 +823,38 @@ internal fun SongsSortLayoutSheet(
     val sheetColor = blendColor(scheme.background, scheme.primary, 0.035f)
     val secondaryColor = scheme.onSurfaceVariantSummary
     val selectedColor = scheme.primary
-    val dismissProgress = rememberPredictiveDialogProgress(enabled = true, onDismissRequest = onDismiss)
-
-    Dialog(
+    RawMiuixOverlayDialog(
+        show = visible,
+        title = "排序与布局",
+        backgroundColor = sheetColor,
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = false)
+        renderInRootScaffold = true
     ) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(scheme.onBackground.copy(alpha = 0.20f))
-                .clickable(
-                    interactionSource = interaction,
-                    indication = null,
-                    onClick = onDismiss
-                ),
-            contentAlignment = Alignment.Center
-        ) {
             Column(
                 modifier = Modifier
-                    .fillMaxWidth(0.88f)
-                    .fillMaxHeight(0.60f)
-                    .predictiveDialogMotion(dismissProgress)
-                    .clip(RoundedCornerShape(28.dp))
-                    .background(sheetColor)
-                    .clickable(
-                        interactionSource = interaction,
-                        indication = null,
-                        onClick = {}
-                    )
-                    .padding(horizontal = 18.dp, vertical = 14.dp)
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(scrollState)
             ) {
-                SheetHandle(
-                    color = secondaryColor,
-                    modifier = Modifier.align(Alignment.CenterHorizontally)
-                )
-                Spacer(Modifier.height(14.dp))
-
                 Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .verticalScroll(scrollState)
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     SheetTitle("排序")
                     Spacer(Modifier.height(8.dp))
 
-                    SortSheetRow("根据标题", currentSortOrder.baseSortOrder() == SortOrder.TITLE_ASC, selectedColor) {
-                        onSortSelected(currentSortOrder.withBaseSortOrder(SortOrder.TITLE_ASC))
-                    }
-                    SortSheetRow("根据文件名", currentSortOrder.baseSortOrder() == SortOrder.FILE_NAME_ASC, selectedColor) {
-                        onSortSelected(currentSortOrder.withBaseSortOrder(SortOrder.FILE_NAME_ASC))
-                    }
-                    SortSheetRow("根据路径", currentSortOrder.baseSortOrder() == SortOrder.PATH_ASC, selectedColor) {
-                        onSortSelected(currentSortOrder.withBaseSortOrder(SortOrder.PATH_ASC))
-                    }
-                    SortSheetRow("根据艺术家", currentSortOrder.baseSortOrder() == SortOrder.ARTIST_ASC, selectedColor) {
-                        onSortSelected(currentSortOrder.withBaseSortOrder(SortOrder.ARTIST_ASC))
-                    }
-                    SortSheetRow("根据专辑", currentSortOrder.baseSortOrder() == SortOrder.ALBUM_ASC, selectedColor) {
-                        onSortSelected(currentSortOrder.withBaseSortOrder(SortOrder.ALBUM_ASC))
-                    }
-                    SortSheetRow("根据年份", currentSortOrder.baseSortOrder() == SortOrder.YEAR_ASC, selectedColor) {
-                        onSortSelected(currentSortOrder.withBaseSortOrder(SortOrder.YEAR_ASC))
-                    }
-                    SortSheetRow("根据播放次数", currentSortOrder.baseSortOrder() == SortOrder.PLAYBACK_INFO, selectedColor) {
-                        onSortSelected(currentSortOrder.withBaseSortOrder(SortOrder.PLAYBACK_INFO))
+                    val effectiveSortOptions = sortOptions ?: listOf(
+                        "根据标题" to SortOrder.TITLE_ASC,
+                        "根据文件名" to SortOrder.FILE_NAME_ASC,
+                        "根据路径" to SortOrder.PATH_ASC,
+                        "根据艺术家" to SortOrder.ARTIST_ASC,
+                        "根据专辑" to SortOrder.ALBUM_ASC,
+                        "根据年份" to SortOrder.YEAR_ASC,
+                        "根据播放次数" to SortOrder.PLAYBACK_INFO
+                    )
+                    effectiveSortOptions.forEach { (label, baseOrder) ->
+                        SortSheetRow(label, currentSortOrder.baseSortOrder() == baseOrder, selectedColor) {
+                            onSortSelected(currentSortOrder.withBaseSortOrder(baseOrder))
+                        }
                     }
                     SortSheetRow("倒序", currentSortOrder.isDescendingSortOrder(), selectedColor) {
                         onSortSelected(currentSortOrder.reversedSortOrder())
@@ -941,7 +891,6 @@ internal fun SongsSortLayoutSheet(
                     }
                 }
             }
-        }
     }
 }
 
