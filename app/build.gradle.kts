@@ -13,9 +13,9 @@ android {
     defaultConfig {
         applicationId = "com.rawsmusic"
         minSdk = 23
-        targetSdk = 34
-        versionCode = 21
-        versionName = "0.9.21-beta"
+        targetSdk = 37
+        versionCode = 48
+        versionName = "0.9.48 beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -59,6 +59,18 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    androidResources {
+        noCompress += listOf("ttf")
+    }
+
+    packaging {
+        jniLibs {
+            // No packaged ELF currently declares this dependency; the checked-in
+            // copy only inflated every arm64 APK.
+            excludes += "**/libc++_shared.so"
+        }
     }
 
     lint {
@@ -107,6 +119,8 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.okhttp)
 
     implementation(project(":lyric:model"))
     implementation(project(":lyric:bridge:provider"))
@@ -123,6 +137,7 @@ dependencies {
 
     implementation(project(":backdrop"))
     implementation(libs.gson)
+    implementation("io.coil-kt:coil-compose:2.7.0")
 
     // Miuix UI 库
     implementation(libs.miuix.ui)
