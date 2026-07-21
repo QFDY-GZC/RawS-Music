@@ -54,7 +54,7 @@ fun BackdropEffectScope.lens(
             }
             RenderEffect.createRuntimeShaderEffect(shader, "content")
         } else {
-            return  // 不支持的 shape 类型，静默跳过
+            throwUnsupportedSDFException()
         }
     effect(effect)
 }
