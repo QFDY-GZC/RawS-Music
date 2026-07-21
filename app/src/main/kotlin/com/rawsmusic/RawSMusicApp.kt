@@ -14,6 +14,7 @@ import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.PlayerService
 import com.rawsmusic.module.scanner.LibraryScannerDependencies
 import com.rawsmusic.module.scanner.MusicRepositoryAudioLibraryRepository
+import com.rawsmusic.memory.FairRuntimeMemoryManager
 import com.rawsmusic.ui.songs.PlayerHolder
 
 class RawSMusicApp : Application() {
@@ -44,6 +45,7 @@ class RawSMusicApp : Application() {
 
         // 只启动后台封面线程，保持首屏封面请求可用；重型解码仍在 BitmapProvider worker 中执行。
         com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider.init(this)
+        FairRuntimeMemoryManager.initialize(this)
 
         // 版本号只用于记录覆盖安装，不再按 appVersion 清空曲库。
         // 数据结构变化交给 Room Migration，避免升级后丢失曲库、收藏和播放统计。
@@ -99,6 +101,11 @@ class RawSMusicApp : Application() {
         })
 
         scheduleDeferredProcessInit()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        FairRuntimeMemoryManager.onAndroidTrimMemory(level)
     }
 
     private fun scheduleDeferredProcessInit() {

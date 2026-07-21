@@ -5,11 +5,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -88,8 +85,6 @@ import kotlin.math.ln
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
-private val peqExpandEnter = expandVertically() + fadeIn()
-private val peqExpandExit = shrinkVertically() + fadeOut()
 private val peqSuggestedBandCounts = listOf(10, 15, 20, 31, 40)
 private val peqGson = Gson()
 
@@ -145,6 +140,7 @@ internal fun ParametricEqualizerSettingsContent(
     val filters by controller.filters.collectAsState()
     val bandCount by controller.bandCount.collectAsState()
     val preamp by controller.preamp.collectAsState()
+    val autoHeadroomReduction by controller.autoHeadroomReduction.collectAsState()
     val frequencyResponse by controller.frequencyResponse.collectAsState()
 
     val cacheManager = remember(context) { AutoEqCacheManager(context.applicationContext) }
@@ -197,11 +193,7 @@ internal fun ParametricEqualizerSettingsContent(
             onCheckedChange = controller::setEnabled
         )
 
-        AnimatedVisibility(
-            visible = enabled,
-            enter = peqExpandEnter,
-            exit = peqExpandExit
-        ) {
+        ExpandableEffectContent(enabled = enabled) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -241,7 +233,11 @@ internal fun ParametricEqualizerSettingsContent(
 
                 SliderPreference(
                     title = stringResource(R.string.settings_peq_preamp),
-                    summary = stringResource(R.string.settings_peq_preamp_summary),
+                    summary = if (autoHeadroomReduction > 0.05f) {
+                        stringResource(R.string.settings_peq_auto_headroom_active, autoHeadroomReduction)
+                    } else {
+                        stringResource(R.string.settings_peq_preamp_summary)
+                    },
                     valueText = stringResource(R.string.settings_db_value_signed_one_decimal, preamp),
                     value = preamp.coerceIn(-12f, 12f),
                     onValueChange = controller::setPreamp,

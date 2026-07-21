@@ -45,5 +45,16 @@ fun PersonalizationSettingsScreen(onBack: () -> Unit) {
                 }
             )
         }
+
+        SmallTitle(text = stringResource(R.string.settings_personalization_layout_section))
+        SettingsCardGroup {
+            SettingsNavigationEntry(
+                title = stringResource(R.string.settings_bottom_navigation_title),
+                description = stringResource(R.string.settings_bottom_navigation_summary),
+                onClick = {
+                    activity?.navigateToSettings(BottomNavigationSettingsActivity::class.java)
+                }
+            )
+        }
     }
 }

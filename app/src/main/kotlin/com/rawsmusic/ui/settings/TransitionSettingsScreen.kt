@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.R
+import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.TransitionPreferences
 import com.rawsmusic.ui.songs.PlayerHolder
 import kotlin.math.roundToInt
@@ -41,6 +42,7 @@ fun TransitionSettingsScreen(onBack: () -> Unit) {
     var expandedCard by remember { mutableStateOf(TransitionCard.Manual) }
     var manualMode by remember { mutableStateOf(TransitionPreferences.manualTrackTransitionMode) }
     var manualDurationMs by remember { mutableStateOf(TransitionPreferences.manualTrackFadeMs) }
+    var crossfadeSec by remember { mutableStateOf(AppPreferences.Player.crossfadeDuration) }
     var transportEnabled by remember { mutableStateOf(TransitionPreferences.transportFadeEnabled) }
     var transportDurationMs by remember { mutableStateOf(TransitionPreferences.transportFadeMs) }
     var seekEnabled by remember { mutableStateOf(TransitionPreferences.seekFadeEnabled) }
@@ -106,6 +108,31 @@ fun TransitionSettingsScreen(onBack: () -> Unit) {
                     TransitionPreferences.manualTrackFadeMs = it
                     notifyChanged()
                 }
+            )
+        }
+
+        ExpandableTransitionCard(
+            title = stringResource(R.string.settings_audio_info_crossfade_title),
+            summary = stringResource(R.string.settings_audio_info_crossfade_body),
+            expanded = expandedCard == TransitionCard.Crossfade,
+            onClick = { expandedCard = expandedCard.toggle(TransitionCard.Crossfade) }
+        ) {
+            SliderPreference(
+                title = stringResource(R.string.settings_audio_info_crossfade_title),
+                summary = stringResource(R.string.settings_audio_info_crossfade_body),
+                valueText = if (crossfadeSec == 0) {
+                    stringResource(R.string.settings_audio_crossfade_off)
+                } else {
+                    stringResource(R.string.settings_audio_crossfade_seconds, crossfadeSec)
+                },
+                value = crossfadeSec.toFloat(),
+                onValueChange = { value ->
+                    crossfadeSec = value.toInt()
+                    AppPreferences.Player.crossfadeDuration = crossfadeSec
+                },
+                valueRange = 0f..12f,
+                steps = 11,
+                hapticEffect = SliderDefaults.SliderHapticEffect.Step
             )
         }
 
@@ -283,6 +310,7 @@ private fun DurationSlider(
 
 private enum class TransitionCard {
     Manual,
+    Crossfade,
     Transport,
     Seek
 }

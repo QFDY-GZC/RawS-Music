@@ -1,10 +1,5 @@
 package com.rawsmusic.ui.settings
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,9 +31,6 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.preference.SliderPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-
-private val spatialExpandEnter = expandVertically() + fadeIn()
-private val spatialExpandExit = shrinkVertically() + fadeOut()
 
 /**
  * MIUIX version of the existing Surround 360 screen. The controller remains
@@ -78,11 +70,7 @@ internal fun Surround360SettingsContent(
             onCheckedChange = controller::setEnabled
         )
 
-        AnimatedVisibility(
-            visible = enabled,
-            enter = spatialExpandEnter,
-            exit = spatialExpandExit
-        ) {
+        ExpandableEffectContent(enabled = enabled) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -249,11 +237,7 @@ internal fun Panoramic360SettingsContent(
             onCheckedChange = controller::setEnabled
         )
 
-        AnimatedVisibility(
-            visible = enabled,
-            enter = spatialExpandEnter,
-            exit = spatialExpandExit
-        ) {
+        ExpandableEffectContent(enabled = enabled) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()

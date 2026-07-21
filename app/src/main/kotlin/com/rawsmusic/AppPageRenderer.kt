@@ -15,11 +15,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import com.rawsmusic.core.ui.scene.ExternalPageRenderer
+import com.rawsmusic.core.ui.scene.GlobalSearchScope
 import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.scene.NavigationState
 import com.rawsmusic.module.data.prefs.PlaylistStore
 import com.rawsmusic.module.data.prefs.PlaybackStatsStore
 import com.rawsmusic.module.player.dsp.GraphicEQController
+import com.rawsmusic.module.player.dsp.DynamicEqController
+import com.rawsmusic.module.player.dsp.LoudnessBalanceController
+import com.rawsmusic.module.player.dsp.MonoBassController
+import com.rawsmusic.module.player.dsp.NativeDSPEngine
+import com.rawsmusic.module.player.dsp.MoogLadderController
 import com.rawsmusic.ui.analytics.AnalyticsScreen
 import com.rawsmusic.ui.playlist.PlaylistDetailScreen
 import com.rawsmusic.core.common.model.toAudioFile
@@ -137,17 +143,23 @@ class AppPageRendererImpl(
             }
 
             NavScene.SEARCH -> {
-                val playlistStore = PlaylistStore.getInstance(context)
                 GlobalSearchScreen(
-                    playlistStore = playlistStore,
+                    initialScope = GlobalSearchScope.fromToken(argument),
                     onBack = onBack,
                     onSongClick = { song -> activity?.playSongFromSearch(song) },
-                    onAlbumClick = { album -> activity?.openAlbumFromSearch(album) },
-                    onArtistClick = { artist -> activity?.openArtistFromSearch(artist) },
-                    onPlaylistClick = { playlist ->
-                        navState?.navigateTo(NavScene.PLAYLIST_DETAIL_PAGE, playlist.id)
+                    onCategoryClick = { scope, key ->
+                        val target = when (scope) {
+                            GlobalSearchScope.ALBUM -> NavScene.ALBUM_DETAIL
+                            GlobalSearchScope.ARTIST -> NavScene.ARTIST_DETAIL
+                            GlobalSearchScope.FOLDER -> NavScene.FOLDER_HIERARCHY
+                            GlobalSearchScope.GENRE -> NavScene.GENRE_DETAIL
+                            GlobalSearchScope.YEAR -> NavScene.YEAR_DETAIL
+                            GlobalSearchScope.COMPOSER -> NavScene.COMPOSER_DETAIL
+                            GlobalSearchScope.SONG -> null
+                        }
+                        target?.let { navState?.navigateTo(it, Uri.encode(key)) }
                     },
-                    onFolderClick = { folder -> activity?.openFolderFromSearch(folder) }
+                    onShuffle = { songs -> activity?.playShuffledSearchResults(songs) }
                 )
             }
 
@@ -160,11 +172,53 @@ class AppPageRendererImpl(
                         null
                     }
                 }
-                val graphicEqController = remember(peqController) {
+                val graphicEqController = remember(pc) {
                     try {
-                        peqController?.let(::GraphicEQController)
+                        pc?.ensureGraphicEQConnected()
+                        pc?.graphicEqController
                     } catch (_: Exception) {
                         null
+                    }
+                }
+                val experimentalGainController = remember(pc) {
+                    try {
+                        pc?.ensureExperimentalGainConnected()
+                        pc?.experimentalGainController
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val loudnessBalanceController = remember(pc) {
+                    try {
+                        pc?.ensureLoudnessBalanceConnected()
+                        pc?.loudnessBalanceController
+                            ?: LoudnessBalanceController(NativeDSPEngine())
+                    } catch (_: Exception) {
+                        LoudnessBalanceController(NativeDSPEngine())
+                    }
+                }
+                val monoBassController = remember(pc) {
+                    try {
+                        pc?.ensureMonoBassConnected()
+                        pc?.monoBassController ?: MonoBassController(NativeDSPEngine())
+                    } catch (_: Exception) {
+                        MonoBassController(NativeDSPEngine())
+                    }
+                }
+                val dynamicEqController = remember(pc) {
+                    try {
+                        pc?.ensureDynamicEqConnected()
+                        pc?.dynamicEqController ?: DynamicEqController(NativeDSPEngine())
+                    } catch (_: Exception) {
+                        DynamicEqController(NativeDSPEngine())
+                    }
+                }
+                val moogLadderController = remember(pc) {
+                    try {
+                        pc?.ensureMoogLadderConnected()
+                        pc?.moogLadderController ?: MoogLadderController(NativeDSPEngine())
+                    } catch (_: Exception) {
+                        MoogLadderController(NativeDSPEngine())
                     }
                 }
                 var pendingPeqExportJson by remember { mutableStateOf<String?>(null) }
@@ -242,6 +296,11 @@ class AppPageRendererImpl(
                     onTogglePEQ = { enabled -> peqController?.setEnabled(enabled) },
                     peqController = peqController,
                     graphicEqController = graphicEqController,
+                    experimentalGainController = experimentalGainController,
+                    loudnessBalanceController = loudnessBalanceController,
+                    monoBassController = monoBassController,
+                    dynamicEqController = dynamicEqController,
+                    moogLadderController = moogLadderController,
                     fftConvolverController = fftConvolverController,
                     compressorController = compressorController,
                     bassBoostController = bassBoostController,

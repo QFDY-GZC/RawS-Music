@@ -1,10 +1,5 @@
 package com.rawsmusic.ui.settings
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -31,9 +26,6 @@ import top.yukonga.miuix.kmp.preference.SliderPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-
-private val speakerEffectExpandEnter = expandVertically() + fadeIn()
-private val speakerEffectExpandExit = shrinkVertically() + fadeOut()
 
 /**
  * 单卡片扬声器外放设置。
@@ -76,11 +68,7 @@ internal fun SpeakerOutputElasticitySettingsContent(
             onCheckedChange = controller::setEnabled
         )
 
-        AnimatedVisibility(
-            visible = enabled,
-            enter = speakerEffectExpandEnter,
-            exit = speakerEffectExpandExit
-        ) {
+        ExpandableEffectContent(enabled = enabled) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()

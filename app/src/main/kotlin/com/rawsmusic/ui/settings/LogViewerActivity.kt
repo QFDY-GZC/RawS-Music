@@ -1,14 +1,13 @@
 package com.rawsmusic.ui.settings
 
 import android.os.Bundle
+import com.rawsmusic.ui.log.LogViewerScreen
 
-class LyricManagementActivity : BaseSettingsActivity() {
+class LogViewerActivity : BaseSettingsActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            LiquidGlassLyricManagementScreen(
-                onBack = { finish() }
-            )
+            LogViewerScreen(onBack = { finish() })
         }
     }
 }

@@ -1,6 +1,11 @@
 package com.rawsmusic.ui.settings
 
 import android.os.Build
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -23,9 +28,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +60,7 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.preference.ArrowPreference
@@ -175,45 +183,162 @@ internal fun SettingsActionRow(
 fun LiquidGlassSettingsScreen(
     onNavigateToLyricManagement: () -> Unit,
     onNavigateToStatusBarLyric: () -> Unit,
+    onNavigateToLyricFont: () -> Unit,
     onNavigateToAppearance: () -> Unit,
     onNavigateToPersonalization: () -> Unit,
     onNavigateToAudioSettings: () -> Unit,
     onNavigateToAudioEffects: () -> Unit,
+    onNavigateToTransitionSettings: () -> Unit,
     onNavigateToPlayerInterface: () -> Unit,
     onNavigateToUsbDac: () -> Unit,
     onNavigateToGlobalFont: () -> Unit,
     onNavigateToAlbumArt: () -> Unit,
     onWebDavBackup: () -> Unit,
+    onNavigateToLogViewer: () -> Unit,
     onNavigateToAbout: () -> Unit = {},
     onNavigateToScanSettings: () -> Unit = {}
 ) {
     val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
     val pageBackground = if (isDark) Color(0xFF101014) else Color(0xFFF4F4F7)
-
-    // 搜索状态
     var searchQuery by remember { mutableStateOf("") }
 
-    // 可搜索的设置项
-    val searchableItems = listOf(
-        SearchableSetting(stringResource(R.string.settings_audio_quality_title), stringResource(R.string.settings_audio_quality_keywords), onNavigateToAudioSettings),
-        SearchableSetting(stringResource(R.string.settings_usb_dac_title), stringResource(R.string.settings_usb_dac_keywords), onNavigateToUsbDac),
-        SearchableSetting(stringResource(R.string.settings_audio_effects_title), stringResource(R.string.settings_audio_effects_keywords), onNavigateToAudioEffects),
-        SearchableSetting(stringResource(R.string.settings_player_interface_title), stringResource(R.string.settings_player_interface_keywords), onNavigateToPlayerInterface),
-        SearchableSetting(stringResource(R.string.settings_appearance_title), stringResource(R.string.settings_appearance_keywords), onNavigateToAppearance),
-        SearchableSetting(stringResource(R.string.settings_personalization_title), stringResource(R.string.settings_personalization_keywords), onNavigateToPersonalization),
-        SearchableSetting(stringResource(R.string.settings_lyric_management_title), stringResource(R.string.settings_lyric_management_keywords), onNavigateToLyricManagement),
-        SearchableSetting(stringResource(R.string.settings_status_bar_lyric_title), stringResource(R.string.settings_status_bar_lyric_keywords), onNavigateToStatusBarLyric),
-        SearchableSetting(stringResource(R.string.settings_global_font_title), stringResource(R.string.settings_global_font_keywords), onNavigateToGlobalFont),
-        SearchableSetting(stringResource(R.string.settings_album_art_title), stringResource(R.string.settings_album_art_keywords), onNavigateToAlbumArt),
-        SearchableSetting(stringResource(R.string.settings_webdav_backup_title), stringResource(R.string.settings_webdav_backup_keywords), onWebDavBackup),
-        SearchableSetting(stringResource(R.string.settings_about_raws_music_title), stringResource(R.string.settings_about_keywords), onNavigateToAbout),
-        SearchableSetting(stringResource(R.string.settings_scan_settings_title), stringResource(R.string.settings_scan_settings_keywords), onNavigateToScanSettings)
+    // Root sections and search use the same model. This prevents entries from
+    // being searchable but missing from the normal list (or the reverse).
+    val sections = listOf(
+        SettingsRootSection(
+            title = stringResource(R.string.settings_section_playback_audio),
+            items = listOf(
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_audio_quality_title),
+                    summary = stringResource(R.string.settings_audio_quality_summary),
+                    keywords = stringResource(R.string.settings_audio_quality_keywords),
+                    onClick = onNavigateToAudioSettings
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_transition_title),
+                    summary = stringResource(R.string.settings_transition_summary),
+                    keywords = stringResource(R.string.settings_transition_keywords),
+                    onClick = onNavigateToTransitionSettings
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_audio_effects_title),
+                    summary = stringResource(R.string.settings_audio_effects_summary),
+                    keywords = stringResource(R.string.settings_audio_effects_keywords),
+                    onClick = onNavigateToAudioEffects
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_usb_dac_title),
+                    summary = stringResource(R.string.settings_usb_dac_summary),
+                    keywords = stringResource(R.string.settings_usb_dac_keywords),
+                    onClick = onNavigateToUsbDac
+                )
+            )
+        ),
+        SettingsRootSection(
+            title = stringResource(R.string.settings_section_interface_display),
+            items = listOf(
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_appearance_title),
+                    summary = stringResource(R.string.settings_appearance_summary),
+                    keywords = stringResource(R.string.settings_appearance_keywords),
+                    onClick = onNavigateToAppearance
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_player_interface_title),
+                    summary = stringResource(R.string.settings_player_interface_summary),
+                    keywords = stringResource(R.string.settings_player_interface_keywords),
+                    onClick = onNavigateToPlayerInterface
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_album_art_title),
+                    summary = stringResource(R.string.settings_album_art_summary),
+                    keywords = stringResource(R.string.settings_album_art_keywords),
+                    onClick = onNavigateToAlbumArt
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_global_font_title),
+                    summary = stringResource(R.string.settings_global_font_summary),
+                    keywords = stringResource(R.string.settings_global_font_keywords),
+                    onClick = onNavigateToGlobalFont
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_personalization_title),
+                    summary = stringResource(R.string.settings_personalization_summary),
+                    keywords = stringResource(R.string.settings_personalization_keywords),
+                    onClick = onNavigateToPersonalization
+                )
+            )
+        ),
+        SettingsRootSection(
+            title = stringResource(R.string.settings_section_lyrics_extensions),
+            items = listOf(
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_lyric_management_title),
+                    summary = stringResource(R.string.settings_lyric_management_summary),
+                    keywords = stringResource(R.string.settings_lyric_management_keywords),
+                    onClick = onNavigateToLyricManagement
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_lyric_font_title),
+                    summary = stringResource(R.string.settings_lyric_font_summary),
+                    keywords = stringResource(R.string.settings_lyric_font_keywords),
+                    onClick = onNavigateToLyricFont
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_status_bar_lyric_title),
+                    summary = stringResource(R.string.settings_status_bar_lyric_summary),
+                    keywords = stringResource(R.string.settings_status_bar_lyric_keywords),
+                    onClick = onNavigateToStatusBarLyric
+                )
+            )
+        ),
+        SettingsRootSection(
+            title = stringResource(R.string.settings_section_library_data),
+            items = listOf(
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_scan_settings_title),
+                    summary = stringResource(R.string.settings_scan_settings_summary),
+                    keywords = stringResource(R.string.settings_scan_settings_keywords),
+                    onClick = onNavigateToScanSettings
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_webdav_backup_title),
+                    summary = stringResource(R.string.settings_webdav_backup_summary),
+                    keywords = stringResource(R.string.settings_webdav_backup_keywords),
+                    onClick = onWebDavBackup
+                )
+            )
+        ),
+        SettingsRootSection(
+            title = stringResource(R.string.settings_section_help_diagnostics),
+            items = listOf(
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_log_viewer_title),
+                    summary = stringResource(R.string.settings_log_viewer_summary),
+                    keywords = stringResource(R.string.settings_log_viewer_keywords),
+                    onClick = onNavigateToLogViewer
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_about_raws_music_title),
+                    summary = stringResource(R.string.settings_about_raws_music_summary),
+                    keywords = stringResource(R.string.settings_about_keywords),
+                    onClick = onNavigateToAbout
+                )
+            )
+        )
     )
 
-    val filteredItems = if (searchQuery.isBlank()) emptyList()
-    else searchableItems.filter { item ->
-        item.title.contains(searchQuery, ignoreCase = true) ||
-                item.keywords.contains(searchQuery, ignoreCase = true)
+    val filteredItems = if (searchQuery.isBlank()) {
+        emptyList()
+    } else {
+        sections.flatMap { section ->
+            section.items.map { item -> SearchableSetting(section.title, item) }
+        }.filter { result ->
+            result.sectionTitle.contains(searchQuery, ignoreCase = true) ||
+                result.item.title.contains(searchQuery, ignoreCase = true) ||
+                result.item.summary.contains(searchQuery, ignoreCase = true) ||
+                result.item.keywords.contains(searchQuery, ignoreCase = true)
+        }
     }
 
     Column(
@@ -228,7 +353,6 @@ fun LiquidGlassSettingsScreen(
             navigationIcon = {}
         )
 
-        // 搜索框
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -243,7 +367,6 @@ fun LiquidGlassSettingsScreen(
         }
 
         if (searchQuery.isNotBlank() && filteredItems.isNotEmpty()) {
-            // 搜索结果
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -253,13 +376,13 @@ fun LiquidGlassSettingsScreen(
                 SmallTitle(text = stringResource(R.string.settings_search_results))
                 SettingsCardGroup {
                     Column {
-                        filteredItems.forEach { item ->
+                        filteredItems.forEach { result ->
                             ArrowPreference(
-                                title = item.title,
-                                summary = stringResource(R.string.settings_search_open),
+                                title = result.item.title,
+                                summary = "${result.sectionTitle} · ${result.item.summary}",
                                 onClick = {
                                     searchQuery = ""
-                                    item.onClick()
+                                    result.item.onClick()
                                 }
                             )
                         }
@@ -267,8 +390,7 @@ fun LiquidGlassSettingsScreen(
                 }
                 Spacer(modifier = Modifier.height(16.dp))
             }
-        } else if (searchQuery.isNotBlank() && filteredItems.isEmpty()) {
-            // 无结果
+        } else if (searchQuery.isNotBlank()) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
@@ -280,7 +402,6 @@ fun LiquidGlassSettingsScreen(
                 )
             }
         } else {
-            // 正常设置列表
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -288,119 +409,41 @@ fun LiquidGlassSettingsScreen(
                     .padding(horizontal = 12.dp)
             ) {
                 Spacer(modifier = Modifier.height(8.dp))
-
-            SmallTitle(text = stringResource(R.string.settings_section_audio_output))
-
-            SettingsCardGroup {
-                Column {
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_audio_quality_title),
-                        summary = stringResource(R.string.settings_audio_quality_summary),
-                        onClick = onNavigateToAudioSettings
-                    )
-                    ArrowPreference(
-                        title = "USB DAC",
-                        summary = stringResource(R.string.settings_usb_dac_summary),
-                        onClick = onNavigateToUsbDac
-                    )
+                sections.forEach { section ->
+                    SmallTitle(text = section.title)
+                    SettingsCardGroup {
+                        Column {
+                            section.items.forEach { item ->
+                                ArrowPreference(
+                                    title = item.title,
+                                    summary = item.summary,
+                                    onClick = item.onClick
+                                )
+                            }
+                        }
+                    }
                 }
-            }
-
-            SmallTitle(text = stringResource(R.string.settings_section_playback_ui))
-
-            SettingsCardGroup {
-                Column {
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_player_interface_title),
-                        summary = stringResource(R.string.settings_player_interface_summary),
-                        onClick = onNavigateToPlayerInterface
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_album_art_title),
-                        summary = stringResource(R.string.settings_album_art_summary),
-                        onClick = onNavigateToAlbumArt
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_appearance_title),
-                        summary = stringResource(R.string.settings_appearance_summary),
-                        onClick = onNavigateToAppearance
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_personalization_title),
-                        summary = stringResource(R.string.settings_personalization_summary),
-                        onClick = onNavigateToPersonalization
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_global_font_title),
-                        summary = stringResource(R.string.settings_global_font_summary),
-                        onClick = onNavigateToGlobalFont
-                    )
-                }
-            }
-
-            SmallTitle(text = stringResource(R.string.settings_section_lyrics))
-
-            SettingsCardGroup {
-                Column {
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_lyric_management_title),
-                        summary = stringResource(R.string.settings_lyric_management_summary),
-                        onClick = onNavigateToLyricManagement
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_status_bar_lyric_title),
-                        summary = stringResource(R.string.settings_status_bar_lyric_summary),
-                        onClick = onNavigateToStatusBarLyric
-                    )
-                }
-            }
-
-            SmallTitle(text = stringResource(R.string.settings_section_media_library))
-
-            SettingsCardGroup {
-                Column {
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_scan_settings_title),
-                        summary = stringResource(R.string.settings_scan_settings_summary),
-                        onClick = onNavigateToScanSettings
-                    )
-                }
-            }
-
-            SmallTitle(text = stringResource(R.string.settings_section_data))
-
-            SettingsCardGroup {
-                Column {
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_webdav_backup_title),
-                        summary = stringResource(R.string.settings_webdav_backup_summary),
-                        onClick = onWebDavBackup
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            SettingsCardGroup {
-                Column {
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_about_raws_music_title),
-                        summary = stringResource(R.string.settings_about_raws_music_summary),
-                        onClick = onNavigateToAbout
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(180.dp))
+                Spacer(modifier = Modifier.height(180.dp))
             }
         }
     }
 }
 
-private data class SearchableSetting(
+private data class SettingsRootSection(
     val title: String,
+    val items: List<SettingsRootItem>
+)
+
+private data class SettingsRootItem(
+    val title: String,
+    val summary: String,
     val keywords: String,
     val onClick: () -> Unit
+)
+
+private data class SearchableSetting(
+    val sectionTitle: String,
+    val item: SettingsRootItem
 )
 
 @Composable
@@ -501,6 +544,60 @@ internal fun SettingsCard(
         content = content
     )
     Spacer(modifier = Modifier.height(12.dp))
+}
+
+@Composable
+internal fun ExpandableEffectContent(
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    var expanded by rememberSaveable { mutableStateOf(enabled) }
+    var previousEnabled by rememberSaveable { mutableStateOf(enabled) }
+
+    LaunchedEffect(enabled) {
+        if (enabled && !previousEnabled) {
+            expanded = true
+        } else if (!enabled) {
+            expanded = false
+        }
+        previousEnabled = enabled
+    }
+
+    AnimatedVisibility(
+        visible = enabled,
+        enter = fadeIn(),
+        exit = fadeOut()
+    ) {
+        Column(modifier = modifier.fillMaxWidth()) {
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    content = content
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(
+                    text = stringResource(
+                        if (expanded) R.string.settings_effect_card_collapse
+                        else R.string.settings_effect_card_expand
+                    ),
+                    onClick = { expanded = !expanded }
+                )
+            }
+        }
+    }
 }
 
 @Composable

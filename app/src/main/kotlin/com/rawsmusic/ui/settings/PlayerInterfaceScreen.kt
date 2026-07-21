@@ -1,5 +1,10 @@
 package com.rawsmusic.ui.settings
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -7,6 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.rawsmusic.module.data.prefs.AppPreferences
 import androidx.compose.ui.res.stringResource
+import androidx.core.content.ContextCompat
 import com.rawsmusic.R
 
 @Composable
@@ -20,6 +26,22 @@ fun LiquidGlassPlayerInterfaceScreen(
     var audioVisualizerEnabled by remember { mutableStateOf(AppPreferences.UI.isAudioVisualizerEnabled) }
     var miniCoverEnabled by remember { mutableStateOf(AppPreferences.UI.isMiniCoverEnabled) }
     var playPageMemoryEnabled by remember { mutableStateOf(AppPreferences.UI.isPlayPageMemoryEnabled) }
+    fun persistAudioVisualizer(enabled: Boolean) {
+        audioVisualizerEnabled = enabled
+        AppPreferences.UI.isAudioVisualizerEnabled = enabled
+        android.content.Intent("com.rawsmusic.action.AUDIO_VISUALIZER_SETTING_CHANGED").also {
+            it.setPackage(context.packageName)
+            context.sendBroadcast(it)
+        }
+    }
+    val visualizerPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        persistAudioVisualizer(granted)
+        if (!granted) {
+            Toast.makeText(context, R.string.permission_denied, Toast.LENGTH_SHORT).show()
+        }
+    }
 
     SettingsPage(title = stringResource(R.string.settings_player_interface_title), onBack = onBack) {
         SettingsSection(stringResource(R.string.settings_player_bg_section)) {
@@ -51,11 +73,14 @@ fun LiquidGlassPlayerInterfaceScreen(
                 description = stringResource(R.string.settings_player_immersive_desc)
             )
             SwitchRow(stringResource(R.string.settings_player_visualizer), audioVisualizerEnabled) { checked ->
-                audioVisualizerEnabled = checked
-                AppPreferences.UI.isAudioVisualizerEnabled = checked
-                android.content.Intent("com.rawsmusic.action.AUDIO_VISUALIZER_SETTING_CHANGED").also {
-                    it.setPackage(context.packageName)
-                    context.sendBroadcast(it)
+                if (checked && ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    visualizerPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                } else {
+                    persistAudioVisualizer(checked)
                 }
             }
             SettingsInfoEntry(
