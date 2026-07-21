@@ -1,12 +1,14 @@
 package com.rawsmusic.module.scanner.parser
 
 import android.util.Log
+import android.util.Base64
 import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.common.model.LyricLine
 import com.rawsmusic.core.common.model.LyricWord
 import com.rawsmusic.module.scanner.parser.LyricParserBase.applyWordSpacing
 import java.io.ByteArrayOutputStream
 import java.util.zip.Inflater
+import org.json.JSONObject
 
 object KrcParser {
 
@@ -40,7 +42,7 @@ object KrcParser {
             decompressor.end()
             val decompressed = output.toString("UTF-8")
 
-            parseKrcText(decompressed)
+            LyricTextNormalizer.normalize(parseKrcText(decompressed))
         } catch (e: Exception) {
             Log.e(TAG, "KRC decompression failed", e)
             LyricData()
@@ -53,6 +55,9 @@ object KrcParser {
 
         var offset = 0L
         val result = mutableListOf<LyricLine>()
+        val metadata = decodeLanguageMetadata(
+            lines.firstOrNull { it.trimStart().startsWith("[language:", ignoreCase = true) }
+        )
 
         for (line in lines) {
             val trimmed = line.trim()
@@ -101,7 +106,69 @@ object KrcParser {
             ))
         }
 
-        Log.d(TAG, "KRC: ${result.size} lines, offset=$offset")
-        return LyricData(lines = result, offset = offset)
+        val enriched = result.mapIndexed { index, line ->
+            line.copy(
+                translation = metadata.translations.getOrNull(index).orEmpty(),
+                romanization = metadata.phonetics.getOrNull(index)
+                    ?.filter { it.isNotBlank() }
+                    ?.joinToString(" ")
+                    .orEmpty()
+            )
+        }
+        Log.d(
+            TAG,
+            "KRC: ${enriched.size} lines, offset=$offset, " +
+                "translations=${metadata.translations.size}, phonetics=${metadata.phonetics.size}"
+        )
+        return LyricData(lines = enriched, offset = offset)
+    }
+
+    private data class LanguageMetadata(
+        val translations: List<String> = emptyList(),
+        val phonetics: List<List<String>> = emptyList()
+    )
+
+    private fun decodeLanguageMetadata(header: String?): LanguageMetadata {
+        if (header.isNullOrBlank()) return LanguageMetadata()
+        return runCatching {
+            val encoded = header.substringAfter(':').substringBeforeLast(']').trim()
+            if (encoded.isEmpty()) return@runCatching LanguageMetadata()
+            val root = JSONObject(String(Base64.decode(encoded, Base64.DEFAULT), Charsets.UTF_8))
+            val content = root.optJSONArray("content") ?: return@runCatching LanguageMetadata()
+            val translations = mutableListOf<String>()
+            val phonetics = mutableListOf<List<String>>()
+            for (index in 0 until content.length()) {
+                val block = content.optJSONObject(index) ?: continue
+                val rows = block.optJSONArray("lyricContent") ?: continue
+                when (block.optInt("type", -1)) {
+                    1 -> for (rowIndex in 0 until rows.length()) {
+                        val row = rows.optJSONArray(rowIndex) ?: continue
+                        translations += buildString {
+                            for (partIndex in 0 until row.length()) append(row.optString(partIndex))
+                        }
+                    }
+                    0 -> for (rowIndex in 0 until rows.length()) {
+                        val row = rows.optJSONArray(rowIndex) ?: continue
+                        val linePhonetics = mutableListOf<String>()
+                        for (partIndex in 0 until row.length()) {
+                            val syllable = row.optJSONArray(partIndex)
+                            if (syllable != null) {
+                                linePhonetics.add(buildString {
+                                    for (valueIndex in 0 until syllable.length()) {
+                                        append(syllable.optString(valueIndex))
+                                    }
+                                })
+                            } else {
+                                linePhonetics.add(row.optString(partIndex))
+                            }
+                        }
+                        phonetics.add(linePhonetics)
+                    }
+                }
+            }
+            LanguageMetadata(translations = translations, phonetics = phonetics)
+        }.onFailure { error ->
+            Log.w(TAG, "Unable to decode KRC language metadata", error)
+        }.getOrDefault(LanguageMetadata())
     }
 }

@@ -7,6 +7,7 @@ import com.rawsmusic.core.common.model.LyricLine
 import com.rawsmusic.core.common.model.LyricWord
 import com.rawsmusic.module.scanner.parser.KrcParser
 import com.rawsmusic.module.scanner.parser.RawSLyricsParser
+import com.rawsmusic.module.scanner.parser.LyricTextNormalizer
 import java.io.File
 import java.io.FileInputStream
 import java.nio.ByteBuffer
@@ -21,6 +22,8 @@ object LyricReader {
     private const val CUE_BOUNDARY_TOLERANCE_MS = 600L
 
     fun readLyrics(song: AudioFile): LyricData {
+        val rawSOverride = readRawSOverride(song)
+        if (!rawSOverride.isEmpty) return rawSOverride
         if (!song.isCueTrack()) return readLyrics(song.path)
 
         val trackSpecific = readCueTrackSpecificLyrics(song)
@@ -45,7 +48,36 @@ object LyricReader {
     fun readLyrics(songPath: String): LyricData {
         val songName = File(songPath).name
         Log.d(TAG, "readLyrics: $songName")
+        val rawSOverride = readRawSOverride(songPath)
+        if (!rawSOverride.isEmpty) return rawSOverride
         return readAlbumLevelLyrics(songPath)
+    }
+
+    private fun readRawSOverride(song: AudioFile): LyricData {
+        val audio = File(song.path)
+        val suffixes = buildList {
+            if (song.isCueTrack()) add(".track${song.cueTrackIndex}.raws.ttml")
+            add(".raws.ttml")
+        }
+        return readRawSOverride(audio, suffixes)
+    }
+
+    private fun readRawSOverride(songPath: String): LyricData =
+        readRawSOverride(File(songPath), listOf(".raws.ttml"))
+
+    private fun readRawSOverride(audio: File, suffixes: List<String>): LyricData {
+        val parent = audio.parentFile ?: return LyricData()
+        suffixes.forEach { suffix ->
+            val file = File(parent, audio.nameWithoutExtension + suffix)
+            if (file.isFile) {
+                val parsed = readTextAndParse(file) { RawSLyricsParser.parse(it) }
+                if (!parsed.isEmpty) {
+                    Log.i(TAG, "LYRIC_TRACE raws_override file=${file.name} lines=${parsed.lines.size}")
+                    return parsed
+                }
+            }
+        }
+        return LyricData()
     }
 
     private fun readAlbumLevelLyrics(songPath: String): LyricData {
@@ -60,7 +92,7 @@ object LyricReader {
         for (finder in fileFinders) {
             val file = findLyricFile(songPath, finder.extensions)
             if (file != null) {
-                val parsed = finder.parse(file)
+                val parsed = LyricTextNormalizer.normalize(finder.parse(file))
                 if (!parsed.isEmpty) {
                     Log.d(TAG, "  ${finder.name}: ${parsed.lines.size} lines from ${file.name}")
                     return parsed
@@ -81,7 +113,7 @@ object LyricReader {
         for (finder in fileFinders) {
             val file = findLyricFileByBaseNames(dir, candidates, finder.extensions)
             if (file != null) {
-                val parsed = finder.parse(file)
+                val parsed = LyricTextNormalizer.normalize(finder.parse(file))
                 if (!parsed.isEmpty) {
                     Log.d(TAG, "  cue ${finder.name}: ${parsed.lines.size} lines from ${file.name}")
                     return parsed
