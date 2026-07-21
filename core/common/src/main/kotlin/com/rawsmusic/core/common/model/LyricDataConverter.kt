@@ -85,7 +85,8 @@ fun LyricData.toLyriconSong(
             secondary = line.backgroundText?.takeIf { it.isNotBlank() },
             secondaryWords = bgWords,
             translation = line.translation.ifBlank { null },
-            roma = line.romanization.ifBlank { null }
+            roma = line.romanization.ifBlank { null },
+            backgroundTranslation = line.backgroundTranslation?.takeIf { it.isNotBlank() }
         )
     }
 

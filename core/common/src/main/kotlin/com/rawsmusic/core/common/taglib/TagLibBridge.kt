@@ -68,6 +68,28 @@ object TagLibBridge {
         }
     }
 
+    /** Replaces the front cover while preserving all other tags and audio frames. */
+    fun writeEmbeddedArtwork(filePath: String, artworkPath: String, mimeType: String): Boolean {
+        if (!loaded || filePath.isBlank() || artworkPath.isBlank() || mimeType.isBlank()) return false
+        return try {
+            nativeWriteEmbeddedArtwork(filePath, artworkPath, mimeType)
+        } catch (e: Throwable) {
+            Log.e(TAG, "writeEmbeddedArtwork failed for $filePath", e)
+            false
+        }
+    }
+
+    /** Writes tags without remuxing or touching the encoded audio frames. */
+    fun writeMetadata(filePath: String, metadata: Map<String, String>): Boolean {
+        if (!loaded || filePath.isBlank()) return false
+        return try {
+            nativeWriteMetadata(filePath, metadata.keys.toTypedArray(), metadata.values.toTypedArray())
+        } catch (e: Throwable) {
+            Log.e(TAG, "writeMetadata failed for $filePath", e)
+            false
+        }
+    }
+
     // 兼容旧接口
     fun isWavFile(filePath: String): Boolean {
         if (!loaded) return false
@@ -79,4 +101,6 @@ object TagLibBridge {
     private external fun nativeReadMetadata(path: String): Map<String, String>?
     private external fun nativeIsSupported(path: String): Boolean
     private external fun nativeExtractEmbeddedArtworkToFile(path: String, outputPath: String): Boolean
+    private external fun nativeWriteEmbeddedArtwork(path: String, artworkPath: String, mimeType: String): Boolean
+    private external fun nativeWriteMetadata(path: String, keys: Array<String>, values: Array<String>): Boolean
 }

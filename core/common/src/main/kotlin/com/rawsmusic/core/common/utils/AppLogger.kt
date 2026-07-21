@@ -3,6 +3,7 @@ package com.rawsmusic.core.common.utils
 import android.util.Log
 import com.rawsmusic.core.common.CoreInit
 import java.io.File
+import java.io.BufferedWriter
 import java.io.FileWriter
 import java.io.PrintWriter
 import java.text.SimpleDateFormat
@@ -16,6 +17,8 @@ object AppLogger {
     private const val LOG_FILE = "rawsmusic.log"
     private const val PLAYBACK_REPORT_TAG = "PlaybackReport"
     private const val PLAYBACK_REPORT_START = "PLAYBACK_REPORT_START"
+    private const val LOG_BUFFER_SIZE = 16 * 1024
+    private const val FLUSH_INTERVAL_MS = 1_000L
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
     private val fileDateFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
@@ -24,7 +27,10 @@ object AppLogger {
     private var logFile: File? = null
 
     @Volatile
-    private var writer: FileWriter? = null
+    private var writer: BufferedWriter? = null
+
+    @Volatile
+    private var lastFlushAtMs = 0L
 
     private val lock = Any()
 
@@ -34,7 +40,8 @@ object AppLogger {
             val logDir = File(context.filesDir, LOG_DIR)
             if (!logDir.exists()) logDir.mkdirs()
             logFile = File(logDir, LOG_FILE)
-            writer = FileWriter(logFile, true)
+            writer = newWriter(logFile)
+            lastFlushAtMs = android.os.SystemClock.elapsedRealtime()
             trimLogFile()
         } catch (_: Exception) {}
     }
@@ -60,10 +67,14 @@ object AppLogger {
     }
 
     fun getLogContent(): String? {
-        return try {
-            logFile?.readText()
-        } catch (_: Exception) {
-            null
+        return synchronized(lock) {
+            try {
+                writer?.flush()
+                lastFlushAtMs = android.os.SystemClock.elapsedRealtime()
+                logFile?.readText()
+            } catch (_: Exception) {
+                null
+            }
         }
     }
 
@@ -75,7 +86,8 @@ object AppLogger {
                 writer?.close()
                 writer = null
                 logFile?.writeText("")
-                writer = FileWriter(logFile, true)
+                writer = newWriter(logFile)
+                lastFlushAtMs = android.os.SystemClock.elapsedRealtime()
             } catch (_: Exception) {}
         }
     }
@@ -124,8 +136,12 @@ object AppLogger {
                     pw.flush()
                     w.append("\n")
                 }
-                w.flush()
-                trimLogFile()
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (level == "E" || level == "W" || now - lastFlushAtMs >= FLUSH_INTERVAL_MS) {
+                    w.flush()
+                    lastFlushAtMs = now
+                    trimLogFile()
+                }
             } catch (_: Exception) {}
         }
     }
@@ -141,9 +157,14 @@ object AppLogger {
                 val cutIndex = content.indexOf('\n', content.length - keepLength)
                 val trimmed = if (cutIndex >= 0) content.substring(cutIndex + 1) else content
                 file.writeText(trimmed)
-                writer = FileWriter(file, true)
+                writer = newWriter(file)
+                lastFlushAtMs = android.os.SystemClock.elapsedRealtime()
             }
         } catch (_: Exception) {}
+    }
+
+    private fun newWriter(file: File?): BufferedWriter? {
+        return file?.let { BufferedWriter(FileWriter(it, true), LOG_BUFFER_SIZE) }
     }
 
     fun generateExportFileName(): String {

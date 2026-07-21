@@ -32,6 +32,10 @@ object RawWaveformCache {
     private val mutex = Mutex()
     private val memoryCache = ConcurrentHashMap<String, FloatArray>()
 
+    fun clearMemory() {
+        memoryCache.clear()
+    }
+
     fun placeholder(sampleCount: Int = DEFAULT_SAMPLE_COUNT, style: Int = 0): FloatArray {
         val count = sampleCount.coerceIn(32, MAX_SAMPLE_COUNT)
         val level = if (style == 1) 0.035f else 0.055f
