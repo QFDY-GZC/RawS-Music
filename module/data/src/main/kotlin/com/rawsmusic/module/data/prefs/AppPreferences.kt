@@ -15,6 +15,11 @@ object AppPreferences {
     val storage: MMKV get() = kv
     private val gson = Gson()
 
+    /** Flush pending mmap writes before the process is intentionally terminated. */
+    fun sync() {
+        kv.sync()
+    }
+
     object Player {
         var lastSongId: Long
             get() = kv.decodeLong("player_last_song_id", -1)
@@ -116,6 +121,44 @@ object AppPreferences {
         var crossfadeDuration: Int
             get() = kv.decodeInt("player_crossfade", 0)
             set(value) { kv.encode("player_crossfade", value) }
+
+        /** Android 系统 Spatializer 委托；仅普通 Android AudioTrack/AAudio 输出生效。 */
+        var androidSpatialAudioEnabled: Boolean
+            get() = kv.decodeBool("player_android_spatial_audio_enabled", false)
+            set(value) { kv.encode("player_android_spatial_audio_enabled", value) }
+
+        /** RawSMusic 自有双耳空间渲染；仅普通 Android 输出生效，USB 独占始终旁路。 */
+        var androidBinauralSpatialEnabled: Boolean
+            get() = kv.decodeBool("player_android_binaural_spatial_enabled", false)
+            set(value) { kv.encode("player_android_binaural_spatial_enabled", value) }
+
+        var androidBinauralSpatialIntensity: Int
+            get() = kv.decodeInt("player_android_binaural_spatial_intensity", 55).coerceIn(0, 100)
+            set(value) { kv.encode("player_android_binaural_spatial_intensity", value.coerceIn(0, 100)) }
+
+        var androidBinauralSpatialRoom: Int
+            get() = kv.decodeInt("player_android_binaural_spatial_room", 18).coerceIn(0, 100)
+            set(value) { kv.encode("player_android_binaural_spatial_room", value.coerceIn(0, 100)) }
+
+        var androidBinauralBrirEnabled: Boolean
+            get() = kv.decodeBool("player_android_binaural_brir_enabled", true)
+            set(value) { kv.encode("player_android_binaural_brir_enabled", value) }
+
+        var androidBinauralSeparation: Int
+            get() = kv.decodeInt("player_android_binaural_separation", 72).coerceIn(0, 100)
+            set(value) { kv.encode("player_android_binaural_separation", value.coerceIn(0, 100)) }
+
+        var androidBinauralHeadSizeCentimeters: Int
+            get() = kv.decodeInt("player_android_binaural_head_size_cm", 57).coerceIn(48, 68)
+            set(value) { kv.encode("player_android_binaural_head_size_cm", value.coerceIn(48, 68)) }
+
+        var androidBinauralPinnaDetail: Int
+            get() = kv.decodeInt("player_android_binaural_pinna_detail", 55).coerceIn(0, 100)
+            set(value) { kv.encode("player_android_binaural_pinna_detail", value.coerceIn(0, 100)) }
+
+        var androidBinauralHeadTrackingEnabled: Boolean
+            get() = kv.decodeBool("player_android_binaural_head_tracking_enabled", false)
+            set(value) { kv.encode("player_android_binaural_head_tracking_enabled", value) }
 
         /** 音频输出模式：OpenSL ES / AAudio / Direct HiRes */
         var audioOutputMode: AudioOutputMode
@@ -455,7 +498,7 @@ object AppPreferences {
 
         /** 音频可视化：播放界面底部显示音频频谱动画 */
         var isAudioVisualizerEnabled: Boolean
-            get() = kv.decodeBool("ui_audio_visualizer_enabled", false)
+            get() = kv.decodeBool("ui_audio_visualizer_enabled", true)
             set(value) { kv.encode("ui_audio_visualizer_enabled", value) }
 
         /** 普通播放页专辑图切换动画：0=透视切换，1=内倾轮播，2=平移。 */
@@ -488,7 +531,17 @@ object AppPreferences {
             get() = kv.decodeBool("ui_lyric_highlight_all_enabled", false)
             set(value) { kv.encode("ui_lyric_highlight_all_enabled", value) }
 
-        /** 沉浸播放页进度条样式：0=普通，1=可视化波形，2=秒级柱状 */
+        /** 逐字歌词当前字词是否显示柔和发光。 */
+        var lyricKaraokeGlowEnabled: Boolean
+            get() = kv.decodeBool("ui_lyric_karaoke_glow_enabled", true)
+            set(value) { kv.encode("ui_lyric_karaoke_glow_enabled", value) }
+
+        /** 逐字歌词已播放字词是否使用轻微抬升。 */
+        var lyricKaraokeLiftEnabled: Boolean
+            get() = kv.decodeBool("ui_lyric_karaoke_lift_enabled", true)
+            set(value) { kv.encode("ui_lyric_karaoke_lift_enabled", value) }
+
+        /** 播放页进度条样式：0=普通，1=普通窗口级，2=秒级频谱 */
         var immersiveProgressStyle: Int
             get() = kv.decodeInt("ui_immersive_progress_style", 0)
             set(value) { kv.encode("ui_immersive_progress_style", value.coerceIn(0, 2)) }
@@ -776,45 +829,122 @@ object AppPreferences {
             set(value) { kv.encode("peq_band_count", value.coerceIn(10, 40)) }
     }
 
+    object GraphicEQ {
+        var isEnabled: Boolean
+            get() = kv.decodeBool("graphic_eq_enabled", false)
+            set(value) { kv.encode("graphic_eq_enabled", value) }
+
+        var preamp: Float
+            get() = kv.decodeFloat("graphic_eq_preamp", 0f).coerceIn(-12f, 12f)
+            set(value) { kv.encode("graphic_eq_preamp", value.coerceIn(-12f, 12f)) }
+
+        var bandCount: Int
+            get() = kv.decodeInt("graphic_eq_band_count", 10).coerceIn(10, 40)
+            set(value) { kv.encode("graphic_eq_band_count", value.coerceIn(10, 40)) }
+
+        var presetName: String
+            get() = kv.decodeString("graphic_eq_preset_name", "Normal") ?: "Normal"
+            set(value) { kv.encode("graphic_eq_preset_name", value) }
+
+        var gains: List<Float>
+            get() {
+                val json = kv.decodeString("graphic_eq_gains", "") ?: ""
+                if (json.isBlank()) return emptyList()
+                return runCatching {
+                    val type = object : TypeToken<List<Float>>() {}.type
+                    gson.fromJson<List<Float>>(json, type)
+                }.getOrDefault(emptyList())
+            }
+            set(value) { kv.encode("graphic_eq_gains", gson.toJson(value)) }
+    }
+
+    object ExperimentalGain {
+        var isEnabled: Boolean
+            get() = kv.decodeBool("experimental_gain_enabled", false)
+            set(value) { kv.encode("experimental_gain_enabled", value) }
+
+        var gainDb: Float
+            get() = kv.decodeFloat("experimental_gain_db", 0f).coerceIn(0f, 30f)
+            set(value) { kv.encode("experimental_gain_db", value.coerceIn(0f, 30f)) }
+    }
+
+    object LoudnessBalance {
+        var isEnabled: Boolean
+            get() = kv.decodeBool("loudness_balance_enabled", false)
+            set(value) { kv.encode("loudness_balance_enabled", value) }
+
+        var loudnessPercent: Float
+            get() = kv.decodeFloat("loudness_balance_amount", 35f).coerceIn(0f, 100f)
+            set(value) { kv.encode("loudness_balance_amount", value.coerceIn(0f, 100f)) }
+
+        var balance: Float
+            get() = kv.decodeFloat("loudness_balance_position", 0f).coerceIn(-1f, 1f)
+            set(value) { kv.encode("loudness_balance_position", value.coerceIn(-1f, 1f)) }
+    }
+
+    object MonoBass {
+        var isEnabled: Boolean
+            get() = kv.decodeBool("mono_bass_enabled", false)
+            set(value) { kv.encode("mono_bass_enabled", value) }
+
+        var crossoverHz: Float
+            get() = kv.decodeFloat("mono_bass_crossover", 160f).coerceIn(60f, 300f)
+            set(value) { kv.encode("mono_bass_crossover", value.coerceIn(60f, 300f)) }
+
+        var amountPercent: Float
+            get() = kv.decodeFloat("mono_bass_amount", 70f).coerceIn(0f, 100f)
+            set(value) { kv.encode("mono_bass_amount", value.coerceIn(0f, 100f)) }
+    }
+
+    object DynamicEq {
+        var isEnabled: Boolean
+            get() = kv.decodeBool("dynamic_eq_enabled", false)
+            set(value) { kv.encode("dynamic_eq_enabled", value) }
+
+        var intensityPercent: Float
+            get() = kv.decodeFloat("dynamic_eq_intensity", 50f).coerceIn(0f, 100f)
+            set(value) { kv.encode("dynamic_eq_intensity", value.coerceIn(0f, 100f)) }
+
+        var deEsserPercent: Float
+            get() = kv.decodeFloat("dynamic_eq_deesser", 45f).coerceIn(0f, 100f)
+            set(value) { kv.encode("dynamic_eq_deesser", value.coerceIn(0f, 100f)) }
+
+        var deEsserFrequencyHz: Float
+            get() = kv.decodeFloat("dynamic_eq_deesser_frequency", 6500f).coerceIn(4000f, 10000f)
+            set(value) { kv.encode("dynamic_eq_deesser_frequency", value.coerceIn(4000f, 10000f)) }
+    }
+
+    object MoogLadder {
+        var isEnabled: Boolean
+            get() = kv.decodeBool("moog_ladder_enabled", false)
+            set(value) { kv.encode("moog_ladder_enabled", value) }
+
+        var mode: Int
+            get() = kv.decodeInt("moog_ladder_mode", 0).coerceIn(0, 4)
+            set(value) { kv.encode("moog_ladder_mode", value.coerceIn(0, 4)) }
+
+        var cutoffHz: Float
+            get() = kv.decodeFloat("moog_ladder_cutoff", 12000f).coerceIn(20f, 20000f)
+            set(value) { kv.encode("moog_ladder_cutoff", value.coerceIn(20f, 20000f)) }
+
+        var resonancePercent: Float
+            get() = kv.decodeFloat("moog_ladder_resonance", 20f).coerceIn(0f, 100f)
+            set(value) { kv.encode("moog_ladder_resonance", value.coerceIn(0f, 100f)) }
+
+        var driveDb: Float
+            get() = kv.decodeFloat("moog_ladder_drive", 0f).coerceIn(0f, 18f)
+            set(value) { kv.encode("moog_ladder_drive", value.coerceIn(0f, 18f)) }
+
+        var mixPercent: Float
+            get() = kv.decodeFloat("moog_ladder_mix", 100f).coerceIn(0f, 100f)
+            set(value) { kv.encode("moog_ladder_mix", value.coerceIn(0f, 100f)) }
+    }
+
     object Compressor {
         var isEnabled: Boolean
-            get() = kv.decodeBool("compressor_enabled", false)
+            get() = kv.decodeBool("compressor_enabled", true)
             set(value) { kv.encode("compressor_enabled", value) }
 
-        /** 阈值 (dB)，范围 -60 ~ 0 */
-        var thresholdDB: Float
-            get() = kv.decodeFloat("compressor_threshold", -20f)
-            set(value) { kv.encode("compressor_threshold", value.coerceIn(-60f, 0f)) }
-
-        /** 压缩比，范围 1 ~ 20 */
-        var ratio: Float
-            get() = kv.decodeFloat("compressor_ratio", 4f)
-            set(value) { kv.encode("compressor_ratio", value.coerceIn(1f, 20f)) }
-
-        /** 启动时间 (ms)，范围 0.1 ~ 100 */
-        var attackMs: Float
-            get() = kv.decodeFloat("compressor_attack", 10f)
-            set(value) { kv.encode("compressor_attack", value.coerceIn(0.1f, 100f)) }
-
-        /** 释放时间 (ms)，范围 10 ~ 1000 */
-        var releaseMs: Float
-            get() = kv.decodeFloat("compressor_release", 200f)
-            set(value) { kv.encode("compressor_release", value.coerceIn(10f, 1000f)) }
-
-        /** 补偿增益 (dB)，范围 0 ~ 24 */
-        var makeupGainDB: Float
-            get() = kv.decodeFloat("compressor_makeup", 0f)
-            set(value) { kv.encode("compressor_makeup", value.coerceIn(0f, 24f)) }
-
-        /** 拐点宽度 (dB)，范围 0 ~ 30 */
-        var kneeWidthDB: Float
-            get() = kv.decodeFloat("compressor_knee", 6f)
-            set(value) { kv.encode("compressor_knee", value.coerceIn(0f, 30f)) }
-
-        /** 检测模式: 0=Peak, 1=RMS */
-        var detectionMode: Int
-            get() = kv.decodeInt("compressor_detection", 1)
-            set(value) { kv.encode("compressor_detection", value.coerceIn(0, 1)) }
     }
 
     object BassBoost {
