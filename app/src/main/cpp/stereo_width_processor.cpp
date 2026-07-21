@@ -8,7 +8,7 @@ constexpr float kPeakCeiling = 0.999f;
 constexpr float kAmountIdleThreshold = 1.0e-5f;
 constexpr float kGainIdleThreshold = 1.0e-5f;
 
-// Poweramp's decompiled linked limiter changes gain by approximately 1/128
+// The linked limiter changes gain by approximately 1/128
 // on attack and 1/8192 on release at 48 kHz. These time constants preserve
 // that behavior across sample rates.
 constexpr float kLimiterAttackSeconds = 128.0f / 48000.0f;
@@ -117,7 +117,7 @@ void StereoWidthProcessor::process(
         const float left = sanitize(samples[offset]);
         const float right = sanitize(samples[offset + 1]);
 
-        // Poweramp-style continuous StereoX matrix. The Mid component is
+        // Continuous stereo-width matrix. The Mid component is
         // unchanged before linked peak control; only Side is multiplied.
         const float difference = left - right;
         const float expandedLeft = left + currentAmount_ * difference;

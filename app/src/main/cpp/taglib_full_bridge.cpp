@@ -15,6 +15,7 @@
 #include <cctype>
 #include <fstream>
 #include <cstdio>
+#include <algorithm>
 
 // TagLib headers - 按格式专用
 #include "mpegfile.h"
@@ -40,6 +41,7 @@
 #include "tag.h"
 #include "audioproperties.h"
 #include "tstring.h"
+#include "tpropertymap.h"
 
 #define LOG_TAG "TagLibFull"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
@@ -93,6 +95,87 @@ static void readAudioProps(TagLib::AudioProperties *props, std::map<std::string,
     if (props->lengthInMilliseconds() > 0) result["duration_ms"] = std::to_string(props->lengthInMilliseconds());
 }
 
+static void replaceProperty(TagLib::PropertyMap &properties, const char *name,
+                            const std::map<std::string, std::string> &metadata,
+                            const char *sourceName) {
+    const auto value = metadata.find(sourceName);
+    if (value == metadata.end()) return;
+    const TagLib::String key(name, TagLib::String::UTF8);
+    if (value->second.empty()) {
+        properties.erase(key);
+    } else {
+        properties.replace(key, TagLib::StringList(
+            TagLib::String(value->second, TagLib::String::UTF8)));
+    }
+}
+
+template <typename FileType>
+static bool writeMetadataToFile(FileType &file,
+                                const std::map<std::string, std::string> &metadata) {
+    if (!file.isValid()) return false;
+    TagLib::PropertyMap properties = file.properties();
+    replaceProperty(properties, "TITLE", metadata, "title");
+    replaceProperty(properties, "ARTIST", metadata, "artist");
+    replaceProperty(properties, "ALBUM", metadata, "album");
+    replaceProperty(properties, "ALBUMARTIST", metadata, "album_artist");
+    replaceProperty(properties, "GENRE", metadata, "genre");
+    replaceProperty(properties, "COMPOSER", metadata, "composer");
+    replaceProperty(properties, "DATE", metadata, "date");
+    replaceProperty(properties, "TRACKNUMBER", metadata, "track");
+    replaceProperty(properties, "DISCNUMBER", metadata, "disc");
+    replaceProperty(properties, "BPM", metadata, "bpm");
+    file.setProperties(properties);
+    return file.save();
+}
+
+static bool writeMetadata(const char *filePath,
+                          const std::map<std::string, std::string> &metadata) {
+    const std::string ext = getExtension(filePath);
+    if (ext == "mp3" || ext == "mp2" || ext == "mpga" || ext == "aac") {
+        TagLib::MPEG::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    if (ext == "flac") {
+        TagLib::FLAC::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    if (ext == "ogg") {
+        TagLib::Ogg::Vorbis::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    if (ext == "opus") {
+        TagLib::Ogg::Opus::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    if (ext == "m4a" || ext == "m4b" || ext == "m4p" || ext == "mp4") {
+        TagLib::MP4::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    if (ext == "wma" || ext == "asf") {
+        TagLib::ASF::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    if (ext == "ape") {
+        TagLib::APE::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    if (ext == "wav") {
+        TagLib::RIFF::WAV::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    if (ext == "aiff" || ext == "aif") {
+        TagLib::RIFF::AIFF::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    if (ext == "dsf") {
+        TagLib::DSF::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    if (ext == "dff" || ext == "dsdiff") {
+        TagLib::DSDIFF::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    if (ext == "wv") {
+        TagLib::WavPack::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    if (ext == "tta") {
+        TagLib::TrueAudio::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    if (ext == "mpc" || ext == "mp+") {
+        TagLib::MPC::File file(filePath, false); return writeMetadataToFile(file, metadata);
+    }
+    return false;
+}
+
 
 static bool writeByteVectorToFile(const TagLib::ByteVector &data, const char *outputPath) {
     if (outputPath == nullptr || data.size() <= 1024) return false;
@@ -117,6 +200,93 @@ static bool writeByteVectorToFile(const TagLib::ByteVector &data, const char *ou
         return false;
     }
     return true;
+}
+
+static TagLib::ByteVector readByteVectorFromFile(const char *path) {
+    if (path == nullptr) return TagLib::ByteVector();
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input.good()) return TagLib::ByteVector();
+    const auto size = input.tellg();
+    if (size <= 1024 || size > 20 * 1024 * 1024) return TagLib::ByteVector();
+    input.seekg(0, std::ios::beg);
+    TagLib::ByteVector data(static_cast<unsigned int>(size), 0);
+    input.read(data.data(), size);
+    return input.good() || input.eof() ? data : TagLib::ByteVector();
+}
+
+static bool replaceId3FrontCover(
+    TagLib::ID3v2::Tag *tag,
+    const TagLib::ByteVector &data,
+    const char *mimeType
+) {
+    if (!tag || data.isEmpty()) return false;
+    tag->removeFrames("APIC");
+    auto *picture = new TagLib::ID3v2::AttachedPictureFrame();
+    picture->setType(TagLib::ID3v2::AttachedPictureFrame::FrontCover);
+    picture->setMimeType(TagLib::String(mimeType, TagLib::String::UTF8));
+    picture->setDescription(TagLib::String("Front cover", TagLib::String::UTF8));
+    picture->setPicture(data);
+    tag->addFrame(picture);
+    return true;
+}
+
+static bool writeEmbeddedArtwork(
+    const char *filePath,
+    const char *artworkPath,
+    const char *mimeType
+) {
+    const auto data = readByteVectorFromFile(artworkPath);
+    if (data.isEmpty()) return false;
+    const std::string ext = getExtension(filePath);
+
+    if (ext == "mp3" || ext == "mp2" || ext == "mpga" || ext == "aac") {
+        TagLib::MPEG::File file(filePath, false);
+        if (!file.isValid() || !replaceId3FrontCover(file.ID3v2Tag(true), data, mimeType)) return false;
+        return file.save();
+    }
+
+    if (ext == "flac") {
+        TagLib::FLAC::File file(filePath, false);
+        if (!file.isValid()) return false;
+        file.removePictures();
+        auto *picture = new TagLib::FLAC::Picture();
+        picture->setType(TagLib::FLAC::Picture::FrontCover);
+        picture->setMimeType(TagLib::String(mimeType, TagLib::String::UTF8));
+        picture->setDescription(TagLib::String("Front cover", TagLib::String::UTF8));
+        picture->setData(data);
+        file.addPicture(picture);
+        return file.save();
+    }
+
+    if (ext == "m4a" || ext == "m4b" || ext == "m4p" || ext == "mp4") {
+        TagLib::MP4::File file(filePath, false);
+        auto *tag = file.tag();
+        if (!file.isValid() || !tag) return false;
+        TagLib::MP4::CoverArt::Format format = TagLib::MP4::CoverArt::Unknown;
+        const std::string mime(mimeType ? mimeType : "");
+        if (mime == "image/jpeg") format = TagLib::MP4::CoverArt::JPEG;
+        else if (mime == "image/png") format = TagLib::MP4::CoverArt::PNG;
+        else if (mime == "image/bmp") format = TagLib::MP4::CoverArt::BMP;
+        else if (mime == "image/gif") format = TagLib::MP4::CoverArt::GIF;
+        TagLib::MP4::CoverArtList covers;
+        covers.append(TagLib::MP4::CoverArt(format, data));
+        tag->setItem("covr", TagLib::MP4::Item(covers));
+        return file.save();
+    }
+
+    if (ext == "dsf") {
+        TagLib::DSF::File file(filePath, false);
+        if (!file.isValid() || !replaceId3FrontCover(file.tag(), data, mimeType)) return false;
+        return file.save();
+    }
+
+    if (ext == "dff" || ext == "dsdiff") {
+        TagLib::DSDIFF::File file(filePath, false);
+        if (!file.isValid() || !replaceId3FrontCover(file.ID3v2Tag(true), data, mimeType)) return false;
+        return file.save();
+    }
+
+    return false;
 }
 
 static TagLib::ByteVector readAttachedPicture(TagLib::ID3v2::Tag *tag) {
@@ -145,7 +315,7 @@ static TagLib::ByteVector readAttachedPicture(TagLib::ID3v2::Tag *tag) {
 static TagLib::ByteVector extractArtworkBytes(const char *filePath) {
     std::string ext = getExtension(filePath);
 
-    if (ext == "mp3" || ext == "mp2" || ext == "mpga") {
+    if (ext == "mp3" || ext == "mp2" || ext == "mpga" || ext == "aac") {
         TagLib::MPEG::File file(filePath, false);
         if (!file.isValid()) return TagLib::ByteVector();
         return readAttachedPicture(file.ID3v2Tag(false));
@@ -208,7 +378,7 @@ static std::map<std::string, std::string> readMetadata(const char *filePath) {
     LOGI("readMetadata: %s (ext=%s)", filePath, ext.c_str());
 
     // 根据扩展名分发到专用 reader（使用 Average 级别音频属性读取）
-    if (ext == "mp3" || ext == "mp2" || ext == "mpga") {
+    if (ext == "mp3" || ext == "mp2" || ext == "mpga" || ext == "aac") {
         TagLib::MPEG::File file(filePath, true, TagLib::MPEG::Properties::Average);
         if (!file.isValid()) return result;
         readTagsFromTag(file.tag(), result);
@@ -390,6 +560,36 @@ Java_com_rawsmusic_core_common_taglib_TagLibBridge_nativeExtractEmbeddedArtworkT
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rawsmusic_core_common_taglib_TagLibBridge_nativeWriteEmbeddedArtwork(
+    JNIEnv *env, jobject, jstring path, jstring artworkPath, jstring mimeType) {
+
+    const char *filePath = env->GetStringUTFChars(path, nullptr);
+    const char *coverPath = env->GetStringUTFChars(artworkPath, nullptr);
+    const char *mime = env->GetStringUTFChars(mimeType, nullptr);
+    if (!filePath || !coverPath || !mime) {
+        if (filePath) env->ReleaseStringUTFChars(path, filePath);
+        if (coverPath) env->ReleaseStringUTFChars(artworkPath, coverPath);
+        if (mime) env->ReleaseStringUTFChars(mimeType, mime);
+        return JNI_FALSE;
+    }
+
+    bool ok = false;
+    try {
+        ok = writeEmbeddedArtwork(filePath, coverPath, mime);
+        LOGI("nativeWriteEmbeddedArtwork: %s result=%d", filePath, ok ? 1 : 0);
+    } catch (const std::exception &error) {
+        LOGE("nativeWriteEmbeddedArtwork failed: %s", error.what());
+    } catch (...) {
+        LOGE("nativeWriteEmbeddedArtwork failed: unknown error");
+    }
+
+    env->ReleaseStringUTFChars(path, filePath);
+    env->ReleaseStringUTFChars(artworkPath, coverPath);
+    env->ReleaseStringUTFChars(mimeType, mime);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_rawsmusic_core_common_taglib_TagLibBridge_nativeIsSupported(
     JNIEnv *env, jobject, jstring path) {
 
@@ -397,7 +597,7 @@ Java_com_rawsmusic_core_common_taglib_TagLibBridge_nativeIsSupported(
     if (!filePath) return JNI_FALSE;
 
     std::string ext = getExtension(filePath);
-    bool supported = (ext == "mp3" || ext == "mp2" || ext == "mpga" ||
+    bool supported = (ext == "mp3" || ext == "mp2" || ext == "mpga" || ext == "aac" ||
                       ext == "flac" || ext == "ogg" || ext == "opus" ||
                       ext == "m4a" || ext == "m4b" || ext == "m4p" || ext == "mp4" ||
                       ext == "wma" || ext == "asf" || ext == "ape" ||
@@ -407,4 +607,42 @@ Java_com_rawsmusic_core_common_taglib_TagLibBridge_nativeIsSupported(
 
     env->ReleaseStringUTFChars(path, filePath);
     return supported ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rawsmusic_core_common_taglib_TagLibBridge_nativeWriteMetadata(
+    JNIEnv *env, jobject, jstring path, jobjectArray keys, jobjectArray values) {
+    const char *filePath = env->GetStringUTFChars(path, nullptr);
+    if (!filePath || !keys || !values) {
+        if (filePath) env->ReleaseStringUTFChars(path, filePath);
+        return JNI_FALSE;
+    }
+
+    std::map<std::string, std::string> metadata;
+    const jsize count = std::min(env->GetArrayLength(keys), env->GetArrayLength(values));
+    for (jsize index = 0; index < count; ++index) {
+        auto key = static_cast<jstring>(env->GetObjectArrayElement(keys, index));
+        auto value = static_cast<jstring>(env->GetObjectArrayElement(values, index));
+        if (key && value) {
+            const char *keyChars = env->GetStringUTFChars(key, nullptr);
+            const char *valueChars = env->GetStringUTFChars(value, nullptr);
+            if (keyChars && valueChars) metadata[keyChars] = valueChars;
+            if (keyChars) env->ReleaseStringUTFChars(key, keyChars);
+            if (valueChars) env->ReleaseStringUTFChars(value, valueChars);
+        }
+        if (key) env->DeleteLocalRef(key);
+        if (value) env->DeleteLocalRef(value);
+    }
+
+    bool ok = false;
+    try {
+        ok = writeMetadata(filePath, metadata);
+        LOGI("nativeWriteMetadata: %s tags=%zu result=%d", filePath, metadata.size(), ok ? 1 : 0);
+    } catch (const std::exception &error) {
+        LOGE("nativeWriteMetadata failed: %s", error.what());
+    } catch (...) {
+        LOGE("nativeWriteMetadata failed: unknown error");
+    }
+    env->ReleaseStringUTFChars(path, filePath);
+    return ok ? JNI_TRUE : JNI_FALSE;
 }

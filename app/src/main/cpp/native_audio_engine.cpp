@@ -28,6 +28,13 @@ constexpr int MODE_OPENSL_ES = 0;
 constexpr int MODE_AAUDIO = 1;
 constexpr int MODE_DIRECT = 2;
 
+// API 32 values from aaudio/AAudio.h. Keep them local so this file still builds
+// against older NDK headers while resolving the API 32 symbols dynamically.
+constexpr int32_t AAUDIO_USAGE_MEDIA_VALUE = 1;
+constexpr int32_t AAUDIO_CONTENT_TYPE_MUSIC_VALUE = 2;
+constexpr int32_t AAUDIO_SPATIALIZATION_AUTO_VALUE = 1;
+constexpr int32_t AAUDIO_SPATIALIZATION_NEVER_VALUE = 2;
+
 constexpr int FORMAT_PCM_I16 = 1;
 constexpr int FORMAT_PCM_FLOAT = 2;
 // RawSMusic decoder outputs 24/32-bit PCM as S32LE.  Direct/AAudio must
@@ -74,6 +81,10 @@ struct AAudioApi {
     void (*builderSetFormat)(AAudioStreamBuilder*, aaudio_format_t) = nullptr;
     void (*builderSetPerformanceMode)(AAudioStreamBuilder*, aaudio_performance_mode_t) = nullptr;
     void (*builderSetSharingMode)(AAudioStreamBuilder*, aaudio_sharing_mode_t) = nullptr;
+    void (*builderSetUsage)(AAudioStreamBuilder*, int32_t) = nullptr;
+    void (*builderSetContentType)(AAudioStreamBuilder*, int32_t) = nullptr;
+    void (*builderSetSpatializationBehavior)(AAudioStreamBuilder*, int32_t) = nullptr;
+    void (*builderSetIsContentSpatialized)(AAudioStreamBuilder*, bool) = nullptr;
     void (*builderSetDeviceId)(AAudioStreamBuilder*, int32_t) = nullptr;
     aaudio_result_t (*builderOpenStream)(AAudioStreamBuilder*, AAudioStream**) = nullptr;
     aaudio_result_t (*builderDelete)(AAudioStreamBuilder*) = nullptr;
@@ -90,6 +101,8 @@ struct AAudioApi {
     int32_t (*streamGetSampleRate)(AAudioStream*) = nullptr;
     int32_t (*streamGetChannelCount)(AAudioStream*) = nullptr;
     aaudio_format_t (*streamGetFormat)(AAudioStream*) = nullptr;
+    int32_t (*streamGetSpatializationBehavior)(AAudioStream*) = nullptr;
+    bool (*streamIsContentSpatialized)(AAudioStream*) = nullptr;
     aaudio_result_t (*streamSetVolume)(AAudioStream*, float) = nullptr;
     int32_t (*streamGetDeviceId)(AAudioStream*) = nullptr;
     const char* (*convertResultToText)(aaudio_result_t) = nullptr;
@@ -148,6 +161,10 @@ static AAudioApi& aaudioApi() {
         load(api.builderSetFormat, "AAudioStreamBuilder_setFormat");
         load(api.builderSetPerformanceMode, "AAudioStreamBuilder_setPerformanceMode");
         load(api.builderSetSharingMode, "AAudioStreamBuilder_setSharingMode");
+        load(api.builderSetUsage, "AAudioStreamBuilder_setUsage");
+        load(api.builderSetContentType, "AAudioStreamBuilder_setContentType");
+        load(api.builderSetSpatializationBehavior, "AAudioStreamBuilder_setSpatializationBehavior");
+        load(api.builderSetIsContentSpatialized, "AAudioStreamBuilder_setIsContentSpatialized");
         load(api.builderSetDeviceId, "AAudioStreamBuilder_setDeviceId");
         load(api.builderOpenStream, "AAudioStreamBuilder_openStream");
         load(api.builderDelete, "AAudioStreamBuilder_delete");
@@ -164,6 +181,8 @@ static AAudioApi& aaudioApi() {
         load(api.streamGetSampleRate, "AAudioStream_getSampleRate");
         load(api.streamGetChannelCount, "AAudioStream_getChannelCount");
         load(api.streamGetFormat, "AAudioStream_getFormat");
+        load(api.streamGetSpatializationBehavior, "AAudioStream_getSpatializationBehavior");
+        load(api.streamIsContentSpatialized, "AAudioStream_isContentSpatialized");
         load(api.streamSetVolume, "AAudioStream_setVolume");
         load(api.streamGetDeviceId, "AAudioStream_getDeviceId");
         load(api.convertResultToText, "AAudio_convertResultToText");
@@ -173,14 +192,29 @@ static AAudioApi& aaudioApi() {
 
 class AAudioOutput final : public NativeOutput {
 public:
-    AAudioOutput(int mode, int sampleRate, int channels, int format, int bufferFrames, int32_t preferredDeviceId)
+    AAudioOutput(
+        int mode,
+        int sampleRate,
+        int channels,
+        int format,
+        int bufferFrames,
+        int32_t preferredDeviceId,
+        int spatializationBehavior,
+        bool contentSpatialized
+    )
         : mode_(mode),
           sampleRate_(sampleRate),
           channels_(channels),
           format_(format),
           frameBytes_(channels * bytesPerSample(format)),
           bufferFrames_(bufferFrames),
-          preferredDeviceId_(std::max<int32_t>(0, preferredDeviceId)) {}
+          preferredDeviceId_(std::max<int32_t>(0, preferredDeviceId)),
+          spatializationBehavior_(
+              spatializationBehavior == AAUDIO_SPATIALIZATION_AUTO_VALUE
+                  ? AAUDIO_SPATIALIZATION_AUTO_VALUE
+                  : AAUDIO_SPATIALIZATION_NEVER_VALUE
+          ),
+          contentSpatialized_(contentSpatialized) {}
 
     ~AAudioOutput() override {
         closeStream();
@@ -363,6 +397,22 @@ private:
             builder,
             mode_ == MODE_DIRECT ? AAUDIO_SHARING_MODE_EXCLUSIVE : AAUDIO_SHARING_MODE_SHARED
         );
+        if (api.builderSetUsage) {
+            api.builderSetUsage(builder, AAUDIO_USAGE_MEDIA_VALUE);
+        }
+        if (api.builderSetContentType) {
+            api.builderSetContentType(builder, AAUDIO_CONTENT_TYPE_MUSIC_VALUE);
+        }
+        if (api.builderSetSpatializationBehavior) {
+            const int32_t behavior =
+                mode_ == MODE_DIRECT
+                    ? AAUDIO_SPATIALIZATION_NEVER_VALUE
+                    : spatializationBehavior_;
+            api.builderSetSpatializationBehavior(builder, behavior);
+        }
+        if (api.builderSetIsContentSpatialized) {
+            api.builderSetIsContentSpatialized(builder, contentSpatialized_);
+        }
         if (preferredDeviceId_ > 0) {
             if (api.builderSetDeviceId) {
                 api.builderSetDeviceId(builder, preferredDeviceId_);
@@ -387,6 +437,12 @@ private:
         const aaudio_format_t actualFormat = api.streamGetFormat(stream_);
         const aaudio_sharing_mode_t actualSharing = api.streamGetSharingMode(stream_);
         const int32_t actualDeviceId = api.streamGetDeviceId ? api.streamGetDeviceId(stream_) : 0;
+        const int actualSpatializationBehavior = api.streamGetSpatializationBehavior
+            ? api.streamGetSpatializationBehavior(stream_)
+            : -1;
+        const int actualContentSpatialized = api.streamIsContentSpatialized
+            ? (api.streamIsContentSpatialized(stream_) ? 1 : 0)
+            : -1;
 
         // DIRECT means an exclusive AAudio stream with the exact probed format.
         // If the vendor silently gives us shared mode or a different format, do
@@ -411,7 +467,7 @@ private:
             api.streamSetBufferSizeInFrames(stream_, std::min(bufferFrames_, capacity));
         }
         if (stream_) api.streamSetVolume(stream_, volume_);
-        LOGI("AAudio opened mode=%d sharing=%d actualRate=%d ch=%d fmt=%d requestedFmt=%d requestedDeviceId=%d actualDeviceId=%d buffer=%d/%d",
+        LOGI("AAudio opened mode=%d sharing=%d actualRate=%d ch=%d fmt=%d requestedFmt=%d requestedDeviceId=%d actualDeviceId=%d spatialBehavior=%d contentSpatialized=%d buffer=%d/%d",
              mode_,
              actualSharing,
              actualRate,
@@ -420,6 +476,8 @@ private:
              requestedAaudioFormat,
              preferredDeviceId_,
              actualDeviceId,
+             actualSpatializationBehavior,
+             actualContentSpatialized,
              api.streamGetBufferSizeInFrames(stream_),
              api.streamGetBufferCapacityInFrames(stream_));
         return true;
@@ -450,6 +508,8 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<int64_t> framesWritten_{0};
     int32_t preferredDeviceId_ = 0;
+    int32_t spatializationBehavior_ = AAUDIO_SPATIALIZATION_NEVER_VALUE;
+    bool contentSpatialized_ = false;
     float volume_ = 1.0f;
     AAudioStream* stream_ = nullptr;
 };
@@ -679,7 +739,9 @@ Java_com_rawsmusic_module_player_NativeAudioEngine_nativeCreate(
     jint channels,
     jint format,
     jint bufferFrames,
-    jint preferredDeviceId
+    jint preferredDeviceId,
+    jint spatializationBehavior,
+    jboolean contentSpatialized
 ) {
     if (sampleRate <= 0 || channels <= 0 || channels > 2) return 0;
 
@@ -690,7 +752,16 @@ Java_com_rawsmusic_module_player_NativeAudioEngine_nativeCreate(
         return 0;
     }
 
-    auto* output = new AAudioOutput(mode, sampleRate, channels, format, bufferFrames, preferredDeviceId);
+    auto* output = new AAudioOutput(
+        mode,
+        sampleRate,
+        channels,
+        format,
+        bufferFrames,
+        preferredDeviceId,
+        spatializationBehavior,
+        contentSpatialized == JNI_TRUE
+    );
     if (output->open()) return reinterpret_cast<jlong>(output);
     delete output;
     return 0;

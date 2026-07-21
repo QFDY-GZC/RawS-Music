@@ -3,6 +3,25 @@ project("rawsmusic_native")
 
 set(FFMPEG_DIR ${CMAKE_SOURCE_DIR}/ffmpeg_include)
 
+# Lyrico-compatible JavaScript source runtime. Keep it isolated from the audio
+# libraries so loading a lyric plugin never initializes the playback engine.
+set(QUICKJS_DIR ${CMAKE_SOURCE_DIR}/third_party/quickjs-ng)
+add_library(rawsmusic_quickjs STATIC
+    ${QUICKJS_DIR}/quickjs.c
+    ${QUICKJS_DIR}/libregexp.c
+    ${QUICKJS_DIR}/libunicode.c
+    ${QUICKJS_DIR}/dtoa.c
+)
+target_include_directories(rawsmusic_quickjs PUBLIC ${QUICKJS_DIR})
+target_compile_definitions(rawsmusic_quickjs PRIVATE CONFIG_VERSION="0.14.0")
+set_target_properties(rawsmusic_quickjs PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rawsmusic_quickjs PRIVATE -O2 -fomit-frame-pointer -w)
+
+add_library(rawsmusic_lyrico_quickjs SHARED rawsmusic_lyrico_quickjs.cpp)
+target_include_directories(rawsmusic_lyrico_quickjs PRIVATE ${QUICKJS_DIR})
+target_compile_options(rawsmusic_lyrico_quickjs PRIVATE -O2 -fomit-frame-pointer -std=c++17)
+target_link_libraries(rawsmusic_lyrico_quickjs rawsmusic_quickjs android log)
+
 # Keep hot-path optimization levels target-specific while allowing the linker to
 # discard unreachable native code and merge identical functions in release APKs.
 add_compile_options(
@@ -23,7 +42,18 @@ add_library(
     rawsmusic_dsp
     SHARED
     dsp_engine.cpp
+    auto_peak_limiter.cpp
+    experimental_gain.cpp
+    loudness_balance_processor.cpp
+    mono_bass_processor.cpp
+    dynamic_eq_processor.cpp
+    moog_ladder_filter.cpp
     stereo_width_processor.cpp
+    stereo_coherence_scene.cpp
+    second_order_ambisonics.cpp
+    analytic_hrtf_decoder.cpp
+    compact_brir_renderer.cpp
+    android_binaural_spatial_processor.cpp
     speaker_output_effect.cpp
     raw_fft_convolver.cpp
     raw_fft_convolver_jni.cpp
@@ -145,6 +175,7 @@ add_library(
     ffmpeg_bridge.cpp
     raw_waveform_scan.cpp
     raw_fft_analyzer.cpp
+    stereo_spectrum_analyzer.cpp
 )
 
 target_include_directories(

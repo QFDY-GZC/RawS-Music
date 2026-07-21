@@ -2526,6 +2526,22 @@ static int writeFlacMetadata(const char *filePath, const char *tmpPath,
  * Preserves all audio streams and existing data; only updates metadata tags.
  * Returns 0 on success, negative on error.
  */
+static const char *metadataMuxerForPath(const char *path) {
+    if (!path) return nullptr;
+    const char *dot = std::strrchr(path, '.');
+    if (!dot) return nullptr;
+    std::string ext(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    if (ext == "aac") return "adts";
+    if (ext == "m4a" || ext == "m4b" || ext == "m4p") return "ipod";
+    if (ext == "mp3" || ext == "mp2" || ext == "mpga") return "mp3";
+    if (ext == "wma" || ext == "asf") return "asf";
+    if (ext == "aif" || ext == "aiff") return "aiff";
+    return nullptr;
+}
+
 static int writeMetadataGeneric(const char *inputPath, const char *tmpPath,
                                  const char **keys, const char **values, int tagCount) {
     AVFormatContext *ifmt_ctx = nullptr;
@@ -2546,10 +2562,12 @@ static int writeMetadataGeneric(const char *inputPath, const char *tmpPath,
         return -31;
     }
 
-    // Create output context (guess format from tmpPath extension)
-    ret = avformat_alloc_output_context2(&ofmt_ctx, nullptr, nullptr, tmpPath);
+    // Raw ADTS and several audio-only extensions need an explicit muxer name.
+    const char *muxerName = metadataMuxerForPath(tmpPath);
+    ret = avformat_alloc_output_context2(&ofmt_ctx, nullptr, muxerName, tmpPath);
     if (ret < 0 || !ofmt_ctx) {
-        LOGE("writeMetaGeneric: avformat_alloc_output_context2 failed: %d", ret);
+        LOGE("writeMetaGeneric: avformat_alloc_output_context2 failed: %d muxer=%s",
+             ret, muxerName ? muxerName : "auto");
         avformat_close_input(&ifmt_ctx);
         return -32;
     }
@@ -2595,6 +2613,11 @@ static int writeMetadataGeneric(const char *inputPath, const char *tmpPath,
             LOGE("writeMetaGeneric: avio_open failed: %d", ret);
             goto cleanup;
         }
+    }
+
+    if (muxerName && std::strcmp(muxerName, "adts") == 0 && ofmt_ctx->priv_data) {
+        // ADTS stores global metadata in a leading ID3v2 tag rather than a container table.
+        av_opt_set(ofmt_ctx->priv_data, "write_id3v2", "1", 0);
     }
 
     // Write header

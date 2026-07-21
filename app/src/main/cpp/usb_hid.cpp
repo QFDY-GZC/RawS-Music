@@ -1,8 +1,8 @@
 /**
- * USB HID Remote Control Implementation for RawSMusic
+ * USB HID remote control implementation for RawSMusic.
  * 
- * Based on reverse-engineering of Kugou Music's libkugouplayer.so
- * Implements HID interface discovery, reading, and media key event parsing
+ * Discovers compatible HID interfaces, reads reports, and maps media-key events.
+ * Supports interrupt and bulk IN endpoints exposed by compatible devices.
  */
 
 #include "usb_hid.h"
@@ -101,7 +101,7 @@ bool UsbHidManager::findHidInterface(libusb_device_handle* devHandle) {
                     }
                 }
                 
-                // If no interrupt endpoint, try bulk transfer (like Kugou does)
+                // If no interrupt endpoint is available, try a bulk IN endpoint.
                 if (!found) {
                     for (int k = 0; k < altsetting.bNumEndpoints; k++) {
                         const struct libusb_endpoint_descriptor& ep = altsetting.endpoint[k];

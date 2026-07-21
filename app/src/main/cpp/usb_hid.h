@@ -1,8 +1,8 @@
 /**
- * USB HID Remote Control Support for RawSMusic
+ * USB HID remote control support for RawSMusic.
  * 
- * Based on reverse-engineering of Kugou Music's libkugouplayer.so
- * Supports media key events from USB HID devices (DACs with remote controls)
+ * Discovers compatible HID interfaces, reads reports, and maps media-key events.
+ * Supports media-key events from compatible USB DACs and remote controls.
  * 
  * HID Report Format (typical media keys):
  *   Byte 0: Modifier keys (not used for media keys)

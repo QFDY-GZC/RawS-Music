@@ -9,8 +9,15 @@
 #include <cmath>
 #include <math.h>
 #include "raw_fft_convolver.h"
+#include "auto_peak_limiter.h"
+#include "experimental_gain.h"
+#include "loudness_balance_processor.h"
+#include "mono_bass_processor.h"
+#include "dynamic_eq_processor.h"
+#include "moog_ladder_filter.h"
 #include "speaker_output_effect.h"
 #include "stereo_width_processor.h"
+#include "android_binaural_spatial_processor.h"
 
 using namespace std;
 
@@ -24,27 +31,16 @@ using namespace std;
 // 频率转换系数：标准 RBJ 使用 2π
 #define FREQ_CONST (2.0 * M_PI)
 
-static inline float sanitizeAndLimitSample(float sample) {
+static inline float sanitizeAndClampSample(float sample) {
     if (!std::isfinite(sample)) {
         return 0.0f;
     }
-
-    constexpr float threshold = 0.95f;
-    constexpr float ceiling = 0.999f;
-    const float absSample = std::fabs(sample);
-    if (absSample <= threshold) {
-        return sample;
-    }
-
-    const float sign = sample < 0.0f ? -1.0f : 1.0f;
-    const float over = (absSample - threshold) / (ceiling - threshold);
-    const float shaped = threshold + (ceiling - threshold) * std::tanh(over);
-    return sign * std::min(shaped, ceiling);
+    return std::max(-1.0f, std::min(1.0f, sample));
 }
 
-static inline void applyOutputSafetyLimiter(float* samples, int length) {
+static inline void applyOutputSafetyClamp(float* samples, int length) {
     for (int i = 0; i < length; ++i) {
-        samples[i] = sanitizeAndLimitSample(samples[i]);
+        samples[i] = sanitizeAndClampSample(samples[i]);
     }
 }
 
@@ -107,6 +103,10 @@ public:
         float* s = m_state[ch];
         float output = coeffs.b0 * input + coeffs.b1 * s[0] + coeffs.b2 * s[1]
                        - coeffs.a1 * s[2] - coeffs.a2 * s[3];
+        if (!std::isfinite(output)) {
+            memset(s, 0, sizeof(m_state[ch]));
+            return 0.0f;
+        }
         s[1] = s[0]; s[0] = input;
         s[3] = s[2]; s[2] = output;
         return output;
@@ -259,11 +259,12 @@ public:
             a2 = 1.0 - alpha;
         }
 
-        // 应用增益
-        double A = pow(10.0, gainDB / 40.0);
-        b0 *= A;
-        b1 *= A;
-        b2 *= A;
+        // Band-pass gain is an output gain, so dB must convert with /20.
+        // Using the PEQ coefficient factor (/40) only applied half the requested gain.
+        double linearGain = pow(10.0, gainDB / 20.0);
+        b0 *= linearGain;
+        b1 *= linearGain;
+        b2 *= linearGain;
 
         if (invertPhase) { b0 = -b0; b1 = -b1; b2 = -b2; }
         setCoeffs(b0, b1, b2, a0, a1, a2);
@@ -284,11 +285,11 @@ public:
         double a1 = -2.0 * cosw0;
         double a2 = 1.0 - alpha;
 
-        // 应用增益
-        double A = pow(10.0, gainDB / 40.0);
-        b0 *= A;
-        b1 *= A;
-        b2 *= A;
+        // A notch has unity pass-band gain. Applying PEQ's A factor here shifted
+        // the entire spectrum and made the displayed response disagree with the
+        // filter's actual purpose.
+        (void)gainDB;
+        (void)altQ;
 
         if (invertPhase) { b0 = -b0; b1 = -b1; b2 = -b2; }
         setCoeffs(b0, b1, b2, a0, a1, a2);
@@ -375,7 +376,10 @@ public:
     bool isEnabled() const { return m_pendingEnabled.load(std::memory_order_acquire); }
 
     void setPreamp(float gainDB) {
-        m_pendingPreampDB.store(gainDB, std::memory_order_release);
+        const float safeGain = std::isfinite(gainDB)
+            ? std::max(-96.0f, std::min(gainDB, 12.0f))
+            : 0.0f;
+        m_pendingPreampDB.store(safeGain, std::memory_order_release);
     }
 
     float getPreamp() const { return m_preampDB; }
@@ -692,201 +696,6 @@ private:
         }
         m_attenuationDB = attenuation;
         m_crossGainLinear = powf(10.0f, -attenuation / 20.0f);
-    }
-};
-
-// ==========================================
-// 压限器 (Compressor) - 动态范围压缩
-// ==========================================
-class Compressor {
-    bool m_enabled = false;
-    int m_sampleRate = 44100;
-
-    // 参数
-    float m_thresholdDB = -20.0f;   // 阈值 (dB), 范围: -60 ~ 0
-    float m_ratio = 4.0f;           // 压缩比, 范围: 1 ~ 20
-    float m_attackMs = 10.0f;       // 启动时间 (ms), 范围: 0.1 ~ 100
-    float m_releaseMs = 200.0f;     // 释放时间 (ms), 范围: 10 ~ 1000
-    float m_makeupGainDB = 0.0f;    // 补偿增益 (dB), 范围: 0 ~ 24
-    float m_kneeWidthDB = 6.0f;     // 拐点宽度 (dB), 范围: 0 ~ 30
-    int m_detectionMode = 1;        // 0=Peak, 1=RMS
-
-    // 预计算系数
-    float m_alphaAttack = 0.0f;     // 启动平滑系数
-    float m_alphaRelease = 0.0f;    // 释放平滑系数
-    float m_makeupGainLinear = 1.0f;
-    float m_ratioInv = 0.25f;       // 1/ratio - 1
-
-    // 状态变量
-    float m_gainSmooth = 0.0f;      // 平滑后的增益衰减 (dB)
-    float m_rmsLevel = 0.0f;        // RMS电平（指数平均）
-    float m_alphaRms = 0.0f;        // RMS平滑系数
-
-    // 用于GR Meter
-    std::atomic<float> m_currentGR{0.0f};       // 当前增益衰减量 (dB)
-    std::atomic<bool> m_pendingEnabled{false};
-    std::atomic<float> m_pendingThresholdDB{-20.0f};
-    std::atomic<float> m_pendingRatio{4.0f};
-    std::atomic<float> m_pendingAttackMs{10.0f};
-    std::atomic<float> m_pendingReleaseMs{200.0f};
-    std::atomic<float> m_pendingMakeupGainDB{0.0f};
-    std::atomic<float> m_pendingKneeWidthDB{6.0f};
-    std::atomic<int> m_pendingDetectionMode{1};
-    std::atomic<bool> m_paramsDirty{false};
-
-    void updateCoeffs() {
-        float fs = (float)m_sampleRate;
-        m_alphaAttack = expf(-1.0f / (m_attackMs * 0.001f * fs));
-        m_alphaRelease = expf(-1.0f / (m_releaseMs * 0.001f * fs));
-        m_makeupGainLinear = powf(10.0f, m_makeupGainDB / 20.0f);
-        m_ratioInv = 1.0f / m_ratio - 1.0f;
-        // RMS 时间常数约 10ms
-        m_alphaRms = expf(-1.0f / (0.010f * fs));
-    }
-
-public:
-    Compressor() { updateCoeffs(); }
-
-    void setEnabled(bool enabled) {
-        m_pendingEnabled.store(enabled, std::memory_order_release);
-        m_paramsDirty.store(true, std::memory_order_release);
-    }
-
-    bool isEnabled() const { return m_pendingEnabled.load(std::memory_order_acquire); }
-
-    void setSampleRate(int sampleRate) {
-        if (sampleRate > 0 && sampleRate != m_sampleRate) {
-            m_sampleRate = sampleRate;
-            updateCoeffs();
-        }
-    }
-
-    void setParams(float thresholdDB, float ratio, float attackMs, float releaseMs, float makeupGainDB) {
-        m_pendingThresholdDB.store(thresholdDB, std::memory_order_relaxed);
-        m_pendingRatio.store(ratio, std::memory_order_relaxed);
-        m_pendingAttackMs.store(attackMs, std::memory_order_relaxed);
-        m_pendingReleaseMs.store(releaseMs, std::memory_order_relaxed);
-        m_pendingMakeupGainDB.store(makeupGainDB, std::memory_order_relaxed);
-        m_paramsDirty.store(true, std::memory_order_release);
-    }
-
-    void setKneeWidth(float kneeWidthDB) {
-        m_pendingKneeWidthDB.store(kneeWidthDB, std::memory_order_relaxed);
-        m_paramsDirty.store(true, std::memory_order_release);
-    }
-
-    void setDetectionMode(int mode) {
-        m_pendingDetectionMode.store(mode, std::memory_order_relaxed);
-        m_paramsDirty.store(true, std::memory_order_release);
-    }
-
-    float getCurrentGR() const { return m_currentGR.load(std::memory_order_acquire); }
-
-    void process(float* samples, int numFrames, int channels) {
-        applyPendingParams();
-        if (!m_enabled) return;
-
-        const float threshold = m_thresholdDB;
-        const float halfW = m_kneeWidthDB * 0.5f;
-        const float ratioInvM1 = m_ratioInv; // 1/ratio - 1
-        const float alphaA = m_alphaAttack;
-        const float alphaR = m_alphaRelease;
-        const float makeup = m_makeupGainLinear;
-        const bool isRMS = (m_detectionMode == 1);
-        const float alphaRmsVal = m_alphaRms;
-        const float epsilon = 1e-10f;
-
-        float gainSmooth = m_gainSmooth;
-        float rmsLevel = m_rmsLevel;
-
-        for (int i = 0; i < numFrames; i++) {
-            // 计算检测电平（取所有声道最大值）
-            float maxAbs = 0.0f;
-            for (int ch = 0; ch < channels; ch++) {
-                float s = fabsf(samples[i * channels + ch]);
-                if (s > maxAbs) maxAbs = s;
-            }
-
-            float detectLevel;
-            if (isRMS) {
-                // RMS 检测：指数平均
-                rmsLevel = alphaRmsVal * rmsLevel + (1.0f - alphaRmsVal) * maxAbs * maxAbs;
-                detectLevel = sqrtf(rmsLevel);
-            } else {
-                // Peak 检测
-                detectLevel = maxAbs;
-            }
-
-            // 转换到 dB 域
-            float linDB = 20.0f * log10f(detectLevel + epsilon);
-
-            // 计算目标增益衰减
-            float delta = linDB - threshold;
-            float gainTarget;
-
-            if (delta < -halfW) {
-                // 低于阈值，不压缩
-                gainTarget = 0.0f;
-            } else if (delta < halfW) {
-                // 软拐点区域：二次曲线平滑过渡
-                gainTarget = (0.5f / m_kneeWidthDB) * (delta + halfW) * (delta + halfW) * ratioInvM1;
-            } else {
-                // 线性压缩区
-                gainTarget = delta * ratioInvM1;
-            }
-
-            // 包络跟随器：平滑增益变化
-            if (gainTarget < gainSmooth) {
-                // 启动：快速响应
-                gainSmooth = alphaA * gainSmooth + (1.0f - alphaA) * gainTarget;
-            } else {
-                // 释放：缓慢恢复
-                gainSmooth = alphaR * gainSmooth + (1.0f - alphaR) * gainTarget;
-            }
-
-            // 应用增益（含补偿增益）
-            float gainLinear = powf(10.0f, (gainSmooth + m_makeupGainDB) / 20.0f);
-            for (int ch = 0; ch < channels; ch++) {
-                samples[i * channels + ch] *= gainLinear;
-            }
-        }
-
-        m_gainSmooth = gainSmooth;
-        m_rmsLevel = rmsLevel;
-        m_currentGR.store(-gainSmooth, std::memory_order_release); // GR Meter 显示正值
-    }
-
-    void reset() {
-        m_gainSmooth = 0.0f;
-        m_rmsLevel = 0.0f;
-        m_currentGR.store(0.0f, std::memory_order_release);
-    }
-
-private:
-    void applyPendingParams() {
-        if (!m_paramsDirty.exchange(false, std::memory_order_acq_rel)) return;
-
-        const bool enabled = m_pendingEnabled.load(std::memory_order_acquire);
-        if (!m_enabled && enabled) {
-            m_gainSmooth = 0.0f;
-            m_rmsLevel = 0.0f;
-        }
-        m_enabled = enabled;
-        m_thresholdDB = m_pendingThresholdDB.load(std::memory_order_relaxed);
-        m_thresholdDB = (m_thresholdDB < -60.0f) ? -60.0f : (m_thresholdDB > 0.0f) ? 0.0f : m_thresholdDB;
-        m_ratio = m_pendingRatio.load(std::memory_order_relaxed);
-        m_ratio = (m_ratio < 1.0f) ? 1.0f : (m_ratio > 20.0f) ? 20.0f : m_ratio;
-        m_attackMs = m_pendingAttackMs.load(std::memory_order_relaxed);
-        m_attackMs = (m_attackMs < 0.1f) ? 0.1f : (m_attackMs > 100.0f) ? 100.0f : m_attackMs;
-        m_releaseMs = m_pendingReleaseMs.load(std::memory_order_relaxed);
-        m_releaseMs = (m_releaseMs < 10.0f) ? 10.0f : (m_releaseMs > 1000.0f) ? 1000.0f : m_releaseMs;
-        m_makeupGainDB = m_pendingMakeupGainDB.load(std::memory_order_relaxed);
-        m_makeupGainDB = (m_makeupGainDB < 0.0f) ? 0.0f : (m_makeupGainDB > 24.0f) ? 24.0f : m_makeupGainDB;
-        m_kneeWidthDB = m_pendingKneeWidthDB.load(std::memory_order_relaxed);
-        m_kneeWidthDB = (m_kneeWidthDB < 0.0f) ? 0.0f : (m_kneeWidthDB > 30.0f) ? 30.0f : m_kneeWidthDB;
-        int mode = m_pendingDetectionMode.load(std::memory_order_relaxed);
-        m_detectionMode = (mode == 0) ? 0 : 1;
-        updateCoeffs();
     }
 };
 
@@ -1689,49 +1498,69 @@ private:
 // ==========================================
 class DSPChain {
     std::unique_ptr<StereoWidthProcessor> m_expander;
+    std::unique_ptr<AndroidBinauralSpatialProcessor> m_androidBinauralSpatial;
     std::unique_ptr<ParametricEQ> m_peq;
+    std::unique_ptr<ParametricEQ> m_graphicEq;
     std::unique_ptr<Crossfeed> m_crossfeed;
-    std::unique_ptr<Compressor> m_compressor;
+    std::unique_ptr<AutoPeakLimiter> m_autoPeakLimiter;
     std::unique_ptr<BassBoost> m_bassBoost;
     std::unique_ptr<TrebleBoost> m_trebleBoost;
     std::unique_ptr<Surround360> m_surround360;
     std::unique_ptr<Panoramic360> m_panoramic360;
     std::unique_ptr<RawFftConvolver> m_convolver;
     std::unique_ptr<SpeakerOutputEffect> m_speakerOutputEffect;
+    std::unique_ptr<ExperimentalGainProcessor> m_experimentalGain;
+    std::unique_ptr<LoudnessBalanceProcessor> m_loudnessBalance;
+    std::unique_ptr<MonoBassProcessor> m_monoBass;
+    std::unique_ptr<DynamicEqProcessor> m_dynamicEq;
+    std::unique_ptr<MoogLadderFilter> m_moogLadder;
     std::vector<float> m_floatBuf;
     int m_sampleRate = 44100;
     int m_channels = 2;
 
 public:
     DSPChain() : m_expander(std::make_unique<StereoWidthProcessor>()),
+                 m_androidBinauralSpatial(std::make_unique<AndroidBinauralSpatialProcessor>()),
                  m_peq(std::make_unique<ParametricEQ>()),
+                 m_graphicEq(std::make_unique<ParametricEQ>()),
                  m_crossfeed(std::make_unique<Crossfeed>()),
-                 m_compressor(std::make_unique<Compressor>()),
+                 m_autoPeakLimiter(std::make_unique<AutoPeakLimiter>()),
                  m_bassBoost(std::make_unique<BassBoost>()),
                  m_trebleBoost(std::make_unique<TrebleBoost>()),
                  m_surround360(std::make_unique<Surround360>()),
                  m_panoramic360(std::make_unique<Panoramic360>()),
                  m_convolver(std::make_unique<RawFftConvolver>()),
-                 m_speakerOutputEffect(std::make_unique<SpeakerOutputEffect>()) {}
+                 m_speakerOutputEffect(std::make_unique<SpeakerOutputEffect>()),
+                 m_experimentalGain(std::make_unique<ExperimentalGainProcessor>()),
+                 m_loudnessBalance(std::make_unique<LoudnessBalanceProcessor>()),
+                 m_monoBass(std::make_unique<MonoBassProcessor>()),
+                 m_dynamicEq(std::make_unique<DynamicEqProcessor>()),
+                 m_moogLadder(std::make_unique<MoogLadderFilter>()) {}
 
     void init(int sampleRate, int channels) {
         m_sampleRate = sampleRate;
         m_channels = channels;
         m_expander->setSampleRate(sampleRate);
+        m_androidBinauralSpatial->setSampleRate(sampleRate);
         m_peq->setSampleRate(sampleRate);
+        m_graphicEq->setSampleRate(sampleRate);
         m_crossfeed->setSampleRate(sampleRate);
-        m_compressor->setSampleRate(sampleRate);
+        m_autoPeakLimiter->setSampleRate(sampleRate);
         m_bassBoost->setSampleRate(sampleRate);
         m_trebleBoost->setSampleRate(sampleRate);
         m_surround360->setSampleRate(sampleRate);
         m_panoramic360->setSampleRate(sampleRate);
         m_convolver->setFormat(sampleRate, channels);
         m_speakerOutputEffect->setSampleRate(sampleRate);
+        m_loudnessBalance->setSampleRate(sampleRate);
+        m_monoBass->setSampleRate(sampleRate);
+        m_dynamicEq->setSampleRate(sampleRate);
+        m_moogLadder->setSampleRate(sampleRate);
         m_floatBuf.resize(48000 * 2);
     }
 
     void process(float* samples, int numFrames, int channels) {
-        // 处理链顺序: BassBoost → TrebleBoost → PEQ → FFT Convolver → Compressor → Surround360 → Panoramic360 → Crossfeed → StereoWidth → SpeakerOutput
+        // All colour effects run first; the linked safety limiter observes their final peak.
 
         // 1. 低音增强
         if (m_bassBoost->isEnabled()) {
@@ -1746,44 +1575,70 @@ public:
         // 3. 参量均衡器
         if (m_peq->isEnabled()) {
             m_peq->process(samples, numFrames, channels);
+        } else if (m_graphicEq->isEnabled()) {
+            m_graphicEq->process(samples, numFrames, channels);
         }
 
-        // 4. FFT 卷积器：用于耳机/音箱校正 IR 或轻量空间 IR
+        // 4. 等响度补偿与声道平衡：音色校正后再做平滑的左右衰减。
+        if (m_loudnessBalance->isEnabled()) {
+            m_loudnessBalance->process(samples, numFrames, channels);
+        }
+
+        // 5. 低频居中：只折叠分频点以下的 Side，保留中高频立体声。
+        if (m_monoBass->isEnabled()) {
+            m_monoBass->process(samples, numFrames, channels);
+        }
+
+        // 6. 动态均衡与齿音抑制：使用双声道联动包络，避免声像摆动。
+        if (m_dynamicEq->isEnabled()) {
+            m_dynamicEq->process(samples, numFrames, channels);
+        }
+
+        // Moog-style four-stage zero-delay-feedback ladder and its output variants.
+        if (m_moogLadder->isEnabled()) {
+            m_moogLadder->process(samples, numFrames, channels);
+        }
+
+        // 7. FFT 卷积器：用于耳机/音箱校正 IR 或轻量空间 IR
         if (m_convolver->isEnabled() && m_convolver->isReady()) {
             m_convolver->process(samples, numFrames, channels);
         }
 
-        // 5. 压限器
-        if (m_compressor->isEnabled()) {
-            m_compressor->process(samples, numFrames, channels);
+        // 8. RawSMusic Android-output binaural renderer. When active it owns the
+        // spatial stage, so legacy surround/crossfeed/width effects are bypassed
+        // instead of being stacked after HRTF-style processing.
+        const bool androidBinauralActive = m_androidBinauralSpatial->isEnabled();
+        if (androidBinauralActive) {
+            m_androidBinauralSpatial->process(samples, numFrames, channels);
+        } else {
+            if (m_surround360->isEnabled()) {
+                m_surround360->process(samples, numFrames, channels);
+            }
+            if (m_panoramic360->isEnabled()) {
+                m_panoramic360->process(samples, numFrames, channels);
+            }
+            if (m_crossfeed->isEnabled()) {
+                m_crossfeed->process(samples, numFrames, channels);
+            }
+            if (m_expander->isEnabled()) {
+                m_expander->process(samples, numFrames, channels);
+            }
         }
 
-        // 6. 360° 环绕音 (2D 水平面双耳渲染)
-        if (m_surround360->isEnabled()) {
-            m_surround360->process(samples, numFrames, channels);
-        }
-
-        // 7. 360° 全景音 (3D 球面双耳渲染)
-        if (m_panoramic360->isEnabled()) {
-            m_panoramic360->process(samples, numFrames, channels);
-        }
-
-        // 8. 互馈 (Crossfeed)：先完成耳机串音模拟，再由立体声扩展
-        // 对最终左右差异执行连续 Mid/Side 展宽。
-        if (m_crossfeed->isEnabled()) {
-            m_crossfeed->process(samples, numFrames, channels);
-        }
-
-        // 9. 立体声扩展：0–100% 连续映射到 1–3 倍 Side，
-        // 随后使用双声道联动峰值控制保持声像稳定。
-        if (m_expander->isEnabled()) {
-            m_expander->process(samples, numFrames, channels);
-        }
-
-        // 10. 扬声器外放效果：在最终混合信号上识别低中频瞬态，
-        // 只施加短促联动增益，之后仍由统一输出安全限幅器兜底。
+        // 9. 扬声器外放效果：在最终混合信号上识别低中频瞬态。
         if (m_speakerOutputEffect->isEnabled()) {
             m_speakerOutputEffect->process(samples, numFrames, channels);
+        }
+
+        // 10. Automatic linked limiter. It is the only compressor path.
+        if (m_autoPeakLimiter->isEnabled()) {
+            m_autoPeakLimiter->process(samples, numFrames, channels);
+        }
+
+        // 11. Experimental total gain is deliberately last and independent.
+        // Its static waveshaper is not observed or controlled by any limiter.
+        if (m_experimentalGain->isEnabled()) {
+            m_experimentalGain->process(samples, numFrames * channels);
         }
     }
 
@@ -1791,26 +1646,59 @@ public:
         return m_bassBoost->isEnabled() ||
                m_trebleBoost->isEnabled() ||
                m_peq->isEnabled() ||
+               m_graphicEq->isEnabled() ||
                (m_convolver->isEnabled() && m_convolver->isReady()) ||
-               m_compressor->isEnabled() ||
+               m_autoPeakLimiter->isEnabled() ||
                m_surround360->isEnabled() ||
                m_panoramic360->isEnabled() ||
+               m_androidBinauralSpatial->isEnabled() ||
                m_expander->isEnabled() ||
                m_crossfeed->isEnabled() ||
-               m_speakerOutputEffect->isEnabled();
+               m_speakerOutputEffect->isEnabled() ||
+               m_loudnessBalance->isEnabled() ||
+               m_monoBass->isEnabled() ||
+               m_dynamicEq->isEnabled() ||
+               m_moogLadder->isEnabled() ||
+               m_experimentalGain->isEnabled();
+    }
+
+    void setPEQEnabled(bool enabled) {
+        if (enabled) m_graphicEq->setEnabled(false);
+        m_peq->setEnabled(enabled);
+    }
+
+    void setGraphicEQEnabled(bool enabled) {
+        if (enabled) m_peq->setEnabled(false);
+        m_graphicEq->setEnabled(enabled);
+    }
+
+    void setCompressorEnabled(bool enabled) {
+        m_autoPeakLimiter->setEnabled(enabled);
+    }
+
+    float getCompressorGainReduction() const {
+        return m_autoPeakLimiter->isEnabled()
+            ? m_autoPeakLimiter->getCurrentGainReductionDb()
+            : 0.0f;
     }
 
     float* getFloatBuffer() { return m_floatBuf.data(); }
     StereoWidthProcessor* getExpander() { return m_expander.get(); }
+    AndroidBinauralSpatialProcessor* getAndroidBinauralSpatial() { return m_androidBinauralSpatial.get(); }
     ParametricEQ* getPEQ() { return m_peq.get(); }
+    ParametricEQ* getGraphicEQ() { return m_graphicEq.get(); }
     Crossfeed* getCrossfeed() { return m_crossfeed.get(); }
-    Compressor* getCompressor() { return m_compressor.get(); }
     BassBoost* getBassBoost() { return m_bassBoost.get(); }
     TrebleBoost* getTrebleBoost() { return m_trebleBoost.get(); }
     Surround360* getSurround360() { return m_surround360.get(); }
     Panoramic360* getPanoramic360() { return m_panoramic360.get(); }
     RawFftConvolver* getConvolver() { return m_convolver.get(); }
     SpeakerOutputEffect* getSpeakerOutputEffect() { return m_speakerOutputEffect.get(); }
+    ExperimentalGainProcessor* getExperimentalGain() { return m_experimentalGain.get(); }
+    LoudnessBalanceProcessor* getLoudnessBalance() { return m_loudnessBalance.get(); }
+    MonoBassProcessor* getMonoBass() { return m_monoBass.get(); }
+    DynamicEqProcessor* getDynamicEq() { return m_dynamicEq.get(); }
+    MoogLadderFilter* getMoogLadder() { return m_moogLadder.get(); }
 };
 
 extern "C" SpeakerOutputEffect* rawsmusic_dsp_get_speaker_output_effect(jlong handle) {
@@ -1853,6 +1741,56 @@ Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetStereoWiden(
 }
 
 extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetAndroidBinauralSpatialEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getAndroidBinauralSpatial()->setEnabled(
+        enabled == JNI_TRUE
+    );
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetAndroidBinauralSpatialParameters(
+        JNIEnv*, jobject, jlong handle, jfloat intensityPercent, jfloat roomPercent) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getAndroidBinauralSpatial()->setParameters(
+        intensityPercent,
+        roomPercent
+    );
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetAndroidBinauralSpatialAdvancedParameters(
+        JNIEnv*, jobject, jlong handle, jboolean brirEnabled, jfloat separationPercent,
+        jfloat headSizeCentimeters, jfloat pinnaDetailPercent) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getAndroidBinauralSpatial()->setAdvancedParameters(
+        brirEnabled == JNI_TRUE,
+        separationPercent,
+        headSizeCentimeters,
+        pinnaDetailPercent
+    );
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetAndroidBinauralHeadPose(
+        JNIEnv*, jobject, jlong handle, jboolean enabled, jfloat quaternionX,
+        jfloat quaternionY, jfloat quaternionZ, jfloat quaternionW) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getAndroidBinauralSpatial()->setHeadPose(
+        enabled == JNI_TRUE,
+        quaternionX,
+        quaternionY,
+        quaternionZ,
+        quaternionW
+    );
+}
+
+extern "C"
 JNIEXPORT jint JNICALL
 Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeProcess(
         JNIEnv* env, jobject, jlong handle, jshortArray buffer, jint length, jint channels) {
@@ -1869,15 +1807,12 @@ Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeProcess(
         floatBuf[i] = (float)samples[i] / 32768.0f;
     }
 
-    const bool shouldLimitOutput = chain->hasActiveEffects();
     chain->process(floatBuf, numFrames, channels);
-    if (shouldLimitOutput) {
-        applyOutputSafetyLimiter(floatBuf, length);
-    }
 
     for (int i = 0; i < length; ++i) {
-        float v = floatBuf[i] < 0.0f ? floatBuf[i] * 32768.0f : floatBuf[i] * 32767.0f;
-        samples[i] = (short)v;
+        const float safeSample = sanitizeAndClampSample(floatBuf[i]);
+        const float value = safeSample < 0.0f ? safeSample * 32768.0f : safeSample * 32767.0f;
+        samples[i] = static_cast<short>(value);
     }
 
     env->ReleasePrimitiveArrayCritical(buffer, samples, 0);
@@ -1896,12 +1831,11 @@ Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeProcessFloat(
     auto* chain = reinterpret_cast<DSPChain*>(handle);
     int numFrames = length / channels;
 
-    // Float32 数据已经是 [-1.0, 1.0] 范围，直接处理
-    const bool shouldLimitOutput = chain->hasActiveEffects();
+    // Float32 数据直接进入 DSP；最终只做有限值和硬边界保护。
+    // 透明的动态限幅由压限器的自动模式显式控制，不再对所有音效
+    // 默认施加 0.95 起始的隐藏软削波。
     chain->process(samples, numFrames, channels);
-    if (shouldLimitOutput) {
-        applyOutputSafetyLimiter(samples, length);
-    }
+    applyOutputSafetyClamp(samples, length);
 
     env->ReleasePrimitiveArrayCritical(buffer, samples, 0);
     return 0;
@@ -1926,7 +1860,135 @@ Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetPEQEnabled(
         JNIEnv*, jobject, jlong handle, jboolean enabled) {
     if (handle == 0) return;
     auto* chain = reinterpret_cast<DSPChain*>(handle);
-    chain->getPEQ()->setEnabled(enabled);
+    chain->setPEQEnabled(enabled == JNI_TRUE);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetGraphicEQEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->setGraphicEQEnabled(enabled == JNI_TRUE);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetGraphicEQFilter(
+        JNIEnv*, jobject, jlong handle, jint index, jfloat frequency,
+        jfloat gainDB, jfloat Q, jboolean enabled) {
+    if (handle == 0) return;
+    FilterParams params{
+        FILTER_PEAK,
+        frequency,
+        gainDB,
+        Q,
+        enabled == JNI_TRUE
+    };
+    reinterpret_cast<DSPChain*>(handle)->getGraphicEQ()->setFilter(index, params);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeClearGraphicEQFilters(
+        JNIEnv*, jobject, jlong handle) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getGraphicEQ()->clearAll();
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetGraphicEQPreamp(
+        JNIEnv*, jobject, jlong handle, jfloat gainDB) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getGraphicEQ()->setPreamp(gainDB);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetExperimentalGainEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getExperimentalGain()->setEnabled(enabled == JNI_TRUE);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetExperimentalGainDb(
+        JNIEnv*, jobject, jlong handle, jfloat gainDb) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getExperimentalGain()->setGainDb(gainDb);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetLoudnessBalanceEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getLoudnessBalance()->setEnabled(enabled == JNI_TRUE);
+    LOGD("CORE_DSP loudness_balance enabled=%d", enabled == JNI_TRUE);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetLoudnessBalanceParameters(
+        JNIEnv*, jobject, jlong handle, jfloat loudnessPercent, jfloat balance) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getLoudnessBalance()->setParameters(loudnessPercent, balance);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetMonoBassEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getMonoBass()->setEnabled(enabled == JNI_TRUE);
+    LOGD("CORE_DSP mono_bass enabled=%d", enabled == JNI_TRUE);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetMonoBassParameters(
+        JNIEnv*, jobject, jlong handle, jfloat crossoverHz, jfloat amountPercent) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getMonoBass()->setParameters(crossoverHz, amountPercent);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetDynamicEqEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getDynamicEq()->setEnabled(enabled == JNI_TRUE);
+    LOGD("CORE_DSP dynamic_eq enabled=%d", enabled == JNI_TRUE);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetDynamicEqParameters(
+        JNIEnv*, jobject, jlong handle, jfloat intensityPercent,
+        jfloat deEsserPercent, jfloat deEsserFrequencyHz) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getDynamicEq()->setParameters(
+        intensityPercent, deEsserPercent, deEsserFrequencyHz);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetMoogLadderEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getMoogLadder()->setEnabled(enabled == JNI_TRUE);
+    LOGD("CORE_DSP moog_ladder enabled=%d", enabled == JNI_TRUE);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetMoogLadderParameters(
+        JNIEnv*, jobject, jlong handle, jint mode, jfloat cutoffHz,
+        jfloat resonancePercent, jfloat driveDb, jfloat mixPercent) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getMoogLadder()->setParameters(
+        mode, cutoffHz, resonancePercent, driveDb, mixPercent);
 }
 
 extern "C"
@@ -2030,35 +2092,7 @@ Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetCompressorEnabled(
         JNIEnv*, jobject, jlong handle, jboolean enabled) {
     if (handle == 0) return;
     auto* chain = reinterpret_cast<DSPChain*>(handle);
-    chain->getCompressor()->setEnabled(enabled);
-}
-
-extern "C"
-JNIEXPORT void JNICALL
-Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetCompressorParams(
-        JNIEnv*, jobject, jlong handle,
-        jfloat thresholdDB, jfloat ratio, jfloat attackMs, jfloat releaseMs, jfloat makeupGainDB) {
-    if (handle == 0) return;
-    auto* chain = reinterpret_cast<DSPChain*>(handle);
-    chain->getCompressor()->setParams(thresholdDB, ratio, attackMs, releaseMs, makeupGainDB);
-}
-
-extern "C"
-JNIEXPORT void JNICALL
-Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetCompressorKneeWidth(
-        JNIEnv*, jobject, jlong handle, jfloat kneeWidthDB) {
-    if (handle == 0) return;
-    auto* chain = reinterpret_cast<DSPChain*>(handle);
-    chain->getCompressor()->setKneeWidth(kneeWidthDB);
-}
-
-extern "C"
-JNIEXPORT void JNICALL
-Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetCompressorDetectionMode(
-        JNIEnv*, jobject, jlong handle, jint mode) {
-    if (handle == 0) return;
-    auto* chain = reinterpret_cast<DSPChain*>(handle);
-    chain->getCompressor()->setDetectionMode(mode);
+    chain->setCompressorEnabled(enabled);
 }
 
 extern "C"
@@ -2067,7 +2101,7 @@ Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeGetCompressorGR(
         JNIEnv*, jobject, jlong handle) {
     if (handle == 0) return 0.0f;
     auto* chain = reinterpret_cast<DSPChain*>(handle);
-    return chain->getCompressor()->getCurrentGR();
+    return chain->getCompressorGainReduction();
 }
 
 // ==========================================
