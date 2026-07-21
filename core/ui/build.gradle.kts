@@ -69,4 +69,6 @@ dependencies {
     implementation(libs.miuix.preference)
     implementation(libs.miuix.squircle)
     implementation("androidx.navigationevent:navigationevent-compose:1.1.1")
+
+    testImplementation("junit:junit:4.13.2")
 }
