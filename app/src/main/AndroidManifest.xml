@@ -20,10 +20,28 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+
+    <queries>
+        <package android:name="com.lonx.lyrico" />
+        <package android:name="com.lonx.lyrico.debug" />
+        <intent>
+            <action android:name="com.lonx.lyrico.action.EDIT_TAG" />
+            <data android:mimeType="audio/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="audio/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="audio/*" />
+        </intent>
+    </queries>
 
     <application
         android:name=".RawSMusicApp"
@@ -44,9 +62,14 @@
         <meta-data android:name="lyricon_module_tags" android:resource="@array/lyricon_module_tags" />
 
         <activity
+            android:name=".ui.settings.LyricoSearchActivity"
+            android:exported="false"
+            android:theme="@style/SettingsActivityTheme" />
+        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:enableOnBackInvokedCallback="true"
+            android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|keyboardHidden"
             android:windowSoftInputMode="adjustResize"
             android:launchMode="singleTop">
@@ -54,6 +77,10 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
 
         </activity>
 
@@ -76,6 +103,7 @@
         <!-- 设置子页面 Activity（SettingsActivity + f90 模式） -->
         <activity android:name=".ui.settings.SettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.AudioSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.AudioFocusSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.AudioEffectsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.AppearanceActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.LyricManagementActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
@@ -96,6 +124,9 @@
         <activity android:name=".ui.settings.AboutActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.ScanSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.TransitionSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.PersonalizationSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.BottomNavigationSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.LogViewerActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -114,6 +145,14 @@
             android:enableOnBackInvokedCallback="true"
             android:screenOrientation="portrait" />
 
+        <activity
+            android:name=".ui.player.LandscapePlayerActivity"
+            android:theme="@style/Theme.RawSMusic"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:enableOnBackInvokedCallback="true"
+            android:screenOrientation="sensorLandscape" />
+
         <service
             android:name="com.rawsmusic.module.player.PlayerService"
             android:exported="false"
@@ -121,6 +160,7 @@
             <intent-filter>
                 <action android:name="com.rawsmusic.action.PLAY" />
                 <action android:name="com.rawsmusic.action.PAUSE" />
+                <action android:name="com.rawsmusic.action.TOGGLE_PLAYBACK" />
                 <action android:name="com.rawsmusic.action.NEXT" />
                 <action android:name="com.rawsmusic.action.PREVIOUS" />
                 <action android:name="com.rawsmusic.action.STOP" />
@@ -142,6 +182,42 @@
                 <action android:name="android.intent.action.MEDIA_UNMOUNTED" />
                 <data android:scheme="file" />
             </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".widget.PlaybackWidgetProvider"
+            android:exported="false"
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.rawsmusic.action.REFRESH_PLAYBACK_WIDGET" />
+                <action android:name="com.rawsmusic.action.PROGRESS_PLAYBACK_WIDGET" />
+                <action android:name="miui.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/playback_widget_info" />
+            <meta-data
+                android:name="com.hihonor.widget.type"
+                android:value="honorcard" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.CompactPlaybackWidgetProvider"
+            android:exported="false"
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/widget_compact_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="miui.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/playback_widget_compact_info" />
+            <meta-data
+                android:name="com.hihonor.widget.type"
+                android:value="honorcard" />
         </receiver>
 
     </application>
