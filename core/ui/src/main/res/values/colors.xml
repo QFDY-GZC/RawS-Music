@@ -1,0 +1,14 @@
+<resources>
+    <color name="text_primary">#FF1C1B1A</color>
+    <color name="text_secondary">#CC1C1B1A</color>
+    <color name="text_tertiary">#991C1B1A</color>
+    <color name="icon_muted">#FF767676</color>
+    <color name="add_btn_bg">#1A000000</color>
+    <color name="accent">#FFC4956A</color>
+    <!--  高亮文本（当前播放歌曲）：浅色背景下用黑色  -->
+    <color name="now_playing_text">#FF000000</color>
+    <!--  歌词背景遮罩色  -->
+    <color name="lyrics_bg_layer_black_scrim">#4D000000</color>
+    <color name="lyrics_bg_layer_white_scrim">#1AFFFFFF</color>
+    <color name="lyrics_bg_default">#FF424242</color>
+</resources>

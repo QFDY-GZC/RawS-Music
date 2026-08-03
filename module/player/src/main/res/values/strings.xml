@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="usb_bitperfect_enabled">Bit-perfect enabled</string>
+    <string name="usb_volume_transition">USB is switching; try hardware volume again shortly</string>
+    <string name="usb_volume_exclusive_only">Hardware volume is available only in USB exclusive mode</string>
+    <string name="usb_volume_disabled">Hardware volume disabled</string>
+</resources>
