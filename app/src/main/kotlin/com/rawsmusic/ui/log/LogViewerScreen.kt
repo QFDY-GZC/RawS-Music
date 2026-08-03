@@ -104,15 +104,15 @@ fun LogViewerScreen(onBack: () -> Unit) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    SectionHeader("过滤")
+                    SectionHeader(stringResource(R.string.ui_log_filter))
                     Row {
                         TextButton(onClick = {
                             scope.launch { AppLogStore.refresh() }
                         }) {
-                            Text("刷新", color = colors.primary, fontSize = 13.sp, fontFamily = appFontFamily())
+                            Text(stringResource(R.string.ui_refresh), color = colors.primary, fontSize = 13.sp, fontFamily = appFontFamily())
                         }
                         TextButton(onClick = { showClearConfirm = true }) {
-                            Text("清空", color = Color(0xFFC62828), fontSize = 13.sp, fontFamily = appFontFamily())
+                            Text(stringResource(R.string.ui_clear), color = Color(0xFFC62828), fontSize = 13.sp, fontFamily = appFontFamily())
                         }
                         TextButton(onClick = {
                             val file = AppLogger.getLogFile()
@@ -128,11 +128,16 @@ fun LogViewerScreen(onBack: () -> Unit) {
                                         putExtra(Intent.EXTRA_STREAM, uri)
                                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                     }
-                                    context.startActivity(Intent.createChooser(shareIntent, "分享日志"))
+                                    context.startActivity(
+                                        Intent.createChooser(
+                                            shareIntent,
+                                            context.getString(R.string.ui_log_share_title)
+                                        )
+                                    )
                                 } catch (_: Exception) {}
                             }
                         }) {
-                            Text("分享", color = colors.primary, fontSize = 13.sp, fontFamily = appFontFamily())
+                            Text(stringResource(R.string.ui_log_share), color = colors.primary, fontSize = 13.sp, fontFamily = appFontFamily())
                         }
                     }
                 }
@@ -152,7 +157,7 @@ fun LogViewerScreen(onBack: () -> Unit) {
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    label = { Text("搜索日志", fontFamily = appFontFamily()) },
+                    label = { Text(stringResource(R.string.ui_log_search_hint), fontFamily = appFontFamily()) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -171,7 +176,7 @@ fun LogViewerScreen(onBack: () -> Unit) {
 
                 if (availableTags.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
-                    Text("标签过滤:", fontSize = 13.sp, color = colors.secondaryText, fontFamily = appFontFamily())
+                    Text(stringResource(R.string.ui_log_tag_filter), fontSize = 13.sp, color = colors.secondaryText, fontFamily = appFontFamily())
                     Spacer(Modifier.height(4.dp))
                     TagFilterFlowRow(
                         tags = availableTags,
@@ -186,7 +191,7 @@ fun LogViewerScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(12.dp))
 
             Text(
-                "共 ${filteredEntries.size} 条日志",
+                stringResource(R.string.ui_log_count, filteredEntries.size),
                 fontSize = 13.sp,
                 color = colors.secondaryText,
                 fontFamily = appFontFamily(),
@@ -237,7 +242,7 @@ fun LogViewerScreen(onBack: () -> Unit) {
             },
             confirmButton = {
                 TextButton(onClick = { showDetail = null }) {
-                    Text("关闭", fontFamily = appFontFamily())
+                    Text(stringResource(R.string.ui_close), fontFamily = appFontFamily())
                 }
             }
         )
@@ -246,19 +251,19 @@ fun LogViewerScreen(onBack: () -> Unit) {
     if (showClearConfirm) {
         AlertDialog(
             onDismissRequest = { showClearConfirm = false },
-            title = { Text("清空日志", fontFamily = appFontFamily()) },
-            text = { Text("确定要清空所有日志吗？此操作不可恢复。", fontFamily = appFontFamily()) },
+            title = { Text(stringResource(R.string.ui_clear_logs_title), fontFamily = appFontFamily()) },
+            text = { Text(stringResource(R.string.ui_clear_logs_confirm), fontFamily = appFontFamily()) },
             confirmButton = {
                 TextButton(onClick = {
                     AppLogStore.clearLog()
                     showClearConfirm = false
                 }) {
-                    Text("清空", color = Color(0xFFC62828), fontFamily = appFontFamily())
+                    Text(stringResource(R.string.ui_clear), color = Color(0xFFC62828), fontFamily = appFontFamily())
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showClearConfirm = false }) {
-                    Text("取消", fontFamily = appFontFamily())
+                    Text(stringResource(R.string.ui_cancel), fontFamily = appFontFamily())
                 }
             }
         )
@@ -269,23 +274,23 @@ fun LogViewerScreen(onBack: () -> Unit) {
 private fun StatsCard(stats: LogStats) {
     val colors = themeColors()
     SettingsCard {
-        SectionHeader("概览")
+        SectionHeader(stringResource(R.string.ui_overview))
         Spacer(Modifier.height(8.dp))
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            StatItem("总计", stats.total.toString(), colors.onSurface)
-            StatItem("错误", stats.errorCount.toString(), Color(0xFFC62828))
-            StatItem("警告", stats.warnCount.toString(), Color.White)
-            StatItem("信息", stats.infoCount.toString(), Color(0xFF1565C0))
-            StatItem("调试", stats.debugCount.toString(), Color(0xFF616161))
+            StatItem(stringResource(R.string.ui_total), stats.total.toString(), colors.onSurface)
+            StatItem(stringResource(R.string.ui_error), stats.errorCount.toString(), Color(0xFFC62828))
+            StatItem(stringResource(R.string.ui_warning), stats.warnCount.toString(), Color.White)
+            StatItem(stringResource(R.string.ui_info), stats.infoCount.toString(), Color(0xFF1565C0))
+            StatItem(stringResource(R.string.ui_debug), stats.debugCount.toString(), Color(0xFF616161))
         }
 
         if (stats.topTags.isNotEmpty()) {
             Spacer(Modifier.height(12.dp))
             Text(
-                "高频标签 Top 5:",
+                stringResource(R.string.ui_top_tags),
                 fontSize = 13.sp,
                 color = colors.secondaryText,
                 fontFamily = appFontFamily()
@@ -297,7 +302,7 @@ private fun StatsCard(stats: LogStats) {
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(tag, fontSize = 13.sp, color = colors.onSurface, fontFamily = appFontFamily())
-                    Text("$count 次", fontSize = 13.sp, color = colors.secondaryText, fontFamily = appFontFamily())
+                    Text(stringResource(R.string.ui_occurrences, count), fontSize = 13.sp, color = colors.secondaryText, fontFamily = appFontFamily())
                 }
             }
         }
@@ -322,10 +327,10 @@ private fun LevelFilterRow(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        LevelChip("E", "错误 ${stats.errorCount}", selectedLevel == "E", Color(0xFFC62828), onSelect)
-        LevelChip("W", "警告 ${stats.warnCount}", selectedLevel == "W", Color.White, onSelect)
-        LevelChip("I", "信息 ${stats.infoCount}", selectedLevel == "I", Color(0xFF1565C0), onSelect)
-        LevelChip("D", "调试 ${stats.debugCount}", selectedLevel == "D", Color(0xFF616161), onSelect)
+        LevelChip("E", "${stringResource(R.string.ui_error)} ${stats.errorCount}", selectedLevel == "E", Color(0xFFC62828), onSelect)
+        LevelChip("W", "${stringResource(R.string.ui_warning)} ${stats.warnCount}", selectedLevel == "W", Color.White, onSelect)
+        LevelChip("I", "${stringResource(R.string.ui_info)} ${stats.infoCount}", selectedLevel == "I", Color(0xFF1565C0), onSelect)
+        LevelChip("D", "${stringResource(R.string.ui_debug)} ${stats.debugCount}", selectedLevel == "D", Color(0xFF616161), onSelect)
     }
 }
 

@@ -152,6 +152,7 @@ abstract class BaseSettingsActivity : ComponentActivity() {
 
     @Suppress("DEPRECATION")
     override fun finish() {
+        SettingsBackHandoffRuntime.noteSettingsFinish()
         super.finish()
         if (Build.VERSION.SDK_INT < 34) {
             overridePendingTransition(R.anim.settings_enter_from_left, R.anim.settings_exit_to_right)

@@ -58,8 +58,7 @@ class OverlayCoordinator(
         audioInfoVisible: Boolean = false,
         metadataCardVisible: Boolean = false,
         playModeVisible: Boolean = false,
-        dialogVisible: Boolean = false,
-        batteryVisible: Boolean = false
+        dialogVisible: Boolean = false
     ) {
         composeOverlayContentVisible =
             forceVisible ||
@@ -72,7 +71,6 @@ class OverlayCoordinator(
                 metadataCardVisible ||
                 playModeVisible ||
                 dialogVisible ||
-                batteryVisible ||
                 isUsbVolumeOverlayVisible ||
                 isPlayerPageVisible()
     }

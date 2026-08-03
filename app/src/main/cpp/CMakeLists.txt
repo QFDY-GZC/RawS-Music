@@ -17,7 +17,7 @@ target_compile_definitions(rawsmusic_quickjs PRIVATE CONFIG_VERSION="0.14.0")
 set_target_properties(rawsmusic_quickjs PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(rawsmusic_quickjs PRIVATE -O2 -fomit-frame-pointer -w)
 
-add_library(rawsmusic_lyrico_quickjs SHARED rawsmusic_lyrico_quickjs.cpp)
+add_library(rawsmusic_lyrico_quickjs OBJECT rawsmusic_lyrico_quickjs.cpp)
 target_include_directories(rawsmusic_lyrico_quickjs PRIVATE ${QUICKJS_DIR})
 target_compile_options(rawsmusic_lyrico_quickjs PRIVATE -O2 -fomit-frame-pointer -std=c++17)
 target_link_libraries(rawsmusic_lyrico_quickjs rawsmusic_quickjs android log)
@@ -40,14 +40,16 @@ add_link_options(
 # ==========================================
 add_library(
     rawsmusic_dsp
-    SHARED
+    OBJECT
     dsp_engine.cpp
+    android_dvc_processor.cpp
     auto_peak_limiter.cpp
     experimental_gain.cpp
     loudness_balance_processor.cpp
     mono_bass_processor.cpp
     dynamic_eq_processor.cpp
     moog_ladder_filter.cpp
+    realtime_stem_separator.cpp
     stereo_width_processor.cpp
     stereo_coherence_scene.cpp
     second_order_ambisonics.cpp
@@ -57,6 +59,7 @@ add_library(
     speaker_output_effect.cpp
     raw_fft_convolver.cpp
     raw_fft_convolver_jni.cpp
+    pcm_dither.cpp
 )
 
 target_include_directories(
@@ -109,42 +112,16 @@ target_compile_options(usb PRIVATE -O2 -fomit-frame-pointer -w)
 # ==========================================
 add_library(
     rawsmusic_usb
-    SHARED
+    OBJECT
     usb_audio_engine.cpp
+    usb_hardware_volume.cpp
     raw_audio_safety.cpp
     raw_usb_background_scheduler.cpp
+    raw_usb_audio_schedule_bootstrap.cpp
     raw_usb_native_guardian.cpp
     raw_usb_submit_scheduler.cpp
     raw_audio_format_policy.cpp
     raw_pcm_pipeline.cpp
-    raw_uac20_stream.cpp
-    raw_uac20_stream_builder.cpp
-    raw_uac20_format_matcher.cpp
-    raw_uac20_device.cpp
-    usb_uac20_session.cpp
-    usb_uac20_descriptors.cpp
-    usb_uac20_clock.cpp
-    usb_uac20_feedback.cpp
-    usb_uac20_event_loop.cpp
-    usb_uac20_policy.cpp
-    usb_uac20_recovery_policy.cpp
-    usb_uac20_recovery_attempt.cpp
-    usb_uac20_recovery_candidates.cpp
-    usb_uac20_recovery_execution.cpp
-    usb_uac20_diagnostics.cpp
-    usb_uac20_transfers.cpp
-    usb_uac20_write_ring.cpp
-    usb_uac20_out_feeder.cpp
-    usb_uac20_packet_scheduler.cpp
-    usb_uac20_pcm_adapter.cpp
-    usb_uac20_phase.cpp
-    usb_uac20_real_out_ring.cpp
-    usb_uac20_real_out_submitter.cpp
-    usb_uac20_playback_guard.cpp
-    usb_uac20_recovery_executor.cpp
-    usb_uac20_format_fallback.cpp
-    usb_uac20_volume.cpp
-    usb_uac20_jni_bridge.cpp
     pcm_to_dsd_converter.cpp
     usb_hid.cpp
     raw_usb_crash_guard.cpp
@@ -159,56 +136,36 @@ target_include_directories(
 )
 
 target_compile_options(rawsmusic_usb PRIVATE -O2 -fomit-frame-pointer -std=c++17)
+# PCM->DSD is a recursive per-bit realtime kernel. Compile this independent
+# translation unit at the hot-path level instead of inheriting the broad USB
+# engine's conservative -O2 setting. Fast-math is safe here because inputs are
+# integer PCM and the converter clamps every sample before modulation.
+set_source_files_properties(
+    pcm_to_dsd_converter.cpp
+    PROPERTIES COMPILE_OPTIONS "-O3;-ffast-math;-fno-math-errno;-fno-trapping-math"
+)
+
+# Android 16 exposes OpenSL callback policy as FIFO|SCHED_RESET_ON_FORK;
+# the child pthread is therefore reset to SCHED_OTHER. UAPP also falls back to
+# its normal event pthread when the callback policy is not exactly FIFO. Keep
+# this experimental bootstrap compiled out and rely on the UAPP-style Android
+# media identity + foreground/wakelock path for background process exemption.
+target_compile_definitions(rawsmusic_usb PRIVATE RAWS_ENABLE_OPENSL_RT_BOOTSTRAP=0)
 
 target_link_libraries(
     rawsmusic_usb
     usb
-    swresample
-    avutil
+    rawsmusic_ffmpeg
     android
     log
+    OpenSLES
 )
-
-add_library(
-    rawsmusic_ffmpeg
-    SHARED
-    ffmpeg_bridge.cpp
-    raw_waveform_scan.cpp
-    raw_fft_analyzer.cpp
-    stereo_spectrum_analyzer.cpp
-)
-
-target_include_directories(
-    rawsmusic_ffmpeg
-    PRIVATE
-    ${CMAKE_SOURCE_DIR}
-    ${FFMPEG_DIR}
-)
-
-target_compile_options(rawsmusic_ffmpeg PRIVATE -O3 -fomit-frame-pointer)
 
 set(JNI_LIBS_DIR ${CMAKE_SOURCE_DIR}/../jniLibs/${ANDROID_ABI})
-
-add_library(avcodec SHARED IMPORTED)
-set_target_properties(avcodec PROPERTIES IMPORTED_LOCATION ${JNI_LIBS_DIR}/libavcodec.so)
-
-add_library(avformat SHARED IMPORTED)
-set_target_properties(avformat PROPERTIES IMPORTED_LOCATION ${JNI_LIBS_DIR}/libavformat.so)
-
-add_library(avutil SHARED IMPORTED)
-set_target_properties(avutil PROPERTIES IMPORTED_LOCATION ${JNI_LIBS_DIR}/libavutil.so)
-
-add_library(swresample SHARED IMPORTED)
-set_target_properties(swresample PROPERTIES IMPORTED_LOCATION ${JNI_LIBS_DIR}/libswresample.so)
-
-target_link_libraries(
+add_library(rawsmusic_ffmpeg SHARED IMPORTED)
+set_target_properties(
     rawsmusic_ffmpeg
-    avcodec
-    avformat
-    avutil
-    swresample
-    android
-    log
+    PROPERTIES IMPORTED_LOCATION ${JNI_LIBS_DIR}/librawsmusic_ffmpeg.so
 )
 
 
@@ -217,7 +174,7 @@ target_link_libraries(
 # ==========================================
 add_library(
     rawsmusic_native_audio
-    SHARED
+    OBJECT
     native_audio_engine.cpp
     raw_android_audio_identity.cpp
 )
@@ -412,7 +369,7 @@ target_compile_definitions(taglib_static PRIVATE
 target_compile_options(taglib_static PRIVATE -O2 -fomit-frame-pointer -w -std=c++17)
 
 # TagLib 全格式 JNI 桥接
-add_library(rawsmusic_taglib_full SHARED taglib_full_bridge.cpp)
+add_library(rawsmusic_taglib_full OBJECT taglib_full_bridge.cpp)
 
 target_include_directories(rawsmusic_taglib_full PRIVATE
     ${TAGLIB_DIR}
@@ -424,12 +381,49 @@ target_compile_options(rawsmusic_taglib_full PRIVATE -O3 -fomit-frame-pointer -s
 
 target_link_libraries(rawsmusic_taglib_full taglib_static android log z)
 
+
+# ==========================================
+# Offline AI vocal separation engine
+# ==========================================
+# ONNX Runtime execution lives behind the Java adapter; this native target owns only offline
+# PCM/STFT/ISTFT/overlap-add and float-WAV writing. It never runs on USB or playback callbacks.
+add_library(
+    rawsmusic_ai_separation
+    OBJECT
+    ai_separation_engine.cpp
+    ai_separation_engine_jni.cpp
+    ai_separation_audio_encoder.cpp
+    ai_separation_wav.cpp
+)
+
+target_include_directories(
+    rawsmusic_ai_separation
+    PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${FFMPEG_DIR}
+)
+
+target_compile_options(
+    rawsmusic_ai_separation
+    PRIVATE
+    -O2
+    -fomit-frame-pointer
+    -std=c++17
+)
+
+target_link_libraries(
+    rawsmusic_ai_separation
+    rawsmusic_ffmpeg
+    android
+    log
+)
+
 # ==========================================
 # Player artwork transition state machine
 # ==========================================
 add_library(
     rawsmusic_artwork_transition
-    SHARED
+    OBJECT
     raw_player_artwork_transition.cpp
 )
 
@@ -445,4 +439,71 @@ target_link_libraries(
     rawsmusic_artwork_transition
     android
     log
+)
+
+add_library(
+    rawsmusic_static_background
+    OBJECT
+    raw_static_background.cpp
+)
+
+target_compile_options(
+    rawsmusic_static_background
+    PRIVATE
+    -O3
+    -fomit-frame-pointer
+    -std=c++17
+)
+
+target_link_libraries(
+    rawsmusic_static_background
+    android
+    log
+)
+
+# Offline file-spectrum analysis. FFmpeg stays in the Kotlin decoder path;
+# this object only owns the stateful FFT and compact analysis payload.
+add_library(
+    rawsmusic_file_spectrum
+    OBJECT
+    raw_file_spectrum_analyzer.cpp
+    raw_file_spectrum_analyzer_jni.cpp
+)
+
+target_include_directories(
+    rawsmusic_file_spectrum
+    PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+
+target_compile_options(rawsmusic_file_spectrum PRIVATE -O3 -fomit-frame-pointer -std=c++17)
+target_link_libraries(rawsmusic_file_spectrum android log)
+
+# Keep application-owned JNI code in one service library. Object libraries preserve
+# per-engine compile flags while avoiding duplicate ELF metadata and load operations.
+add_library(
+    rawscoreservice
+    SHARED
+    $<TARGET_OBJECTS:rawsmusic_lyrico_quickjs>
+    $<TARGET_OBJECTS:rawsmusic_dsp>
+    $<TARGET_OBJECTS:rawsmusic_usb>
+    $<TARGET_OBJECTS:rawsmusic_native_audio>
+    $<TARGET_OBJECTS:rawsmusic_taglib_full>
+    $<TARGET_OBJECTS:rawsmusic_ai_separation>
+    $<TARGET_OBJECTS:rawsmusic_artwork_transition>
+    $<TARGET_OBJECTS:rawsmusic_static_background>
+    $<TARGET_OBJECTS:rawsmusic_file_spectrum>
+)
+
+target_link_libraries(
+    rawscoreservice
+    rawsmusic_quickjs
+    usb
+    taglib_static
+    rawsmusic_ffmpeg
+    android
+    log
+    z
+    OpenSLES
+    dl
 )

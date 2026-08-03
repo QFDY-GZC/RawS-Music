@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+    xmlns:tools="http://schemas.android.com/tools"
+    android:versionName="0.9.61beta">
 
     <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur" />
 
@@ -15,18 +16,25 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <queries>
+        <package android:name="com.miui.weather2" />
+        <package android:name="com.coloros.weather2" />
+        <package android:name="com.vivo.weather" />
+        <package android:name="com.huawei.android.totemweather" />
         <package android:name="com.lonx.lyrico" />
         <package android:name="com.lonx.lyrico.debug" />
         <intent>
@@ -103,10 +111,13 @@
         <!-- 设置子页面 Activity（SettingsActivity + f90 模式） -->
         <activity android:name=".ui.settings.SettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.AudioSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.DvcSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.AudioFocusSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.AudioEffectsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.AiSeparationActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.AppearanceActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.LyricManagementActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.LyricSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.StatusBarLyricActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.PlayerInterfaceActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.AlbumArtActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
@@ -127,6 +138,12 @@
         <activity android:name=".ui.settings.PersonalizationSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.BottomNavigationSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.LogViewerActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
+        <activity
+            android:name=".ui.analysis.AudioSpectrumAnalysisActivity"
+            android:theme="@style/SettingsActivityTheme"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:enableOnBackInvokedCallback="true" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -151,7 +168,27 @@
             android:exported="false"
             android:launchMode="singleTop"
             android:enableOnBackInvokedCallback="true"
-            android:screenOrientation="sensorLandscape" />
+            android:screenOrientation="userLandscape" />
+        <activity
+            android:name=".ui.player.MusicVideoActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:enableOnBackInvokedCallback="true"
+            android:screenOrientation="sensorLandscape">
+            <intent-filter>
+                <action android:name="com.rawsmusic.action.OPEN_MUSIC_VIDEO" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".metadata.LibraryMetadataMatchService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name=".lyric.DesktopLyricService"
+            android:exported="false" />
 
         <service
             android:name="com.rawsmusic.module.player.PlayerService"
@@ -171,6 +208,15 @@
             android:name="com.rawsmusic.module.scanner.LibraryScanForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".source.OnlineSourceDownloadReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.DOWNLOAD_COMPLETE" />
+                <action android:name="com.rawsmusic.action.ONLINE_DOWNLOAD_MEDIA_READY" />
+            </intent-filter>
+        </receiver>
 
         <!-- 存储事件监听，StorageBroadcastReceiver -->
         <receiver
@@ -219,6 +265,33 @@
                 android:name="com.hihonor.widget.type"
                 android:value="honorcard" />
         </receiver>
+
+        <receiver
+            android:name=".widget.FlowPlaybackWidgetProvider"
+            android:exported="false"
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/widget_flow_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="miui.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/playback_widget_flow_info" />
+            <meta-data
+                android:name="com.hihonor.widget.type"
+                android:value="honorcard" />
+        </receiver>
+
+        <service
+            android:name=".separation.AiSeparationDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name=".separation.AiSeparationJobService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProcessing" />
 
     </application>
 

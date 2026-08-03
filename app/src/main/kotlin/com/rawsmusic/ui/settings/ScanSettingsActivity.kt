@@ -16,28 +16,18 @@ import com.rawsmusic.module.scanner.ScanScheduler
 
 class ScanSettingsActivity : BaseSettingsActivity() {
 
-    private val audioPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) {
-        // 权限结果不用强依赖；用户可能还需要去系统设置里打开文件访问权限。
+    private val legacyReadPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        updateLegacyAccessState(granted)
     }
 
     private val allFilesAccessLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
-        val granted = if (Build.VERSION.SDK_INT >= 30) {
+        val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
             Environment.isExternalStorageManager()
-        } else {
-            true
-        }
-
-        AppPreferences.Scanner.legacyFileAccessEnabled = granted
-
-        Toast.makeText(
-            this,
-            if (granted) getString(R.string.scan_settings_legacy_access_enabled_toast) else getString(R.string.scan_settings_legacy_access_denied_toast),
-            Toast.LENGTH_SHORT
-        ).show()
+        updateLegacyAccessState(granted)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -57,17 +47,7 @@ class ScanSettingsActivity : BaseSettingsActivity() {
     }
 
     private fun requestLegacyAudioAccess() {
-        if (Build.VERSION.SDK_INT >= 33) {
-            audioPermissionLauncher.launch(
-                arrayOf(Manifest.permission.READ_MEDIA_AUDIO)
-            )
-        } else {
-            audioPermissionLauncher.launch(
-                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-            )
-        }
-
-        if (Build.VERSION.SDK_INT >= 30) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             runCatching {
                 allFilesAccessLauncher.launch(
                     Intent(
@@ -80,8 +60,26 @@ class ScanSettingsActivity : BaseSettingsActivity() {
                     Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
                 )
             }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            legacyReadPermissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
         } else {
-            AppPreferences.Scanner.legacyFileAccessEnabled = true
+            updateLegacyAccessState(true)
+        }
+    }
+
+    private fun updateLegacyAccessState(granted: Boolean) {
+        AppPreferences.Scanner.legacyFileAccessEnabled = granted
+        Toast.makeText(
+            this,
+            if (granted) {
+                getString(R.string.scan_settings_legacy_access_enabled_toast)
+            } else {
+                getString(R.string.scan_settings_legacy_access_denied_toast)
+            },
+            Toast.LENGTH_SHORT
+        ).show()
+        if (granted) {
+            ScanScheduler.requestDirScan(this, getString(R.string.scan_settings_rescan_reason_manual))
         }
     }
 }

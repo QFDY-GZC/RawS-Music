@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.widget.Toast
+import com.rawsmusic.R
 import androidx.core.content.FileProvider
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.utils.AppLogger
@@ -28,7 +29,7 @@ class UsbDacFeedbackHelper(
         val reportFile = withContext(Dispatchers.IO) {
             createPlaybackReportFile(controller)
         } ?: return withContext(Dispatchers.Main) {
-            Toast.makeText(context, "暂无可导出的播放日志", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.ui_no_exportable_logs), Toast.LENGTH_SHORT).show()
             false
         }
 
@@ -54,7 +55,7 @@ class UsbDacFeedbackHelper(
                 context.startActivity(Intent.createChooser(intent, "通过邮箱反馈 USB DAC 日志"))
                 true
             } catch (t: Throwable) {
-                Toast.makeText(context, "未找到可用的邮箱应用", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, context.getString(R.string.ui_no_email_app), Toast.LENGTH_SHORT).show()
                 false
             }
         }
@@ -130,8 +131,6 @@ class UsbDacFeedbackHelper(
                 appendLine("FeatureUnitDiagnostics=${usbStatus.featureUnitDiagnostics}")
                 appendLine("ProfileDiagnostics=${usbStatus.profileDiagnostics}")
                 appendLine("RecoveryDiagnostics=${usbStatus.recoveryDiagnostics}")
-                appendLine("Uac20PreviewDiagnostics=${usbStatus.uac20PreviewDiagnostics}")
-                appendLine("Uac20GrayDecisionDiagnostics=${usbStatus.uac20GrayDecisionDiagnostics}")
                 if (usbStatus.nativeStatsRaw.isNotBlank()) {
                     appendLine("NativeStatsRaw=${usbStatus.nativeStatsRaw}")
                 }

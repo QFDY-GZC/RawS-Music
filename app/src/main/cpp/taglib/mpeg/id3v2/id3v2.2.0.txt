@@ -1583,7 +1583,7 @@ A.3.   Genre List
      78.Rock & Roll
      79.Hard Rock
      
-   The following genres are Winamp extensions
+   The following genres are legacy extensions
      
      80.Folk
      81.Folk-Rock
@@ -1647,14 +1647,14 @@ A.4.   Track addition - ID3v1.1
 9.   Author's Address
 
    Martin Nilsson
-   Rydsvägen 246 C. 30
-   S-584 34 Linköping
+   Rydsvgen 246 C. 30
+   S-584 34 Linkping
    Sweden
 
    Email: nilsson@id3.org
 
    Co-authors:
 
-   Johan Sundström   Email: johan@id3.org
+   Johan Sundstrm   Email: johan@id3.org
 
 

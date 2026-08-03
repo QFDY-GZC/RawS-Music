@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,8 +21,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -38,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -45,6 +45,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.UserPlaylist
 import com.rawsmusic.core.ui.scene.NavScene
@@ -67,15 +69,18 @@ fun PlaylistScreen(
     val scope = rememberCoroutineScope()
     val colors = themeColors()
     var createDialog by remember { mutableStateOf(false) }
+    var creatingPlaylist by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<UserPlaylist?>(null) }
     var deleteTarget by remember { mutableStateOf<UserPlaylist?>(null) }
 
-    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
-            val result = playlistStore.importTextPlaylist(uri, librarySongs)
-            val message = if (result.importedCount > 0) {
-                context.getString(R.string.playlist_import_success, result.importedCount, result.missingCount)
+            val results = uris.map { playlistStore.importTextPlaylist(it, librarySongs) }
+            val imported = results.sumOf { it.importedCount }
+            val missing = results.sumOf { it.missingCount }
+            val message = if (imported > 0) {
+                context.getString(R.string.playlist_import_success, imported, missing)
             } else {
                 context.getString(R.string.playlist_import_empty)
             }
@@ -88,7 +93,17 @@ fun PlaylistScreen(
         sceneId = NavScene.PLAYLISTS.name,
         onBack = onBack,
         onCreatePlaylist = { createDialog = true },
-        onImportPlaylist = { importLauncher.launch(arrayOf("text/plain", "audio/x-mpegurl", "application/octet-stream")) },
+        onImportPlaylist = {
+            importLauncher.launch(
+                arrayOf(
+                    "text/plain",
+                    "audio/x-mpegurl",
+                    "audio/mpegurl",
+                    "application/vnd.apple.mpegurl",
+                    "application/octet-stream"
+                )
+            )
+        },
         contentOverlap = 0.dp
     ) { topPadding, backdropSource ->
         LazyColumn(
@@ -104,28 +119,46 @@ fun PlaylistScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(playlists, key = { it.id }) { playlist ->
-                Card(
+                val coverSong = remember(playlist, librarySongs) {
+                    playlistStore.resolveSongs(playlist, librarySongs).firstOrNull()
+                }
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .combinedClickable(
                             onClick = { onPlaylistClick(playlist.id, playlist.name) },
                             onLongClick = { if (!playlist.isFavorites) renameTarget = playlist }
-                        ),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = colors.surface.copy(alpha = 0.86f))
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            painter = painterResource(
-                                if (playlist.isFavorites) R.drawable.ic_heart_fill else R.drawable.ic_music_note
-                            ),
-                            contentDescription = null,
-                            tint = if (playlist.isFavorites) Color(0xFFEF476F) else colors.primary,
-                            modifier = Modifier.size(25.dp)
                         )
+                        .padding(horizontal = 4.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                        if (coverSong != null) {
+                            AsyncImage(
+                                model = coverSong.albumArtPath.ifBlank { coverSong.path },
+                                contentDescription = playlist.name,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(76.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                            )
+                        } else {
+                            androidx.compose.foundation.layout.Box(
+                                modifier = Modifier
+                                    .size(76.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(colors.surface.copy(alpha = 0.72f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    painter = painterResource(
+                                        if (playlist.isFavorites) R.drawable.ic_heart_fill else R.drawable.ic_music_note
+                                    ),
+                                    contentDescription = null,
+                                    tint = if (playlist.isFavorites) Color(0xFFEF476F) else colors.primary,
+                                    modifier = Modifier.size(30.dp)
+                                )
+                            }
+                        }
                         Spacer(Modifier.width(13.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -154,7 +187,6 @@ fun PlaylistScreen(
                                 )
                             }
                         }
-                    }
                 }
             }
         }
@@ -164,13 +196,28 @@ fun PlaylistScreen(
         PlaylistNameDialog(
             title = stringResource(R.string.playlist_create),
             initialName = "",
+            submitting = creatingPlaylist,
             onDismiss = { createDialog = false },
             onConfirm = { name ->
                 scope.launch {
-                    val created = playlistStore.createPlaylist(name)
-                    if (created == null) Toast.makeText(context, R.string.playlist_name_exists, Toast.LENGTH_SHORT).show()
+                    creatingPlaylist = true
+                    val result = runCatching { playlistStore.createPlaylist(name) }
+                    creatingPlaylist = false
+                    when {
+                        result.getOrNull() != null -> createDialog = false
+                        result.isFailure -> Toast.makeText(
+                            context,
+                            result.exceptionOrNull()?.localizedMessage
+                                ?: context.getString(R.string.playlist_create_failed),
+                            Toast.LENGTH_LONG
+                        ).show()
+                        else -> Toast.makeText(
+                            context,
+                            R.string.playlist_name_exists,
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
                 }
-                createDialog = false
             }
         )
     }
@@ -179,6 +226,7 @@ fun PlaylistScreen(
         PlaylistNameDialog(
             title = stringResource(R.string.playlist_rename),
             initialName = playlist.name,
+            submitting = false,
             onDismiss = { renameTarget = null },
             onConfirm = { name ->
                 scope.launch {
@@ -215,13 +263,14 @@ fun PlaylistScreen(
 private fun PlaylistNameDialog(
     title: String,
     initialName: String,
+    submitting: Boolean,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit
 ) {
     val colors = themeColors()
     var name by remember(initialName) { mutableStateOf(initialName) }
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!submitting) onDismiss() },
         title = { Text(title, fontFamily = appFontFamily()) },
         text = {
             OutlinedTextField(
@@ -237,7 +286,7 @@ private fun PlaylistNameDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = name.isNotBlank(),
+                enabled = name.isNotBlank() && !submitting,
                 onClick = { onConfirm(name.trim()) },
                 colors = ButtonDefaults.textButtonColors(contentColor = colors.primary)
             ) { Text(stringResource(R.string.playlist_confirm_action)) }

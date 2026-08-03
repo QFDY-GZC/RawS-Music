@@ -48,6 +48,8 @@ class LyricoPluginStore private constructor(private val context: Context) {
 
     fun listInstalled(): List<InstalledLyricoPlugin> {
         root.mkdirs()
+        val preferred = preferredOrder()
+        val preferredIndex = preferred.withIndex().associate { it.value to it.index }
         return root.listFiles()
             .orEmpty()
             .asSequence()
@@ -63,8 +65,42 @@ class LyricoPluginStore private constructor(private val context: Context) {
                     )
                 }.getOrNull()
             }
-            .sortedBy { it.manifest.name.lowercase() }
+            .sortedWith(
+                compareBy<InstalledLyricoPlugin> {
+                    preferredIndex[it.manifest.id] ?: Int.MAX_VALUE
+                }.thenBy { it.manifest.name.lowercase() }
+            )
             .toList()
+    }
+
+    fun enabledInPreferredOrder(): List<InstalledLyricoPlugin> = listInstalled().filter { it.enabled }
+
+    fun preferredOrder(): List<String> = preferences.getString(PREFERRED_ORDER_KEY, null)
+        .orEmpty()
+        .lineSequence()
+        .map(String::trim)
+        .filter(String::isNotBlank)
+        .distinct()
+        .toList()
+
+    fun setPreferredOrder(pluginIds: List<String>) {
+        val installed = listInstalled().map { it.manifest.id }
+        val installedSet = installed.toSet()
+        val normalized = (
+            pluginIds.filter { it in installedSet } + installed.filterNot { it in pluginIds }
+        ).distinct()
+        preferences.edit().putString(PREFERRED_ORDER_KEY, normalized.joinToString("\n")).apply()
+    }
+
+    fun movePreferred(pluginId: String, direction: Int) {
+        val ordered = listInstalled().map { it.manifest.id }.toMutableList()
+        val index = ordered.indexOf(pluginId)
+        if (index < 0) return
+        val target = (index + direction).coerceIn(0, ordered.lastIndex)
+        if (target == index) return
+        ordered.removeAt(index)
+        ordered.add(target, pluginId)
+        setPreferredOrder(ordered)
     }
 
     fun setEnabled(pluginId: String, enabled: Boolean) {
@@ -276,6 +312,7 @@ class LyricoPluginStore private constructor(private val context: Context) {
     companion object {
         private const val TAG = "LyricoPluginStore"
         private const val MANIFEST_FILE = "manifest.json"
+        private const val PREFERRED_ORDER_KEY = "preferred_source_order_v1"
         private const val MAX_PLUGINS_PER_ARCHIVE = 20
         private const val MAX_ARCHIVE_ENTRIES = 256
         private const val MAX_DEPTH = 12

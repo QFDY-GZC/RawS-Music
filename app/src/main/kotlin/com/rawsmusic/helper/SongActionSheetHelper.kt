@@ -43,6 +43,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -174,7 +175,8 @@ class SongActionSheetHelper(
             }
             withContext(Dispatchers.Main) {
                 hidePlaylistPicker()
-                val message = playlist?.let { "已添加到「${it.name}」" } ?: "创建歌单失败"
+                val message = playlist?.let { context.getString(R.string.ui_playlist_added, it.name) }
+                    ?: context.getString(R.string.ui_playlist_create_failed)
                 Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             }
         }
@@ -190,7 +192,7 @@ class SongActionSheetHelper(
         getCoroutineScope().launch {
             playlistStore.addSongsToPlaylist(playlist.id, songs)
             withContext(Dispatchers.Main) {
-                Toast.makeText(context, "已添加到「${playlist.name}」", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, context.getString(R.string.ui_playlist_added, playlist.name), Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -198,7 +200,7 @@ class SongActionSheetHelper(
     fun addToQueue() {
         val song = getPlayerController()?.currentSong?.value ?: return
         getPlayerController()?.addToQueue(song)
-        Toast.makeText(context, "已添加到播放队列", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.ui_queue_added), Toast.LENGTH_SHORT).show()
     }
 
     fun showAlbumList() {
@@ -206,7 +208,7 @@ class SongActionSheetHelper(
             val song = getPlayerController()?.currentSong?.value ?: return
             val album = song.album.trim()
             if (album.isBlank()) {
-                Toast.makeText(context, "未知专辑", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, context.getString(R.string.ui_unknown_album), Toast.LENGTH_SHORT).show()
                 return
             }
             closePlayPage()
@@ -282,7 +284,8 @@ private fun PlaylistPickerOverlay(helper: SongActionSheetHelper) {
                     )
                     Spacer(modifier = Modifier.height(14.dp))
                     Text(
-                        text = if (helper.isCreatingPlaylist) "新建歌单" else "快捷加入歌单",
+                        text = if (helper.isCreatingPlaylist) stringResource(R.string.ui_create_playlist_title)
+                        else stringResource(R.string.ui_playlist_picker_title),
                         color = Color.White,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.SemiBold
@@ -309,7 +312,7 @@ private fun PlaylistPickerOverlay(helper: SongActionSheetHelper) {
                             )
                             if (newPlaylistName.isBlank()) {
                                 Text(
-                                    text = "歌单名称",
+                                    text = stringResource(R.string.ui_playlist_name),
                                     color = Color.White.copy(alpha = 0.38f),
                                     fontSize = 15.sp
                                 )
@@ -318,14 +321,14 @@ private fun PlaylistPickerOverlay(helper: SongActionSheetHelper) {
                         Spacer(modifier = Modifier.height(12.dp))
                         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             PlaylistPickerActionButton(
-                                text = "返回",
+                                text = stringResource(R.string.ui_back),
                                 icon = { Icon(MiuixIcons.Regular.Back, contentDescription = null, tint = Color.White.copy(alpha = 0.76f)) },
                                 modifier = Modifier.weight(1f),
                                 onClick = { helper.cancelCreatePlaylist() }
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             PlaylistPickerActionButton(
-                                text = "创建并加入",
+                                text = stringResource(R.string.ui_playlist_create_and_add),
                                 icon = { Icon(MiuixIcons.Regular.Ok, contentDescription = null, tint = Color.White) },
                                 tint = Color(0xFF8DA8FF),
                                 modifier = Modifier.weight(1f),
@@ -334,8 +337,8 @@ private fun PlaylistPickerOverlay(helper: SongActionSheetHelper) {
                         }
                     } else {
                         PlaylistPickerRow(
-                            title = "新建歌单",
-                            subtitle = "创建后自动加入已选歌曲",
+                            title = stringResource(R.string.ui_create_playlist_title),
+                            subtitle = stringResource(R.string.ui_playlist_created_summary),
                             icon = { Icon(MiuixIcons.Regular.Folder, contentDescription = null, tint = Color.White.copy(alpha = 0.82f)) },
                             onClick = {
                                 newPlaylistName = ""
@@ -352,7 +355,7 @@ private fun PlaylistPickerOverlay(helper: SongActionSheetHelper) {
                             helper.playlistChoices.forEach { playlist ->
                                 PlaylistPickerRow(
                                     title = playlist.name,
-                                    subtitle = "${playlist.songs.size} 首歌曲",
+                                    subtitle = stringResource(R.string.ui_playlist_song_count, playlist.songs.size),
                                     icon = { Icon(MiuixIcons.Regular.Music, contentDescription = null, tint = Color.White.copy(alpha = 0.72f)) },
                                     onClick = { helper.selectPlaylist(playlist) }
                                 )
@@ -369,7 +372,7 @@ private fun PlaylistPickerOverlay(helper: SongActionSheetHelper) {
                             .padding(horizontal = 18.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(text = "取消", color = Color(0xFF8DA8FF), fontSize = 14.sp)
+                        Text(text = stringResource(R.string.ui_cancel), color = Color(0xFF8DA8FF), fontSize = 14.sp)
                     }
                     Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
                 }
@@ -435,94 +438,5 @@ private fun PlaylistPickerActionButton(
         }
         Spacer(modifier = Modifier.width(8.dp))
         Text(text = text, color = Color.White, fontSize = 13.sp, maxLines = 1)
-    }
-}
-
-@Composable
-private fun SongActionRow(
-    iconRes: Int,
-    text: String,
-    tint: Color = Color(0xE0FFFFFF),
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(48.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClick
-            )
-            .padding(start = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Image(
-            painter = painterResource(iconRes),
-            contentDescription = null,
-            colorFilter = ColorFilter.tint(tint),
-            modifier = Modifier.size(22.dp)
-        )
-        Spacer(modifier = Modifier.width(12.dp))
-        Text(text = text, color = tint, fontSize = 15.sp)
-    }
-}
-
-@Composable
-private fun CoverActionRow(helper: SongActionSheetHelper) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(48.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .height(48.dp)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = { helper.onPickCoverImage?.invoke() }
-                )
-                .padding(start = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Image(
-                painter = painterResource(R.drawable.ic_edit_box_fill),
-                contentDescription = null,
-                colorFilter = ColorFilter.tint(Color(0xE0FFFFFF)),
-                modifier = Modifier.size(22.dp)
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Text(text = "修改此曲专辑图", color = Color(0xE0FFFFFF), fontSize = 15.sp)
-        }
-        CapsuleButton(text = "修改", enabled = true) {
-            helper.onPickCoverImage?.invoke()
-        }
-        Spacer(modifier = Modifier.width(4.dp))
-        CapsuleButton(text = "恢复", enabled = helper.hasCustomCover) {
-            helper.hide()
-            helper.onRestoreCover?.invoke()
-        }
-    }
-}
-
-@Composable
-private fun CapsuleButton(text: String, enabled: Boolean, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .height(28.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color(0xFF2A2A2A))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 12.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = text,
-            color = if (enabled) Color(0xB0FFFFFF) else Color(0x66FFFFFF),
-            fontSize = 11.sp
-        )
     }
 }

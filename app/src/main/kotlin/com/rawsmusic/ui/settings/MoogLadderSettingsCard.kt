@@ -18,7 +18,7 @@ import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.preference.SliderPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
-import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
+import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 
 @Composable
 internal fun MoogLadderSettingsCard(controller: MoogLadderController?) {
@@ -123,7 +123,7 @@ private fun MoogModePreference(
         )
     }
     val index = mode.ordinal.coerceIn(labels.indices)
-    WindowDropdownPreference(
+    RawWindowDropdownPreference(
         entry = entry,
         title = stringResource(R.string.settings_moog_variant),
         summary = summaries[index],

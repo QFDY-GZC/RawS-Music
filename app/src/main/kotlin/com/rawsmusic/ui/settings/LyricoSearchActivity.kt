@@ -2,10 +2,15 @@ package com.rawsmusic.ui.settings
 
 import android.app.Activity
 import android.content.Intent
+import android.content.IntentSender
+import android.provider.MediaStore
+import android.app.RecoverableSecurityException
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -50,11 +55,13 @@ import coil.compose.AsyncImage
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
+import com.rawsmusic.lyrico.LyricoAudioWriteAccess
 import com.rawsmusic.lyrico.LyricoPluginStore
 import com.rawsmusic.lyrico.LyricoCoverCandidate
 import com.rawsmusic.lyrico.LyricoLyricTiming
 import com.rawsmusic.lyrico.LyricoSongCandidate
 import com.rawsmusic.lyrico.LyricoSourceEngine
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
@@ -71,6 +78,15 @@ private data class LyricoSourceFilter(
 )
 
 class LyricoSearchActivity : BaseSettingsActivity() {
+    private var pendingAudioWriteConsent: CompletableDeferred<Boolean>? = null
+
+    private val audioWriteConsentLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        pendingAudioWriteConsent?.complete(result.resultCode == Activity.RESULT_OK)
+        pendingAudioWriteConsent = null
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val song = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -87,12 +103,64 @@ class LyricoSearchActivity : BaseSettingsActivity() {
             LyricoSearchScreen(
                 song = song,
                 onBack = ::finish,
+                requestCoverWriteAccess = ::requestCoverWriteAccess,
                 onApplied = {
                     setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_SONG_PATH, song.path))
                     finish()
                 }
             )
         }
+    }
+
+
+    private suspend fun requestCoverWriteAccess(song: AudioFile): Boolean {
+        val before = LyricoAudioWriteAccess.inspect(this, song)
+        if (before.canWrite) return true
+        val mediaUri = before.mediaUri ?: return false
+
+        val intentSender = when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
+                runCatching {
+                    MediaStore.createWriteRequest(contentResolver, listOf(mediaUri)).intentSender
+                }.getOrNull()
+            }
+            Build.VERSION.SDK_INT == Build.VERSION_CODES.Q -> {
+                try {
+                    contentResolver.openFileDescriptor(mediaUri, "rw")?.use { }
+                    return LyricoAudioWriteAccess.inspect(this, song).canWrite
+                } catch (recoverable: RecoverableSecurityException) {
+                    recoverable.userAction.actionIntent.intentSender
+                } catch (_: SecurityException) {
+                    null
+                }
+            }
+            else -> null
+        } ?: return false
+
+        val granted = launchAudioWriteConsent(intentSender)
+        return granted && LyricoAudioWriteAccess.inspect(this, song).canWrite
+    }
+
+    private suspend fun launchAudioWriteConsent(intentSender: IntentSender): Boolean {
+        val deferred = CompletableDeferred<Boolean>()
+        pendingAudioWriteConsent?.complete(false)
+        pendingAudioWriteConsent = deferred
+        return try {
+            audioWriteConsentLauncher.launch(
+                IntentSenderRequest.Builder(intentSender).build()
+            )
+            deferred.await()
+        } catch (_: Throwable) {
+            pendingAudioWriteConsent = null
+            deferred.complete(false)
+            false
+        }
+    }
+
+    override fun onDestroy() {
+        pendingAudioWriteConsent?.complete(false)
+        pendingAudioWriteConsent = null
+        super.onDestroy()
     }
 
     companion object {
@@ -105,6 +173,7 @@ class LyricoSearchActivity : BaseSettingsActivity() {
 private fun LyricoSearchScreen(
     song: AudioFile,
     onBack: () -> Unit,
+    requestCoverWriteAccess: suspend (AudioFile) -> Boolean,
     onApplied: () -> Unit
 ) {
     val context = LocalContext.current
@@ -266,37 +335,75 @@ private fun LyricoSearchScreen(
     previewCandidate?.let { candidate ->
         fun applySelection(writeLyrics: Boolean, writeCover: Boolean) {
             val loadedLyrics = previewLyrics
+            val coverUrlToWrite = selectedCoverUrl
             val shouldWriteLyrics = writeLyrics && loadedLyrics != null && !loadedLyrics.isEmpty
-            val shouldWriteCover = writeCover && selectedCoverUrl != null
+            val shouldWriteCover = writeCover && coverUrlToWrite != null
             if (!shouldWriteLyrics && !shouldWriteCover) return
             val applyId = "${candidate.pluginId}:${candidate.id}"
             applyingId = applyId
             scope.launch {
-                val result = withContext(Dispatchers.IO) {
-                    runCatching {
-                        if (shouldWriteCover) {
-                            selectedCoverUrl?.let { engine.writeEmbeddedCover(song, it) }
-                        }
-                        if (shouldWriteLyrics && loadedLyrics != null) {
-                            val prepared = engine.prepareLyrics(
-                                lyrics = loadedLyrics,
-                                timing = lyricTiming,
-                                includeTranslation = includeTranslation,
-                                includeRomanization = includeRomanization
+                val failures = mutableListOf<String>()
+                var appliedParts = 0
+
+                if (shouldWriteLyrics && loadedLyrics != null) {
+                    val prepared = engine.prepareLyrics(
+                        lyrics = loadedLyrics,
+                        timing = lyricTiming,
+                        includeTranslation = includeTranslation,
+                        includeRomanization = includeRomanization
+                    )
+                    withContext(Dispatchers.IO) {
+                        runCatching { engine.writeOverride(song, prepared) }
+                    }.onSuccess {
+                        appliedParts++
+                    }.onFailure { error ->
+                        failures += context.getString(
+                            R.string.lyrico_search_lyrics_failed,
+                            error.message.orEmpty()
+                        )
+                    }
+                }
+
+                if (shouldWriteCover) {
+                    val authorized = requestCoverWriteAccess(song)
+                    if (!authorized) {
+                        failures += context.getString(R.string.lyrico_search_cover_permission_failed)
+                    } else {
+                        withContext(Dispatchers.IO) {
+                            runCatching {
+                                engine.writeEmbeddedCover(song, requireNotNull(coverUrlToWrite))
+                            }
+                        }.onSuccess {
+                            appliedParts++
+                        }.onFailure { error ->
+                            failures += context.getString(
+                                R.string.lyrico_search_cover_failed,
+                                error.message.orEmpty()
                             )
-                            engine.writeOverride(song, prepared)
                         }
                     }
                 }
+
                 applyingId = null
-                result.onSuccess {
-                    Toast.makeText(context, R.string.lyrico_search_applied, Toast.LENGTH_SHORT).show()
+                if (appliedParts > 0) {
+                    val message = if (failures.isEmpty()) {
+                        context.getString(R.string.lyrico_search_applied)
+                    } else {
+                        context.getString(
+                            R.string.lyrico_search_applied_partial,
+                            failures.joinToString("; ")
+                        )
+                    }
+                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                     previewCandidate = null
                     onApplied()
-                }.onFailure { error ->
+                } else {
                     Toast.makeText(
                         context,
-                        context.getString(R.string.lyrico_search_apply_failed, error.message.orEmpty()),
+                        context.getString(
+                            R.string.lyrico_search_apply_failed,
+                            failures.joinToString("; ").ifBlank { "Unknown error" }
+                        ),
                         Toast.LENGTH_LONG
                     ).show()
                 }

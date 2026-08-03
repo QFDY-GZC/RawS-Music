@@ -32,6 +32,37 @@ extern "C" {
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+static std::string online_safe_url(const char *value) {
+    if (!value || value[0] == '\0') return "-";
+    std::string result(value);
+    const size_t query = result.find('?');
+    const size_t fragment = result.find('#');
+    size_t cut = std::string::npos;
+    if (query != std::string::npos) cut = query;
+    if (fragment != std::string::npos && (cut == std::string::npos || fragment < cut)) cut = fragment;
+    if (cut != std::string::npos) result.resize(cut);
+    const size_t scheme = result.find("://");
+    if (scheme != std::string::npos) {
+        const size_t authorityStart = scheme + 3;
+        const size_t authorityEnd = result.find('/', authorityStart);
+        const size_t at = result.find('@', authorityStart);
+        if (at != std::string::npos && (authorityEnd == std::string::npos || at < authorityEnd)) {
+            result.erase(authorityStart, at - authorityStart + 1);
+        }
+    }
+    if (result.size() > 300) result.resize(300);
+    return result;
+}
+
+static int online_header_line_count(const char *headers) {
+    if (!headers || headers[0] == '\0') return 0;
+    int count = 0;
+    for (const char *p = headers; *p; ++p) {
+        if (*p == '\n') ++count;
+    }
+    return count > 0 ? count : 1;
+}
+
 static thread_local sigjmp_buf s_abort_jmp_buf;
 static thread_local volatile sig_atomic_t s_abort_caught = 0;
 static std::mutex s_send_packet_signal_mutex;
@@ -835,9 +866,60 @@ cleanup_pcm:
     return ret;
 }
 
-static jlong probe_duration(const char *path) {
+
+static int open_input_with_http_options(
+    AVFormatContext **format_context,
+    const char *path,
+    const char *headers_block,
+    const char *user_agent
+) {
+    AVDictionary *options = nullptr;
+    const bool remote_input = path &&
+        (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0);
+    if (remote_input) {
+        if (headers_block && headers_block[0] != '\0') {
+            av_dict_set(&options, "headers", headers_block, 0);
+        }
+        if (user_agent && user_agent[0] != '\0') {
+            av_dict_set(&options, "user_agent", user_agent, 0);
+        }
+        av_dict_set(&options, "reconnect", "1", 0);
+        av_dict_set(&options, "reconnect_streamed", "1", 0);
+        av_dict_set(&options, "reconnect_delay_max", "5", 0);
+        av_dict_set(&options, "rw_timeout", "15000000", 0);
+    }
+    const std::string safeUrl = online_safe_url(path);
+    if (remote_input) {
+        LOGI("ONLINE_PIPE NATIVE_PROBE_OPEN_START url=%s headers=%d ua=%d",
+             safeUrl.c_str(), online_header_line_count(headers_block),
+             user_agent && user_agent[0] != '\0');
+    }
+    const int result = avformat_open_input(format_context, path, nullptr, &options);
+    av_dict_free(&options);
+    if (remote_input) {
+        if (result < 0) {
+            char errorText[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(result, errorText, sizeof(errorText));
+            LOGE("ONLINE_PIPE NATIVE_PROBE_OPEN_FAIL url=%s error=%d (%s)",
+                 safeUrl.c_str(), result, errorText);
+        } else {
+            LOGI("ONLINE_PIPE NATIVE_PROBE_OPEN_OK url=%s format=%s streams=%u",
+                 safeUrl.c_str(),
+                 (*format_context && (*format_context)->iformat && (*format_context)->iformat->name)
+                     ? (*format_context)->iformat->name : "-",
+                 *format_context ? (*format_context)->nb_streams : 0);
+        }
+    }
+    return result;
+}
+
+static jlong probe_duration(
+    const char *path,
+    const char *headers_block = nullptr,
+    const char *user_agent = nullptr
+) {
     AVFormatContext *fmt_ctx = nullptr;
-    if (avformat_open_input(&fmt_ctx, path, nullptr, nullptr) < 0) return 0;
+    if (open_input_with_http_options(&fmt_ctx, path, headers_block, user_agent) < 0) return 0;
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
         avformat_close_input(&fmt_ctx);
         return 0;
@@ -849,9 +931,13 @@ static jlong probe_duration(const char *path) {
     return dur / 1000;
 }
 
-static jint probe_sample_rate(const char *path) {
+static jint probe_sample_rate(
+    const char *path,
+    const char *headers_block = nullptr,
+    const char *user_agent = nullptr
+) {
     AVFormatContext *fmt_ctx = nullptr;
-    if (avformat_open_input(&fmt_ctx, path, nullptr, nullptr) < 0) return 0;
+    if (open_input_with_http_options(&fmt_ctx, path, headers_block, user_agent) < 0) return 0;
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
         avformat_close_input(&fmt_ctx);
         return 0;
@@ -867,9 +953,13 @@ static jint probe_sample_rate(const char *path) {
     return sr;
 }
 
-static jint probe_bits_per_sample(const char *path) {
+static jint probe_bits_per_sample(
+    const char *path,
+    const char *headers_block = nullptr,
+    const char *user_agent = nullptr
+) {
     AVFormatContext *fmt_ctx = nullptr;
-    if (avformat_open_input(&fmt_ctx, path, nullptr, nullptr) < 0) {
+    if (open_input_with_http_options(&fmt_ctx, path, headers_block, user_agent) < 0) {
         LOGE("probe_bits_per_sample: failed to open %s", path);
         return 0;
     }
@@ -897,9 +987,13 @@ static jint probe_bits_per_sample(const char *path) {
     return bits;
 }
 
-static jint probe_channel_count(const char *path) {
+static jint probe_channel_count(
+    const char *path,
+    const char *headers_block = nullptr,
+    const char *user_agent = nullptr
+) {
     AVFormatContext *fmt_ctx = nullptr;
-    if (avformat_open_input(&fmt_ctx, path, nullptr, nullptr) < 0) return 0;
+    if (open_input_with_http_options(&fmt_ctx, path, headers_block, user_agent) < 0) return 0;
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
         avformat_close_input(&fmt_ctx);
         return 0;
@@ -1056,6 +1150,58 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCount(
     jint ch = probe_channel_count(p);
     env->ReleaseStringUTFChars(path, p);
     return ch;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeDurationWithOptions(
+    JNIEnv *env, jobject, jstring path, jstring headersBlock, jstring userAgent) {
+    const char *p = env->GetStringUTFChars(path, nullptr);
+    const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
+    const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
+    const jlong value = probe_duration(p, headers, agent);
+    if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+    if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
+    env->ReleaseStringUTFChars(path, p);
+    return value;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeSampleRateWithOptions(
+    JNIEnv *env, jobject, jstring path, jstring headersBlock, jstring userAgent) {
+    const char *p = env->GetStringUTFChars(path, nullptr);
+    const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
+    const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
+    const jint value = probe_sample_rate(p, headers, agent);
+    if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+    if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
+    env->ReleaseStringUTFChars(path, p);
+    return value;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeBitsPerSampleWithOptions(
+    JNIEnv *env, jobject, jstring path, jstring headersBlock, jstring userAgent) {
+    const char *p = env->GetStringUTFChars(path, nullptr);
+    const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
+    const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
+    const jint value = probe_bits_per_sample(p, headers, agent);
+    if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+    if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
+    env->ReleaseStringUTFChars(path, p);
+    return value;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCountWithOptions(
+    JNIEnv *env, jobject, jstring path, jstring headersBlock, jstring userAgent) {
+    const char *p = env->GetStringUTFChars(path, nullptr);
+    const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
+    const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
+    const jint value = probe_channel_count(p, headers, agent);
+    if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+    if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
+    env->ReleaseStringUTFChars(path, p);
+    return value;
 }
 
 extern "C" JNIEXPORT jint JNICALL
@@ -1295,7 +1441,9 @@ static StreamDecoder* stream_decoder_open(
     const char *path,
     int target_sample_rate,
     int bits_per_sample,
-    int channels
+    int channels,
+    const char *headers_block,
+    const char *user_agent
 ) {
     StreamDecoder *sd = (StreamDecoder *)calloc(1, sizeof(StreamDecoder));
     if (!sd) return nullptr;
@@ -1324,24 +1472,66 @@ static StreamDecoder* stream_decoder_open(
     sd->dsd_pcm_coeffs = nullptr;
     sd->dsd_pcm_history = nullptr;
 
-    const int openResult = avformat_open_input(&sd->fmt_ctx, path, nullptr, nullptr);
+    AVDictionary *openOptions = nullptr;
+    const bool remoteInput = path &&
+        (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0);
+    if (remoteInput) {
+        if (headers_block && headers_block[0] != '\0') {
+            av_dict_set(&openOptions, "headers", headers_block, 0);
+        }
+        if (user_agent && user_agent[0] != '\0') {
+            av_dict_set(&openOptions, "user_agent", user_agent, 0);
+        }
+        // FFmpeg's HTTP protocol reconnects the decoded stream without involving a
+        // background Java MediaPlayer. This keeps online PCM inside the DSP/USB path.
+        av_dict_set(&openOptions, "reconnect", "1", 0);
+        av_dict_set(&openOptions, "reconnect_streamed", "1", 0);
+        av_dict_set(&openOptions, "reconnect_delay_max", "5", 0);
+        av_dict_set(&openOptions, "rw_timeout", "15000000", 0);
+    }
+    const std::string safeUrl = online_safe_url(path);
+    if (remoteInput) {
+        LOGI("ONLINE_PIPE NATIVE_DECODER_OPEN_START url=%s target=%dHz/%dbit/%dch headers=%d ua=%d",
+             safeUrl.c_str(), target_sample_rate, bits_per_sample, channels,
+             online_header_line_count(headers_block), user_agent && user_agent[0] != '\0');
+    }
+    const int openResult = avformat_open_input(&sd->fmt_ctx, path, nullptr, &openOptions);
+    av_dict_free(&openOptions);
     if (openResult < 0) {
         char errorText[AV_ERROR_MAX_STRING_SIZE] = {0};
         av_strerror(openResult, errorText, sizeof(errorText));
         LOGE("stream_decoder_open: Could not open input: %s error=%d (%s)",
-             path, openResult, errorText);
+             safeUrl.c_str(), openResult, errorText);
+        if (remoteInput) {
+            LOGE("ONLINE_PIPE NATIVE_DECODER_OPEN_FAIL url=%s error=%d (%s)",
+                 safeUrl.c_str(), openResult, errorText);
+        }
         free(sd);
         return nullptr;
+    }
+    if (remoteInput) {
+        LOGI("ONLINE_PIPE NATIVE_DECODER_INPUT_OK url=%s format=%s streams=%u",
+             safeUrl.c_str(),
+             (sd->fmt_ctx && sd->fmt_ctx->iformat && sd->fmt_ctx->iformat->name)
+                 ? sd->fmt_ctx->iformat->name : "-",
+             sd->fmt_ctx ? sd->fmt_ctx->nb_streams : 0);
     }
 
     if (avformat_find_stream_info(sd->fmt_ctx, nullptr) < 0) {
         LOGE("stream_decoder_open: Could not find stream info");
+        if (remoteInput) {
+            LOGE("ONLINE_PIPE NATIVE_STREAM_INFO_FAIL url=%s", safeUrl.c_str());
+        }
         goto fail;
     }
 
     sd->audio_stream_idx = find_audio_stream(sd->fmt_ctx);
     if (sd->audio_stream_idx < 0) {
         LOGE("stream_decoder_open: No audio stream found");
+        if (remoteInput) {
+            LOGE("ONLINE_PIPE NATIVE_NO_AUDIO_STREAM url=%s streams=%u",
+                 safeUrl.c_str(), sd->fmt_ctx ? sd->fmt_ctx->nb_streams : 0);
+        }
         goto fail;
     }
 
@@ -1588,10 +1778,20 @@ static StreamDecoder* stream_decoder_open(
         sd->flushed_swr = false;
 
         LOGI("stream_decoder_open: OK, %s -> %dHz %dch %dbit, duration=%lldus%s%s",
-             path, sd->out_sample_rate, sd->out_channels, sd->out_bits,
+             safeUrl.c_str(), sd->out_sample_rate, sd->out_channels, sd->out_bits,
              (long long)sd->duration_us,
              sd->raw_pcm_passthrough ? ", rawFallback=" : "",
              sd->raw_pcm_passthrough ? sd->raw_pcm_name : "");
+        if (remoteInput) {
+            const AVCodecParameters *openedCodec =
+                sd->fmt_ctx->streams[sd->audio_stream_idx]->codecpar;
+            LOGI("ONLINE_PIPE NATIVE_DECODER_OPEN_OK url=%s codec=%s source=%dHz/%dch output=%dHz/%dbit/%dch durationUs=%lld",
+                 safeUrl.c_str(),
+                 openedCodec ? avcodec_get_name(openedCodec->codec_id) : "-",
+                 sd->src_sample_rate, sd->src_channels,
+                 sd->out_sample_rate, sd->out_bits, sd->out_channels,
+                 (long long)sd->duration_us);
+        }
         return sd;
     }
 
@@ -1953,9 +2153,26 @@ static void stream_decoder_close(StreamDecoder *sd) {
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoder(
-    JNIEnv *env, jobject, jstring path, jint targetRate, jint targetBits, jint channels) {
+    JNIEnv *env,
+    jobject,
+    jstring path,
+    jint targetRate,
+    jint targetBits,
+    jint channels,
+    jstring headersBlock,
+    jstring userAgent) {
     const char *p = env->GetStringUTFChars(path, nullptr);
-    StreamDecoder *sd = stream_decoder_open(p, targetRate, targetBits, channels);
+    const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
+    const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
+    StreamDecoder *sd = stream_decoder_open(
+        p,
+        targetRate,
+        targetBits,
+        channels,
+        headers,
+        agent);
+    if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+    if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
     env->ReleaseStringUTFChars(path, p);
     return registerStreamDecoder(sd);
 }

@@ -15,6 +15,7 @@ import com.rawsmusic.module.player.PlayerService
 import com.rawsmusic.module.scanner.LibraryScannerDependencies
 import com.rawsmusic.module.scanner.MusicRepositoryAudioLibraryRepository
 import com.rawsmusic.memory.FairRuntimeMemoryManager
+import com.rawsmusic.lyric.DesktopLyricService
 import com.rawsmusic.ui.songs.PlayerHolder
 
 class RawSMusicApp : Application() {
@@ -35,8 +36,16 @@ class RawSMusicApp : Application() {
         CoreInit.init(this)
         DataModule.init(this)
         LibraryScannerDependencies.install { MusicRepositoryAudioLibraryRepository() }
+        com.rawsmusic.module.scanner.LyricOverrideStore.install(
+            java.io.File(filesDir, "lyric_overrides")
+        )
         AppLogger.init()
         ThemeManager.applyStoredTheme()
+        // Apply the one-time Flyme default-off migration before any lyric bridge is initialized.
+        AppPreferences.Lyrics.tickerEnabled
+        if (AppPreferences.Lyrics.desktopLyricEnabled && DesktopLyricService.canDraw(this)) {
+            DesktopLyricService.sync(this)
+        }
 
         PlayerService.ensureRuntimeService(
             this,

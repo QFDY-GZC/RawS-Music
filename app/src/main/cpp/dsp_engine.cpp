@@ -9,12 +9,14 @@
 #include <cmath>
 #include <math.h>
 #include "raw_fft_convolver.h"
+#include "android_dvc_processor.h"
 #include "auto_peak_limiter.h"
 #include "experimental_gain.h"
 #include "loudness_balance_processor.h"
 #include "mono_bass_processor.h"
 #include "dynamic_eq_processor.h"
 #include "moog_ladder_filter.h"
+#include "realtime_stem_separator.h"
 #include "speaker_output_effect.h"
 #include "stereo_width_processor.h"
 #include "android_binaural_spatial_processor.h"
@@ -38,9 +40,11 @@ static inline float sanitizeAndClampSample(float sample) {
     return std::max(-1.0f, std::min(1.0f, sample));
 }
 
-static inline void applyOutputSafetyClamp(float* samples, int length) {
+static inline void sanitizeFloatOutput(float* samples, int length) {
     for (int i = 0; i < length; ++i) {
-        samples[i] = sanitizeAndClampSample(samples[i]);
+        if (!std::isfinite(samples[i])) {
+            samples[i] = 0.0f;
+        }
     }
 }
 
@@ -1497,6 +1501,8 @@ private:
 // JNI 引擎框架 (预分配内存)
 // ==========================================
 class DSPChain {
+    std::unique_ptr<AndroidDvcProcessor> m_androidDvc;
+    std::unique_ptr<RealtimeStemSeparator> m_realtimeStemSeparator;
     std::unique_ptr<StereoWidthProcessor> m_expander;
     std::unique_ptr<AndroidBinauralSpatialProcessor> m_androidBinauralSpatial;
     std::unique_ptr<ParametricEQ> m_peq;
@@ -1515,11 +1521,14 @@ class DSPChain {
     std::unique_ptr<DynamicEqProcessor> m_dynamicEq;
     std::unique_ptr<MoogLadderFilter> m_moogLadder;
     std::vector<float> m_floatBuf;
+    std::atomic<bool> m_doublePrecisionProcessing{false};
     int m_sampleRate = 44100;
     int m_channels = 2;
 
 public:
-    DSPChain() : m_expander(std::make_unique<StereoWidthProcessor>()),
+    DSPChain() : m_androidDvc(std::make_unique<AndroidDvcProcessor>()),
+                 m_realtimeStemSeparator(std::make_unique<RealtimeStemSeparator>()),
+                 m_expander(std::make_unique<StereoWidthProcessor>()),
                  m_androidBinauralSpatial(std::make_unique<AndroidBinauralSpatialProcessor>()),
                  m_peq(std::make_unique<ParametricEQ>()),
                  m_graphicEq(std::make_unique<ParametricEQ>()),
@@ -1540,6 +1549,8 @@ public:
     void init(int sampleRate, int channels) {
         m_sampleRate = sampleRate;
         m_channels = channels;
+        m_androidDvc->setSampleRate(sampleRate);
+        m_realtimeStemSeparator->setSampleRate(sampleRate);
         m_expander->setSampleRate(sampleRate);
         m_androidBinauralSpatial->setSampleRate(sampleRate);
         m_peq->setSampleRate(sampleRate);
@@ -1561,6 +1572,13 @@ public:
 
     void process(float* samples, int numFrames, int channels) {
         // All colour effects run first; the linked safety limiter observes their final peak.
+        m_androidDvc->process(samples, numFrames * channels);
+
+        // Current-session stem emphasis owns no files and follows the active PCM
+        // stream across seeks and track switches.
+        if (m_realtimeStemSeparator->isActive()) {
+            m_realtimeStemSeparator->process(samples, numFrames, channels);
+        }
 
         // 1. 低音增强
         if (m_bassBoost->isEnabled()) {
@@ -1642,8 +1660,33 @@ public:
         }
     }
 
+    void setDoublePrecisionProcessing(bool enabled) {
+        m_doublePrecisionProcessing.store(enabled, std::memory_order_release);
+    }
+
+    void processDouble(double* samples, int numFrames, int channels) {
+        if (!samples || numFrames <= 0 || channels <= 0) return;
+        const int sampleCount = numFrames * channels;
+        if (static_cast<int>(m_floatBuf.size()) < sampleCount) {
+            m_floatBuf.resize(static_cast<size_t>(sampleCount));
+        }
+
+        // Keep the public output contract unchanged while allowing the opted-in
+        // path to retain double precision across JNI conversion and final PCM
+        // accumulation. Existing effect kernels remain the same DSP modules.
+        for (int i = 0; i < sampleCount; ++i) {
+            m_floatBuf[i] = static_cast<float>(samples[i]);
+        }
+        process(m_floatBuf.data(), numFrames, channels);
+        for (int i = 0; i < sampleCount; ++i) {
+            samples[i] = static_cast<double>(m_floatBuf[i]);
+        }
+    }
+
     bool hasActiveEffects() const {
-        return m_bassBoost->isEnabled() ||
+        return m_androidDvc->isEnabled() ||
+               m_realtimeStemSeparator->isActive() ||
+               m_bassBoost->isEnabled() ||
                m_trebleBoost->isEnabled() ||
                m_peq->isEnabled() ||
                m_graphicEq->isEnabled() ||
@@ -1659,7 +1702,8 @@ public:
                m_monoBass->isEnabled() ||
                m_dynamicEq->isEnabled() ||
                m_moogLadder->isEnabled() ||
-               m_experimentalGain->isEnabled();
+               m_experimentalGain->isEnabled() ||
+               m_doublePrecisionProcessing.load(std::memory_order_acquire);
     }
 
     void setPEQEnabled(bool enabled) {
@@ -1683,6 +1727,8 @@ public:
     }
 
     float* getFloatBuffer() { return m_floatBuf.data(); }
+    AndroidDvcProcessor* getAndroidDvc() { return m_androidDvc.get(); }
+    RealtimeStemSeparator* getRealtimeStemSeparator() { return m_realtimeStemSeparator.get(); }
     StereoWidthProcessor* getExpander() { return m_expander.get(); }
     AndroidBinauralSpatialProcessor* getAndroidBinauralSpatial() { return m_androidBinauralSpatial.get(); }
     ParametricEQ* getPEQ() { return m_peq.get(); }
@@ -1727,6 +1773,45 @@ Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeRelease(
     if (handle != 0) {
         delete reinterpret_cast<DSPChain*>(handle);
     }
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetAndroidDvc(
+    JNIEnv*, jobject, jlong handle, jboolean enabled, jfloat gain, jfloat noDvcHeadroomDb) {
+    if (handle == 0) return;
+    auto* dvc = reinterpret_cast<DSPChain*>(handle)->getAndroidDvc();
+    dvc->setTargetGain(gain);
+    dvc->setNoDvcHeadroomDb(noDvcHeadroomDb);
+    dvc->setEnabled(enabled == JNI_TRUE);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetRealtimeStemEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getRealtimeStemSeparator()->setEnabled(
+        enabled == JNI_TRUE
+    );
+    LOGD("AI_REALTIME_STEM native enabled=%d", enabled == JNI_TRUE);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetRealtimeStemMode(
+        JNIEnv*, jobject, jlong handle, jint mode) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getRealtimeStemSeparator()->setMode(mode);
+    LOGD("AI_REALTIME_STEM native mode=%d", mode);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetRealtimeStemStrength(
+        JNIEnv*, jobject, jlong handle, jfloat strength) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getRealtimeStemSeparator()->setStrength(strength);
 }
 
 extern "C"
@@ -1831,14 +1916,42 @@ Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeProcessFloat(
     auto* chain = reinterpret_cast<DSPChain*>(handle);
     int numFrames = length / channels;
 
-    // Float32 数据直接进入 DSP；最终只做有限值和硬边界保护。
-    // 透明的动态限幅由压限器的自动模式显式控制，不再对所有音效
-    // 默认施加 0.95 起始的隐藏软削波。
+    // Preserve Float32 headroom between DSP and the output stage. Integer
+    // callers clamp while quantizing; float output may use downstream volume
+    // or DVC headroom before the HAL performs its final conversion.
     chain->process(samples, numFrames, channels);
-    applyOutputSafetyClamp(samples, length);
+    sanitizeFloatOutput(samples, length);
 
     env->ReleasePrimitiveArrayCritical(buffer, samples, 0);
     return 0;
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeProcessDouble(
+        JNIEnv* env, jobject, jlong handle, jdoubleArray buffer, jint length, jint channels) {
+    if (handle == 0) return -1;
+    jdouble* samples = (jdouble*)env->GetPrimitiveArrayCritical(buffer, nullptr);
+    if (samples == nullptr) return -2;
+
+    auto* chain = reinterpret_cast<DSPChain*>(handle);
+    const int numFrames = length / channels;
+    chain->processDouble(samples, numFrames, channels);
+    for (int i = 0; i < length; ++i) {
+        if (!std::isfinite(samples[i])) samples[i] = 0.0;
+        samples[i] = std::clamp(samples[i], -1.0, 1.0);
+    }
+
+    env->ReleasePrimitiveArrayCritical(buffer, samples, 0);
+    return 0;
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetDoublePrecisionProcessing(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->setDoublePrecisionProcessing(enabled == JNI_TRUE);
 }
 
 extern "C"

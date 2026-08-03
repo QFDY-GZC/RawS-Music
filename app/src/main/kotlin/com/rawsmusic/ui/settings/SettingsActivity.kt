@@ -8,13 +8,12 @@ class SettingsActivity : BaseSettingsActivity() {
 
         setContent {
             LiquidGlassSettingsScreen(
-                onNavigateToLyricManagement = { navigateToSettings(LyricManagementActivity::class.java) },
-                onNavigateToStatusBarLyric = { navigateToSettings(StatusBarLyricActivity::class.java) },
-                onNavigateToLyricFont = { navigateToSettings(LyricFontSettingsActivity::class.java) },
+                onNavigateToLyrics = { navigateToSettings(LyricSettingsActivity::class.java) },
                 onNavigateToAppearance = { navigateToSettings(AppearanceActivity::class.java) },
                 onNavigateToPersonalization = { navigateToSettings(PersonalizationSettingsActivity::class.java) },
                 onNavigateToAudioSettings = { navigateToSettings(AudioSettingsActivity::class.java) },
                 onNavigateToAudioEffects = { navigateToSettings(AudioEffectsActivity::class.java) },
+                onNavigateToAiSeparation = { navigateToSettings(AiSeparationActivity::class.java) },
                 onNavigateToTransitionSettings = { navigateToSettings(TransitionSettingsActivity::class.java) },
                 onNavigateToPlayerInterface = { navigateToSettings(PlayerInterfaceActivity::class.java) },
                 onNavigateToUsbDac = { navigateToSettings(UsbDacSettingsActivity::class.java) },

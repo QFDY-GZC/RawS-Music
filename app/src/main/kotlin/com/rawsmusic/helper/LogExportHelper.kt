@@ -16,16 +16,16 @@ class LogExportHelper(
         try {
             val logContent = AppLogger.getLogContent()
             if (logContent.isNullOrBlank()) {
-                Toast.makeText(context, "暂无日志", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, context.getString(com.rawsmusic.R.string.logs_empty), Toast.LENGTH_SHORT).show()
                 return
             }
 
             context.contentResolver.openOutputStream(uri)?.use { output ->
                 output.write(logContent.toByteArray(Charsets.UTF_8))
             }
-            Toast.makeText(context, "日志已导出", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(com.rawsmusic.R.string.logs_exported), Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            Toast.makeText(context, "导出失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(com.rawsmusic.R.string.logs_export_failed, e.message.orEmpty()), Toast.LENGTH_SHORT).show()
         }
     }
 }

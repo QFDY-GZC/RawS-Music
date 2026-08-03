@@ -1,6 +1,9 @@
 package com.rawsmusic.lyrico
 
 import android.content.Context
+import android.graphics.BitmapFactory
+import android.media.MediaScannerConnection
+import android.net.Uri
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonArray
@@ -14,6 +17,7 @@ import com.rawsmusic.core.common.model.LyricWord
 import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.lyrico.runtime.QuickJsHostApi
 import com.rawsmusic.lyrico.runtime.QuickJsRuntime
+import com.rawsmusic.module.scanner.LyricOverrideStore
 import com.rawsmusic.module.scanner.parser.RawSLyricsParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -21,6 +25,7 @@ import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
@@ -37,6 +42,13 @@ data class LyricoSongCandidate(
     val supportsCoverSearch: Boolean,
     val fields: Map<String, String>,
     val internal: Map<String, String>
+)
+
+
+data class LyricoPreferredSource(
+    val id: String,
+    val name: String,
+    val capabilities: Set<String>
 )
 
 data class LyricoCoverCandidate(
@@ -56,6 +68,75 @@ class LyricoSourceEngine(context: Context) {
     private val appContext = context.applicationContext
     private val store = LyricoPluginStore.get(appContext)
     private val gson = Gson()
+
+    fun preferredSources(): List<LyricoPreferredSource> = store.enabledInPreferredOrder().map { plugin ->
+        LyricoPreferredSource(
+            id = plugin.manifest.id,
+            name = plugin.manifest.name.ifBlank { plugin.manifest.id },
+            capabilities = plugin.manifest.capabilities.orEmpty()
+        )
+    }
+
+    suspend fun searchSource(
+        song: AudioFile,
+        sourceId: String,
+        query: String = defaultQuery(song)
+    ): List<LyricoSongCandidate> = withContext(Dispatchers.IO) {
+        val plugin = store.enabledInPreferredOrder().firstOrNull { it.manifest.id == sourceId }
+            ?: return@withContext emptyList()
+        runCatching { searchPlugin(plugin, song, query) }
+            .onFailure { Log.w(TAG, "Preferred source search failed for $sourceId", it) }
+            .getOrDefault(emptyList())
+            .sortedWith(
+                compareByDescending<LyricoSongCandidate> { candidateTitleScore(song, it) }
+                    .thenByDescending { candidateMetadataScore(song, it) }
+            )
+    }
+
+    fun bestMatchingCandidate(
+        song: AudioFile,
+        candidates: List<LyricoSongCandidate>,
+        minimumScore: Double = 0.62
+    ): LyricoSongCandidate? = matchingCandidates(song, candidates, minimumScore).firstOrNull()
+
+    fun matchingCandidates(
+        song: AudioFile,
+        candidates: List<LyricoSongCandidate>,
+        minimumScore: Double = 0.62
+    ): List<LyricoSongCandidate> = candidates
+        .map { candidate ->
+            val score = candidateTitleScore(song, candidate) * 0.72 +
+                candidateMetadataScore(song, candidate) * 0.28
+            candidate to score
+        }
+        .filter { (_, score) -> score >= minimumScore }
+        .sortedByDescending { (_, score) -> score }
+        .map { (candidate, _) -> candidate }
+
+    suspend fun highestResolutionCover(
+        candidates: List<LyricoCoverCandidate>
+    ): LyricoCoverCandidate? = supervisorScope {
+        val distinct = candidates.distinctBy { it.url }.take(12)
+        if (distinct.isEmpty()) return@supervisorScope null
+        val measured = distinct.mapIndexed { index, candidate ->
+            async(Dispatchers.IO) {
+                val size = probeRemoteImageSize(candidate.url)
+                val area = size?.let { (width, height) -> width.toLong() * height.toLong() } ?: -1L
+                Triple(candidate, area, index)
+            }
+        }.map { it.await() }
+        measured.maxWithOrNull(
+            compareBy<Triple<LyricoCoverCandidate, Long, Int>> { it.second }
+                .thenBy { -it.third }
+        )?.first
+    }
+
+    fun clearTransientCache() {
+        listOf(
+            File(appContext.cacheDir, "lyrico_covers"),
+            File(appContext.cacheDir, "lyrico_plugins")
+        ).forEach { directory -> runCatching { directory.deleteRecursively() } }
+    }
 
     suspend fun search(song: AudioFile, query: String): List<LyricoSongCandidate> =
         supervisorScope {
@@ -186,78 +267,225 @@ class LyricoSourceEngine(context: Context) {
             require(coverUrl.startsWith("http://") || coverUrl.startsWith("https://")) {
                 "Unsupported cover address"
             }
-            val audio = File(song.path)
-            require(audio.isFile && audio.canRead() && audio.canWrite()) {
-                "The audio file is not writable"
-            }
             require(TagLibBridge.isLoaded()) { "The metadata writer is unavailable" }
 
+            val audio = File(song.path)
+            val access = LyricoAudioWriteAccess.inspect(appContext, song)
+            require(access.canWrite) {
+                "Audio write access was not granted"
+            }
+
             val downloaded = downloadCover(coverUrl, song.id)
-            val parent = audio.parentFile ?: error("The audio file has no parent directory")
-            require(parent.canWrite()) { "The audio directory is not writable" }
             val operationId = System.nanoTime()
-            val extensionSuffix = audio.extension.takeIf { it.isNotBlank() }?.let { ".$it" }.orEmpty()
-            val working = File(parent, ".${audio.nameWithoutExtension}.raws-cover-work-$operationId$extensionSuffix")
-            val backup = File(parent, ".${audio.name}.raws-cover-$operationId.bak")
+            val extension = resolveAudioExtension(song, audio)
+            val extensionSuffix = extension.takeIf { it.isNotBlank() }?.let { ".$it" }.orEmpty()
             val verify = File(appContext.cacheDir, "lyrico_cover_verify_${song.id}_$operationId.img")
-            var originalMoved = false
-            var replacementMoved = false
-            try {
-                // TagLib may shift audio payload offsets while rewriting tags. Mutating the file
-                // currently held by FFmpeg can look like an early EOF, so edit a sibling copy and
-                // atomically replace the directory entry only after verification.
-                audio.copyTo(working, overwrite = false)
-                val mimeType = detectImageMime(downloaded)
-                Log.i(TAG, "LYRICO_COVER_WRITE prepare path=${audio.absolutePath} mime=$mimeType")
-                require(TagLibBridge.writeEmbeddedArtwork(working.absolutePath, downloaded.absolutePath, mimeType)) {
-                    "This audio format does not support embedded cover writing"
+            val directWorking = audio.parentFile?.let { parent ->
+                File(parent, ".${audio.nameWithoutExtension}.raws-cover-work-$operationId$extensionSuffix")
+            }?.takeIf { access.canCreateSibling }
+
+            if (directWorking != null && audio.isFile) {
+                writeCoverWithAtomicSibling(audio, directWorking, downloaded, verify, operationId)
+            } else {
+                val working = File(
+                    appContext.cacheDir,
+                    "lyrico_cover_work_${song.id}_$operationId$extensionSuffix"
+                )
+                try {
+                    copyAudioSource(song, access.mediaUri, working)
+                    writeAndVerifyCover(working, downloaded, verify)
+                    commitWorkingAudio(song, access.mediaUri, working)
+                    Log.i(
+                        TAG,
+                        "LYRICO_COVER_WRITE committed strategy=${if (access.canOpenMediaUri) "media_store" else "direct_stream"} " +
+                            "path=${song.path} bytes=${downloaded.length()}"
+                    )
+                    downloaded
+                } catch (error: Throwable) {
+                    Log.e(TAG, "LYRICO_COVER_WRITE failed path=${song.path}", error)
+                    throw error
+                } finally {
+                    verify.delete()
+                    working.delete()
                 }
-                require(TagLibBridge.extractEmbeddedArtworkToFile(working.absolutePath, verify.absolutePath)) {
-                    "Cover verification failed"
-                }
-                require(verify.length() > 1_024L) { "The written cover is invalid" }
-                originalMoved = audio.renameTo(backup)
-                require(originalMoved) { "Unable to prepare the original audio for replacement" }
-                replacementMoved = working.renameTo(audio)
-                if (!replacementMoved) {
-                    backup.renameTo(audio)
-                    originalMoved = false
-                    error("Unable to activate the updated audio file")
-                }
-                Log.i(TAG, "LYRICO_COVER_WRITE committed path=${audio.absolutePath} bytes=${downloaded.length()}")
-                downloaded
-            } catch (error: Throwable) {
-                if (originalMoved && !replacementMoved && !audio.exists() && backup.exists()) {
-                    if (!backup.renameTo(audio)) {
-                        backup.copyTo(audio, overwrite = true)
-                    }
-                }
-                Log.e(TAG, "LYRICO_COVER_WRITE failed path=${audio.absolutePath}", error)
-                throw error
-            } finally {
-                verify.delete()
-                working.delete()
-                if (replacementMoved) backup.delete()
             }
         }
 
+
+    private fun resolveAudioExtension(song: AudioFile, audio: File): String {
+        val pathCandidate = sequenceOf(
+            audio.extension,
+            runCatching { Uri.parse(song.path).lastPathSegment.orEmpty().substringAfterLast('.', "") }
+                .getOrDefault(""),
+            song.path.substringBefore('?').substringBefore('#').substringAfterLast('.', "")
+        ).map { it.lowercase(Locale.ROOT).filter(Char::isLetterOrDigit) }
+            .firstOrNull { it in AUDIO_FILE_EXTENSIONS }
+        if (pathCandidate != null) return pathCandidate
+
+        val format = listOf(song.format, song.encodingFormat)
+            .joinToString(" ")
+            .uppercase(Locale.ROOT)
+        return when {
+            "DSDIFF" in format || "DFF" in format -> "dff"
+            "DSF" in format || "DSD" in format -> "dsf"
+            "WAVPACK" in format -> "wv"
+            "WAVE" in format || "WAV" in format -> "wav"
+            "AIFF" in format || "AIF" in format -> "aiff"
+            "FLAC" in format -> "flac"
+            "ALAC" in format || "M4A" in format || "MP4" in format -> "m4a"
+            "MPEG" in format || "MP3" in format -> "mp3"
+            "AAC" in format -> "aac"
+            "OPUS" in format -> "opus"
+            "OGG" in format || "VORBIS" in format -> "ogg"
+            "MONKEY" in format || "APE" in format -> "ape"
+            "WMA" in format || "ASF" in format -> "wma"
+            else -> error("Unable to determine the audio container format")
+        }
+    }
+
+    private fun writeCoverWithAtomicSibling(
+        audio: File,
+        working: File,
+        downloaded: File,
+        verify: File,
+        operationId: Long
+    ): File {
+        val parent = audio.parentFile ?: error("The audio file has no parent directory")
+        val backup = File(parent, ".${audio.name}.raws-cover-$operationId.bak")
+        var originalMoved = false
+        var replacementMoved = false
+        try {
+            audio.copyTo(working, overwrite = false)
+            writeAndVerifyCover(working, downloaded, verify)
+            originalMoved = audio.renameTo(backup)
+            require(originalMoved) { "Unable to prepare the original audio for replacement" }
+            replacementMoved = working.renameTo(audio)
+            if (!replacementMoved) {
+                backup.renameTo(audio)
+                originalMoved = false
+                error("Unable to activate the updated audio file")
+            }
+            Log.i(TAG, "LYRICO_COVER_WRITE committed strategy=atomic path=${audio.absolutePath}")
+            return downloaded
+        } catch (error: Throwable) {
+            if (originalMoved && !replacementMoved && !audio.exists() && backup.exists()) {
+                if (!backup.renameTo(audio)) backup.copyTo(audio, overwrite = true)
+            }
+            throw error
+        } finally {
+            verify.delete()
+            working.delete()
+            if (replacementMoved) backup.delete()
+        }
+    }
+
+    private fun writeAndVerifyCover(working: File, downloaded: File, verify: File) {
+        val mimeType = detectImageMime(downloaded)
+        Log.i(TAG, "LYRICO_COVER_WRITE prepare path=${working.absolutePath} mime=$mimeType")
+        require(TagLibBridge.writeEmbeddedArtwork(working.absolutePath, downloaded.absolutePath, mimeType)) {
+            "This audio format does not support embedded cover writing"
+        }
+        require(TagLibBridge.extractEmbeddedArtworkToFile(working.absolutePath, verify.absolutePath)) {
+            "Cover verification failed"
+        }
+        require(verify.length() > 1_024L) { "The written cover is invalid" }
+    }
+
+    private fun copyAudioSource(song: AudioFile, mediaUri: Uri?, target: File) {
+        if (target.exists()) target.delete()
+        target.parentFile?.mkdirs()
+        openAudioInput(song, mediaUri).use { input ->
+            target.outputStream().buffered().use { output -> input.copyTo(output) }
+        }
+        require(target.length() > 0L) { "The audio source could not be copied for editing" }
+    }
+
+    private fun openAudioInput(song: AudioFile, mediaUri: Uri?): InputStream {
+        val file = File(song.path)
+        if (file.isFile) {
+            runCatching { file.inputStream().buffered() }.getOrNull()?.let { return it }
+        }
+        if (mediaUri != null) {
+            return appContext.contentResolver.openInputStream(mediaUri)?.buffered()
+                ?: error("The audio source cannot be opened")
+        }
+        error("The audio source cannot be opened")
+    }
+
+    private fun commitWorkingAudio(song: AudioFile, mediaUri: Uri?, working: File) {
+        val access = LyricoAudioWriteAccess.inspect(appContext, song)
+        if (mediaUri != null && access.canOpenMediaUri) {
+            val resolver = appContext.contentResolver
+            val descriptor = resolver.openFileDescriptor(mediaUri, "rw")
+                ?: error("The MediaStore audio descriptor cannot be opened for writing")
+            descriptor.use { pfd ->
+                FileOutputStream(pfd.fileDescriptor).use { output ->
+                    working.inputStream().use { input ->
+                        val source = input.channel
+                        val target = output.channel
+                        target.position(0L)
+                        var transferred = 0L
+                        while (transferred < source.size()) {
+                            val count = source.transferTo(transferred, source.size() - transferred, target)
+                            if (count <= 0L) error("The updated audio could not be fully written")
+                            transferred += count
+                        }
+                        target.truncate(transferred)
+                        target.force(true)
+                    }
+                }
+            }
+            val statSize = resolver.openFileDescriptor(mediaUri, "r")?.use { it.statSize } ?: -1L
+            require(statSize <= 0L || statSize == working.length()) {
+                "The updated audio size does not match the prepared file"
+            }
+        } else {
+            val target = File(song.path)
+            require(access.canOpenDirectFile) { "The audio file cannot be opened for writing" }
+            FileOutputStream(target, false).use { output ->
+                working.inputStream().buffered().use { input -> input.copyTo(output) }
+                output.flush()
+                runCatching { output.fd.sync() }
+            }
+            require(target.length() == working.length()) {
+                "The updated audio size does not match the prepared file"
+            }
+        }
+        if (!song.path.startsWith("content://", ignoreCase = true)) {
+            runCatching {
+                MediaScannerConnection.scanFile(appContext, arrayOf(song.path), null, null)
+            }
+        }
+    }
+
     suspend fun writeOverride(song: AudioFile, lyrics: LyricData): File = withContext(Dispatchers.IO) {
         require(!lyrics.isEmpty) { "Lyrics are empty" }
+        val content = toTtml(lyrics)
         val audio = File(song.path)
-        val parent = audio.parentFile ?: error("The audio file has no parent directory")
-        require(parent.isDirectory && parent.canWrite()) { "The audio directory is not writable" }
         val suffix = if (song.cueTrackIndex > 0 || song.cueOffsetMs > 0L) {
             ".track${song.cueTrackIndex}.raws.ttml"
         } else {
             ".raws.ttml"
         }
-        val output = File(parent, audio.nameWithoutExtension + suffix)
-        val temporary = File(parent, output.name + ".tmp")
-        temporary.writeText(toTtml(lyrics), Charsets.UTF_8)
-        require(temporary.length() > 0L) { "Generated lyric file is empty" }
-        if (output.exists()) require(output.delete()) { "Unable to replace the previous lyric override" }
-        require(temporary.renameTo(output)) { "Unable to activate the lyric override" }
-        output
+
+        val sidecar = runCatching {
+            val parent = audio.parentFile ?: error("The audio file has no parent directory")
+            require(parent.isDirectory) { "The audio directory is unavailable" }
+            val output = File(parent, audio.nameWithoutExtension + suffix)
+            val temporary = File(parent, output.name + ".tmp-${System.nanoTime()}")
+            temporary.writeText(content, Charsets.UTF_8)
+            require(temporary.length() > 0L) { "Generated lyric file is empty" }
+            if (output.exists()) require(output.delete()) { "Unable to replace the previous lyric override" }
+            if (!temporary.renameTo(output)) {
+                temporary.copyTo(output, overwrite = true)
+                temporary.delete()
+            }
+            output
+        }.onFailure {
+            Log.w(TAG, "Sidecar lyric write unavailable; using private override for ${song.path}", it)
+        }.getOrNull()
+
+        sidecar ?: LyricOverrideStore.write(song, content)
     }
 
     private fun searchPlugin(
@@ -478,6 +706,36 @@ class LyricoSourceEngine(context: Context) {
         appendLine("</tt>")
     }
 
+    private fun defaultQuery(song: AudioFile): String = listOf(song.title, song.artist)
+        .filter { it.isNotBlank() }
+        .joinToString(" ")
+        .ifBlank { song.displayName }
+
+    private fun probeRemoteImageSize(url: String): Pair<Int, Int>? {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) return null
+        val connection = runCatching { URL(url).openConnection() as HttpURLConnection }.getOrNull()
+            ?: return null
+        return try {
+            connection.connectTimeout = 8_000
+            connection.readTimeout = 10_000
+            connection.instanceFollowRedirects = true
+            connection.setRequestProperty("User-Agent", "RawSMusic")
+            connection.inputStream.use { input ->
+                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeStream(input, null, options)
+                if (options.outWidth > 0 && options.outHeight > 0) {
+                    options.outWidth to options.outHeight
+                } else {
+                    null
+                }
+            }
+        } catch (_: Throwable) {
+            null
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun candidateTitleScore(song: AudioFile, candidate: LyricoSongCandidate): Double {
         return smartTextSimilarity(song.title, candidate.title)
     }
@@ -694,6 +952,11 @@ class LyricoSourceEngine(context: Context) {
 
     companion object {
         private const val TAG = "LyricoSourceEngine"
+        private val AUDIO_FILE_EXTENSIONS = setOf(
+            "aac", "aif", "aiff", "alac", "ape", "dff", "dsdiff", "dsf", "flac",
+            "m4a", "m4b", "m4p", "mp2", "mp3", "mp4", "mpga", "ogg", "opus",
+            "wav", "wma", "wv"
+        )
         private const val MAX_COVER_BYTES = 20L * 1024L * 1024L
         private val NUMERIC_ENTITY_REGEX = Regex("&#(x[0-9a-fA-F]+|[0-9]+);")
         private val VERSION_NOISE_REGEX = Regex(

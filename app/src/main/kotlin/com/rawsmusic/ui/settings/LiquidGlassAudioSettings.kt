@@ -1,6 +1,8 @@
 package com.rawsmusic.ui.settings
 
 import android.content.Intent
+import top.yukonga.miuix.kmp.basic.DropdownEntry
+import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.Switch
@@ -26,6 +28,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Surface
@@ -49,8 +52,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioOutputMode
+import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.AudioOutputManager
+import com.rawsmusic.module.player.PcmDitherMode
 
 @Composable
 fun LiquidGlassAudioSettingsScreen(
@@ -77,6 +82,22 @@ fun LiquidGlassAudioSettingsScreen(
         mutableStateOf(AppPreferences.Player.playCountThresholdPercent.coerceIn(1, 100))
     }
     var infoDialogId by remember { mutableStateOf(0) }
+    var ditherMode by remember { mutableStateOf(AppPreferences.Player.pcmDitherMode) }
+
+    val ditherOptions = listOf(
+        PcmDitherMode.OFF.id to (stringResource(R.string.settings_audio_dither_none) to stringResource(R.string.settings_audio_dither_none_desc)),
+        PcmDitherMode.RPDF.id to (stringResource(R.string.settings_audio_dither_rpdf) to stringResource(R.string.settings_audio_dither_rpdf_desc)),
+        PcmDitherMode.TPDF.id to (stringResource(R.string.settings_audio_dither_tpdf) to stringResource(R.string.settings_audio_dither_tpdf_desc)),
+        PcmDitherMode.TPDF_HIGH_PASS.id to (stringResource(R.string.settings_audio_dither_tpdf_hp) to stringResource(R.string.settings_audio_dither_tpdf_hp_desc)),
+        PcmDitherMode.GAUSSIAN.id to (stringResource(R.string.settings_audio_dither_gaussian) to stringResource(R.string.settings_audio_dither_gaussian_desc)),
+        PcmDitherMode.F_WEIGHTED.id to (stringResource(R.string.settings_audio_dither_f_weighted) to stringResource(R.string.settings_audio_dither_f_weighted_desc)),
+        PcmDitherMode.MODIFIED_E_WEIGHTED.id to (stringResource(R.string.settings_audio_dither_modified_e) to stringResource(R.string.settings_audio_dither_modified_e_desc)),
+        PcmDitherMode.SHIBATA.id to (stringResource(R.string.settings_audio_dither_shibata) to stringResource(R.string.settings_audio_dither_shibata_desc)),
+        PcmDitherMode.LOW_SHIBATA.id to (stringResource(R.string.settings_audio_dither_low_shibata) to stringResource(R.string.settings_audio_dither_low_shibata_desc)),
+        PcmDitherMode.HIGH_SHIBATA.id to (stringResource(R.string.settings_audio_dither_high_shibata) to stringResource(R.string.settings_audio_dither_high_shibata_desc))
+    )
+    val selectedDitherName = ditherOptions.firstOrNull { it.first == ditherMode }?.second?.first
+        ?: stringResource(R.string.settings_audio_dither_modified_e)
 
     fun applyAudioOutputSettings() {
         com.rawsmusic.ui.songs.PlayerHolder.controller?.applyAudioOutputSettingsChanged()
@@ -104,6 +125,7 @@ fun LiquidGlassAudioSettingsScreen(
         applyAudioOutputSettings()
     }
 
+    Box(Modifier.fillMaxSize()) {
     SettingsPage(title = stringResource(R.string.settings_audio_quality_title), onBack = onBack) {
         // ==========================
         // v6f: 每个输出引擎一张卡片，图标在左，点击展开输出品质
@@ -178,6 +200,38 @@ fun LiquidGlassAudioSettingsScreen(
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
+            SectionHeader(stringResource(R.string.settings_audio_internal_precision_section))
+            Spacer(Modifier.height(4.dp))
+            var internalDoublePrecision by remember {
+                mutableStateOf(AppPreferences.Player.internalDoublePrecisionProcessingEnabled)
+            }
+            SwitchPreference(
+                title = stringResource(R.string.settings_audio_internal_precision_title),
+                summary = stringResource(R.string.settings_audio_internal_precision_summary),
+                checked = internalDoublePrecision,
+                onCheckedChange = { checked ->
+                    internalDoublePrecision = checked
+                    AppPreferences.Player.internalDoublePrecisionProcessingEnabled = checked
+                    com.rawsmusic.ui.songs.PlayerHolder.controller
+                        ?.setInternalDoublePrecisionProcessing(checked)
+                }
+            )
+            DitherSettingsPreference(
+                title = stringResource(R.string.settings_audio_dither_title),
+                description = stringResource(R.string.settings_audio_dither_summary, selectedDitherName),
+                options = ditherOptions,
+                selectedId = ditherMode,
+                onSelected = { id ->
+                    ditherMode = id
+                    AppPreferences.Player.pcmDitherMode = id
+                    com.rawsmusic.ui.songs.PlayerHolder.controller?.setPcmDitherMode(id)
+                }
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        SettingsCard {
             SettingsActionRow(
                 title = stringResource(R.string.settings_audio_focus_title),
                 description = stringResource(R.string.settings_audio_focus_summary),
@@ -198,6 +252,15 @@ fun LiquidGlassAudioSettingsScreen(
                 normalization = checked
                 AppPreferences.Player.volumeNormalizationEnabled = checked
             }
+            SettingsActionRow(
+                title = stringResource(R.string.settings_audio_dvc),
+                description = stringResource(R.string.settings_audio_dvc_desc),
+                onClick = {
+                    (context as? BaseSettingsActivity)
+                        ?.navigateToSettings(DvcSettingsActivity::class.java)
+                        ?: context.startActivity(Intent(context, DvcSettingsActivity::class.java))
+                }
+            )
             InfoSwitchRow(stringResource(R.string.settings_audio_gapless), stringResource(R.string.settings_audio_gapless_desc), gapless, { infoDialogId = 2 }) { checked ->
                 gapless = checked
                 AppPreferences.Player.gaplessPlaybackEnabled = checked
@@ -305,25 +368,59 @@ fun LiquidGlassAudioSettingsScreen(
             }
         }
 
-        if (infoDialogId > 0) {
-            val pair: Pair<String, String> = when (infoDialogId) {
-                1 -> stringResource(R.string.settings_audio_info_volume_title) to stringResource(R.string.settings_audio_info_volume_body)
-                2 -> stringResource(R.string.settings_audio_info_gapless_title) to stringResource(R.string.settings_audio_info_gapless_body)
-                4 -> stringResource(R.string.settings_audio_info_sco_title) to stringResource(R.string.settings_audio_info_sco_body)
-                else -> "" to ""
-            }
-            val title = pair.first
-            val body = pair.second
-            AlertDialog(
-                onDismissRequest = { infoDialogId = 0 },
-                title = { Text(title, fontWeight = FontWeight.Bold) },
-                text = { Text(body, fontSize = 14.sp, lineHeight = 22.sp) },
-                confirmButton = {
-                    TextButton(onClick = { infoDialogId = 0 }) { Text(stringResource(R.string.settings_dialog_ok)) }
-                }
-            )
-        }
     }
+
+    if (infoDialogId > 0) {
+        val pair: Pair<String, String> = when (infoDialogId) {
+            1 -> stringResource(R.string.settings_audio_info_volume_title) to stringResource(R.string.settings_audio_info_volume_body)
+            2 -> stringResource(R.string.settings_audio_info_gapless_title) to stringResource(R.string.settings_audio_info_gapless_body)
+            4 -> stringResource(R.string.settings_audio_info_sco_title) to stringResource(R.string.settings_audio_info_sco_body)
+            else -> "" to ""
+        }
+        val title = pair.first
+        val body = pair.second
+        AlertDialog(
+            onDismissRequest = { infoDialogId = 0 },
+            title = { Text(title, fontWeight = FontWeight.Bold) },
+            text = { Text(body, fontSize = 14.sp, lineHeight = 22.sp) },
+            confirmButton = {
+                TextButton(onClick = { infoDialogId = 0 }) { Text(stringResource(R.string.settings_dialog_ok)) }
+            }
+        )
+    }
+    }
+}
+
+@Composable
+private fun DitherSettingsPreference(
+    title: String,
+    description: String,
+    options: List<Pair<Int, Pair<String, String>>>,
+    selectedId: Int,
+    onSelected: (Int) -> Unit
+) {
+    val dropdownEntry = remember(options, selectedId) {
+        DropdownEntry(
+            items = options.map { (id, option) ->
+                DropdownItem(
+                    text = option.first,
+                    summary = option.second,
+                    selected = selectedId == id,
+                    onClick = { onSelected(id) }
+                )
+            }
+        )
+    }
+
+    RawWindowDropdownPreference(
+        entry = dropdownEntry,
+        title = title,
+        summary = description,
+        enabled = options.isNotEmpty(),
+        showValue = options.any { it.first == selectedId },
+        maxHeight = 560.dp,
+        collapseOnSelection = true,
+    )
 }
 
 // ==========================

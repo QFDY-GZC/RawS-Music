@@ -20,7 +20,9 @@ internal class GlobalSearchSessionState(
     )
     private val prefix = "${sessionKey}_"
 
-    var query by mutableStateOf(preferences.getString(prefix + "query", "").orEmpty())
+    // A search result session is intentionally transient. Only the dedicated history store
+    // persists entered queries; reopening search starts with a clean result set.
+    var query by mutableStateOf("")
         private set
     var entryScopeMode by mutableStateOf(
         preferences.getBoolean(prefix + "entry_scope_mode", initialScope != null)
@@ -32,8 +34,10 @@ internal class GlobalSearchSessionState(
             ?: initialScope?.let { linkedSetOf(it) }.orEmpty()
     )
         private set
-    var outerListIndex by mutableIntStateOf(preferences.getInt(prefix + "outer_index", 0))
-    var outerListOffset by mutableIntStateOf(preferences.getInt(prefix + "outer_offset", 0))
+    var outerListIndex by mutableIntStateOf(0)
+    var outerListOffset by mutableIntStateOf(0)
+    private val focusedIndices = mutableMapOf<GlobalSearchScope, Int>()
+    private val focusedKeys = mutableMapOf<GlobalSearchScope, String>()
     var sortMode by mutableStateOf(
         GlobalSearchSortMode.fromToken(preferences.getString(prefix + "sort_mode", null))
     )
@@ -43,7 +47,6 @@ internal class GlobalSearchSessionState(
 
     fun updateQuery(value: String) {
         query = value
-        preferences.edit().putString(prefix + "query", value).apply()
     }
 
     fun updateFilters(scopes: Set<GlobalSearchScope>, entryMode: Boolean) {
@@ -58,34 +61,33 @@ internal class GlobalSearchSessionState(
     fun saveOuterScroll(index: Int, offset: Int) {
         outerListIndex = index
         outerListOffset = offset
-        preferences.edit()
-            .putInt(prefix + "outer_index", index)
-            .putInt(prefix + "outer_offset", offset)
-            .apply()
     }
 
-    fun focusedIndex(scope: GlobalSearchScope): Int {
-        return preferences.getInt(prefix + "focus_${scope.token}", -1)
-    }
+    fun focusedIndex(scope: GlobalSearchScope): Int = focusedIndices[scope] ?: -1
 
-    fun focusedKey(scope: GlobalSearchScope): String? {
-        return preferences.getString(prefix + "focus_key_${scope.token}", null)
-    }
+    fun focusedKey(scope: GlobalSearchScope): String? = focusedKeys[scope]
 
     fun saveFocusedIndex(scope: GlobalSearchScope, index: Int) {
-        preferences.edit().putInt(prefix + "focus_${scope.token}", index).apply()
+        focusedIndices[scope] = index
     }
 
     fun saveFocusedEntry(scope: GlobalSearchScope, key: String, index: Int) {
-        preferences.edit()
-            .putString(prefix + "focus_key_${scope.token}", key)
-            .putInt(prefix + "focus_${scope.token}", index)
-            .apply()
+        focusedKeys[scope] = key
+        focusedIndices[scope] = index
     }
 
     fun updateSort(mode: GlobalSearchSortMode) {
         sortMode = mode
         preferences.edit().putString(prefix + "sort_mode", mode.token).apply()
+    }
+
+    fun updateSort(mode: GlobalSearchSortMode, descending: Boolean) {
+        sortMode = mode
+        sortDescending = descending
+        preferences.edit()
+            .putString(prefix + "sort_mode", mode.token)
+            .putBoolean(prefix + "sort_descending", descending)
+            .apply()
     }
 
     fun toggleSortDirection() {
@@ -107,14 +109,8 @@ internal enum class GlobalSearchSortMode(val token: String) {
 }
 
 internal object GlobalSearchSessionStore {
-    private val sessions = linkedMapOf<String, GlobalSearchSessionState>()
-
     fun get(context: Context, initialScope: GlobalSearchScope?): GlobalSearchSessionState {
         val key = initialScope?.token ?: "all"
-        return synchronized(sessions) {
-            sessions.getOrPut(key) {
-                GlobalSearchSessionState(context, key, initialScope)
-            }
-        }
+        return GlobalSearchSessionState(context, key, initialScope)
     }
 }

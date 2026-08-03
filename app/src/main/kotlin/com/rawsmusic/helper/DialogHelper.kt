@@ -35,6 +35,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.stringResource
+import com.rawsmusic.R
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.PlayerController
 import com.rawsmusic.core.ui.widget.predictiveDialogMotion
@@ -51,7 +53,7 @@ class DialogHelper(
     var activeDialog by mutableStateOf<DialogKind?>(null)
         private set
 
-    var sleepOptions by mutableStateOf<List<String>>(emptyList())
+    var sleepOptions by mutableStateOf<List<Int>>(emptyList())
         private set
 
     var checkedSleepIndex by mutableIntStateOf(-1)
@@ -129,18 +131,18 @@ class DialogHelper(
     }
 
     companion object {
-        private val SLEEP_TIMER_OPTIONS = arrayOf(
-            "关闭",
-            "10 分钟",
-            "15 分钟",
-            "20 分钟",
-            "30 分钟",
-            "45 分钟",
-            "60 分钟",
-            "90 分钟",
-            "播完当前",
-            "播完 3 首后",
-            "播完 5 首后"
+        private val SLEEP_TIMER_OPTIONS = intArrayOf(
+            R.string.sleep_timer_off,
+            R.string.sleep_timer_10,
+            R.string.sleep_timer_15,
+            R.string.sleep_timer_20,
+            R.string.sleep_timer_30,
+            R.string.sleep_timer_45,
+            R.string.sleep_timer_60,
+            R.string.sleep_timer_90,
+            R.string.sleep_timer_current,
+            R.string.sleep_timer_3_songs,
+            R.string.sleep_timer_5_songs,
         )
     }
 }
@@ -189,19 +191,19 @@ fun DialogOverlay(
 private fun QqGroupDialog(helper: DialogHelper) {
     DialogCard {
         Text(
-            text = "QQ群号",
+            text = stringResource(R.string.dialog_qq_title),
             color = Color.White,
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold
         )
         Spacer(modifier = Modifier.height(14.dp))
         Text(
-            text = "QQ群号1093312333，欢迎大家进群讨论。",
+            text = stringResource(R.string.dialog_qq_description),
             color = Color.White.copy(alpha = 0.78f),
             fontSize = 14.sp
         )
         Spacer(modifier = Modifier.height(20.dp))
-        DialogTextButton(text = "确定", modifier = Modifier.align(Alignment.End)) {
+        DialogTextButton(text = stringResource(R.string.dialog_confirm), modifier = Modifier.align(Alignment.End)) {
             helper.dismiss()
         }
     }
@@ -211,7 +213,7 @@ private fun QqGroupDialog(helper: DialogHelper) {
 private fun SleepTimerDialog(helper: DialogHelper) {
     DialogCard {
         Text(
-            text = "睡眠定时",
+            text = stringResource(R.string.sleep_timer_title),
             color = Color.White,
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold
@@ -247,7 +249,7 @@ private fun SleepTimerDialog(helper: DialogHelper) {
                     }
                 }
                 Text(
-                    text = option,
+                    text = stringResource(option),
                     color = Color.White.copy(alpha = if (helper.checkedSleepIndex == index) 0.95f else 0.72f),
                     fontSize = 14.sp,
                     modifier = Modifier
@@ -257,7 +259,7 @@ private fun SleepTimerDialog(helper: DialogHelper) {
             }
         }
         Spacer(modifier = Modifier.height(10.dp))
-        DialogTextButton(text = "取消", modifier = Modifier.align(Alignment.End)) {
+        DialogTextButton(text = stringResource(R.string.sleep_timer_cancel), modifier = Modifier.align(Alignment.End)) {
             helper.dismiss()
         }
     }

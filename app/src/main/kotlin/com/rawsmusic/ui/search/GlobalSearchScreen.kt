@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -37,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -117,7 +119,8 @@ fun GlobalSearchScreen(
     }
     val songs by MusicRepository.songs.collectAsState()
     val historyStore = remember(context) { SearchHistoryStore(context) }
-    var history by remember { mutableStateOf(historyStore.load()) }
+    var history by remember { mutableStateOf(emptyList<String>()) }
+    var historyHintIndex by remember { mutableIntStateOf(0) }
     var debouncedQuery by remember(session) { mutableStateOf(session.query.trim()) }
     var showSortDialog by remember { mutableStateOf(false) }
 
@@ -153,6 +156,18 @@ fun GlobalSearchScreen(
         debouncedQuery = session.query.trim()
     }
 
+    LaunchedEffect(historyStore) {
+        history = historyStore.load()
+    }
+
+    LaunchedEffect(history) {
+        historyHintIndex = 0
+        while (history.isNotEmpty()) {
+            delay(3_000L)
+            historyHintIndex = (historyHintIndex + 1) % history.size
+        }
+    }
+
     val shownDimensions = if (session.entryScopeMode && session.activeScopes.size == 1) {
         dimensions.filter { it.scope in session.activeScopes }
     } else {
@@ -162,14 +177,14 @@ fun GlobalSearchScreen(
         dimensions.mapTo(linkedSetOf()) { it.scope }
     }
     val normalizedQuery = debouncedQuery.lowercase()
-    val results = remember(
+    val allScopeResults = remember(
         catalog,
         normalizedQuery,
-        enabledScopes,
         session.sortMode,
         session.sortDescending
     ) {
-        enabledScopes.associateWith { scope ->
+        dimensions.associate { dimension ->
+            val scope = dimension.scope
             val filtered = catalog[scope].orEmpty().filter { normalizedQuery in it.searchText }
             val sorted = when (session.sortMode) {
                 GlobalSearchSortMode.RELEVANCE -> filtered.sortedWith(
@@ -182,8 +197,14 @@ fun GlobalSearchScreen(
                         .thenBy { it.title.lowercase() }
                 )
             }
-            if (session.sortDescending) sorted.asReversed() else sorted
+            scope to if (session.sortDescending) sorted.asReversed() else sorted
         }
+    }
+    val results = remember(allScopeResults, enabledScopes) {
+        enabledScopes.associateWith { scope -> allScopeResults[scope].orEmpty() }
+    }
+    val allResultCount = remember(allScopeResults) {
+        allScopeResults.values.sumOf { it.size }
     }
     val visibleDimensions = dimensions.filter { dimension ->
         dimension.scope in enabledScopes && results[dimension.scope].orEmpty().isNotEmpty()
@@ -228,7 +249,7 @@ fun GlobalSearchScreen(
     }
 
     fun saveCurrentQuery() {
-        if (session.query.isNotBlank()) history = historyStore.add(session.query)
+        if (session.query.isNotBlank()) history = historyStore.add(session.query, history)
     }
 
     LaunchedEffect(restoreResultIndex, flattenedResults) {
@@ -237,17 +258,20 @@ fun GlobalSearchScreen(
         }
     }
 
+    val rotatingSearchHint = history.getOrNull(historyHintIndex)
+        ?: stringResource(R.string.global_search_hint_short)
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MiuixTheme.colorScheme.background)
+            .background(Color.Transparent)
             .statusBarsPadding()
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .zIndex(10f)
-                .background(MiuixTheme.colorScheme.background)
+                .background(Color.Transparent)
         ) {
             Row(
                 modifier = Modifier
@@ -270,7 +294,7 @@ fun GlobalSearchScreen(
                             onSearch = { saveCurrentQuery() },
                             expanded = false,
                             onExpandedChange = {},
-                            label = stringResource(R.string.global_search_hint)
+                            label = rotatingSearchHint
                         )
                     },
                     onExpandedChange = {},
@@ -287,10 +311,22 @@ fun GlobalSearchScreen(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 18.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                item(key = "all") {
+                    SearchFilterBubble(
+                        label = stringResource(R.string.global_search_category_all_count, allResultCount),
+                        selected = session.activeScopes.isEmpty(),
+                        showClose = false,
+                        onClick = { session.updateFilters(emptySet(), entryMode = false) }
+                    )
+                }
                 items(shownDimensions, key = { it.scope.token }) { dimension ->
                     val selected = dimension.scope in session.activeScopes
                     SearchFilterBubble(
-                        label = dimension.label,
+                        label = stringResource(
+                            R.string.global_search_category_count,
+                            dimension.label,
+                            allScopeResults[dimension.scope].orEmpty().size
+                        ),
                         selected = selected,
                         showClose = session.entryScopeMode && selected,
                         onClick = {
@@ -572,20 +608,37 @@ private fun GlobalSearchSortLayoutDialog(
             SearchDialogSectionTitle(stringResource(R.string.global_search_sort_section))
             SearchDialogRow(
                 title = stringResource(R.string.global_search_sort_relevance),
-                selected = session.sortMode == GlobalSearchSortMode.RELEVANCE
+                selected = session.sortMode == GlobalSearchSortMode.RELEVANCE,
+                reverseSelected = session.sortMode == GlobalSearchSortMode.RELEVANCE && session.sortDescending,
+                onReverseClick = {
+                    session.updateSort(
+                        GlobalSearchSortMode.RELEVANCE,
+                        session.sortMode != GlobalSearchSortMode.RELEVANCE || !session.sortDescending
+                    )
+                }
             ) { session.updateSort(GlobalSearchSortMode.RELEVANCE) }
             SearchDialogRow(
                 title = stringResource(R.string.global_search_sort_name),
-                selected = session.sortMode == GlobalSearchSortMode.NAME
+                selected = session.sortMode == GlobalSearchSortMode.NAME,
+                reverseSelected = session.sortMode == GlobalSearchSortMode.NAME && session.sortDescending,
+                onReverseClick = {
+                    session.updateSort(
+                        GlobalSearchSortMode.NAME,
+                        session.sortMode != GlobalSearchSortMode.NAME || !session.sortDescending
+                    )
+                }
             ) { session.updateSort(GlobalSearchSortMode.NAME) }
             SearchDialogRow(
                 title = stringResource(R.string.global_search_sort_song_count),
-                selected = session.sortMode == GlobalSearchSortMode.SONG_COUNT
+                selected = session.sortMode == GlobalSearchSortMode.SONG_COUNT,
+                reverseSelected = session.sortMode == GlobalSearchSortMode.SONG_COUNT && session.sortDescending,
+                onReverseClick = {
+                    session.updateSort(
+                        GlobalSearchSortMode.SONG_COUNT,
+                        session.sortMode != GlobalSearchSortMode.SONG_COUNT || !session.sortDescending
+                    )
+                }
             ) { session.updateSort(GlobalSearchSortMode.SONG_COUNT) }
-            SearchDialogRow(
-                title = stringResource(R.string.global_search_sort_reverse),
-                selected = session.sortDescending
-            ) { session.toggleSortDirection() }
 
             Box(
                 Modifier
@@ -639,22 +692,67 @@ private fun SearchDialogSectionTitle(title: String) {
 private fun SearchDialogRow(
     title: String,
     selected: Boolean,
+    reverseSelected: Boolean? = null,
+    onReverseClick: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
     val scheme = MiuixTheme.colorScheme
-    Text(
-        text = title,
-        color = if (selected) scheme.primary else scheme.onBackground,
-        fontSize = 15.sp,
-        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(44.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(if (selected) scheme.primary.copy(alpha = 0.10f) else androidx.compose.ui.graphics.Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 11.dp)
-    )
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            color = if (selected) scheme.primary else scheme.onBackground,
+            fontSize = 15.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            modifier = Modifier.weight(1f)
+        )
+        if (reverseSelected != null && onReverseClick != null) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onReverseClick)
+                    .padding(start = 10.dp, end = 2.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = stringResource(R.string.global_search_sort_reverse),
+                    color = if (reverseSelected) scheme.primary else scheme.onSurfaceVariantSummary,
+                    fontSize = 13.sp,
+                    fontWeight = if (reverseSelected) FontWeight.SemiBold else FontWeight.Normal
+                )
+                Spacer(Modifier.width(7.dp))
+                Box(
+                    modifier = Modifier
+                        .size(width = 30.dp, height = 18.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(
+                            if (reverseSelected) scheme.primary
+                            else scheme.onSurfaceVariantSummary.copy(alpha = 0.20f)
+                        )
+                        .padding(2.dp),
+                    contentAlignment = if (reverseSelected) Alignment.CenterEnd else Alignment.CenterStart
+                ) {
+                    Box(
+                        Modifier
+                            .size(14.dp)
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(
+                                if (reverseSelected) scheme.background
+                                else scheme.onSurfaceVariantSummary
+                            )
+                    )
+                }
+            }
+        }
+    }
 }
 
 private fun SearchEntry.relevanceRank(query: String): Int {

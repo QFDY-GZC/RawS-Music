@@ -14,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -23,15 +24,18 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +55,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -60,6 +65,7 @@ import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.core.common.model.isDsdSourceFile
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.widget.predictiveDialogMotion
 import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 import com.rawsmusic.module.data.prefs.AppPreferences
@@ -67,6 +73,8 @@ import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.PlayerController
 import com.rawsmusic.module.player.dsp.PEQFilter
 import java.io.File
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlin.math.roundToInt
 
 /**
@@ -77,7 +85,8 @@ class AudioInfoCapsuleHelper(
     private val context: Context,
     private val getPlayerController: () -> PlayerController?,
     private val onVisibilityChanged: (Boolean) -> Unit = {},
-    private val onNavigateDestination: (Int) -> Unit = {}
+    private val onNavigateDestination: (Int) -> Unit = {},
+    private val onNavigateLink: (AudioInfoLink) -> Unit = {}
 ) {
     /** 胶囊显示状态：0=音频参数, 1=输出设备, 2=输出参数, 3=队列位置, 4=当前歌词 */
     var capsuleState = 0
@@ -122,6 +131,18 @@ class AudioInfoCapsuleHelper(
 
     fun navigateFromCompose(destinationId: Int) {
         onNavigateDestination(destinationId)
+    }
+
+    fun navigateFromCompose(link: AudioInfoLink) {
+        when (link) {
+            is AudioInfoLink.Settings -> onNavigateDestination(link.destinationId)
+            else -> onNavigateLink(link)
+        }
+    }
+
+    /** Refreshes the realtime snapshot without restarting the popup transition. */
+    fun refreshPopup() {
+        if (isPopupShowing) showPopup(notifyVisibility = false, writeLog = false)
     }
 
     /** 更新Hi-Res徽章显示 */
@@ -428,7 +449,7 @@ class AudioInfoCapsuleHelper(
     }
 
     @Suppress("MissingPermission", "DEPRECATION")
-    private fun showPopup() {
+    private fun showPopup(notifyVisibility: Boolean = true, writeLog: Boolean = notifyVisibility) {
         val pc = getPlayerController() ?: return
         val song = pc.currentSong.value ?: return
         val queue = pc.queue.value
@@ -468,19 +489,73 @@ class AudioInfoCapsuleHelper(
             bufFrames * 2 * 1000f / (if (ffmpegOutputSr > 0) ffmpegOutputSr.toFloat() else 48000f)
         }
 
-        val mediaLines = listOf(
-            InfoLine("所有歌曲 - $queuePos", R.id.nav_songs, true),
-            InfoLine(song.displayName.ifBlank { "当前音轨" }),
-            InfoLine(song.artist.ifBlank { "未知艺术家" })
-        )
-        val trackLines = listOf(
-            InfoLine("${fmt.ifBlank { "未知格式" }}  ${formatBitDepth(srcBd, fmt)}  ${formatSampleRate(srcSr)}  ${formatBitrate(song.bitRate)}"),
-            InfoLine("${formatChannelCount(song.channelCount)}  /  ${formatDuration(song.duration)}"),
-            InfoLine(if (AppPreferences.Player.gaplessPlaybackEnabled) "无间隙播放：开启" else "无间隙播放：关闭"),
-            InfoLine(File(song.path).name.ifBlank { "未知文件" })
-        )
+        val albumArtist = song.albumArtist.ifBlank { song.artist }.ifBlank { "未知艺术家" }
+        val mediaLines = buildList {
+            add(
+                InfoLine(
+                    "所有歌曲 - $queuePos",
+                    underline = true,
+                    action = AudioInfoLink.Library(NavScene.SONGS, "")
+                )
+            )
+            add(InfoLine(song.displayName.ifBlank { "当前音轨" }))
+            if (song.artist.isNotBlank()) {
+                add(
+                    InfoLine(
+                        song.artist,
+                        underline = true,
+                        action = AudioInfoLink.Library(NavScene.ARTIST_DETAIL, song.artist)
+                    )
+                )
+            } else {
+                add(InfoLine("未知艺术家"))
+            }
+            if (song.album.isNotBlank()) {
+                add(
+                    InfoLine(
+                        "专辑：${song.album}",
+                        underline = true,
+                        action = AudioInfoLink.Library(
+                            NavScene.ALBUM_DETAIL,
+                            "$albumArtist␟${song.album}"
+                        )
+                    )
+                )
+            }
+            if (song.albumArtist.isNotBlank() && song.albumArtist != song.artist) {
+                add(
+                    InfoLine(
+                        "专辑艺术家：${song.albumArtist}",
+                        underline = true,
+                        action = AudioInfoLink.Library(NavScene.ARTIST_DETAIL, song.albumArtist)
+                    )
+                )
+            }
+        }
+        val trackLines = buildList {
+            add(InfoLine("${fmt.ifBlank { "未知格式" }}  ${formatBitDepth(srcBd, fmt)}  ${formatSampleRate(srcSr)}  ${formatBitrate(song.bitRate)}"))
+            add(InfoLine("${formatChannelCount(song.channelCount)}  /  ${formatDuration(song.duration)}"))
+            if (song.genre.isNotBlank()) {
+                add(InfoLine("流派：${song.genre}", underline = true, action = AudioInfoLink.Library(NavScene.GENRE_DETAIL, song.genre)))
+            }
+            if (song.year > 0) {
+                add(InfoLine("年份：${song.year}", underline = true, action = AudioInfoLink.Library(NavScene.YEAR_DETAIL, song.year.toString())))
+            }
+            if (song.composer.isNotBlank()) {
+                add(InfoLine("作曲家：${song.composer}", underline = true, action = AudioInfoLink.Library(NavScene.COMPOSER_DETAIL, song.composer)))
+            }
+            add(InfoLine(if (AppPreferences.Player.gaplessPlaybackEnabled) "无间隙播放：开启" else "无间隙播放：关闭"))
+            add(
+                InfoLine(
+                    File(song.path).absolutePath.ifBlank { "未知文件" },
+                    underline = true,
+                    action = AudioInfoLink.OpenFile(song.path)
+                )
+            )
+        }
         val decoderLines = listOf(
             InfoLine("FFmpeg Decoder"),
+            InfoLine("解码状态：${formatDecoderState(ffmpegPlayer?.state?.name)}"),
             InfoLine("编码格式：${song.encodingFormat.ifBlank { fmt.ifBlank { "未知" } }}"),
             InfoLine("源文件：${formatFileSize(song.fileSize)}")
         )
@@ -495,7 +570,12 @@ class AudioInfoCapsuleHelper(
             outputSettingsDest = outputSettingsDest,
             usbStatus = usbStatus
         )
-        val signalLines = buildSignalProcessingLines(ffmpegOutputSr, ffmpegOutputBd)
+        val signalLines = buildSignalProcessingLines(
+            sourceSr = srcSr,
+            outputSr = ffmpegOutputSr,
+            outputBits = ffmpegOutputBd,
+            outputApi = outputApi
+        )
         val outputLatencyDisplay = pc.getBluetoothLatencyInfo()?.takeIf { it.isNotBlank() }?.let {
             "${"%.0f".format(estimatedLatencyMs)} ms [$it]"
         } ?: "${"%.0f".format(estimatedLatencyMs)} ms / $actualBufFrames frames"
@@ -506,7 +586,9 @@ class AudioInfoCapsuleHelper(
             InfoLine("实际输出：$actualOutputText"),
             InfoLine("独占：${if (isUsbExclusive) "已启用" else "未启用"}"),
             InfoLine("完美比特：${bitPerfectStatus(isUsbExclusive, srChanged, bdChanged, usbStatus)}"),
-            InfoLine("输出延迟：$outputLatencyDisplay")
+            InfoLine("输出延迟：$outputLatencyDisplay"),
+            InfoLine("实时状态：${formatPlaybackState(pc.playState.value.name)}"),
+            InfoLine("播放位置：${formatDuration(pc.position.value)} / ${formatDuration(pc.duration.value)}")
         )
         val deviceInfo = resolveDeviceInfo(pc, isUsbExclusive, ffmpegOutputSr, ffmpegOutputBd, targetBits, usbStatus)
         val deviceIcon = resolveOutputDeviceIcon(isUsbExclusive, deviceInfo.kind)
@@ -530,14 +612,18 @@ class AudioInfoCapsuleHelper(
             navigateToSettings = { onNavigateDestination(outputSettingsDest) },
             outputSettingsDest = outputSettingsDest
         )
-        isPopupShowing = true
-        onVisibilityChanged(true)
+        if (notifyVisibility) {
+            isPopupShowing = true
+            onVisibilityChanged(true)
+        }
 
-        AppLogger.d(
-            "AudioOutput",
-            "popup: outputMode=$actualOutputMode, outputSr=$ffmpegOutputSr, outputBd=$ffmpegOutputBd, " +
-                "srcSr=$srcSr, srcBd=$srcBd, latencyMs=$actualLatencyMs, bufFrames=$actualBufFrames, usbExclusive=$isUsbExclusive"
-        )
+        if (writeLog) {
+            AppLogger.d(
+                "AudioOutput",
+                "popup: outputMode=$actualOutputMode, outputSr=$ffmpegOutputSr, outputBd=$ffmpegOutputBd, " +
+                    "srcSr=$srcSr, srcBd=$srcBd, latencyMs=$actualLatencyMs, bufFrames=$actualBufFrames, usbExclusive=$isUsbExclusive"
+            )
+        }
     }
 
     private fun resolveTrackFormatIcon(format: String, path: String): TimelineIcon {
@@ -576,7 +662,12 @@ class AudioInfoCapsuleHelper(
         }
     }
 
-    private fun buildSignalProcessingLines(outputSr: Int, outputBits: Int): List<InfoLine> {
+    private fun buildSignalProcessingLines(
+        sourceSr: Int,
+        outputSr: Int,
+        outputBits: Int,
+        outputApi: String
+    ): List<InfoLine> {
         val lines = mutableListOf<InfoLine>()
         val peqFilters = readPeqFilters()
         val activePeqFilters = peqFilters.count { it.enabled }
@@ -588,10 +679,6 @@ class AudioInfoCapsuleHelper(
                 "图形均衡器：${AppPreferences.GraphicEQ.presetName}，${AppPreferences.GraphicEQ.bandCount} 段，Preamp ${formatDb(AppPreferences.GraphicEQ.preamp)}"
             else -> "均衡器：关闭"
         }
-        lines += InfoLine("处理格式：${formatOutputBitDepth(outputBits, AppPreferences.Player.targetBitDepth)} / ${formatSampleRate(outputSr)}")
-        lines += InfoLine("均衡器", isLabel = true)
-        lines += InfoLine(equalizerState, R.id.nav_audio_effects, true)
-        lines += InfoLine("音效", isLabel = true)
         val enabledEffects = mutableListOf<String>()
         if (AppPreferences.BassBoost.isEnabled) enabledEffects += "低音 ${formatDb(AppPreferences.BassBoost.gainDB)}"
         if (AppPreferences.TrebleBoost.isEnabled) enabledEffects += "高音 ${formatDb(AppPreferences.TrebleBoost.gainDB)}"
@@ -600,6 +687,17 @@ class AudioInfoCapsuleHelper(
         if (AppPreferences.Panoramic360.isEnabled) enabledEffects += "360 全景"
         if (AppPreferences.Equalizer.virtualizer > 0) enabledEffects += "立体声扩展 ${AppPreferences.Equalizer.virtualizer / 10}%"
         if (AppPreferences.Equalizer.crossfeedEnabled) enabledEffects += "互馈 ${AppPreferences.Equalizer.crossfeedAttenuation / 10f}dB"
+        val processingChain = buildList {
+            add("FFmpeg 解码")
+            if (sourceSr > 0 && outputSr > 0 && sourceSr != outputSr) add("重采样")
+            if (AppPreferences.PEQ.isEnabled || AppPreferences.GraphicEQ.isEnabled || enabledEffects.isNotEmpty()) add("DSP")
+            add(outputApi)
+        }
+        lines += InfoLine("处理链：${processingChain.joinToString(" → ")}")
+        lines += InfoLine("处理格式：${formatOutputBitDepth(outputBits, AppPreferences.Player.targetBitDepth)} / ${formatSampleRate(outputSr)}")
+        lines += InfoLine("均衡器", isLabel = true)
+        lines += InfoLine(equalizerState, R.id.nav_audio_effects, true)
+        lines += InfoLine("音效", isLabel = true)
         lines += InfoLine(if (enabledEffects.isEmpty()) "关闭" else enabledEffects.joinToString(" / "), R.id.nav_audio_effects, true)
         lines += InfoLine("音调", isLabel = true)
         lines += InfoLine(
@@ -818,6 +916,23 @@ class AudioInfoCapsuleHelper(
         return "%d:%02d".format(minutes, seconds)
     }
 
+    private fun formatPlaybackState(state: String): String = when (state) {
+        "PLAYING" -> "播放中"
+        "PAUSED" -> "已暂停"
+        "PREPARING" -> "准备中"
+        "ERROR" -> "错误"
+        else -> "空闲"
+    }
+
+    private fun formatDecoderState(state: String?): String = when (state) {
+        "PLAYING" -> "解码中"
+        "PAUSED" -> "已暂停"
+        "PREPARING" -> "准备中"
+        "ERROR" -> "错误"
+        null -> "未创建"
+        else -> state
+    }
+
     private fun formatFileSize(bytes: Long): String {
         if (bytes <= 0) return "未知大小"
         val mb = bytes / 1024.0 / 1024.0
@@ -857,11 +972,18 @@ class AudioInfoCapsuleHelper(
     )
 }
 
+sealed interface AudioInfoLink {
+    data class Settings(val destinationId: Int) : AudioInfoLink
+    data class Library(val scene: NavScene, val key: String) : AudioInfoLink
+    data class OpenFile(val path: String) : AudioInfoLink
+}
+
 data class InfoLine(
     val text: String,
     val destinationId: Int? = null,
     val underline: Boolean = false,
-    val isLabel: Boolean = false
+    val isLabel: Boolean = false,
+    val action: AudioInfoLink? = null
 )
 
 data class TimelineSection(
@@ -885,6 +1007,12 @@ fun AudioInfoCapsuleOverlay(
 ) {
     val data = helper.popupDataForCompose() ?: return
     val dismissProgress = rememberPredictiveDialogProgress(helper.isPopupShowing, helper::dismissPopup)
+    LaunchedEffect(helper.isPopupShowing) {
+        while (isActive && helper.isPopupShowing) {
+            delay(700L)
+            if (helper.isPopupShowing) helper.refreshPopup()
+        }
+    }
     AnimatedVisibility(
         visible = helper.isPopupShowing,
         enter = fadeIn(tween(200)),
@@ -908,19 +1036,25 @@ fun AudioInfoCapsuleOverlay(
                 exit = fadeOut(tween(180)) + slideOutVertically(tween(200), targetOffsetY = { it / 10 }) + scaleOut(tween(200), targetScale = 0.95f),
                 modifier = Modifier.predictiveDialogMotion(dismissProgress)
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth(0.9f)
-                        .height(560.dp)
-                        .clip(RoundedCornerShape(22.dp))
-                        .background(ComposeColor(0xFF2D2D2D))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = {}
-                        )
-                        .padding(start = 18.dp, end = 12.dp, top = 14.dp, bottom = 14.dp)
+                BoxWithConstraints(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
                 ) {
+                    val popupMaxHeight = (maxHeight * 0.84f).coerceAtMost(720.dp)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth(0.9f)
+                            .heightIn(min = 320.dp, max = popupMaxHeight)
+                            .wrapContentHeight()
+                            .clip(RoundedCornerShape(22.dp))
+                            .background(ComposeColor(0xFF2D2D2D))
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = {}
+                            )
+                            .padding(start = 18.dp, end = 12.dp, top = 14.dp, bottom = 14.dp)
+                    ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -967,12 +1101,13 @@ fun AudioInfoCapsuleOverlay(
                             AudioInfoSection(
                                 section = section,
                                 showConnector = index != data.sections.lastIndex,
-                                onNavigate = { destination ->
+                                onNavigate = { link ->
                                     helper.dismissPopup()
-                                    helper.navigateFromCompose(destination)
+                                    helper.navigateFromCompose(link)
                                 }
                             )
                         }
+                    }
                     }
                 }
             }
@@ -984,7 +1119,7 @@ fun AudioInfoCapsuleOverlay(
 private fun AudioInfoSection(
     section: TimelineSection,
     showConnector: Boolean,
-    onNavigate: (Int) -> Unit
+    onNavigate: (AudioInfoLink) -> Unit
 ) {
     var contentHeightPx by remember { mutableStateOf(0) }
     val density = LocalDensity.current
@@ -1057,7 +1192,8 @@ private fun AudioInfoSection(
                 modifier = Modifier.padding(bottom = 6.dp)
             )
             section.lines.forEach { line ->
-                val clickable = line.destinationId != null
+                val link = line.action ?: line.destinationId?.let(AudioInfoLink::Settings)
+                val clickable = link != null
                 Text(
                     text = line.text,
                     color = when {
@@ -1067,11 +1203,12 @@ private fun AudioInfoSection(
                     },
                     fontSize = if (line.isLabel) 12.sp else 13.5.sp,
                     lineHeight = 18.sp,
+                    textDecoration = if (line.underline && clickable) TextDecoration.Underline else TextDecoration.None,
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(4.dp))
                         .clickable(enabled = clickable) {
-                            line.destinationId?.let(onNavigate)
+                            link?.let(onNavigate)
                         }
                         .padding(top = if (line.isLabel) 5.dp else 1.dp, bottom = 1.dp)
                 )

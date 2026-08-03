@@ -24,6 +24,7 @@ fun LiquidGlassPlayerInterfaceScreen(
     var defaultBackgroundEnabled by remember { mutableStateOf(AppPreferences.UI.isDefaultBackgroundEnabled) }
     var immersiveEnabled by remember { mutableStateOf(AppPreferences.UI.isImmersiveEnabled) }
     var audioVisualizerEnabled by remember { mutableStateOf(AppPreferences.UI.isAudioVisualizerEnabled) }
+    var statusBarHidden by remember { mutableStateOf(AppPreferences.UI.isStatusBarHidden) }
     var miniCoverEnabled by remember { mutableStateOf(AppPreferences.UI.isMiniCoverEnabled) }
     var playPageMemoryEnabled by remember { mutableStateOf(AppPreferences.UI.isPlayPageMemoryEnabled) }
     fun persistAudioVisualizer(enabled: Boolean) {
@@ -71,6 +72,14 @@ fun LiquidGlassPlayerInterfaceScreen(
             SettingsInfoEntry(
                 title = stringResource(R.string.settings_player_immersive),
                 description = stringResource(R.string.settings_player_immersive_desc)
+            )
+            SwitchRow(stringResource(R.string.settings_player_hide_status_bar), statusBarHidden) { checked ->
+                statusBarHidden = checked
+                AppPreferences.UI.isStatusBarHidden = checked
+            }
+            SettingsInfoEntry(
+                title = stringResource(R.string.settings_player_hide_status_bar),
+                description = stringResource(R.string.settings_player_hide_status_bar_desc)
             )
             SwitchRow(stringResource(R.string.settings_player_visualizer), audioVisualizerEnabled) { checked ->
                 if (checked && ContextCompat.checkSelfPermission(

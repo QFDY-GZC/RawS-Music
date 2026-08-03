@@ -12,10 +12,10 @@ android {
 
     defaultConfig {
         applicationId = "com.rawsmusic"
-        minSdk = 23
+        minSdk = 24
         targetSdk = 37
-        versionCode = 48
-        versionName = "0.9.48 beta"
+        versionCode = 68
+        versionName = "0.9.68 USB fix vision"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -67,9 +67,23 @@ android {
 
     packaging {
         jniLibs {
+            // Compress native libraries in the distributable APK. Android extracts
+            // them at install time on our minSdk 24 devices; this keeps runtime
+            // loading unchanged while avoiding several megabytes of APK padding.
+            useLegacyPackaging = true
             // No packaged ELF currently declares this dependency; the checked-in
             // copy only inflated every arm64 APK.
             excludes += "**/libc++_shared.so"
+            excludes += listOf(
+                "**/libavcodec.so",
+                "**/libavformat.so",
+                "**/libavutil.so",
+                "**/libswresample.so",
+                "**/libswscale.so",
+                // The 27 MB core is installed on demand from the signed AI repository.
+                // Keep libonnxruntime4j_jni.so: it is the small Java/JNI loader bridge.
+                "**/libonnxruntime.so"
+            )
         }
     }
 

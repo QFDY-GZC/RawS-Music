@@ -27,6 +27,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.stringResource
+import com.rawsmusic.R
 import com.rawsmusic.module.data.prefs.PlaybackStatsStore
 import com.rawsmusic.ui.settings.SettingsPage
 import com.rawsmusic.ui.settings.ThemeColors
@@ -50,7 +52,7 @@ fun AnalyticsScreen(
     val totalListenMs = stats.sumOf { it.listenedMs }
     val totalListenMin = totalListenMs / 60_000L
 
-    SettingsPage(title = "听歌统计", onBack = onBack) {
+    SettingsPage(title = stringResource(R.string.ui_analytics_title), onBack = onBack) {
         Card(
             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
             colors = CardDefaults.cardColors(containerColor = colors.surface),
@@ -60,42 +62,42 @@ fun AnalyticsScreen(
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                StatItem("播放次数", "$totalPlays", colors)
-                StatItem("听歌时长", "${totalListenMin}分钟", colors)
-                StatItem("歌曲数", "${stats.size}", colors)
+                StatItem(stringResource(R.string.ui_analytics_play_count), "$totalPlays", colors)
+                StatItem(stringResource(R.string.ui_analytics_listen_duration), stringResource(R.string.ui_analytics_minutes, totalListenMin), colors)
+                StatItem(stringResource(R.string.ui_analytics_song_count), "${stats.size}", colors)
             }
         }
 
         Spacer(Modifier.height(8.dp))
-        SectionTitle("听歌热力图（近8周）", colors)
+        SectionTitle(stringResource(R.string.ui_analytics_heatmap), colors)
         HeatmapCard(dailyMs, colors)
 
         Spacer(Modifier.height(8.dp))
-        SectionTitle("播放次数排行", colors)
+        SectionTitle(stringResource(R.string.ui_analytics_play_rank), colors)
         stats.sortedByDescending { it.playCount }.take(10).forEachIndexed { index, item ->
             RankingRow(
                 rank = index + 1,
                 title = item.title,
                 subtitle = item.artist,
-                value = "${item.playCount}次",
+                value = stringResource(R.string.ui_analytics_times, item.playCount),
                 colors = colors
             )
         }
 
         Spacer(Modifier.height(8.dp))
-        SectionTitle("听歌时长排行", colors)
+        SectionTitle(stringResource(R.string.ui_analytics_duration_rank), colors)
         stats.sortedByDescending { it.listenedMs }.take(10).forEachIndexed { index, item ->
             RankingRow(
                 rank = index + 1,
                 title = item.title,
                 subtitle = item.artist,
-                value = "${item.listenedMs / 60_000L}分钟",
+                value = stringResource(R.string.ui_analytics_minutes, item.listenedMs / 60_000L),
                 colors = colors
             )
         }
 
         Spacer(Modifier.height(8.dp))
-        SectionTitle("最近播放", colors)
+        SectionTitle(stringResource(R.string.ui_analytics_recent), colors)
         val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
         history.take(20).forEach { entry ->
             RankingRow(
@@ -108,7 +110,7 @@ fun AnalyticsScreen(
         }
 
         Spacer(Modifier.height(8.dp))
-        SectionTitle("最常听艺术家", colors)
+        SectionTitle(stringResource(R.string.ui_analytics_top_artists), colors)
         stats.filter { it.artist.isNotBlank() }
             .groupBy { it.artist }
             .mapValues { (_, v) -> v.sumOf { it.playCount } }
@@ -117,13 +119,13 @@ fun AnalyticsScreen(
                     rank = index + 1,
                     title = artist,
                     subtitle = "",
-                    value = "${count}次",
+                    value = stringResource(R.string.ui_analytics_times, count),
                     colors = colors
                 )
             }
 
         Spacer(Modifier.height(8.dp))
-        SectionTitle("最常听专辑", colors)
+        SectionTitle(stringResource(R.string.ui_analytics_top_albums), colors)
         stats.filter { it.album.isNotBlank() }
             .groupBy { it.album }
             .mapValues { (_, v) -> v.sumOf { it.playCount } }
@@ -132,13 +134,13 @@ fun AnalyticsScreen(
                     rank = index + 1,
                     title = album,
                     subtitle = "",
-                    value = "${count}次",
+                    value = stringResource(R.string.ui_analytics_times, count),
                     colors = colors
                 )
             }
 
         Spacer(Modifier.height(8.dp))
-        SectionTitle("本周听歌统计", colors)
+        SectionTitle(stringResource(R.string.ui_analytics_weekly), colors)
         val weekCal = Calendar.getInstance()
         val weekSdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
         val weekDayFormat = SimpleDateFormat("E", Locale.getDefault())
@@ -181,7 +183,7 @@ fun AnalyticsScreen(
                             }
                         }
                         Spacer(Modifier.width(8.dp))
-                        Text("${minutes}分钟", fontSize = 12.sp, color = colors.onSurface.copy(alpha = 0.5f),
+                        Text(stringResource(R.string.ui_analytics_minutes, minutes), fontSize = 12.sp, color = colors.onSurface.copy(alpha = 0.5f),
                             modifier = Modifier.width(52.dp), fontFamily = appFontFamily())
                     }
                 }
@@ -189,7 +191,7 @@ fun AnalyticsScreen(
         }
 
         Spacer(Modifier.height(8.dp))
-        SectionTitle("听歌偏好分布", colors)
+        SectionTitle(stringResource(R.string.ui_analytics_preference), colors)
         val once = stats.count { it.playCount == 1 }
         val twoToFive = stats.count { it.playCount in 2..5 }
         val sixToTen = stats.count { it.playCount in 6..10 }
@@ -203,10 +205,10 @@ fun AnalyticsScreen(
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                StatItem("1次", "$once", colors)
-                StatItem("2-5次", "$twoToFive", colors)
-                StatItem("6-10次", "$sixToTen", colors)
-                StatItem("10次+", "$overTen", colors)
+                StatItem(stringResource(R.string.ui_analytics_once), "$once", colors)
+                StatItem(stringResource(R.string.ui_analytics_two_five), "$twoToFive", colors)
+                StatItem(stringResource(R.string.ui_analytics_six_ten), "$sixToTen", colors)
+                StatItem(stringResource(R.string.ui_analytics_over_ten), "$overTen", colors)
             }
         }
 

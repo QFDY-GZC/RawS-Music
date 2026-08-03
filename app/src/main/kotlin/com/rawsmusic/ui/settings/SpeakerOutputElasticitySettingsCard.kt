@@ -24,7 +24,7 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.preference.SliderPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
-import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
+import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
@@ -142,7 +142,7 @@ private fun SpeakerOutputModePreference(
             )
         )
     }
-    WindowDropdownPreference(
+    RawWindowDropdownPreference(
         entry = entry,
         title = stringResource(R.string.settings_speaker_output_mode),
         summary = when (mode) {

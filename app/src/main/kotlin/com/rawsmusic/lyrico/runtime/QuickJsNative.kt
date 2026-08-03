@@ -5,7 +5,7 @@ import androidx.annotation.Keep
 @Keep
 object QuickJsNative {
     init {
-        System.loadLibrary("rawsmusic_lyrico_quickjs")
+        System.loadLibrary("rawscoreservice")
     }
 
     external fun createRuntime(

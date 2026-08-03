@@ -56,10 +56,14 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.PlayState
+import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.repository.MusicRepository
+import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.PlayerController
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -86,7 +90,8 @@ class MetadataEditorHelper(
     private val hideActionSheet: () -> Unit,
     private val setCustomCover: (Boolean) -> Unit,
     private val updateCoverRestoreButton: () -> Unit,
-    private val onVisibilityChanged: (Boolean) -> Unit = {}
+    private val onVisibilityChanged: (Boolean) -> Unit = {},
+    private val deleteSong: ((AudioFile) -> Unit)? = null,
 ) {
     private var pendingMetadataUri: android.net.Uri? = null
     private var pendingMetadataValues: ContentValues? = null
@@ -142,12 +147,12 @@ class MetadataEditorHelper(
                         performMetadataUpdate(uri, values)
                     } else {
                         AppLogger.e("EditMetadata", "Write permission returned without pending metadata")
-                        Toast.makeText(activity, "保存状态已失效，请重试", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(activity, activity.getString(R.string.ui_metadata_save_state_expired), Toast.LENGTH_SHORT).show()
                         isMetadataSaving = false
                     }
                 }
             } else {
-                Toast.makeText(activity, "写入权限被拒绝", Toast.LENGTH_SHORT).show()
+                Toast.makeText(activity, activity.getString(R.string.ui_metadata_write_permission_denied), Toast.LENGTH_SHORT).show()
                 isMetadataSaving = false
             }
             clearPendingMetadataWrite()
@@ -279,7 +284,7 @@ class MetadataEditorHelper(
         AppLogger.d("EditMetadata", "Save clicked. FFmpeg write to: $filePath, meta=$ffmpegMeta")
 
         if (filePath.isBlank() || !File(filePath).exists()) {
-            Toast.makeText(activity, "文件不存在: $filePath", Toast.LENGTH_SHORT).show()
+            Toast.makeText(activity, activity.getString(R.string.ui_metadata_file_missing, filePath), Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -302,13 +307,13 @@ class MetadataEditorHelper(
             } catch (e: Exception) {
                 AppLogger.e("EditMetadata", "createWriteRequest failed", e)
                 clearPendingMetadataWrite()
-                Toast.makeText(activity, "权限请求失败: ${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(activity, activity.getString(R.string.ui_metadata_permission_failed, e.message.orEmpty()), Toast.LENGTH_LONG).show()
                 isMetadataSaving = false
             }
         } else {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !File(filePath).canWrite()) {
                 AppLogger.e("EditMetadata", "No MediaStore item and source is not directly writable: $filePath")
-                Toast.makeText(activity, "未在系统媒体库中找到该歌曲，无法获取写入权限", Toast.LENGTH_LONG).show()
+            Toast.makeText(activity, activity.getString(R.string.ui_metadata_media_missing), Toast.LENGTH_LONG).show()
                 isMetadataSaving = false
                 return
             }
@@ -359,7 +364,7 @@ class MetadataEditorHelper(
             AppLogger.d("EditMetadata", "URI exists: $exists, URI: $uri")
 
             if (!exists) {
-                Toast.makeText(activity, "歌曲未在 MediaStore 中找到", Toast.LENGTH_SHORT).show()
+            Toast.makeText(activity, activity.getString(R.string.ui_metadata_song_missing), Toast.LENGTH_SHORT).show()
                 return
             }
 
@@ -385,15 +390,15 @@ class MetadataEditorHelper(
             AppLogger.d("EditMetadata", "Updated rows: $rows")
 
             if (rows > 0) {
-                Toast.makeText(activity, "已保存", Toast.LENGTH_SHORT).show()
+                Toast.makeText(activity, activity.getString(R.string.ui_saved), Toast.LENGTH_SHORT).show()
                 finishMetadataSave(editingSong ?: getPlayerController()?.currentSong?.value)
             } else {
-                Toast.makeText(activity, "保存失败，MediaStore 更新返回 0", Toast.LENGTH_SHORT).show()
+                Toast.makeText(activity, activity.getString(R.string.ui_media_update_empty), Toast.LENGTH_SHORT).show()
                 isMetadataSaving = false
             }
         } catch (e: Exception) {
             AppLogger.e("EditMetadata", "Update failed", e)
-            Toast.makeText(activity, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(activity, activity.getString(R.string.ui_save_failed, e.message.orEmpty()), Toast.LENGTH_SHORT).show()
             isMetadataSaving = false
         }
     }
@@ -405,7 +410,30 @@ class MetadataEditorHelper(
         updatedSong: AudioFile
     ) {
         (activity as androidx.lifecycle.LifecycleOwner).lifecycleScope.launch(Dispatchers.IO) {
+            val guardedController = getPlayerController()?.takeIf { controller ->
+                controller.currentSong.value?.path == filePath &&
+                    controller.playState.value == PlayState.PLAYING &&
+                    AudioOutputManager.getCurrentOutputMode(activity) == AudioOutputMode.OPENSL_ES
+            }
+            var outputRebuilt = false
             try {
+                if (guardedController != null) {
+                    withContext(Dispatchers.Main.immediate) {
+                        guardedController.pause()
+                    }
+                    val pauseDeadline = android.os.SystemClock.elapsedRealtime() + 2_000L
+                    while (
+                        guardedController.playState.value == PlayState.PLAYING &&
+                        android.os.SystemClock.elapsedRealtime() < pauseDeadline
+                    ) {
+                        delay(20L)
+                    }
+                    // Let the configured fade and the OpenSL callback queue settle before the
+                    // source inode is replaced.
+                    delay(80L)
+                    AppLogger.i("EditMetadata", "OpenSL metadata guard paused path=$filePath")
+                }
+
                 val originalFile = File(filePath)
                 val parentDir = originalFile.parentFile
                     ?: throw IllegalStateException("音频文件没有可写父目录")
@@ -441,7 +469,7 @@ class MetadataEditorHelper(
                 if (ret != 0) {
                     tempFile.delete()
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(activity, "元数据写入失败 (错误码: $ret)", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(activity, activity.getString(R.string.ui_metadata_write_failed, ret), Toast.LENGTH_SHORT).show()
                         isMetadataSaving = false
                     }
                     return@launch
@@ -450,7 +478,7 @@ class MetadataEditorHelper(
                 if (!tempFile.exists() || tempFile.length() == 0L) {
                     AppLogger.e("EditMetadata", "Temp file missing or empty: ${tempFile.absolutePath}")
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(activity, "临时文件不存在或为空", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(activity, activity.getString(R.string.ui_temp_file_missing), Toast.LENGTH_SHORT).show()
                         isMetadataSaving = false
                     }
                     return@launch
@@ -473,7 +501,7 @@ class MetadataEditorHelper(
                     AppLogger.e("EditMetadata", "Temp verification failed size=$tempSize duration=$tempDuration")
                     tempFile.delete()
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(activity, "临时文件校验失败，原音频未改动", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(activity, activity.getString(R.string.ui_temp_file_invalid), Toast.LENGTH_SHORT).show()
                         isMetadataSaving = false
                     }
                     return@launch
@@ -481,7 +509,7 @@ class MetadataEditorHelper(
 
                 if (!replaceAudioFileAtomically(originalFile, tempFile)) {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(activity, "文件替换失败，已恢复原音频", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(activity, activity.getString(R.string.ui_file_replace_failed), Toast.LENGTH_SHORT).show()
                         isMetadataSaving = false
                     }
                     return@launch
@@ -517,16 +545,25 @@ class MetadataEditorHelper(
                 )
                 MusicRepository.updateSong(committedSong)
                 getPlayerController()?.updateCurrentSongIfSamePath(committedSong)
+                outputRebuilt = guardedController
+                    ?.rebuildCurrentOpenSlAfterMetadataWrite(filePath) == true
 
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(activity, "已保存", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(activity, activity.getString(R.string.ui_saved), Toast.LENGTH_SHORT).show()
                     finishMetadataSave(committedSong)
                 }
             } catch (e: Exception) {
                 AppLogger.e("EditMetadata", "doFfmpegWrite failed", e)
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(activity, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(activity, activity.getString(R.string.ui_save_failed, e.message.orEmpty()), Toast.LENGTH_SHORT).show()
                     isMetadataSaving = false
+                }
+            } finally {
+                if (guardedController != null && !outputRebuilt) {
+                    withContext(Dispatchers.Main.immediate) {
+                        guardedController.resume()
+                    }
+                    AppLogger.i("EditMetadata", "OpenSL metadata guard restored after failed write")
                 }
             }
         }
@@ -613,9 +650,14 @@ class MetadataEditorHelper(
     fun confirmDeleteCurrentSong() {
         val song = pendingDeleteSong ?: return
         dismissDeleteConfirm()
-        getPlayerController()?.next()
-        val deleted = MusicRepository.deleteSongFromDevice(activity, song)
-        Toast.makeText(activity, if (deleted) "已删除" else "删除失败", Toast.LENGTH_SHORT).show()
+        val delegated = deleteSong
+        if (delegated != null) {
+            delegated(song)
+        } else {
+            getPlayerController()?.next()
+            val deleted = MusicRepository.deleteSongFromDevice(activity, song)
+            Toast.makeText(activity, activity.getString(if (deleted) R.string.ui_deleted else R.string.ui_delete_failed), Toast.LENGTH_SHORT).show()
+        }
     }
 
     fun pendingDeleteTitle(): String = pendingDeleteSong?.title.orEmpty()
@@ -627,158 +669,6 @@ fun MetadataEditorOverlay(
     modifier: Modifier = Modifier
 ) {
     DeleteConfirmOverlay(helper = helper, modifier = modifier)
-}
-
-@Composable
-private fun MetadataEditorFormOverlay(
-    helper: MetadataEditorHelper,
-    modifier: Modifier = Modifier
-) {
-    AnimatedVisibility(
-        visible = helper.isMetadataEditorShowing,
-        enter = fadeIn(tween(120)),
-        exit = fadeOut(tween(120)),
-        modifier = modifier.fillMaxSize()
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0x99000000))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = { helper.dismissMetadataEditor() }
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            AnimatedVisibility(
-                visible = helper.isMetadataEditorShowing,
-                enter = fadeIn(tween(140)) + scaleIn(tween(180), initialScale = 0.95f),
-                exit = fadeOut(tween(100)) + scaleOut(tween(120), targetScale = 0.98f)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth(0.88f)
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(Color(0xF21B1816))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = {}
-                        )
-                        .padding(horizontal = 20.dp, vertical = 18.dp)
-                ) {
-                    Text(
-                        text = stringResource(R.string.metadata_editor_title),
-                        color = Color.White,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(390.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        MetadataField(helper, MetadataEditField.TITLE, stringResource(R.string.metadata_field_title), helper.editTitle) { helper.editTitle = it }
-                        MetadataField(helper, MetadataEditField.ARTIST, stringResource(R.string.metadata_field_artist), helper.editArtist) { helper.editArtist = it }
-                        MetadataField(helper, MetadataEditField.ALBUM, stringResource(R.string.metadata_field_album), helper.editAlbum) { helper.editAlbum = it }
-                        MetadataField(helper, MetadataEditField.ALBUM_ARTIST, stringResource(R.string.metadata_field_album_artist), helper.editAlbumArtist) { helper.editAlbumArtist = it }
-                        MetadataField(helper, MetadataEditField.GENRE, stringResource(R.string.metadata_field_genre), helper.editGenre) { helper.editGenre = it }
-                        MetadataField(helper, MetadataEditField.COMPOSER, stringResource(R.string.metadata_field_composer), helper.editComposer) { helper.editComposer = it }
-                        MetadataField(helper, MetadataEditField.YEAR, stringResource(R.string.metadata_field_year), helper.editYear, numeric = true) { helper.editYear = it }
-                        MetadataField(helper, MetadataEditField.TRACK, stringResource(R.string.metadata_field_track), helper.editTrack, numeric = true) { helper.editTrack = it }
-                        MetadataField(helper, MetadataEditField.DISC, stringResource(R.string.metadata_field_disc), helper.editDisc, numeric = true) { helper.editDisc = it }
-                        MetadataField(helper, MetadataEditField.BPM, stringResource(R.string.metadata_field_bpm), helper.editBpm, numeric = true) { helper.editBpm = it }
-                    }
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (helper.isMetadataSaving) {
-                            Text(
-                                text = stringResource(R.string.metadata_saving),
-                                color = Color.White.copy(alpha = 0.58f),
-                                fontSize = 13.sp
-                            )
-                        }
-                        Spacer(modifier = Modifier.weight(1f))
-                        Text(
-                            text = stringResource(R.string.metadata_cancel),
-                            color = Color.White.copy(alpha = if (helper.isMetadataSaving) 0.35f else 0.65f),
-                            fontSize = 14.sp,
-                            modifier = Modifier
-                                .clickable(enabled = !helper.isMetadataSaving) { helper.dismissMetadataEditor() }
-                                .padding(horizontal = 12.dp, vertical = 6.dp)
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(
-                            text = stringResource(R.string.metadata_save),
-                            color = if (helper.isMetadataSaving) Color.White.copy(alpha = 0.35f) else Color(0xFF4CAF50),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier
-                                .clickable(enabled = !helper.isMetadataSaving) { helper.saveMetadata() }
-                                .padding(horizontal = 12.dp, vertical = 6.dp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MetadataField(
-    helper: MetadataEditorHelper,
-    field: MetadataEditField,
-    label: String,
-    value: String,
-    numeric: Boolean = false,
-    onValueChange: (String) -> Unit
-) {
-    val focusRequester = remember(field) { FocusRequester() }
-    val keyboardController = LocalSoftwareKeyboardController.current
-    val autoFocus = helper.requestedFocusField == field
-    LaunchedEffect(autoFocus) {
-        if (autoFocus) {
-            focusRequester.requestFocus()
-            keyboardController?.show()
-            helper.markFocusHandled(field)
-        }
-    }
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        enabled = !helper.isMetadataSaving,
-        label = { Text(label) },
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(
-            keyboardType = if (numeric) KeyboardType.Number else KeyboardType.Text
-        ),
-        shape = RoundedCornerShape(12.dp),
-        colors = TextFieldDefaults.colors(
-            focusedTextColor = Color.White,
-            unfocusedTextColor = Color.White.copy(alpha = 0.88f),
-            disabledTextColor = Color.White.copy(alpha = 0.45f),
-            focusedContainerColor = Color.Transparent,
-            unfocusedContainerColor = Color.Transparent,
-            disabledContainerColor = Color.Transparent,
-            focusedIndicatorColor = Color(0xFF4CAF50),
-            unfocusedIndicatorColor = Color.White.copy(alpha = 0.22f),
-            disabledIndicatorColor = Color.White.copy(alpha = 0.12f),
-            focusedLabelColor = Color(0xFF4CAF50),
-            unfocusedLabelColor = Color.White.copy(alpha = 0.56f),
-            disabledLabelColor = Color.White.copy(alpha = 0.35f),
-            cursorColor = Color(0xFF4CAF50)
-        ),
-        modifier = Modifier
-            .fillMaxWidth()
-            .focusRequester(focusRequester)
-            .padding(bottom = 10.dp)
-    )
 }
 
 @Composable
@@ -821,14 +711,14 @@ private fun DeleteConfirmOverlay(
                         .padding(horizontal = 22.dp, vertical = 20.dp)
                 ) {
                     Text(
-                        text = "删除歌曲",
+                            text = stringResource(R.string.ui_delete_song),
                         color = Color.White,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "确定要删除\"${helper.pendingDeleteTitle()}\"吗？此操作不可撤销。",
+                            text = stringResource(R.string.ui_confirm_delete_song, helper.pendingDeleteTitle()),
                         color = Color.White.copy(alpha = 0.78f),
                         fontSize = 14.sp,
                         lineHeight = 20.sp
@@ -840,7 +730,7 @@ private fun DeleteConfirmOverlay(
                     ) {
                         Spacer(modifier = Modifier.weight(1f))
                         Text(
-                            text = "取消",
+                            text = stringResource(R.string.ui_cancel),
                             color = Color.White.copy(alpha = 0.65f),
                             fontSize = 14.sp,
                             modifier = Modifier
@@ -849,7 +739,7 @@ private fun DeleteConfirmOverlay(
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            text = "删除",
+                            text = stringResource(R.string.ui_delete_song),
                             color = Color(0xFFFF5252),
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,

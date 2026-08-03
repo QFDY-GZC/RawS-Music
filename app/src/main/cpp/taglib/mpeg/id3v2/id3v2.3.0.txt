@@ -1409,7 +1409,7 @@ Abstract
      Text encoding          $xx
      MIME type              <text string> $00
      Filename               <text string according to encoding> $00 (00)
-     Content description    <text string according to encóding> $00 (00)
+     Content description    <text string according to encding> $00 (00)
      Encapsulated object    <binary data>
 
 
@@ -1942,7 +1942,7 @@ A.   Appendix A - Genre List from ID3v1
      78.Rock & Roll
      79.Hard Rock
 
-   The following genres are Winamp extensions
+   The following genres are legacy extensions
 
      80.Folk
      81.Folk-Rock
@@ -1997,8 +1997,8 @@ A.   Appendix A - Genre List from ID3v1
    Written by
 
      Martin Nilsson
-     Rydsvägen 246 C. 30
-     S-584 34 Linköping
+     Rydsvgen 246 C. 30
+     S-584 34 Linkping
      Sweden
 
      Email: nilsson@id3.org
@@ -2014,9 +2014,9 @@ A.   Appendix A - Genre List from ID3v1
      Email: dirk@id3.org
 
 
-     Johan Sundström
-     Alsättersgatan 5 A. 34
-     S-584 35 Linköping
+     Johan Sundstrm
+     Alsttersgatan 5 A. 34
+     S-584 35 Linkping
      Sweden
 
      Email: johan@id3.org

@@ -83,7 +83,6 @@ enum class GestureLockReason {
     AudioInfoPopup,
     PlayModePopup,
     Dialog,
-    BatteryOptimization,
     SceneTransition
 }
 

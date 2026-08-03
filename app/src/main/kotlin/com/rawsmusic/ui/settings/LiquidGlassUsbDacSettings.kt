@@ -5,25 +5,18 @@ import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,15 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import android.util.Log
-import kotlinx.coroutines.Dispatchers
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -52,7 +37,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
+import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
+import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.basic.Surface
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.DropdownEntry
+import top.yukonga.miuix.kmp.basic.DropdownItem
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.ChevronForward
+import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.preference.RadioButtonPreference
+import top.yukonga.miuix.kmp.preference.SwitchPreference
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
@@ -60,8 +58,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.rawsmusic.helper.UsbDacFeedbackHelper
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.PlayState
@@ -69,7 +65,6 @@ import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.PlayerController
 import com.rawsmusic.module.player.PlayerService
-import com.rawsmusic.module.player.usb.UsbAudioEngine
 import com.rawsmusic.module.player.usb.UsbDsdTransport
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -100,6 +95,7 @@ fun LiquidGlassUsbDacSettingsScreen(
 
 
     var bitPerfect by remember { mutableStateOf(AppPreferences.Player.bitPerfectEnabled) }
+    var exclusiveRequested by remember { mutableStateOf(AppPreferences.Player.usbExclusiveRequested) }
     var hardwareFU by remember { mutableStateOf(AppPreferences.Player.hardwareFeatureUnitEnabled) }
     var safeExclusive by remember { mutableStateOf(AppPreferences.Player.usbSafeExclusiveMode) }
     var usbNoCI by remember { mutableStateOf(AppPreferences.Player.usbNoControlInterface) }
@@ -109,14 +105,14 @@ fun LiquidGlassUsbDacSettingsScreen(
     var targetBitDepth by remember { mutableStateOf(AppPreferences.Player.usbTargetBitDepth) }
     val usbCapabilities by (runtimeController?.usbCapabilities
         ?: kotlinx.coroutines.flow.MutableStateFlow(null)).collectAsState()
-    var showResampleSheet by remember { mutableStateOf(false) }
+    val usbExclusiveActiveState = runtimeController?.usbExclusiveActive?.collectAsState()
+    val usbExclusiveActive = usbExclusiveActiveState?.value == true
     var showDeviceStatus by remember { mutableStateOf(false) }
     var deviceStatus by remember { mutableStateOf<PlayerController.UsbDeviceStatus?>(null) }
     var usbVolumeMode by remember { mutableStateOf(AppPreferences.Player.usbVolumeMode) }
     var disableDacClockInfo by remember { mutableStateOf(AppPreferences.Player.usbDisableDacClockInfo) }
     var releaseBandwidthAfterPlayback by remember { mutableStateOf(AppPreferences.Player.usbReleaseBandwidthAfterPlayback) }
     var dacPreheatMs by remember { mutableStateOf(AppPreferences.Player.usbDacPreheatMs) }
-    var showVolumeModeDialog by remember { mutableStateOf(false) }
     var showDigitalVolumeWarning by remember { mutableStateOf(false) }
     var preheatExpanded by remember { mutableStateOf(false) }
     var dashboardMetricInfo by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -179,14 +175,46 @@ fun LiquidGlassUsbDacSettingsScreen(
         if (pc != null) {
             pc.applyUsbOutputSettingsChanged(userInitiated = true)
         } else {
-            UsbAudioEngine.setDsdConversion(
-                enabled = dsdEnabled,
-                rate = dsdRate,
-                type = dsdType,
-                dither = dsdDither,
-                dop = dsdEnabled && (UsbDsdTransport.fromPref(dsdTransportMode) == UsbDsdTransport.DOP)
+            // Preferences are already saved. Never mutate process-global native DSD state from a
+            // settings screen without the PlayerController transport transaction: a stale USB
+            // handle may still own the previous DSD altsetting even though the UI shows AAudio.
+            android.util.Log.w(
+                "UsbDacSettings",
+                "DSD setting staged only: PlayerController unavailable; apply on next clean USB init",
             )
         }
+    }
+
+    fun selectBitPerfect(newValue: Boolean) {
+        val pc = runtimeController ?: requireRuntimeController("select_bit_perfect").also {
+            runtimeController = it
+        }
+        val result = pc.setUsbBitPerfectEnabled(newValue)
+        bitPerfect = AppPreferences.Player.bitPerfectEnabled
+        if (result != 0) {
+            Toast.makeText(
+                context,
+                if (newValue) context.getString(R.string.usb_dac_enable_exclusive_required)
+                else context.getString(R.string.usb_dac_switch_output_failed),
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        deviceStatus = pc.getUsbDeviceStatus()
+    }
+
+    fun selectVolumeMode(mode: Int) {
+        if (mode == 2) {
+            showDigitalVolumeWarning = true
+            return
+        }
+        val pc = runtimeController ?: requireRuntimeController("select_volume_mode").also {
+            runtimeController = it
+        }
+        usbVolumeMode = mode
+        pc.setUsbVolumeMode(mode)
+        bitPerfect = AppPreferences.Player.bitPerfectEnabled
+        hardwareFU = AppPreferences.Player.hardwareFeatureUnitEnabled
+        deviceStatus = pc.getUsbDeviceStatus()
     }
 
     Box(
@@ -218,46 +246,121 @@ fun LiquidGlassUsbDacSettingsScreen(
         )
 
         SettingsCard {
-            DacSettingRow(
-                iconRes = R.drawable.ic_audio_bit_perfect_png,
-                iconContentDescription = stringResource(R.string.usb_dac_output_mode),
-                title = stringResource(R.string.usb_dac_output_mode),
-                value = if (bitPerfect) stringResource(R.string.usb_dac_bit_perfect) else stringResource(R.string.usb_dac_general_output),
-                subtitle = if (bitPerfect) stringResource(R.string.usb_dac_bit_perfect_desc) else stringResource(R.string.usb_dac_general_output_desc),
-                onClick = {
-                    val pc = runtimeController ?: requireRuntimeController("toggle_bit_perfect")
-                    runtimeController = pc
-                    val newValue = !bitPerfect
-                    val result = pc.setUsbBitPerfectEnabled(newValue)
-                    bitPerfect = AppPreferences.Player.bitPerfectEnabled
-                    if (result != 0) {
-                        Toast.makeText(context, if (newValue) context.getString(R.string.usb_dac_enable_exclusive_required) else context.getString(R.string.usb_dac_switch_output_failed), Toast.LENGTH_SHORT).show()
-                    }
-                    deviceStatus = pc.getUsbDeviceStatus()
+            AdvancedSwitchRow(
+                title = stringResource(R.string.usb_dac_exclusive_mode),
+                description = when {
+                    usbExclusiveActive -> stringResource(R.string.usb_dac_exclusive_active_desc)
+                    exclusiveRequested -> stringResource(R.string.usb_dac_exclusive_pending_desc)
+                    else -> stringResource(R.string.usb_dac_exclusive_desc)
+                },
+                note = if (exclusiveRequested && !usbExclusiveActive) {
+                    stringResource(R.string.usb_dac_exclusive_waiting_note)
+                } else {
+                    null
+                },
+                checked = usbExclusiveActive || exclusiveRequested
+            ) { checked ->
+                val pc = runtimeController ?: requireRuntimeController("toggle_exclusive").also {
+                    runtimeController = it
                 }
+                if (checked) {
+                    exclusiveRequested = true
+                    pc.enableUsbExclusive()
+                } else {
+                    exclusiveRequested = false
+                    pc.disableUsbExclusive()
+                }
+                deviceStatus = pc.getUsbDeviceStatus()
+            }
+            val outputModeEntry = DropdownEntry(
+                items = listOf(
+                    DropdownItem(
+                        text = stringResource(R.string.usb_dac_general_output),
+                        summary = stringResource(R.string.usb_dac_general_output_desc),
+                        selected = !bitPerfect,
+                        onClick = { selectBitPerfect(false) }
+                    ),
+                    DropdownItem(
+                        text = stringResource(R.string.usb_dac_bit_perfect),
+                        summary = stringResource(R.string.usb_dac_bit_perfect_desc),
+                        selected = bitPerfect,
+                        onClick = { selectBitPerfect(true) }
+                    )
+                )
             )
-            DacSettingRow(
+            DacDropdownRow(
                 iconRes = R.drawable.ic_dac_sample_rate_png,
                 iconContentDescription = stringResource(R.string.usb_dac_sample_rate),
                 title = stringResource(R.string.usb_dac_sample_rate),
                 value = AudioOutputManager.SAMPLE_RATE_LABELS[targetSampleRate] ?: stringResource(R.string.usb_dac_auto),
                 subtitle = stringResource(R.string.usb_dac_current_output_format, outputSummary.substringBefore("/").trim()),
-                onClick = { showResampleSheet = true }
+                entry = DropdownEntry(
+                    items = (listOf(0) + caps?.supportedSampleRates.orEmpty()
+                        .filter { it in 1..384000 }
+                        .distinct()
+                        .sorted()).distinct().map { rate ->
+                        DropdownItem(
+                            text = formatSampleRate(rate),
+                            selected = targetSampleRate == rate,
+                            onClick = {
+                                targetSampleRate = rate
+                                AudioOutputManager.setUsbTargetSampleRate(rate)
+                                applyUsbOutputSettings()
+                            }
+                        )
+                    }
+                ),
+                maxHeight = 430.dp
             )
-            DacSettingRow(
+            DacDropdownRow(
                 iconRes = R.drawable.ic_dac_bit_rate_png,
                 iconContentDescription = stringResource(R.string.usb_dac_bit_depth),
                 title = stringResource(R.string.usb_dac_bit_depth),
                 value = AudioOutputManager.BIT_DEPTH_LABELS[targetBitDepth] ?: stringResource(R.string.usb_dac_auto),
                 subtitle = stringResource(R.string.usb_dac_bit_depth_desc),
-                onClick = { showResampleSheet = true }
+                entry = DropdownEntry(
+                    items = (listOf(0) + caps?.supportedBitDepths.orEmpty())
+                        .distinct()
+                        .sorted()
+                        .map { depth ->
+                            DropdownItem(
+                                text = AudioOutputManager.BIT_DEPTH_LABELS[depth] ?: "${depth}bit",
+                                selected = targetBitDepth == depth,
+                                onClick = {
+                                    targetBitDepth = depth
+                                    AudioOutputManager.setUsbTargetBitDepth(depth)
+                                    applyUsbOutputSettings()
+                                }
+                            )
+                        }
+                ),
+                maxHeight = 360.dp
             )
-            DacSettingRow(
+            DacDropdownRow(
                 iconText = stringResource(R.string.usb_dac_volume_short),
                 title = stringResource(R.string.usb_dac_volume_mode),
                 value = usbVolumeModeLabel(usbVolumeMode),
                 subtitle = usbVolumeModeDescription(usbVolumeMode),
-                onClick = { showVolumeModeDialog = true }
+                entry = DropdownEntry(
+                    items = listOf(1, 0, 2).map { mode ->
+                        DropdownItem(
+                            text = usbVolumeModeLabel(mode),
+                            summary = usbVolumeModeDescription(mode),
+                            selected = usbVolumeMode.coerceIn(0, 2) == mode,
+                            onClick = { selectVolumeMode(mode) }
+                        )
+                    }
+                ),
+                maxHeight = 320.dp
+            )
+            DacDropdownRow(
+                iconRes = R.drawable.ic_audio_bit_perfect_png,
+                iconContentDescription = stringResource(R.string.usb_dac_output_mode),
+                title = stringResource(R.string.usb_dac_output_mode),
+                value = if (bitPerfect) stringResource(R.string.usb_dac_bit_perfect) else stringResource(R.string.usb_dac_general_output),
+                subtitle = if (bitPerfect) stringResource(R.string.usb_dac_bit_perfect_desc) else stringResource(R.string.usb_dac_general_output_desc),
+                entry = outputModeEntry,
+                maxHeight = 300.dp
             )
             DacSettingRow(
                 iconRes = R.drawable.ic_dac_waveform_png,
@@ -418,24 +521,6 @@ fun LiquidGlassUsbDacSettingsScreen(
         Spacer(Modifier.height(220.dp))
     }
 
-        ResampleBottomSheet(
-            visible = showResampleSheet,
-            sampleRate = targetSampleRate,
-            bitDepth = targetBitDepth,
-            capabilities = usbCapabilities,
-            onSampleRateChange = { rate ->
-                targetSampleRate = rate
-                AudioOutputManager.setUsbTargetSampleRate(rate)
-                applyUsbOutputSettings()
-            },
-            onBitDepthChange = { depth ->
-                targetBitDepth = depth
-                AudioOutputManager.setUsbTargetBitDepth(depth)
-                applyUsbOutputSettings()
-            },
-            onDismiss = { showResampleSheet = false }
-        )
-
         UsbDeviceStatusDialog(
             visible = showDeviceStatus,
             status = deviceStatus,
@@ -443,26 +528,6 @@ fun LiquidGlassUsbDacSettingsScreen(
                 deviceStatus = runtimeController?.getUsbDeviceStatus()
             },
             onDismiss = { showDeviceStatus = false }
-        )
-
-        VolumeModeDialog(
-            visible = showVolumeModeDialog,
-            selectedMode = usbVolumeMode,
-            onSelect = { mode ->
-                if (mode == 2) {
-                    showDigitalVolumeWarning = true
-                } else {
-                    val pc = runtimeController ?: requireRuntimeController("volume_mode")
-                    runtimeController = pc
-                    usbVolumeMode = mode
-                    pc.setUsbVolumeMode(mode)
-                    bitPerfect = AppPreferences.Player.bitPerfectEnabled
-                    hardwareFU = AppPreferences.Player.hardwareFeatureUnitEnabled
-                    deviceStatus = pc.getUsbDeviceStatus()
-                }
-                showVolumeModeDialog = false
-            },
-            onDismiss = { showVolumeModeDialog = false }
         )
 
         DigitalVolumeWarningDialog(
@@ -493,118 +558,85 @@ private fun UsbDeviceStatusDialog(
     onRefresh: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    if (!visible) return
-
-    Dialog(
+    val maxDialogHeight = LocalConfiguration.current.screenHeightDp.dp * 0.76f
+    RawMiuixOverlayDialog(
+        show = visible,
+        title = "USB DAC \u8bbe\u5907\u72b6\u6001",
+        backgroundColor = MiuixTheme.colorScheme.surface,
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+            renderInRootScaffold = true
     ) {
-        val dialogInteraction = remember { MutableInteractionSource() }
-        val maxDialogHeight = LocalConfiguration.current.screenHeightDp.dp * 0.76f
-        Box(
+        Column(
             Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.58f))
-                .clickable { onDismiss() },
-            contentAlignment = Alignment.Center
+                .fillMaxWidth()
+                .heightIn(max = maxDialogHeight),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 28.dp)
-                    .heightIn(max = maxDialogHeight)
-                    .clickable(
-                        interactionSource = dialogInteraction,
-                        indication = null
-                    ) {},
-                color = Color(0xFF050505),
-                shape = RoundedCornerShape(22.dp)
+            Column(
+                Modifier
+                    .weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "USB DAC \u8bbe\u5907\u72b6\u6001",
-                            color = Color.White,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Medium,
-                            fontFamily = appFontFamily()
-                        )
-                        TextButton(onClick = onDismiss) {
-                            Text("\u5173\u95ed", color = Color.White, fontFamily = appFontFamily())
-                        }
+                if (status == null) {
+                    Text(
+                        "\u6682\u65e0\u72b6\u6001\u6570\u636e",
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        fontSize = 14.sp,
+                        fontFamily = appFontFamily()
+                    )
+                } else {
+                    StatusSection("\u8bbe\u5907") {
+                        StatusRow("\u540d\u79f0", status.deviceName)
+                        StatusRow("VID/PID", status.vendorProductId)
+                        StatusRow("\u8fde\u63a5", if (status.connected) "\u5df2\u8fde\u63a5" else "\u672a\u8fde\u63a5")
+                        StatusRow("\u6743\u9650", if (status.permissionGranted) "\u5df2\u6388\u6743" else "\u672a\u6388\u6743")
+                        StatusRow("\u7ba1\u7406\u5668", status.managerState)
                     }
-
-                    Column(
-                        Modifier
-                            .weight(1f, fill = false)
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        if (status == null) {
-                            Text(
-                                "\u6682\u65e0\u72b6\u6001\u6570\u636e",
-                                color = Color(0xFFBDBDBD),
-                                fontSize = 14.sp,
-                                fontFamily = appFontFamily()
-                            )
-                        } else {
-                            StatusSection("\u8bbe\u5907") {
-                                StatusRow("\u540d\u79f0", status.deviceName)
-                                StatusRow("VID/PID", status.vendorProductId)
-                                StatusRow("\u8fde\u63a5", if (status.connected) "\u5df2\u8fde\u63a5" else "\u672a\u8fde\u63a5")
-                                StatusRow("\u6743\u9650", if (status.permissionGranted) "\u5df2\u6388\u6743" else "\u672a\u6388\u6743")
-                                StatusRow("\u7ba1\u7406\u5668", status.managerState)
-                            }
-                            StatusSection("\u64ad\u653e\u94fe\u8def") {
-                                StatusRow("\u72ec\u5360", if (status.exclusiveActive) "\u5df2\u542f\u7528" else "\u672a\u542f\u7528")
-                                StatusRow("\u5f15\u64ce", if (status.initialized) "\u5df2\u521d\u59cb\u5316" else "\u672a\u521d\u59cb\u5316")
-                                StatusRow("\u4f20\u8f93", if (status.running) "\u6b63\u5728\u8f93\u51fa" else "\u672a\u8f93\u51fa")
-                                StatusRow("Bit-Perfect", if (status.bitPerfect) "\u5f00" else "\u5173")
-                                StatusRow("\u64ad\u653e\u6a21\u5f0f", status.playbackMode)
-                                StatusRow("\u94fe\u8def", status.outputChain)
-                            }
-                            StatusSection("\u683c\u5f0f") {
-                                StatusRow("\u6e90\u683c\u5f0f", status.sourceFormat)
-                                StatusRow("\u76ee\u6807\u683c\u5f0f", status.targetFormat)
-                                StatusRow("\u5b9e\u9645\u8f93\u51fa", status.actualOutputFormat)
-                                StatusRow("PCM\u2192DSD", status.dsdInfo)
-                            }
-                            StatusSection("\u4f20\u8f93") {
-                                StatusRow("\u63a5\u53e3", status.interfaceInfo)
-                                StatusRow("\u7aef\u70b9", status.endpointInfo)
-                                StatusRow("Buffer", status.bufferInfo)
-                                StatusRow("吞吐", status.transportDiagnostics)
-                                StatusRow("Audible", status.audibleDiagnostics)
-                                StatusRow("Feedback", status.feedbackDiagnostics)
-                                StatusRow("Clock", status.clockDiagnostics)
-                                StatusRow("\u786c\u4ef6\u97f3\u91cf", status.hardwareVolumeInfo)
-                                StatusRow("Feature Unit", status.featureUnitDiagnostics)
-                            }
-                            StatusSection("Profile / Recovery") {
-                                StatusRow("Profile", status.profileDiagnostics)
-                                StatusRow("Recovery", status.recoveryDiagnostics)
-                            }
-                        }
+                    StatusSection("\u64ad\u653e\u94fe\u8def") {
+                        StatusRow("\u72ec\u5360", if (status.exclusiveActive) "\u5df2\u542f\u7528" else "\u672a\u542f\u7528")
+                        StatusRow("\u5f15\u64ce", if (status.initialized) "\u5df2\u521d\u59cb\u5316" else "\u672a\u521d\u59cb\u5316")
+                        StatusRow("\u4f20\u8f93", if (status.running) "\u6b63\u5728\u8f93\u51fa" else "\u672a\u8f93\u51fa")
+                        StatusRow("Bit-Perfect", if (status.bitPerfect) "\u5f00" else "\u5173")
+                        StatusRow("\u64ad\u653e\u6a21\u5f0f", status.playbackMode)
+                        StatusRow("\u94fe\u8def", status.outputChain)
                     }
-
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        TextButton(onClick = onRefresh) {
-                            Text("\u5237\u65b0", color = Color.White, fontFamily = appFontFamily())
-                        }
+                    StatusSection("\u683c\u5f0f") {
+                        StatusRow("\u6e90\u683c\u5f0f", status.sourceFormat)
+                        StatusRow("\u76ee\u6807\u683c\u5f0f", status.targetFormat)
+                        StatusRow("\u5b9e\u9645\u8f93\u51fa", status.actualOutputFormat)
+                        StatusRow("PCM\u2192DSD", status.dsdInfo)
+                    }
+                    StatusSection("\u4f20\u8f93") {
+                        StatusRow("\u63a5\u53e3", status.interfaceInfo)
+                        StatusRow("\u7aef\u70b9", status.endpointInfo)
+                        StatusRow("Buffer", status.bufferInfo)
+                        StatusRow("吞吐", status.transportDiagnostics)
+                        StatusRow("Audible", status.audibleDiagnostics)
+                        StatusRow("Feedback", status.feedbackDiagnostics)
+                        StatusRow("Clock", status.clockDiagnostics)
+                        StatusRow("\u786c\u4ef6\u97f3\u91cf", status.hardwareVolumeInfo)
+                        StatusRow("Feature Unit", status.featureUnitDiagnostics)
+                    }
+                    StatusSection("Profile / Recovery") {
+                        StatusRow("Profile", status.profileDiagnostics)
+                        StatusRow("Recovery", status.recoveryDiagnostics)
                     }
                 }
+            }
+
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    text = "\u5237\u65b0",
+                    onClick = onRefresh
+                )
+                TextButton(
+                    text = "\u5173\u95ed",
+                    onClick = onDismiss
+                )
             }
         }
     }
@@ -615,21 +647,24 @@ private fun StatusSection(
     title: String,
     content: @Composable () -> Unit
 ) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(Color(0xFF111111), RoundedCornerShape(6.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = MiuixTheme.colorScheme.surfaceContainerHigh
     ) {
-        Text(
-            title,
-            color = Color.White,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
-            fontFamily = appFontFamily()
-        )
-        content()
+        Column(
+            Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                title,
+                color = MiuixTheme.colorScheme.onSurface,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                fontFamily = appFontFamily()
+            )
+            content()
+        }
     }
 }
 
@@ -642,14 +677,14 @@ private fun StatusRow(label: String, value: String) {
         Text(
             label,
             modifier = Modifier.width(76.dp),
-            color = Color(0xFF8E8E8E),
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             fontSize = 12.sp,
             fontFamily = appFontFamily()
         )
         Text(
             value,
             modifier = Modifier.weight(1f),
-            color = Color(0xFFE5E5E5),
+            color = MiuixTheme.colorScheme.onSurface,
             fontSize = 11.sp,
             fontFamily = appFontFamily()
         )
@@ -705,11 +740,7 @@ private fun DsdOptionGroup(
             fontFamily = appFontFamily()
         )
         Spacer(Modifier.height(8.dp))
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        Column(Modifier.fillMaxWidth()) {
             content()
         }
     }
@@ -723,27 +754,13 @@ private fun DsdOptionChip(
     onClick: () -> Unit
 ) {
     
-    Box(
-        Modifier
-            .background(
-                if (selected) MiuixTheme.colorScheme.primary else Color.Transparent,
-                RoundedCornerShape(6.dp)
-            )
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-    ) {
-        Text(
-            label,
-            color = when {
-                selected -> MiuixTheme.colorScheme.onPrimary
-                enabled -> MiuixTheme.colorScheme.onSurfaceVariantSummary
-                else -> MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.38f)
-            },
-            fontSize = 13.sp,
-            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-            fontFamily = appFontFamily()
-        )
-    }
+    RadioButtonPreference(
+        title = label,
+        selected = selected,
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
 private fun formatSampleRate(rate: Int): String {
@@ -767,8 +784,7 @@ private fun ResampleBottomSheet(
     onDismiss: () -> Unit
 ) {
     var tab by remember { mutableStateOf(ResampleTab.SampleRate) }
-    val sheetInteraction = remember { MutableInteractionSource() }
-    val maxDialogHeight = LocalConfiguration.current.screenHeightDp.dp * 0.64f
+    val maxDialogHeight = LocalConfiguration.current.screenHeightDp.dp * 0.68f
     // 动态采样率：仅显示设备支持的 + Auto；capabilities 为空时只显示 Auto
     val deviceRates = capabilities
         ?.supportedSampleRates
@@ -783,107 +799,71 @@ private fun ResampleBottomSheet(
         addAll(capabilities?.supportedBitDepths.orEmpty())
     }.distinct().sorted()
 
-    if (!visible) return
-
-    Dialog(
+    RawMiuixOverlayDialog(
+        show = visible,
+        title = stringResource(R.string.usb_dac_output_mode),
+        summary = stringResource(R.string.usb_dac_general_output_desc),
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        renderInRootScaffold = true
     ) {
-        Box(
+        Column(
             Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.58f))
-                .clickable { onDismiss() },
-            contentAlignment = Alignment.Center
+                .fillMaxWidth()
+                .heightIn(max = maxDialogHeight),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 28.dp)
-                    .heightIn(max = maxDialogHeight)
-                    .clickable(
-                        interactionSource = sheetInteraction,
-                        indication = null
-                    ) {},
-                color = Color(0xFF262626),
-                shape = RoundedCornerShape(22.dp)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 22.dp, vertical = 22.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(24.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        SheetTabButton(stringResource(R.string.usb_dac_bit_rate_tab), tab == ResampleTab.BitRate) {
-                            tab = ResampleTab.BitRate
-                        }
-                        SheetTabButton(stringResource(R.string.usb_dac_sample_rate), tab == ResampleTab.SampleRate) {
-                            tab = ResampleTab.SampleRate
-                        }
-                    }
+                SheetTabButton(stringResource(R.string.usb_dac_bit_rate_tab), tab == ResampleTab.BitRate) {
+                    tab = ResampleTab.BitRate
+                }
+                SheetTabButton(stringResource(R.string.usb_dac_sample_rate), tab == ResampleTab.SampleRate) {
+                    tab = ResampleTab.SampleRate
+                }
+            }
 
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .weight(1f, fill = false)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        Text(
-                            if (tab == ResampleTab.SampleRate) stringResource(R.string.usb_dac_sample_rate) else stringResource(R.string.usb_dac_sample_bits),
-                            color = Color.White,
-                            fontSize = 21.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            fontFamily = appFontFamily()
-                        )
-                        Spacer(Modifier.height(14.dp))
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    if (tab == ResampleTab.SampleRate) stringResource(R.string.usb_dac_sample_rate) else stringResource(R.string.usb_dac_sample_bits),
+                    color = MiuixTheme.colorScheme.onSurface,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = appFontFamily()
+                )
+                Spacer(Modifier.height(8.dp))
 
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            if (tab == ResampleTab.SampleRate) {
-                                sampleRates.forEach { rate ->
-                                    SheetOptionChip(formatSampleRate(rate), sampleRate == rate) {
-                                        onSampleRateChange(rate)
-                                    }
-                                }
-                            } else {
-                                bitDepths.forEach { depth ->
-                                    val label = AudioOutputManager.BIT_DEPTH_LABELS[depth] ?: "${depth}bit"
-                                    SheetOptionChip(label, bitDepth == depth) {
-                                        onBitDepthChange(depth)
-                                    }
-                                }
-                            }
+                if (tab == ResampleTab.SampleRate) {
+                    sampleRates.forEach { rate ->
+                        SheetOptionPreference(formatSampleRate(rate), sampleRate == rate) {
+                            onSampleRateChange(rate)
                         }
                     }
-
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        Box(
-                            Modifier
-                                .background(Color(0xFF6A6A6A), RoundedCornerShape(28.dp))
-                                .clickable(onClick = onDismiss)
-                                .padding(horizontal = 30.dp, vertical = 11.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                stringResource(R.string.usb_dac_close),
-                                color = Color.White,
-                                fontSize = 17.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                fontFamily = appFontFamily()
-                            )
+                } else {
+                    bitDepths.forEach { depth ->
+                        val label = AudioOutputManager.BIT_DEPTH_LABELS[depth] ?: "${depth}bit"
+                        SheetOptionPreference(label, bitDepth == depth) {
+                            onBitDepthChange(depth)
                         }
                     }
                 }
+            }
+
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    text = stringResource(R.string.usb_dac_close),
+                    onClick = onDismiss
+                )
             }
         }
     }
@@ -895,54 +875,28 @@ private fun SheetTabButton(
     selected: Boolean,
     onClick: () -> Unit
 ) {
-    Text(
+    TextButton(
         text = label,
-        Modifier
-            .clickable(onClick = onClick)
-            .padding(vertical = 4.dp),
-        color = if (selected) Color.White else Color(0xFF8E8E8E),
-        fontSize = 16.sp,
-        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-        fontFamily = appFontFamily()
+        onClick = onClick,
+        colors = top.yukonga.miuix.kmp.basic.ButtonDefaults.textButtonColors(
+            textColor = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary
+        ),
+        insideMargin = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp)
     )
 }
 
 @Composable
-private fun SheetOptionChip(
+private fun SheetOptionPreference(
     label: String,
     selected: Boolean,
     onClick: () -> Unit
 ) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp, vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(18.dp)
-    ) {
-        Box(
-            Modifier
-                .size(30.dp)
-                .border(3.dp, Color.White, CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
-            if (selected) {
-                Box(
-                    Modifier
-                        .size(15.dp)
-                        .background(Color.White, CircleShape)
-                )
-            }
-        }
-        Text(
-            label,
-            color = Color.White,
-            fontSize = 20.sp,
-            fontWeight = FontWeight.SemiBold,
-            fontFamily = appFontFamily()
-        )
-    }
+    RadioButtonPreference(
+        title = label,
+        selected = selected,
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
 
@@ -1135,39 +1089,107 @@ private fun DacSettingRow(
     subtitle: String,
     onClick: () -> Unit
 ) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 13.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            Modifier
-                .size(42.dp)
-                .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.16f), RoundedCornerShape(12.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            if (iconRes != null) {
-                Image(
-                    painter = painterResource(iconRes),
-                    contentDescription = iconContentDescription ?: title,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.size(27.dp)
+    ArrowPreference(
+        title = title,
+        summary = subtitle,
+        onClick = onClick,
+        startAction = {
+            Box(
+                Modifier
+                    .size(42.dp)
+                    .background(
+                        MiuixTheme.colorScheme.primary.copy(alpha = 0.16f),
+                        RoundedCornerShape(12.dp)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (iconRes != null) {
+                    Image(
+                        painter = painterResource(iconRes),
+                        contentDescription = iconContentDescription ?: title,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.size(27.dp)
+                    )
+                } else {
+                    Text(
+                        iconText.orEmpty(),
+                        color = MiuixTheme.colorScheme.primary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = appFontFamily()
+                    )
+                }
+            }
+        },
+        endActions = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    value,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    fontSize = 14.sp,
+                    fontFamily = appFontFamily()
                 )
-            } else {
-                Text(iconText.orEmpty(), color = MiuixTheme.colorScheme.primary, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = appFontFamily())
+                Icon(
+                    imageVector = MiuixIcons.Regular.ChevronForward,
+                    contentDescription = null,
+                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
-        Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, color = MiuixTheme.colorScheme.onBackground, fontSize = 16.sp, fontWeight = FontWeight.Medium, fontFamily = appFontFamily())
-            Text(subtitle, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp, modifier = Modifier.padding(top = 3.dp), fontFamily = appFontFamily())
+    )
+}
+
+@Composable
+private fun DacDropdownRow(
+    iconText: String? = null,
+    iconRes: Int? = null,
+    iconContentDescription: String? = null,
+    title: String,
+    value: String,
+    subtitle: String,
+    entry: DropdownEntry,
+    maxHeight: androidx.compose.ui.unit.Dp
+) {
+    RawWindowDropdownPreference(
+        entry = entry,
+        title = title,
+        summary = subtitle,
+        showValue = true,
+        maxHeight = maxHeight,
+        collapseOnSelection = true,
+        startAction = {
+            Box(
+                Modifier
+                    .size(42.dp)
+                    .background(
+                        MiuixTheme.colorScheme.primary.copy(alpha = 0.16f),
+                        RoundedCornerShape(12.dp)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (iconRes != null) {
+                    Image(
+                        painter = painterResource(iconRes),
+                        contentDescription = iconContentDescription ?: title,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.size(27.dp)
+                    )
+                } else {
+                    Text(
+                        iconText.orEmpty(),
+                        color = MiuixTheme.colorScheme.primary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = appFontFamily()
+                    )
+                }
+            }
         }
-        Text(value, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 14.sp, fontFamily = appFontFamily())
-        Spacer(Modifier.width(8.dp))
-        Text("›", color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 24.sp)
-    }
+    )
 }
 
 @Composable
@@ -1178,21 +1200,19 @@ private fun AdvancedSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, color = MiuixTheme.colorScheme.onBackground, fontSize = 15.sp, fontWeight = FontWeight.Medium, fontFamily = appFontFamily())
-            Text(description, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp, modifier = Modifier.padding(top = 3.dp), fontFamily = appFontFamily())
+    SwitchPreference(
+        title = title,
+        summary = buildString {
+            append(description)
             if (!note.isNullOrBlank()) {
-                Text(note, color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.72f), fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 4.dp), fontFamily = appFontFamily())
+                append("\n")
+                append(note)
             }
-        }
-        androidx.compose.material3.Switch(checked = checked, onCheckedChange = onCheckedChange)
-    }
+        },
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
 @Composable
@@ -1203,51 +1223,36 @@ private fun PreheatSettingRow(
     onSelected: (Int) -> Unit
 ) {
     Column(Modifier.fillMaxWidth()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onToggle)
-                .padding(horizontal = 8.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(stringResource(R.string.usb_dac_preheat_event), color = MiuixTheme.colorScheme.onBackground, fontSize = 15.sp, fontWeight = FontWeight.Medium, fontFamily = appFontFamily())
-                Text(if (preheatMs <= 0) stringResource(R.string.usb_dac_never_preheat) else stringResource(R.string.usb_dac_ms_value, preheatMs), color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp, modifier = Modifier.padding(top = 3.dp), fontFamily = appFontFamily())
+        ArrowPreference(
+            title = stringResource(R.string.usb_dac_preheat_event),
+            summary = if (preheatMs <= 0) {
+                stringResource(R.string.usb_dac_never_preheat)
+            } else {
+                stringResource(R.string.usb_dac_ms_value, preheatMs)
+            },
+            onClick = onToggle,
+            endActions = {
+                Text(
+                    if (expanded) stringResource(R.string.usb_dac_collapse)
+                    else stringResource(R.string.usb_dac_select),
+                    color = MiuixTheme.colorScheme.primary,
+                    fontSize = 13.sp,
+                    fontFamily = appFontFamily()
+                )
             }
-            Text(if (expanded) stringResource(R.string.usb_dac_collapse) else stringResource(R.string.usb_dac_select), color = MiuixTheme.colorScheme.primary, fontSize = 13.sp, fontFamily = appFontFamily())
-        }
+        )
         AnimatedVisibility(visible = expanded, enter = fadeIn(), exit = fadeOut()) {
-            FlowRow(
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
                 listOf(0, 100, 200, 300, 400, 500, 800, 1000, 1500, 2000, 2500).forEach { value ->
-                    DacChip(
-                        label = if (value == 0) stringResource(R.string.usb_dac_never_preheat) else stringResource(R.string.usb_dac_ms_value, value),
-                        selected = preheatMs == value
-                    ) { onSelected(value) }
+                    RadioButtonPreference(
+                        title = if (value == 0) stringResource(R.string.usb_dac_never_preheat) else stringResource(R.string.usb_dac_ms_value, value),
+                        selected = preheatMs == value,
+                        onClick = { onSelected(value) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun DacChip(label: String, selected: Boolean, onClick: () -> Unit) {
-    Box(
-        Modifier
-            .background(if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.10f), RoundedCornerShape(20.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 13.dp, vertical = 8.dp)
-    ) {
-        Text(
-            label,
-            color = if (selected) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onBackground,
-            fontSize = 12.sp,
-            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-            fontFamily = appFontFamily()
-        )
     }
 }
 
@@ -1256,13 +1261,28 @@ private fun DashboardMetricInfoDialog(
     metric: Pair<String, String>?,
     onDismiss: () -> Unit
 ) {
-    if (metric == null) return
-    AlertDialog(
+    RawMiuixOverlayDialog(
+        show = metric != null,
+        title = metric?.let { dashboardMetricTitle(it.first) },
         onDismissRequest = onDismiss,
-        title = { Text(dashboardMetricTitle(metric.first), fontWeight = FontWeight.SemiBold, fontFamily = appFontFamily()) },
-        text = { Text(metric.second, fontSize = 14.sp, lineHeight = 20.sp, fontFamily = appFontFamily()) },
-        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.usb_dac_got_it)) } }
-    )
+        renderInRootScaffold = true
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text(
+                metric?.second.orEmpty(),
+                color = MiuixTheme.colorScheme.onSurface,
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+                fontFamily = appFontFamily()
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(
+                    text = stringResource(R.string.usb_dac_got_it),
+                    onClick = onDismiss
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -1272,21 +1292,24 @@ private fun VolumeModeDialog(
     onSelect: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
-    if (!visible) return
-    MiuixChoiceDialog(
-        visible = visible,
+    RawMiuixOverlayDialog(
+        show = visible,
         title = stringResource(R.string.usb_dac_volume_mode),
-        selectedValue = selectedMode.coerceIn(0, 2),
-        items = listOf(1, 0, 2).map { mode ->
-            MiuixChoiceItem(
-                value = mode,
-                title = usbVolumeModeLabel(mode),
-                summary = usbVolumeModeDescription(mode)
-            )
-        },
-        onSelect = onSelect,
-        onDismiss = onDismiss
-    )
+        onDismissRequest = onDismiss,
+        renderInRootScaffold = true
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            listOf(1, 0, 2).forEach { mode ->
+                RadioButtonPreference(
+                    title = usbVolumeModeLabel(mode),
+                    summary = usbVolumeModeDescription(mode),
+                    selected = selectedMode.coerceIn(0, 2) == mode,
+                    onClick = { onSelect(mode) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -1295,14 +1318,38 @@ private fun DigitalVolumeWarningDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    if (!visible) return
-    AlertDialog(
+    RawMiuixOverlayDialog(
+        show = visible,
+        title = stringResource(R.string.usb_dac_max_volume_warning),
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.usb_dac_max_volume_warning), fontWeight = FontWeight.SemiBold, fontFamily = appFontFamily()) },
-        text = { Text(stringResource(R.string.usb_dac_max_volume_warning_desc), fontSize = 14.sp, lineHeight = 20.sp, fontFamily = appFontFamily()) },
-        confirmButton = { TextButton(onClick = onConfirm) { Text(stringResource(R.string.usb_dac_confirm_enable)) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.usb_dac_cancel)) } }
-    )
+        renderInRootScaffold = true
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text(
+                stringResource(R.string.usb_dac_max_volume_warning_desc),
+                color = MiuixTheme.colorScheme.onSurface,
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+                fontFamily = appFontFamily()
+            )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    text = stringResource(R.string.usb_dac_cancel),
+                    onClick = onDismiss
+                )
+                TextButton(
+                    text = stringResource(R.string.usb_dac_confirm_enable),
+                    onClick = onConfirm,
+                    colors = top.yukonga.miuix.kmp.basic.ButtonDefaults.textButtonColors(
+                        textColor = MiuixTheme.colorScheme.primary
+                    )
+                )
+            }
+        }
+    }
 }
 
 private fun usbVolumeModeLabel(mode: Int): String = when (mode.coerceIn(0, 2)) {

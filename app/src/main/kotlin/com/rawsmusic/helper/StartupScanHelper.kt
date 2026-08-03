@@ -66,12 +66,12 @@ class StartupScanHelper(
                     // 空库不自动扫描，显示空态提示用户选择文件夹
                     AppLogger.d(TAG, "library empty, waiting for user to select folders")
                     _scanUiState.value = ScanUiState.idle().copy(
-                        message = "音乐库为空，请选择文件夹或手动添加音乐"
+                        message = context.getString(R.string.scan_library_empty)
                     )
                 } else {
                     AppLogger.d(TAG, "skip startup auto scan, existing songs=$existingCount")
                     _scanUiState.value = ScanUiState.idle().copy(
-                        message = "音乐库已就绪，手动刷新可重新扫描",
+                        message = context.getString(R.string.scan_library_ready),
                         found = existingCount
                     )
                 }
@@ -121,7 +121,7 @@ class StartupScanHelper(
                     AppLogger.d(TAG, "MediaStore changed: uri=${change.uri}")
                     _scanUiState.value = _scanUiState.value.copy(
                         pendingScan = true,
-                        message = "媒体库有变化，手动刷新可重新扫描"
+                        message = context.getString(R.string.scan_media_changed)
                     )
                 }
         }
@@ -138,7 +138,7 @@ class StartupScanHelper(
                 pendingScanReason = reason
                 _scanUiState.value = _scanUiState.value.copy(
                     pendingScan = true,
-                    message = "${_scanUiState.value.message}，稍后将重新扫描"
+                    message = context.getString(R.string.scan_pending, _scanUiState.value.message)
                 )
                 AppLogger.d(TAG, "scan running, mark pending: $reason")
                 return
@@ -161,8 +161,8 @@ class StartupScanHelper(
             } catch (e: Exception) {
                 _scanUiState.value = _scanUiState.value.copy(
                     isScanning = false, canCancel = false,
-                    stage = "错误", error = e.message,
-                    message = "扫描失败：${e.message}"
+                    stage = context.getString(R.string.scan_stage_error), error = e.message,
+                    message = context.getString(R.string.scan_failed, e.message.orEmpty())
                 )
                 AppLogger.e(TAG, "scan failed", e)
                 return
@@ -176,10 +176,11 @@ class StartupScanHelper(
     private suspend fun runSingleScan(context: Context, reason: String) {
         // 检查用户是否已选择扫描文件夹
         val scanPaths = com.rawsmusic.module.data.prefs.AppPreferences.UI.scanPaths
-        if (scanPaths.isEmpty()) {
-            AppLogger.w(TAG, "runSingleScan: scanPaths is empty, requesting folder selection")
+        val safFolders = com.rawsmusic.module.data.prefs.AppPreferences.Scanner.musicFolderUris
+        if (scanPaths.isEmpty() && safFolders.isEmpty()) {
+            AppLogger.w(TAG, "runSingleScan: no filesystem path or SAF folder selected")
             _scanUiState.value = ScanUiState.idle().copy(
-                message = "请先选择音乐文件夹"
+                message = context.getString(R.string.scan_select_folder)
             )
             // 触发文件夹选择需求
             com.rawsmusic.module.scanner.ScanStateBus.notifyFolderSelectionNeeded()
@@ -194,6 +195,8 @@ class StartupScanHelper(
             context = context,
             options = TwoStageMediaScanner.Options(
                 scannerOptions = MediaStoreScanner.ScanOptions.fromPreferences(),
+                customPaths = scanPaths,
+                sourceMode = TwoStageMediaScanner.SourceMode.fromPreferences(),
                 expandCueTracks = true, emitEachSong = false, usePersistentCache = true
             )
         ).collect { event ->
@@ -201,24 +204,24 @@ class StartupScanHelper(
                 is LibraryScanCoordinator.Event.ScannerEvent -> handleScannerEvent(reason, event.event)
                 is LibraryScanCoordinator.Event.DatabaseSyncStarted -> {
                     val stageText = when (event.phase) {
-                        LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> "快速写入"
-                        LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> "后台补全"
-                        LibraryScanCoordinator.SyncPhase.FINAL -> "最终同步"
+                        LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> context.getString(R.string.scan_stage_quick_write)
+                        LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> context.getString(R.string.scan_stage_background_enrich)
+                        LibraryScanCoordinator.SyncPhase.FINAL -> context.getString(R.string.scan_stage_final_sync)
                     }
                     _scanUiState.value = _scanUiState.value.copy(
                         isScanning = true, canCancel = true, stage = stageText,
-                        message = "$reason：$stageText ${event.newCount} 首"
+                        message = context.getString(R.string.scan_sync_progress, reason, stageText, event.newCount)
                     )
                 }
                 is LibraryScanCoordinator.Event.DatabaseSyncCompleted -> {
                     if (event.phase == LibraryScanCoordinator.SyncPhase.FINAL) finalSync = event
                     val message = when (event.phase) {
-                        LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> "$reason：快速结果已显示，新增/变更 ${event.upserted} 首"
-                        LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> "$reason：后台补全已写入 ${event.upserted} 首"
-                        LibraryScanCoordinator.SyncPhase.FINAL -> "$reason：数据库同步完成，更新 ${event.upserted}，删除 ${event.deleted}，未变 ${event.unchanged}"
+                        LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> context.getString(R.string.scan_quick_visible, reason, event.upserted)
+                        LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> context.getString(R.string.scan_background_enriched, reason, event.upserted)
+                        LibraryScanCoordinator.SyncPhase.FINAL -> context.getString(R.string.scan_database_synced, reason, event.upserted, event.deleted, event.unchanged)
                     }
                     _scanUiState.value = _scanUiState.value.copy(
-                        isScanning = true, canCancel = true, stage = "数据库完成",
+                        isScanning = true, canCancel = true, stage = context.getString(R.string.scan_stage_database_complete),
                         dbUpserted = event.upserted, dbDeleted = event.deleted, dbUnchanged = event.unchanged,
                         message = message
                     )
@@ -228,17 +231,17 @@ class StartupScanHelper(
                     MusicRepository.publishTransientScanSongs(event.songs)
                     _scanUiState.value = _scanUiState.value.copy(
                         isScanning = true, canCancel = true, pendingScan = false,
-                        stage = "可浏览", progress = _scanUiState.value.progress.coerceAtLeast(0.40f),
+                        stage = context.getString(R.string.scan_stage_visible), progress = _scanUiState.value.progress.coerceAtLeast(0.40f),
                         found = event.found, timeMs = event.timeMs,
-                        message = "$reason：${event.found} 首已可浏览，后台继续补全音频信息"
+                        message = context.getString(R.string.scan_visible_progress, reason, event.found)
                     )
                 }
                 is LibraryScanCoordinator.Event.Completed -> {
                     _songs.value = event.songs
                     _scanUiState.value = _scanUiState.value.copy(
                         isScanning = false, canCancel = false, pendingScan = false,
-                        stage = "完成", progress = 1f, found = event.songs.size, timeMs = event.timeMs,
-                        message = "$reason：完成 ${event.songs.size} 首，用时 ${event.timeMs}ms"
+                        stage = context.getString(R.string.scan_stage_complete), progress = 1f, found = event.songs.size, timeMs = event.timeMs,
+                        message = context.getString(R.string.scan_completed, reason, event.songs.size, event.timeMs)
                     )
                     val stats = finalSync
                     val elapsedSeconds = event.timeMs / 1000.0
@@ -267,8 +270,8 @@ class StartupScanHelper(
                 }
                 is LibraryScanCoordinator.Event.Error -> {
                     _scanUiState.value = _scanUiState.value.copy(
-                        isScanning = false, canCancel = false, stage = "错误",
-                        error = event.message, message = "$reason：失败 ${event.message}"
+                        isScanning = false, canCancel = false, stage = context.getString(R.string.scan_stage_error),
+                        error = event.message, message = context.getString(R.string.scan_error_with_reason, reason, event.message)
                     )
                 }
             }
@@ -279,22 +282,22 @@ class StartupScanHelper(
         when (event) {
             is TwoStageMediaScanner.Event.Started -> {
                 _scanUiState.value = _scanUiState.value.copy(
-                    isScanning = true, canCancel = true, reason = reason, stage = "开始",
+                    isScanning = true, canCancel = true, reason = reason, stage = context.getString(R.string.scan_stage_start),
                     total = event.totalEstimated, scanned = 0, progress = 0f,
-                    message = "$reason：开始扫描 ${event.totalEstimated} 个媒体项"
+                    message = context.getString(R.string.scan_started, reason, event.totalEstimated)
                 )
             }
             is TwoStageMediaScanner.Event.CacheLoaded -> {
                 _scanUiState.value = _scanUiState.value.copy(
-                    stage = "读取缓存", message = "$reason：已加载缓存 ${event.cachedCount} 条"
+                    stage = context.getString(R.string.scan_stage_cache), message = context.getString(R.string.scan_cache_loaded, reason, event.cachedCount)
                 )
             }
             is TwoStageMediaScanner.Event.QuickProgress -> {
                 val p = if (event.total > 0) event.scanned.toFloat() / event.total * 0.35f else 0f
                 _scanUiState.value = _scanUiState.value.copy(
-                    isScanning = true, canCancel = true, stage = "快速扫描",
+                    isScanning = true, canCancel = true, stage = context.getString(R.string.scan_stage_quick),
                     scanned = event.scanned, total = event.total, progress = p.coerceIn(0f, 0.35f),
-                    message = "$reason：${event.message} ${event.scanned}/${event.total}"
+                    message = context.getString(R.string.scan_progress, reason, event.message, event.scanned, event.total)
                 )
             }
             is TwoStageMediaScanner.Event.QuickCompleted -> {
@@ -302,19 +305,19 @@ class StartupScanHelper(
                 // 快速扫描完成：立即发布到 MusicRepository 让 UI 显示
                 MusicRepository.publishTransientScanSongs(event.songs)
                 _scanUiState.value = _scanUiState.value.copy(
-                    isScanning = true, canCancel = true, stage = "快速扫描完成",
+                    isScanning = true, canCancel = true, stage = context.getString(R.string.scan_stage_quick_complete),
                     found = event.found, progress = 0.35f,
-                    message = "$reason：已找到 ${event.found} 首，正在补全信息"
+                    message = context.getString(R.string.scan_quick_found, reason, event.found)
                 )
             }
             is TwoStageMediaScanner.Event.EnrichProgress -> {
                 val ep = if (event.total > 0) event.processed.toFloat() / event.total else 0f
                 _scanUiState.value = _scanUiState.value.copy(
-                    isScanning = true, canCancel = true, stage = "补全信息",
+                    isScanning = true, canCancel = true, stage = context.getString(R.string.scan_stage_enrich),
                     scanned = event.processed, total = event.total,
                     progress = (0.35f + ep * 0.55f).coerceIn(0.35f, 0.90f),
                     cacheHits = event.cacheHits, enrichedCount = event.enrichedCount,
-                    message = "$reason：${event.message} ${event.processed}/${event.total}，缓存 ${event.cacheHits}，新读 ${event.enrichedCount}"
+                    message = context.getString(R.string.scan_enrich_progress, reason, event.message, event.processed, event.total, event.cacheHits, event.enrichedCount)
                 )
             }
             is TwoStageMediaScanner.Event.SongEnriched -> {
@@ -336,16 +339,16 @@ class StartupScanHelper(
                 // 强制发布最终扫描结果到 MusicRepository
                 MusicRepository.publishTransientScanSongs(event.songs)
                 _scanUiState.value = _scanUiState.value.copy(
-                    isScanning = true, canCancel = true, stage = "准备同步数据库",
+                    isScanning = true, canCancel = true, stage = context.getString(R.string.scan_stage_prepare_sync),
                     progress = 0.90f, found = event.found,
                     cacheHits = event.cacheHits, enrichedCount = event.enrichedCount,
-                    message = "$reason：补全完成，${event.found} 首，缓存 ${event.cacheHits}，新读 ${event.enrichedCount}"
+                    message = context.getString(R.string.scan_enrich_completed, reason, event.found, event.cacheHits, event.enrichedCount)
                 )
             }
             is TwoStageMediaScanner.Event.Error -> {
                 _scanUiState.value = _scanUiState.value.copy(
-                    isScanning = false, canCancel = false, stage = "错误",
-                    error = event.message, message = "$reason：扫描失败 ${event.message}"
+                    isScanning = false, canCancel = false, stage = context.getString(R.string.scan_stage_error),
+                    error = event.message, message = context.getString(R.string.scan_error_with_reason, reason, event.message)
                 )
             }
         }

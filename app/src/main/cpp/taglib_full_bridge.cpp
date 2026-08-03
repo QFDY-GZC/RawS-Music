@@ -258,6 +258,12 @@ static bool writeEmbeddedArtwork(
         return file.save();
     }
 
+    if (ext == "wav") {
+        TagLib::RIFF::WAV::File file(filePath, false);
+        if (!file.isValid() || !replaceId3FrontCover(file.ID3v2Tag(), data, mimeType)) return false;
+        return file.save();
+    }
+
     if (ext == "m4a" || ext == "m4b" || ext == "m4p" || ext == "mp4") {
         TagLib::MP4::File file(filePath, false);
         auto *tag = file.tag();
@@ -337,6 +343,12 @@ static TagLib::ByteVector extractArtworkBytes(const char *filePath) {
         }
         auto *selected = best ? best : fallback;
         return selected ? selected->data() : TagLib::ByteVector();
+    }
+
+    if (ext == "wav") {
+        TagLib::RIFF::WAV::File file(filePath, false);
+        if (!file.isValid()) return TagLib::ByteVector();
+        return readAttachedPicture(file.ID3v2Tag());
     }
 
     if (ext == "m4a" || ext == "m4b" || ext == "m4p" || ext == "mp4") {

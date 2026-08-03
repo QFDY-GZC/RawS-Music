@@ -27,7 +27,6 @@ import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.preference.SliderPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 
-private const val DEFAULT_STEREO_WIDEN_STRENGTH = 250
 
 @Composable
 fun LiquidGlassSpatialSoundScreen(
@@ -338,24 +337,20 @@ internal fun SpatialSoundSettingsContent() {
     val initialStereoStrength = remember {
         AppPreferences.Equalizer.virtualizer.coerceIn(0, 1000)
     }
-    var spatialEnabled by remember { mutableStateOf(initialStereoStrength > 0) }
     var strength by remember { mutableStateOf(initialStereoStrength.toFloat()) }
-    var savedStrength by remember {
-        mutableStateOf(initialStereoStrength.takeIf { it > 0 } ?: DEFAULT_STEREO_WIDEN_STRENGTH)
-    }
 
     var crossfeedEnabled by remember { mutableStateOf(AppPreferences.Equalizer.crossfeedEnabled) }
     var cfLowCut by remember { mutableStateOf(AppPreferences.Equalizer.crossfeedLowCut.toFloat()) }
     var cfHighCut by remember { mutableStateOf(AppPreferences.Equalizer.crossfeedHighCut.toFloat()) }
     var cfAttenuation by remember { mutableStateOf(AppPreferences.Equalizer.crossfeedAttenuation / 10f) }
 
-    fun applyStereoStrength(value: Int) {
-        val coerced = value.coerceIn(0, 1000)
-        strength = coerced.toFloat()
-        spatialEnabled = coerced > 0
-        if (coerced > 0) savedStrength = coerced
-        PlayerHolder.controller?.setStereoWidenFactor(coerced / 1000f)
-            ?: run { AppPreferences.Equalizer.virtualizer = coerced }
+    fun applyStereoStrength(value: Float) {
+        val safe = value.coerceIn(0f, 1000f)
+        strength = safe
+        PlayerHolder.controller?.setStereoWidenFactor(safe / 1000f)
+            ?: run {
+                AppPreferences.Equalizer.virtualizer = safe.roundToInt().coerceIn(0, 1000)
+            }
     }
 
     fun applyCrossfeedParams() {
@@ -369,51 +364,19 @@ internal fun SpatialSoundSettingsContent() {
 
     SectionHeader(stringResource(R.string.settings_spatial_expand_section))
     SettingsCard {
-        SwitchRow(
-            label = stringResource(R.string.settings_spatial_expand_enable),
-            checked = spatialEnabled,
-            onCheckedChange = { checked ->
-                if (checked) {
-                    applyStereoStrength(savedStrength.coerceIn(1, 1000))
-                } else {
-                    savedStrength = strength.toInt().takeIf { it > 0 } ?: savedStrength
-                    applyStereoStrength(0)
-                }
-            }
+        SliderPreference(
+            title = stringResource(R.string.settings_spatial_strength_title),
+            summary = stringResource(R.string.settings_spatial_strength_summary),
+            valueText = stringResource(
+                R.string.settings_percent_value_one_decimal,
+                strength / 10f
+            ),
+            value = strength,
+            onValueChange = ::applyStereoStrength,
+            onValueChangeFinished = { applyStereoStrength(strength) },
+            valueRange = 0f..1000f,
+            showKeyPoints = false
         )
-        ExpandableEffectContent(enabled = spatialEnabled) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp)
-            ) {
-                SliderPreference(
-                    title = stringResource(R.string.settings_spatial_strength_title),
-                    summary = stringResource(R.string.settings_spatial_strength_summary),
-                    valueText = stringResource(
-                        R.string.settings_percent_value_one_decimal,
-                        strength / 10f
-                    ),
-                    value = strength,
-                    onValueChange = { value ->
-                        val next = value.coerceIn(0f, 1000f)
-                        strength = next
-                        spatialEnabled = next > 0f
-                        if (next > 0f) savedStrength = next.roundToInt().coerceIn(1, 1000)
-                        PlayerHolder.controller?.setStereoWidenFactor(next / 1000f)
-                            ?: run {
-                                AppPreferences.Equalizer.virtualizer =
-                                    next.roundToInt().coerceIn(0, 1000)
-                            }
-                    },
-                    onValueChangeFinished = {
-                        applyStereoStrength(strength.roundToInt().coerceIn(0, 1000))
-                    },
-                    valueRange = 0f..1000f,
-                    showKeyPoints = false
-                )
-            }
-        }
     }
 
     SectionHeader(stringResource(R.string.settings_spatial_crossfeed_section))

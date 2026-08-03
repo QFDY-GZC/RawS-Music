@@ -31,7 +31,7 @@ import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.preference.SliderPreference
-import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
+import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 
 @Composable
 fun LiquidGlassLyricManagementScreen(
@@ -143,7 +143,7 @@ fun LiquidGlassLyricManagementScreen(
 
     SettingsPage(title = stringResource(R.string.settings_lyric_management_title), onBack = onBack) {
         SettingsSection(stringResource(R.string.settings_lyric_layout_section)) {
-            WindowDropdownPreference(
+            RawWindowDropdownPreference(
                 entry = lyricTopLayoutEntry,
                 title = stringResource(R.string.settings_lyric_top_style_title),
                 summary = stringResource(

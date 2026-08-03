@@ -17,6 +17,25 @@ constexpr int kMaxDrawCommands = 16;
 constexpr int kFrameHeaderFloats = 4;
 constexpr int kDrawStrideFloats = 4;
 
+float cubicBezierCoordinate(float t, float p1, float p2) {
+    const float inverse = 1.0f - t;
+    return 3.0f * inverse * inverse * t * p1 +
+           3.0f * inverse * t * t * p2 +
+           t * t * t;
+}
+
+float transformSwitchProgress(float fraction) {
+    const float x = std::clamp(fraction, 0.0f, 1.0f);
+    float low = 0.0f;
+    float high = 1.0f;
+    for (int i = 0; i < 14; ++i) {
+        const float mid = (low + high) * 0.5f;
+        if (cubicBezierCoordinate(mid, 0.20f, 0.0f) < x) low = mid;
+        else high = mid;
+    }
+    return cubicBezierCoordinate((low + high) * 0.5f, 0.0f, 1.0f);
+}
+
 struct Entry {
     int token = 0;
     float progress = 0.0f;
@@ -344,4 +363,10 @@ Java_com_rawsmusic_core_ui_widget_bitmaps_NativePlayerArtworkBridge_nativeAdvanc
     const bool active = state->advance(static_cast<int64_t>(deltaNs), values, count);
     env->ReleaseFloatArrayElements(output, values, 0);
     return active ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jfloat JNICALL
+Java_com_rawsmusic_core_ui_widget_bitmaps_NativePlayerArtworkBridge_nativeTransformSwitchProgress(
+        JNIEnv*, jobject, jfloat fraction) {
+    return transformSwitchProgress(fraction);
 }

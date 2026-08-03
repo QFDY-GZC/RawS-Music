@@ -181,13 +181,12 @@ internal fun SettingsActionRow(
  */
 @Composable
 fun LiquidGlassSettingsScreen(
-    onNavigateToLyricManagement: () -> Unit,
-    onNavigateToStatusBarLyric: () -> Unit,
-    onNavigateToLyricFont: () -> Unit,
+    onNavigateToLyrics: () -> Unit,
     onNavigateToAppearance: () -> Unit,
     onNavigateToPersonalization: () -> Unit,
     onNavigateToAudioSettings: () -> Unit,
     onNavigateToAudioEffects: () -> Unit,
+    onNavigateToAiSeparation: () -> Unit,
     onNavigateToTransitionSettings: () -> Unit,
     onNavigateToPlayerInterface: () -> Unit,
     onNavigateToUsbDac: () -> Unit,
@@ -225,6 +224,12 @@ fun LiquidGlassSettingsScreen(
                     summary = stringResource(R.string.settings_audio_effects_summary),
                     keywords = stringResource(R.string.settings_audio_effects_keywords),
                     onClick = onNavigateToAudioEffects
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_ai_separation_title),
+                    summary = stringResource(R.string.settings_ai_separation_summary),
+                    keywords = stringResource(R.string.settings_ai_separation_keywords),
+                    onClick = onNavigateToAiSeparation
                 ),
                 SettingsRootItem(
                     title = stringResource(R.string.settings_usb_dac_title),
@@ -273,22 +278,10 @@ fun LiquidGlassSettingsScreen(
             title = stringResource(R.string.settings_section_lyrics_extensions),
             items = listOf(
                 SettingsRootItem(
-                    title = stringResource(R.string.settings_lyric_management_title),
-                    summary = stringResource(R.string.settings_lyric_management_summary),
-                    keywords = stringResource(R.string.settings_lyric_management_keywords),
-                    onClick = onNavigateToLyricManagement
-                ),
-                SettingsRootItem(
-                    title = stringResource(R.string.settings_lyric_font_title),
-                    summary = stringResource(R.string.settings_lyric_font_summary),
-                    keywords = stringResource(R.string.settings_lyric_font_keywords),
-                    onClick = onNavigateToLyricFont
-                ),
-                SettingsRootItem(
-                    title = stringResource(R.string.settings_status_bar_lyric_title),
-                    summary = stringResource(R.string.settings_status_bar_lyric_summary),
-                    keywords = stringResource(R.string.settings_status_bar_lyric_keywords),
-                    onClick = onNavigateToStatusBarLyric
+                    title = stringResource(R.string.settings_lyrics_title),
+                    summary = stringResource(R.string.settings_lyrics_summary),
+                    keywords = stringResource(R.string.settings_lyrics_keywords),
+                    onClick = onNavigateToLyrics
                 )
             )
         ),

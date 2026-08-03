@@ -250,12 +250,12 @@ class AudioEffectsActivity : BaseSettingsActivity() {
     private fun writeJsonToUri(uri: Uri, json: String) {
         try {
             contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
-            android.widget.Toast.makeText(this, "预设已保存", android.widget.Toast.LENGTH_SHORT).show()
+            android.widget.Toast.makeText(this, getString(com.rawsmusic.R.string.ui_preset_saved), android.widget.Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Log.e("AudioEffectsActivity", "Failed to export PEQ", e)
             android.widget.Toast.makeText(
                 this,
-                "保存失败: ${e.message}",
+                getString(com.rawsmusic.R.string.ui_preset_save_failed, e.message.orEmpty()),
                 android.widget.Toast.LENGTH_SHORT
             ).show()
         }
@@ -270,7 +270,7 @@ class AudioEffectsActivity : BaseSettingsActivity() {
             Log.e("AudioEffectsActivity", "Failed to import PEQ", e)
             android.widget.Toast.makeText(
                 this,
-                "读取失败: ${e.message}",
+                getString(com.rawsmusic.R.string.ui_preset_read_failed, e.message.orEmpty()),
                 android.widget.Toast.LENGTH_SHORT
             ).show()
             null

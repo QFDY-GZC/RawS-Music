@@ -36,7 +36,7 @@ import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.VerticalSlider
 import top.yukonga.miuix.kmp.preference.SliderPreference
-import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
+import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.abs
@@ -200,7 +200,7 @@ private fun GraphicEqDropdownPreference(
         )
     }
 
-    WindowDropdownPreference(
+    RawWindowDropdownPreference(
         entry = dropdownEntry,
         title = title,
         summary = summary,

@@ -15,7 +15,10 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace rawsmusic {
@@ -133,6 +136,9 @@ public:
     uint32_t getDsdRateHz() const;
     uint32_t getRateMultiplier() const;
     uint32_t getActualUpsamplingFactor() const;
+    uint32_t getP2dWorkRateHz() const { return p2d_work_rate_hz_; }
+    uint32_t getP2dRatio() const { return p2d_ratio_; }
+    uint32_t getWorkUpsampleFactor() const { return work_upsample_factor_; }
     int getInputRate() const { return input_rate_; }
 
 private:
@@ -168,6 +174,9 @@ private:
 
     uint32_t convertRealtimeP2d(const void* pcm_data, uint32_t sample_count, int bit_depth,
                                 uint8_t* dsd_output, uint32_t dsd_size);
+    uint32_t convertFixedRatioP2d(const void* pcm_data, uint32_t sample_count, int bit_depth,
+                                  uint8_t* dsd_output, uint32_t dsd_size);
+    float pcmToFloat(const void* data, int bit_depth, uint32_t index) const;
     uint32_t convertLowLatencyFast(const void* pcm_data, uint32_t sample_count, int bit_depth,
                                    uint8_t* dsd_output, uint32_t dsd_size);
     int quantizeP2dSample(float sample, const P2dKernelSpec& spec);
@@ -178,6 +187,22 @@ private:
     double pcmToDouble(const void* data, int bit_depth, int index);
     const P2dKernelSpec& kernelSpec() const;
     bool isSilenceBlock(const std::vector<float>& samples) const;
+
+    // PCM work-rate pre-stage. Its CIFB kernels accept only
+    // power-of-two ratios R8..R128. For DSD256+ from 44.1/48 kHz sources,
+    // one or more persistent 2x halfband stages raise the PCM work rate so
+    // the final P2D kernel remains at or below R128.
+    struct Halfband2xStage {
+        static constexpr size_t HISTORY = 16;
+        std::array<float, HISTORY> history{};
+        size_t head = 0;
+
+        void reset();
+        void process(float input, float& even, float& odd);
+    };
+
+    void configureWorkRate();
+    void expandWorkRate(float input, std::array<float, 8>& output, uint32_t& count);
 
     uint64_t samples_processed_;
     uint64_t bytes_output_;
@@ -195,6 +220,91 @@ private:
     // actual oversampling ratio. This keeps low-rate cleanup generic instead of
     // introducing a DSD64-only branch.
     float low_rate_assist_;
+
+    // Common PCM families map to exact R8/R16/R32/R64/R128... ratios. Keep
+    // that ratio outside the realtime loop and preserve the interpolation
+    // endpoint across nativeWrite blocks. This is the hot path used by USB P2D.
+    uint32_t fixed_ratio_;
+    uint32_t p2d_ratio_;
+    uint32_t work_upsample_factor_;
+    uint32_t p2d_work_rate_hz_;
+    uint32_t work_stage_count_;
+    std::array<Halfband2xStage, 3> work_rate_stages_;
+    float previous_input_;
+    bool have_previous_input_;
+    float previous_work_input_;
+    bool have_previous_work_input_;
+};
+
+/**
+ * Stream-scoped interleaved stereo PCM -> DSD transaction.
+ *
+ * The converter exposes one stereo P2D process call. RawSMusic keeps the
+ * independent modulator implementation, but owns both channels in one persistent
+ * object and performs deinterleave + two channel conversions as one atomic
+ * transaction.  DSD256+ may use one persistent channel helper inside that same
+ * transaction; it has no queue or playback clock of its own.  No process-global
+ * converter state or per-call channel vectors are used by the USB engine.
+ */
+class StereoPcmToDsdConverter {
+public:
+    StereoPcmToDsdConverter();
+    ~StereoPcmToDsdConverter();
+
+    bool init(const DsdConfig& config, int input_rate, int channels);
+
+    bool convertInterleaved(
+            const void* pcm_data,
+            uint32_t frame_count,
+            int channels,
+            int bit_depth,
+            int bytes_per_sample,
+            uint8_t* channel0_output,
+            uint8_t* channel1_output,
+            uint32_t output_capacity_per_channel,
+            std::array<uint32_t, 2>& written_per_channel);
+
+    void reset();
+
+    bool isInitialized() const { return initialized_; }
+    int getChannels() const { return channels_; }
+    int getInputRate() const { return input_rate_; }
+    uint32_t getDsdRateHz() const;
+    uint32_t getRateMultiplier() const;
+    uint32_t getActualUpsamplingFactor() const;
+    uint32_t getP2dWorkRateHz() const;
+    uint32_t getP2dRatio() const;
+    uint32_t getWorkUpsampleFactor() const;
+    bool usesParallelTransactionHelper() const { return parallel_helper_thread_.joinable(); }
+
+private:
+    void startParallelHelperIfNeeded();
+    void stopParallelHelper();
+    void parallelHelperLoop();
+
+    std::array<PcmToDsdConverter, 2> converters_;
+    std::array<std::vector<uint8_t>, 2> pcm_scratch_;
+    DsdConfig config_{};
+    int input_rate_ = 0;
+    int channels_ = 0;
+    bool initialized_ = false;
+
+    // A synchronized channel-1 helper for DSD256+.  The caller submits exactly
+    // one half of the current stereo transaction, converts channel 0 itself,
+    // and waits at the transaction barrier.  It cannot run ahead or free-run.
+    std::thread parallel_helper_thread_;
+    std::mutex parallel_helper_mutex_;
+    std::condition_variable parallel_helper_cv_;
+    std::condition_variable parallel_helper_done_cv_;
+    bool parallel_helper_stop_ = false;
+    bool parallel_helper_pending_ = false;
+    bool parallel_helper_done_ = false;
+    const void* parallel_pcm_ = nullptr;
+    uint32_t parallel_frame_count_ = 0;
+    int parallel_bit_depth_ = 0;
+    uint8_t* parallel_output_ = nullptr;
+    uint32_t parallel_output_capacity_ = 0;
+    uint32_t parallel_written_ = 0;
 };
 
 } // namespace rawsmusic

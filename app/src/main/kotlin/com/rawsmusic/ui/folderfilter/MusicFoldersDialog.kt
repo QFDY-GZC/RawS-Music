@@ -86,6 +86,9 @@ fun MusicFoldersDialog(
     var saving by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var refreshTick by remember { mutableLongStateOf(0L) }
+    var folderUriByPath by remember {
+        mutableStateOf(AppPreferences.Scanner.folderDialogUriByPath)
+    }
 
     val visibleNodes by remember(roots, refreshTick) {
         derivedStateOf {
@@ -208,7 +211,9 @@ fun MusicFoldersDialog(
             return
         }
 
-        addLocalPath(realPath)
+        val normalizedPath = normalizePath(realPath)
+        folderUriByPath = folderUriByPath + (normalizedPath to uri.toString())
+        addLocalPath(normalizedPath)
     }
 
     fun saveAndScan() {
@@ -223,6 +228,18 @@ fun MusicFoldersDialog(
 
         AppPreferences.UI.scanPaths = pathsToSave
         AppPreferences.UI.rootScanPaths = roots.map { it.path }
+
+        // ACTION_OPEN_DOCUMENT_TREE grants access to the whole selected subtree. Keep the
+        // tree URI alongside its resolved path so the scanner can recursively enumerate
+        // children even when MediaStore or direct path traversal misses nested files.
+        val reconciledUris = FolderDialogUriSelectionPolicy.reconcile(
+            currentUris = AppPreferences.Scanner.musicFolderUris,
+            previousDialogMap = AppPreferences.Scanner.folderDialogUriByPath,
+            currentDialogMap = folderUriByPath,
+            selectedPaths = pathsToSave
+        )
+        AppPreferences.Scanner.folderDialogUriByPath = folderUriByPath
+        AppPreferences.Scanner.musicFolderUris = reconciledUris
 
         Toast.makeText(
             context,

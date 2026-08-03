@@ -14,6 +14,7 @@
 
 #include <SLES/OpenSLES.h>
 #include <SLES/OpenSLES_Android.h>
+#include <SLES/OpenSLES_AndroidConfiguration.h>
 
 #include <aaudio/AAudio.h>
 
@@ -392,7 +393,11 @@ private:
         api.builderSetChannelCount(builder, channels_);
         const aaudio_format_t requestedAaudioFormat = aaudioFormatForNativeFormat(format_);
         api.builderSetFormat(builder, requestedAaudioFormat);
-        api.builderSetPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+        // Music playback is not an interactive synthesizer. The device report shows
+        // the keyboard/touch loudness regression only on native backends, whose common
+        // path was the explicit low-latency request. Keep the AAudio protocol but use
+        // its balanced basic path so ordinary system interaction sounds stay isolated.
+        api.builderSetPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_NONE);
         api.builderSetSharingMode(
             builder,
             mode_ == MODE_DIRECT ? AAUDIO_SHARING_MODE_EXCLUSIVE : AAUDIO_SHARING_MODE_SHARED
@@ -566,10 +571,51 @@ public:
         };
         SLDataSink sink = { &locatorOutputMix, nullptr };
 
-        const SLInterfaceID ids[] = { SL_IID_BUFFERQUEUE, SL_IID_VOLUME };
-        const SLboolean req[] = { SL_BOOLEAN_TRUE, SL_BOOLEAN_FALSE };
-        result = (*engine_)->CreateAudioPlayer(engine_, &playerObject_, &source, &sink, 2, ids, req);
+        const SLInterfaceID ids[] = {
+            SL_IID_BUFFERQUEUE,
+            SL_IID_VOLUME,
+            SL_IID_ANDROIDCONFIGURATION
+        };
+        const SLboolean req[] = {
+            SL_BOOLEAN_TRUE,
+            SL_BOOLEAN_FALSE,
+            SL_BOOLEAN_FALSE
+        };
+        result = (*engine_)->CreateAudioPlayer(engine_, &playerObject_, &source, &sink, 3, ids, req);
         if (result != SL_RESULT_SUCCESS || playerObject_ == nullptr) return false;
+
+        // Android defaults OpenSL ES players to the latency performance mode. The
+        // device report shows the keyboard/touch loudness regression only on native
+        // backends, so explicitly request the normal media path before Realize while
+        // keeping OpenSL ES as the selected protocol.
+        SLAndroidConfigurationItf androidConfig = nullptr;
+        const SLresult configInterfaceResult =
+            (*playerObject_)->GetInterface(playerObject_, SL_IID_ANDROIDCONFIGURATION, &androidConfig);
+        if (configInterfaceResult == SL_RESULT_SUCCESS && androidConfig != nullptr) {
+            const SLint32 streamType = SL_ANDROID_STREAM_MEDIA;
+            const SLresult streamTypeResult = (*androidConfig)->SetConfiguration(
+                androidConfig,
+                SL_ANDROID_KEY_STREAM_TYPE,
+                &streamType,
+                sizeof(streamType)
+            );
+            const SLuint32 performanceMode = SL_ANDROID_PERFORMANCE_NONE;
+            const SLresult performanceResult = (*androidConfig)->SetConfiguration(
+                androidConfig,
+                SL_ANDROID_KEY_PERFORMANCE_MODE,
+                &performanceMode,
+                sizeof(performanceMode)
+            );
+            LOGI(
+                "OpenSL Android config: streamTypeResult=%u performanceResult=%u performanceMode=%u",
+                streamTypeResult,
+                performanceResult,
+                performanceMode
+            );
+        } else {
+            LOGW("OpenSL Android configuration interface unavailable: result=%u", configInterfaceResult);
+        }
+
         result = (*playerObject_)->Realize(playerObject_, SL_BOOLEAN_FALSE);
         if (result != SL_RESULT_SUCCESS) return false;
         result = (*playerObject_)->GetInterface(playerObject_, SL_IID_PLAY, &play_);

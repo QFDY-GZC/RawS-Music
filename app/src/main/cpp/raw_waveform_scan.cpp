@@ -6,6 +6,7 @@
 #include <csetjmp>
 #include <ctime>
 #include <vector>
+#include "raw_fft_analyzer.h"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -18,6 +19,7 @@ extern "C" {
 
 #define RAW_WAVE_LOG_TAG "RawWaveScan"
 #define WLOGE(...) __android_log_print(ANDROID_LOG_ERROR, RAW_WAVE_LOG_TAG, __VA_ARGS__)
+#define WLOGI(...) __android_log_print(ANDROID_LOG_INFO, RAW_WAVE_LOG_TAG, __VA_ARGS__)
 
 namespace {
 
@@ -110,6 +112,7 @@ static bool ensure_output_buffer(uint8_t **out_buf, int *out_buf_samples, int wa
 struct WindowRmsResult {
     bool ok = false;
     float mean_square = 0.0f;
+    float fft_energy = 0.0f;
 };
 
 static WindowRmsResult decode_window_mean_square(
@@ -145,6 +148,8 @@ static WindowRmsResult decode_window_mean_square(
 
     double sum_square = 0.0;
     int64_t count = 0;
+    double sum_fft_energy = 0.0;
+    int fft_windows = 0;
     bool done = false;
 
     auto process_frame = [&](AVFrame *frm) -> bool {
@@ -171,6 +176,11 @@ static WindowRmsResult decode_window_mean_square(
         }
 
         const float *samples = reinterpret_cast<const float *>(*out_buf);
+        const float fft_energy = rawsmusic_fft_weighted_energy(samples, out_samples);
+        if (fft_energy > 0.0f) {
+            sum_fft_energy += fft_energy;
+            ++fft_windows;
+        }
         for (int i = 0; i < out_samples; ++i) {
             int64_t sample_ms = frame_ms +
                 static_cast<int64_t>(static_cast<double>(i) * 1000.0 / static_cast<double>(out_rate));
@@ -217,11 +227,14 @@ static WindowRmsResult decode_window_mean_square(
     if (count > 0) {
         result.ok = true;
         result.mean_square = static_cast<float>(sum_square / static_cast<double>(count));
+        result.fft_energy = fft_windows > 0
+            ? static_cast<float>(sum_fft_energy / static_cast<double>(fft_windows))
+            : 0.0f;
     }
     return result;
 }
 
-static std::vector<float> resample_and_normalize_poweramp_like(const std::vector<float> &raw, int target_count) {
+static std::vector<float> resample_and_normalize_envelope(const std::vector<float> &raw, int target_count) {
     std::vector<float> empty;
     const int raw_count = static_cast<int>(raw.size());
     if (raw_count <= 0 || target_count <= 0) return empty;
@@ -271,7 +284,7 @@ static std::vector<float> resample_and_normalize_poweramp_like(const std::vector
 
 } // namespace
 
-std::vector<float> rawsmusic_scan_waveform_poweramp_seek(
+std::vector<float> rawsmusic_scan_waveform_precise_seek(
         const char *input_path,
         int64_t start_ms,
         int64_t end_ms,
@@ -279,9 +292,7 @@ std::vector<float> rawsmusic_scan_waveform_poweramp_seek(
     std::vector<float> empty;
     if (!input_path || !*input_path) return empty;
 
-    const int target_count = std::max(32, std::min(sample_count > 0 ? sample_count : 100, 100));
-    const int64_t max_scan_ns = 2000000000LL;
-    const int64_t window_ms = 500;
+    const int target_count = std::max(32, std::min(sample_count > 0 ? sample_count : 100, 21600));
 
     AVFormatContext *fmt = nullptr;
     AVCodecContext *codec = nullptr;
@@ -297,9 +308,6 @@ std::vector<float> rawsmusic_scan_waveform_poweramp_seek(
     int out_rate = 44100;
     int64_t full_duration_ms = 0;
     int64_t segment_ms = 0;
-
-    timespec scan_started{};
-    clock_gettime(CLOCK_MONOTONIC, &scan_started);
 
     if (avformat_open_input(&fmt, input_path, nullptr, nullptr) < 0) {
         WLOGE("open failed: %s", input_path);
@@ -326,13 +334,17 @@ std::vector<float> rawsmusic_scan_waveform_poweramp_seek(
     codec = avcodec_alloc_context3(decoder);
     if (!codec) goto cleanup;
     if (avcodec_parameters_to_context(codec, stream->codecpar) < 0) goto cleanup;
+    codec->thread_count = 2;
+    codec->thread_type = FF_THREAD_FRAME;
     if (avcodec_open2(codec, decoder, nullptr) < 0) {
         WLOGE("decoder open failed: %s", input_path);
         goto cleanup;
     }
 
     if (codec->sample_rate <= 0) codec->sample_rate = 44100;
-    out_rate = codec->sample_rate;
+    // A mono 6 kHz stream retains more than enough temporal energy detail for one-second bars
+    // while making a full sequential scan substantially cheaper than playback-rate decoding.
+    out_rate = std::max(3000, std::min(codec->sample_rate, 6000));
 
     full_duration_ms = probe_duration_ms(fmt, stream, codec);
     start_ms = std::max<int64_t>(0, start_ms);
@@ -355,14 +367,6 @@ std::vector<float> rawsmusic_scan_waveform_poweramp_seek(
     }
 
     {
-        const int64_t stride_ms = segment_ms >= 50000
-            ? std::max<int64_t>(1, segment_ms / 200)
-            : 250;
-        const int raw_count = segment_ms >= 50000
-            ? 200
-            : std::max(1, static_cast<int>(segment_ms / 250));
-        const int64_t first_window_offset_ms = stride_ms + (stride_ms >> 2);
-
         const int64_t in_layout = channel_layout_for(codec);
         const int64_t out_layout = AV_CH_LAYOUT_MONO;
         AVSampleFormat in_fmt = codec->sample_fmt == AV_SAMPLE_FMT_NONE
@@ -382,42 +386,111 @@ std::vector<float> rawsmusic_scan_waveform_poweramp_seek(
         frame = av_frame_alloc();
         if (!pkt || !frame) goto cleanup;
 
-        std::vector<float> raw;
-        raw.reserve(raw_count);
-        int populated = 0;
-
-        for (int i = 0; i < raw_count; ++i) {
-            if (monotonic_elapsed_ns(scan_started) >= max_scan_ns) {
-                WLOGE("MAX_TIME_TO_SCAN_NS, skipping %s", input_path);
+        if (start_ms > 0) {
+            const int64_t seek_ts = av_rescale_q(start_ms * 1000, AV_TIME_BASE_Q, stream->time_base);
+            if (av_seek_frame(fmt, audio_stream_idx, seek_ts, AVSEEK_FLAG_BACKWARD) < 0) {
+                WLOGE("initial seek failed start=%lld path=%s",
+                      static_cast<long long>(start_ms), input_path);
                 goto cleanup;
             }
-
-            const int64_t window_start_ms = start_ms + first_window_offset_ms + static_cast<int64_t>(i) * stride_ms;
-            if (window_start_ms >= end_ms) break;
-            const int64_t window_end_ms = std::min<int64_t>(end_ms, window_start_ms + window_ms);
-
-            WindowRmsResult window = decode_window_mean_square(
-                fmt,
-                stream,
-                codec,
-                swr,
-                pkt,
-                frame,
-                &out_buf,
-                &out_buf_samples,
-                audio_stream_idx,
-                out_rate,
-                window_start_ms,
-                window_end_ms,
-                scan_started,
-                max_scan_ns);
-
-            raw.push_back(window.ok ? window.mean_square : 0.0f);
-            if (window.ok && window.mean_square > 0.0f) ++populated;
+            avcodec_flush_buffers(codec);
         }
 
-        if (populated <= 0) goto cleanup;
-        empty = resample_and_normalize_poweramp_like(raw, target_count);
+        std::vector<double> sum_square(target_count, 0.0);
+        std::vector<float> peaks(target_count, 0.0f);
+        std::vector<int64_t> counts(target_count, 0);
+        int64_t fallback_frame_ms = start_ms;
+        bool reached_end = false;
+
+        auto process_frame = [&](AVFrame *decoded) -> bool {
+            int wanted = static_cast<int>(av_rescale_rnd(
+                swr_get_delay(swr, codec->sample_rate) + decoded->nb_samples,
+                out_rate,
+                codec->sample_rate,
+                AV_ROUND_UP));
+            wanted = std::max(1, wanted);
+            if (!ensure_output_buffer(&out_buf, &out_buf_samples, wanted)) return false;
+
+            const int out_samples = swr_convert(
+                swr,
+                &out_buf,
+                out_buf_samples,
+                (const uint8_t **)decoded->extended_data,
+                decoded->nb_samples);
+            if (out_samples <= 0 || !out_buf) return true;
+
+            int64_t frame_ms = fallback_frame_ms;
+            if (decoded->best_effort_timestamp != AV_NOPTS_VALUE) {
+                frame_ms = av_rescale_q(
+                    decoded->best_effort_timestamp,
+                    stream->time_base,
+                    AVRational{1, 1000});
+            }
+            const float *samples = reinterpret_cast<const float *>(out_buf);
+            for (int i = 0; i < out_samples; ++i) {
+                const int64_t sample_ms = frame_ms +
+                    static_cast<int64_t>(static_cast<double>(i) * 1000.0 / out_rate);
+                if (sample_ms < start_ms) continue;
+                if (sample_ms >= end_ms) {
+                    reached_end = true;
+                    break;
+                }
+                int bucket = static_cast<int>(
+                    static_cast<double>(sample_ms - start_ms) * target_count / segment_ms);
+                bucket = std::max(0, std::min(bucket, target_count - 1));
+                float amp = samples[i];
+                if (!std::isfinite(amp)) amp = 0.0f;
+                amp = std::min(1.0f, std::fabs(amp));
+                sum_square[bucket] += static_cast<double>(amp) * amp;
+                peaks[bucket] = std::max(peaks[bucket], amp);
+                ++counts[bucket];
+            }
+            fallback_frame_ms = frame_ms +
+                static_cast<int64_t>(static_cast<double>(out_samples) * 1000.0 / out_rate);
+            return true;
+        };
+
+        while (!reached_end && av_read_frame(fmt, pkt) >= 0) {
+            if (pkt->stream_index == audio_stream_idx) {
+                int ret = send_packet_safe(codec, pkt);
+                if (ret >= 0) {
+                    while (!reached_end) {
+                        ret = avcodec_receive_frame(codec, frame);
+                        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+                        if (ret < 0) break;
+                        const bool ok = process_frame(frame);
+                        av_frame_unref(frame);
+                        if (!ok) {
+                            av_packet_unref(pkt);
+                            goto cleanup;
+                        }
+                    }
+                }
+            }
+            av_packet_unref(pkt);
+        }
+
+        empty.assign(target_count, 0.0f);
+        float max_value = 0.0f;
+        int populated = 0;
+        for (int i = 0; i < target_count; ++i) {
+            if (counts[i] <= 0) continue;
+            const float rms = static_cast<float>(
+                std::sqrt(sum_square[i] / static_cast<double>(counts[i])));
+            // RMS describes sustained energy while a small peak contribution keeps attacks visible.
+            const float value = rms * 0.84f + peaks[i] * 0.16f;
+            empty[i] = value;
+            max_value = std::max(max_value, value);
+            ++populated;
+        }
+        if (populated <= 0 || max_value <= 0.000001f) {
+            empty.clear();
+            goto cleanup;
+        }
+        const float gain = 1.0f / max_value;
+        for (float &value : empty) value = std::min(1.0f, std::max(0.0f, value * gain));
+        WLOGI("PCM_SCAN_OK buckets=%d populated=%d durationMs=%lld path=%s",
+              target_count, populated, static_cast<long long>(segment_ms), input_path);
     }
 
 cleanup:

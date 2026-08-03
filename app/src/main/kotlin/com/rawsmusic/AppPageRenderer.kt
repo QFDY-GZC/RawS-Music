@@ -64,6 +64,7 @@ internal val SETTINGS_ACTIVITY_MAP = mapOf<NavScene, Class<*>>(
     NavScene.SCAN_SETTINGS to com.rawsmusic.ui.settings.ScanSettingsActivity::class.java,
     NavScene.TRANSITION_SETTINGS to TransitionSettingsActivity::class.java,
     NavScene.PERSONALIZATION_SETTINGS to com.rawsmusic.ui.settings.PersonalizationSettingsActivity::class.java,
+    NavScene.AUDIO_EFFECTS to com.rawsmusic.ui.settings.AudioEffectsActivity::class.java,
 )
 
 /**
@@ -482,9 +483,9 @@ class AppPageRendererImpl(
     private fun writeJsonToUri(context: android.content.Context, uri: Uri, json: String) {
         try {
             context.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
-            Toast.makeText(context, "预设已保存", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(com.rawsmusic.R.string.preset_saved), Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            Toast.makeText(context, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(com.rawsmusic.R.string.preset_save_failed, e.message.orEmpty()), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -494,7 +495,7 @@ class AppPageRendererImpl(
                 BufferedReader(InputStreamReader(stream)).readText()
             }
         } catch (e: Exception) {
-            Toast.makeText(context, "读取失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(com.rawsmusic.R.string.preset_read_failed, e.message.orEmpty()), Toast.LENGTH_SHORT).show()
             null
         }
     }

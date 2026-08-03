@@ -77,7 +77,7 @@ import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.TextButton as MiuixTextButton
-import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
+import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 import top.yukonga.miuix.kmp.preference.SliderPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -483,7 +483,7 @@ private fun PeqDropdownPreference(
         )
     }
 
-    WindowDropdownPreference(
+    RawWindowDropdownPreference(
         entry = dropdownEntry,
         title = title,
         summary = summary,
