@@ -1,8 +1,10 @@
 package com.rawsmusic.core.common.model
 
 import android.os.Parcelable
+import androidx.compose.runtime.Immutable
 import kotlinx.parcelize.Parcelize
 
+@Immutable
 @Parcelize
 data class AudioFile(
     val id: Long = 0,

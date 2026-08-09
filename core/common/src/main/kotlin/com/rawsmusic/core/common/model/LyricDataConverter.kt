@@ -49,7 +49,17 @@ fun LyricData.toLyriconSong(
 
         // 只保留源歌词真实提供的逐字时间。普通逐行歌词必须保持空 words，
         // ComposeLyricView 才能可靠地区分逐行高亮和逐字羽化扫光。
-        val words = line.words.map { word ->
+        //
+        // Some providers (notably a subset of QRC/syllable exporters) store each word time as
+        // an offset inside the line even though the line tag itself is absolute. Treat that shape
+        // as line-relative here, once, before it reaches every lyric surface. Absolute TTML/QRC
+        // timelines are left untouched. This avoids a 60s line carrying words at 0..3000ms, which
+        // would otherwise make the entire karaoke sweep look completed as soon as the line loads.
+        val words = normalizeSourceWordTimeline(
+            sourceWords = line.words,
+            absoluteBaseMs = begin,
+            absoluteLineEndMs = end
+        ).map { word ->
             val wordBegin = shiftedTime(word.begin)
             val wordEnd = shiftedTime(word.end).coerceAtLeast(wordBegin + 1L)
             LyriconWord(
@@ -60,7 +70,15 @@ fun LyricData.toLyriconSong(
             )
         }
 
-        val bgWords = line.backgroundWords.map { word ->
+        val backgroundBase = line.backgroundStartTime
+            ?.let(::shiftedTime)
+            ?.takeIf { it >= begin }
+            ?: begin
+        val bgWords = normalizeSourceWordTimeline(
+            sourceWords = line.backgroundWords,
+            absoluteBaseMs = backgroundBase,
+            absoluteLineEndMs = end
+        ).map { word ->
             val wordBegin = shiftedTime(word.begin)
             val wordEnd = shiftedTime(word.end).coerceAtLeast(wordBegin + 1L)
             LyriconWord(
@@ -107,3 +125,43 @@ fun LyricData.toLyriconSong(
 
     return Song(id = id, name = name, artist = artist, duration = resolvedDuration, lyrics = lyricLines)
 }
+private fun normalizeSourceWordTimeline(
+    sourceWords: List<LyricWord>,
+    absoluteBaseMs: Long,
+    absoluteLineEndMs: Long
+): List<LyricWord> {
+    if (sourceWords.isEmpty() || absoluteBaseMs <= 0L) return sourceWords
+
+    val lineDurationMs = (absoluteLineEndMs - absoluteBaseMs).coerceAtLeast(1L)
+    val finiteWords = sourceWords.filter { it.begin >= 0L && it.end >= it.begin }
+    if (finiteWords.isEmpty()) return sourceWords
+
+    val firstBegin = finiteWords.minOf { it.begin }
+    val lastEnd = finiteWords.maxOf { maxOf(it.begin, it.end) }
+
+    // Absolute timelines cluster around the line's song position. Relative timelines cluster near
+    // zero and fit inside approximately one line duration. Keep a generous 2s allowance for
+    // provider rounding / trailing syllables, but never rewrite an ambiguous near-absolute line.
+    val relativeAllowanceMs = 2_000L
+    val looksLineRelative =
+        firstBegin < absoluteBaseMs &&
+            firstBegin <= lineDurationMs + relativeAllowanceMs &&
+            lastEnd <= lineDurationMs + relativeAllowanceMs
+
+    if (!looksLineRelative) return sourceWords
+
+    return sourceWords.map { word ->
+        val begin = (absoluteBaseMs + word.begin.coerceAtLeast(0L)).coerceAtLeast(absoluteBaseMs)
+        val rawDuration = when {
+            word.end > word.begin -> word.end - word.begin
+            word.duration > 0L -> word.duration
+            else -> 1L
+        }
+        word.copy(
+            begin = begin,
+            end = begin + rawDuration.coerceAtLeast(1L),
+            duration = rawDuration.coerceAtLeast(1L)
+        )
+    }
+}
+
