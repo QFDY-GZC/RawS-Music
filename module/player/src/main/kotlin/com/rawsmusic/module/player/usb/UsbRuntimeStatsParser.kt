@@ -24,6 +24,12 @@ object UsbRuntimeStatsParser {
         }
     }
 
+    fun parsePacingModeId(raw: String): Int? =
+        parseParts(raw)["pacingModeId"]?.toIntOrNull()?.takeIf { it >= 0 }
+
+    fun parsePacingModeName(raw: String): String? =
+        parseParts(raw)["pacingMode"]?.takeIf { it.isNotBlank() }
+
     fun isAudibleAccepted(raw: String): Boolean =
         raw.isNotBlank() && parseBoolean(parseParts(raw)["audible"]) == true
 

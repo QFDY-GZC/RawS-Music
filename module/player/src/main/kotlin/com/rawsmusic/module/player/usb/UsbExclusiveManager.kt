@@ -1,9 +1,6 @@
 package com.rawsmusic.module.player.usb
 
-import android.app.PendingIntent
-import android.content.BroadcastReceiver
 import android.content.Context
-import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
@@ -11,8 +8,6 @@ import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.Build
-import android.os.SystemClock
-import android.util.Log
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.module.data.prefs.AppPreferences
@@ -22,35 +17,9 @@ import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.UsbStatusNoticeBus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.suspendCancellableCoroutine
-import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.coroutines.resume
-import kotlin.math.PI
-import kotlin.math.roundToInt
-import kotlin.math.sin
 
 class UsbExclusiveManager(private val context: Context) {
-
-    data class AudioFormat(
-        val sampleRate: Int,
-        val channels: Int,
-        val bitsPerSample: Int
-    )
-
-    data class UsbAudioConfig(
-        val iface: Int,
-        val alt: Int,
-        val outEp: Int,
-        val fbEp: Int,
-        val sampleRate: Int,
-        val bits: Int,
-        val channels: Int,
-        val subslot: Int,
-        val sourceBits: Int = bits
-    ) {
-        val frameSize: Int get() = channels * subslot
-    }
 
     /**
      * 硬件音量 Feature Unit 信息。
@@ -68,9 +37,6 @@ class UsbExclusiveManager(private val context: Context) {
 
     companion object {
         private const val TAG = "UsbExclusiveManager"
-        private const val ACTION_USB_PERMISSION = "com.rawsmusic.USB_PERMISSION"
-        private const val USB_CLASS_AUDIO = UsbConstants.USB_CLASS_AUDIO
-        private const val USB_SUBCLASS_AUDIOSTREAMING = 0x02
         private const val USB_DT_INTERFACE = 0x04
     }
 
@@ -85,7 +51,20 @@ class UsbExclusiveManager(private val context: Context) {
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     private val transportOwner = UsbTransportCommandQueue()
-    private var lastResampledCacheTrimMs = 0L
+    private val pcmFallbackProcessor = UsbPcmFallbackProcessor(context)
+    private val usbDiscovery = UsbDeviceDiscovery(usbManager)
+    private val trackStartCoordinator by lazy {
+        UsbTrackStartCoordinator(
+            currentConfig = { currentConfig },
+            fadeOut = ::fadeOutIfStreaming,
+            stopStreaming = ::stopStreaming,
+            prepareForPlayback = { sampleRate, bits, channels ->
+                prepareForPlayback(sampleRate, bits, channels)
+            },
+            startStreaming = ::startStreaming,
+            setStreamingState = ::setStreamingState,
+        )
+    }
 
     init {
         // Seed the OpenSL scheduling probe with Android's output sample
@@ -104,10 +83,8 @@ class UsbExclusiveManager(private val context: Context) {
     private val _state = MutableStateFlow(State.IDLE)
     val state: StateFlow<State> = _state
 
-    // 防重复弹窗：记录上次权限请求时间和被拒绝的设备
-    private var lastPermissionRequestTime = 0L
-    private var lastDeniedDeviceId = -1
-    private val PERMISSION_COOLDOWN_MS = 3000L  // 3秒内不重复请求同一设备
+    // 防重复弹窗：冷却与 Android 权限编排由独立 coordinator 管理。
+    private val permissionGate = UsbPermissionRequestGate()
 
     /** 硬件音量扫描结果（Kotlin 层提前扫描，供 UI 提示） */
     private val _volumeInfo = MutableStateFlow<VolumeInfo?>(null)
@@ -116,11 +93,31 @@ class UsbExclusiveManager(private val context: Context) {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
-    private val permissionCallbackLock = Any()
-    private var permissionCallback: ((Boolean) -> Unit)? = null
     var onDeviceAttached: ((UsbDevice) -> Unit)? = null
     var onDeviceDetached: ((UsbDevice?) -> Unit)? = null
     var onPermissionResult: ((UsbDevice, Boolean) -> Unit)? = null
+
+    private val permissionCoordinator by lazy {
+        UsbPermissionCoordinator(
+            usbManager = usbManager,
+            permissionGate = permissionGate,
+            transportOwner = transportOwner,
+            pendingIntentFactory = { device -> UsbPermissionIntentFactory.create(context, device) },
+            currentDevice = { currentDevice },
+            setCurrentDevice = { device -> currentDevice = device },
+            currentState = { _state.value },
+            setState = { state -> _state.value = state },
+            setError = { message -> _error.value = message },
+            onFreshGrantBeforeResume = { device ->
+                AppLogger.i(TAG, "Fresh USB permission granted; queue DAC initialization notice")
+                UsbStatusNoticeBus.post("USB DAC 初始化成功！")
+            },
+            onPermissionResolved = { device, granted ->
+                AppLogger.i(TAG, "Permission resolved for ${device.productName}, granted=$granted")
+                onPermissionResult?.invoke(device, granted)
+            },
+        )
+    }
 
     fun hasPermission(device: UsbDevice): Boolean = usbManager.hasPermission(device)
 
@@ -128,97 +125,35 @@ class UsbExclusiveManager(private val context: Context) {
     fun isDsdSessionActive(): Boolean =
         currentDsdSessionKey != null && UsbAudioEngine.currentHandle != 0L
 
-    private val usbReceiver = object : BroadcastReceiver() {
-        override fun onReceive(ctx: Context, intent: Intent) {
-            // Android dispatches these broadcasts on the process main thread.
-            // The receiver only publishes a transport message and returns; it
-            // never waits for open/claim/init/cancel/reap while system_server is
-            // waiting for the receiver. Keep this callback strictly O(1).
-            when (intent.action) {
-                ACTION_USB_PERMISSION -> {
-                    val device = if (Build.VERSION.SDK_INT >= 33) {
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-                    }
-                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                    transportOwner.post("broadcast-permission-result") {
-                        handlePermissionResultOnTransport(device, granted)
-                    }
-                }
+    private val usbReceiver = UsbBroadcastReceiver(
+        transportOwner = transportOwner,
+        onPermissionResult = ::handlePermissionResultOnTransport,
+        onDeviceDetached = ::handleDeviceDetachedBroadcast,
+        onDeviceAttached = ::handleDeviceAttachedBroadcast,
+    )
 
-                UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    val device = if (Build.VERSION.SDK_INT >= 33) {
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-                    }
-                    transportOwner.post("broadcast-detach") {
-                        val detachedDevice = device ?: run {
-                            AppLogger.w(TAG, "USB detach broadcast without device; ignored")
-                            return@post
-                        }
-                        if (detachedDevice.deviceId != currentDevice?.deviceId) return@post
-                        AppLogger.w(TAG, "USB device detached: ${detachedDevice.deviceName}")
-                        lastDeniedDeviceId = -1
-                        // Controller notification and native teardown now run on
-                        // the same serialized owner, never on BroadcastReceiver/main.
-                        onDeviceDetached?.invoke(detachedDevice)
-                        runCatching { UsbAudioEngine.nativeOnUsbDetached() }
-                            .onFailure { AppLogger.w(TAG, "nativeOnUsbDetached failed", it) }
-                        closeLocked("detached")
-                    }
-                }
-
-                UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                    val device = if (Build.VERSION.SDK_INT >= 33) {
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-                    }
-                    if (device != null) {
-                        transportOwner.post("broadcast-attach") {
-                            AppLogger.i(TAG, "USB device attached: ${device.deviceName}")
-                            handleDeviceInserted(device)
-                        }
-                    }
-                }
-            }
+    private fun handleDeviceDetachedBroadcast(device: UsbDevice?) {
+        val detachedDevice = device ?: run {
+            AppLogger.w(TAG, "USB detach broadcast without device; ignored")
+            return
         }
+        if (detachedDevice.deviceId != currentDevice?.deviceId) return
+        AppLogger.w(TAG, "USB device detached: ${detachedDevice.deviceName}")
+        permissionGate.markGranted()
+        onDeviceDetached?.invoke(detachedDevice)
+        runCatching { UsbAudioEngine.nativeOnUsbDetached() }
+            .onFailure { AppLogger.w(TAG, "nativeOnUsbDetached failed", it) }
+        closeLocked("detached")
+    }
+
+    private fun handleDeviceAttachedBroadcast(device: UsbDevice?) {
+        if (device == null) return
+        AppLogger.i(TAG, "USB audio device attached: ${device.deviceName}")
+        handleDeviceInserted(device)
     }
 
     private fun handlePermissionResultOnTransport(device: UsbDevice?, granted: Boolean) {
-        val callback = synchronized(permissionCallbackLock) {
-            permissionCallback.also { permissionCallback = null }
-        }
-        AppLogger.d(TAG, "Permission result on Transport: device=${device?.deviceName}, granted=$granted")
-        if (granted && device != null) {
-            currentDevice = device
-            lastDeniedDeviceId = -1
-            _state.value = State.READY
-            _error.value = null
-            // Post before resuming any permission continuation or controller callback. Those
-            // callbacks can immediately rebuild/release the route and must not be able to skip
-            // the one guaranteed fresh-grant notification event. Every result handled here came
-            // from this app's UsbManager.requestPermission() PendingIntent.
-            AppLogger.i(TAG, "Fresh USB permission granted; queue DAC initialization notice")
-            UsbStatusNoticeBus.post("USB DAC 初始化成功！")
-            callback?.invoke(true)
-            AppLogger.i(TAG, "Permission granted for ${device.productName}, notifying controller once off-main")
-            onPermissionResult?.invoke(device, true)
-        } else {
-            _state.value = State.ERROR
-            _error.value = "USB 权限被拒绝"
-            if (device != null) {
-                lastDeniedDeviceId = device.deviceId
-                lastPermissionRequestTime = System.currentTimeMillis()
-                onPermissionResult?.invoke(device, false)
-            }
-            callback?.invoke(false)
-        }
+        permissionCoordinator.handleTransportResult(device, granted)
     }
 
     private fun handleDeviceInserted(device: UsbDevice) {
@@ -228,13 +163,12 @@ class UsbExclusiveManager(private val context: Context) {
         }
         // ---------- ✅ ② 拒绝后冷却检查 ----------
         val now = System.currentTimeMillis()
-        if (device.deviceId == lastDeniedDeviceId &&
-            (now - lastPermissionRequestTime) < PERMISSION_COOLDOWN_MS) {
+        if (permissionGate.isDeniedCoolingDown(device.deviceId, now)) {
             AppLogger.d(TAG, "Device ${device.deviceName} was recently denied, ignore attach")
             return
         }
         // 必须确认真的是 USB audio 设备
-        if (!isUsbAudioOutputDevice(device)) {
+        if (!usbDiscovery.isUsbAudioOutputDevice(device)) {
             AppLogger.d(TAG, "Attached device is not USB audio, ignore")
             return
         }
@@ -264,10 +198,10 @@ class UsbExclusiveManager(private val context: Context) {
                 "Device: ${device.deviceName}, VID=${device.vendorId.toString(16)}, " +
                         "PID=${device.productId.toString(16)}, interfaces=${device.interfaceCount}"
             )
-            if (isUsbAudioOutputDevice(device)) {
+            if (usbDiscovery.isUsbAudioOutputDevice(device)) {
                 currentDevice = device
                 AppLogger.i(TAG, "Remembered USB audio device: ${device.productName}")
-                dumpInterfaces(device)
+                usbDiscovery.dumpInterfaces(device)
                 return true
             }
         }
@@ -277,7 +211,7 @@ class UsbExclusiveManager(private val context: Context) {
     }
 
     fun rememberDeviceOnly(device: UsbDevice, reason: String = "unknown") {
-        if (!isUsbAudioOutputDevice(device)) {
+        if (!usbDiscovery.isUsbAudioOutputDevice(device)) {
             AppLogger.d(TAG, "rememberDeviceOnly ignored non-audio device: ${device.deviceName} reason=$reason")
             return
         }
@@ -288,35 +222,7 @@ class UsbExclusiveManager(private val context: Context) {
     }
 
     fun findUsbAudioDevice(): UsbDevice? {
-        val deviceList = usbManager.deviceList
-        AppLogger.d(TAG, "Scanning ${deviceList.size} USB devices...")
-
-        for (device in deviceList.values) {
-            AppLogger.d(
-                TAG,
-                "Device: ${device.deviceName}, VID=${String.format("%04X", device.vendorId)}, " +
-                        "PID=${String.format("%04X", device.productId)}, interfaces=${device.interfaceCount}"
-            )
-
-            // Keep descriptor diagnostics even when the Android-side filter rejects the device.
-            // Some DACs expose the streaming endpoint on an alternate interface and otherwise
-            // look like a generic USB device in the one-line scan log.
-            if ((0 until device.interfaceCount).any {
-                    val intf = device.getInterface(it)
-                    intf.interfaceClass == USB_CLASS_AUDIO ||
-                        intf.interfaceSubclass == USB_SUBCLASS_AUDIOSTREAMING
-                }) {
-                dumpInterfaces(device)
-            }
-
-            if (isUsbAudioOutputDevice(device)) {
-                AppLogger.i(TAG, "Found USB audio device: ${device.productName}")
-                return device
-            }
-        }
-
-        AppLogger.w(TAG, "No USB audio device with ISO OUT endpoint found")
-        return null
+        return usbDiscovery.findUsbAudioDevice()
     }
 
     /**
@@ -324,118 +230,10 @@ class UsbExclusiveManager(private val context: Context) {
      * 权限获取后只记住设备，不 openDevice。
      * openDevice 在 prepareForPlayback 中完成。
      */
-    /**
-     * 创建 USB 权限 PendingIntent。
-     * Android 12+ 必须使用 FLAG_MUTABLE，否则系统无法填充 EXTRA_DEVICE / EXTRA_PERMISSION_GRANTED。
-     */
-    private fun usbPermissionPendingIntent(device: UsbDevice): PendingIntent {
-        val permissionIntent = Intent(ACTION_USB_PERMISSION).apply {
-            setPackage(context.packageName)
-        }
-        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    PendingIntent.FLAG_MUTABLE
-                } else {
-                    0
-                }
-        return PendingIntent.getBroadcast(context, device.deviceId, permissionIntent, flags)
-    }
+    fun requestPermissionSafely(device: UsbDevice) = permissionCoordinator.requestSafely(device)
 
-    fun requestPermissionSafely(device: UsbDevice) {
-        // 如果已经在请求同一个设备的权限，跳过（防止重复请求导致弹窗消失）
-        val now = System.currentTimeMillis()
-        if (_state.value == State.REQUESTING_PERMISSION &&
-            currentDevice?.deviceId == device.deviceId) {
-            if (now - lastPermissionRequestTime < 1500L) {
-                AppLogger.d(TAG, "Already requesting permission for ${device.deviceName}, skip duplicate")
-                return
-            }
-            AppLogger.w(TAG, "USB permission request appears stale, retrying for ${device.deviceName}")
-        }
-        // 避免在短时间内因上一次拒绝而再次请求（手动请求时可以强制 bypass）
-        if (device.deviceId == lastDeniedDeviceId &&
-            (now - lastPermissionRequestTime) < PERMISSION_COOLDOWN_MS) {
-            AppLogger.d(TAG, "Permission request cooldown for ${device.deviceName}, skipping")
-            return
-        }
-        currentDevice = device
-        if (usbManager.hasPermission(device)) {
-            // State can be updated immediately, but lifecycle/controller callbacks
-            // must still go through the Transport owner so a main/UI caller never
-            // enters close/open/init synchronously.
-            AppLogger.d(TAG, "Already have permission, publishing Transport message")
-            currentDevice = device
-            lastDeniedDeviceId = -1
-            _state.value = State.READY
-            _error.value = null
-            transportOwner.post("permission-already-granted") {
-                // One permission result must produce one lifecycle command. The
-                // previous onPermissionResult + onDeviceReady fan-out could queue
-                // two concurrent activation attempts for the same grant.
-                onPermissionResult?.invoke(device, true)
-            }
-            return
-        }
-        // 进入 "请求中" 状态，让 UI 能显示 Loading
-        _state.value = State.REQUESTING_PERMISSION
-        lastPermissionRequestTime = now
-        synchronized(permissionCallbackLock) {
-            permissionCallback = { granted ->
-                // Permission result state is owned by handlePermissionResultOnTransport;
-                // this callback only preserves the legacy failure observation.
-                if (!granted) {
-                    _state.value = State.ERROR
-                    _error.value = "USB 权限被拒绝"
-                }
-            }
-        }
-        val pendingIntent = usbPermissionPendingIntent(device)
-        AppLogger.d(TAG, "Requesting USB permission for ${device.deviceName}")
-        usbManager.requestPermission(device, pendingIntent)
-    }
-
-    suspend fun requestPermission(device: UsbDevice, force: Boolean = false): Boolean {
-        if (usbManager.hasPermission(device)) {
-            AppLogger.d(TAG, "Already have permission for ${device.deviceName}")
-            currentDevice = device
-            lastDeniedDeviceId = -1
-            _state.value = State.READY
-            return true
-        }
-        // 冷却检查（除非 force 为 true）
-        val now = System.currentTimeMillis()
-        if (!force && device.deviceId == lastDeniedDeviceId &&
-            (now - lastPermissionRequestTime) < PERMISSION_COOLDOWN_MS) {
-            AppLogger.d(TAG, "Permission request cooldown for ${device.deviceName}, skipping")
-            return false
-        }
-        _state.value = State.REQUESTING_PERMISSION
-        lastPermissionRequestTime = now
-        return suspendCancellableCoroutine { cont ->
-            val callback: (Boolean) -> Unit = { granted ->
-                if (granted) {
-                    currentDevice = device
-                    lastDeniedDeviceId = -1
-                    _state.value = State.READY
-                } else {
-                    _state.value = State.ERROR
-                    _error.value = "USB 权限被拒绝"
-                    lastDeniedDeviceId = device.deviceId
-                }
-                if (cont.isActive) cont.resume(granted)
-            }
-            synchronized(permissionCallbackLock) {
-                permissionCallback = callback
-            }
-            cont.invokeOnCancellation {
-                synchronized(permissionCallbackLock) {
-                    if (permissionCallback === callback) permissionCallback = null
-                }
-            }
-            val pendingIntent = usbPermissionPendingIntent(device)
-            usbManager.requestPermission(device, pendingIntent)
-        }
-    }
+    suspend fun requestPermission(device: UsbDevice, force: Boolean = false): Boolean =
+        permissionCoordinator.request(device, force)
 
     /**
      * Treat valid bit-depth and USB subslot/container as separate
@@ -443,22 +241,6 @@ class UsbExclusiveManager(private val context: Context) {
      * asking for native/bit-perfect 24-bit output; many 192k DAC alt-settings
      * expose 24/3 but reject 24/4 or 32/4.
      */
-    private fun preferredUsbSubslotFor(
-        sourceBits: Int,
-        requestedTargetBits: Int,
-        pcmMode: UsbPcmOutputMode,
-        strictBitPerfect: Boolean,
-        pcmDsdActive: Boolean
-    ): Int {
-        if (sourceBits <= 16) return 2
-        if (pcmMode == UsbPcmOutputMode.PCM_24_PACKED) return 3
-        if (pcmMode == UsbPcmOutputMode.PCM_24_IN_32 || pcmMode == UsbPcmOutputMode.PCM_32) return 4
-        if (sourceBits == 24 && (strictBitPerfect || pcmDsdActive || requestedTargetBits <= 0 || requestedTargetBits == AudioOutputManager.BIT_DEPTH_24)) {
-            return 3
-        }
-        return 4
-    }
-
     /**
      * 播放每首歌/每次格式变化时调用。
      * 这里才 openDevice + 初始化 native。
@@ -541,21 +323,41 @@ class UsbExclusiveManager(private val context: Context) {
         } else {
             null
         }
-        val dsdMode = sourceDsdMode ?: pcmToDsdMode
-        // A null key is the stable PCM session.  Keep it distinct from DSD
-        // session identities: the lifecycle below uses null to allow warm
-        // reuse and to keep pause/stop on the native PCM route.  Marking PCM
-        // as a fake DSD key forces every track to close/reopen the USB handle
-        // and can leave the exclusive route unavailable after a fast retry.
-        val desiredDsdSessionKey: String? = when {
-            dsdMode == null -> null
-            sourceIsDsd -> "SOURCE:${dsdMode.multiplier}:${dsdMode.transport}:${dsdMode.deviceSampleRate}"
-            else -> "P2D:${dsdMode.multiplier}:${dsdMode.transport}:${dsdMode.deviceSampleRate}"
+        val dsdPcmFallbackRate = if (sourceIsDsd && sourceDsdMode == null && pcmToDsdMode == null) {
+            caps?.supportedSampleRates
+                ?.filter { it > 0 }
+                ?.minByOrNull { kotlin.math.abs(it.toLong() - sampleRate.toLong()) }
+                ?: sampleRate
+        } else {
+            sampleRate
         }
-        val pcmDsdActive = pcmToDsdMode != null
-        val dsdTransportActive = dsdMode != null
-        val sourceBitsForUsb = bits.coerceAtMost(32)
-        val strictBitPerfectForUsb = bitPerfect && bits <= 32 && !pcmDsdActive
+        if (sourceIsDsd && sourceDsdMode == null && pcmToDsdMode == null && dsdPcmFallbackRate != sampleRate) {
+            AppLogger.w(
+                TAG,
+                "DSD unsupported by device; PCM fallback sourceRate=$sampleRate deviceRate=$dsdPcmFallbackRate"
+            )
+        }
+        UsbAudioEngine.setPcmOutputMode(pcmMode)
+        val profile = UsbPlaybackProfilePolicy.plan(
+            sampleRate = sampleRate,
+            sourceBits = bits,
+            requestedTargetRate = requestedTargetRate,
+            requestedTargetBits = requestedTargetBits,
+            pcmMode = pcmMode,
+            bitPerfect = bitPerfect,
+            sourceIsDsd = sourceIsDsd,
+            sourceDsdMode = sourceDsdMode,
+            pcmToDsdMode = pcmToDsdMode,
+            dsdPcmFallbackRate = dsdPcmFallbackRate,
+            targetBitDepth = AudioOutputManager::usbDeviceBitResolutionForTarget,
+            targetSubslot = AudioOutputManager::usbDeviceSubslotForTarget,
+        )
+        val dsdMode = profile.dsdMode
+        val desiredDsdSessionKey = profile.desiredDsdSessionKey
+        val pcmDsdActive = profile.pcmDsdActive
+        val dsdTransportActive = profile.dsdTransportActive
+        val sourceBitsForUsb = profile.sourceBitsForUsb
+        val strictBitPerfectForUsb = profile.strictBitPerfectForUsb
         if (bits > 32) {
             AppLogger.w(
                 TAG,
@@ -566,48 +368,9 @@ class UsbExclusiveManager(private val context: Context) {
         if (bitPerfect && !strictBitPerfectForUsb) {
             AppLogger.w(TAG, "prepareForPlayback: strict bit-perfect disabled for >32-bit source")
         }
-        UsbAudioEngine.setPcmOutputMode(pcmMode)
-        val dsdPcmFallbackRate = if (sourceIsDsd && dsdMode == null) {
-            caps?.supportedSampleRates
-                ?.filter { it > 0 }
-                ?.minByOrNull { kotlin.math.abs(it.toLong() - sampleRate.toLong()) }
-                ?: sampleRate
-        } else {
-            sampleRate
-        }
-        if (sourceIsDsd && dsdMode == null && dsdPcmFallbackRate != sampleRate) {
-            AppLogger.w(
-                TAG,
-                "DSD unsupported by device; PCM fallback sourceRate=$sampleRate deviceRate=$dsdPcmFallbackRate"
-            )
-        }
-        val deviceSampleRate = when {
-            dsdMode != null -> dsdMode.deviceSampleRate
-            sourceIsDsd -> dsdPcmFallbackRate
-            strictBitPerfectForUsb || dsdTransportActive || requestedTargetRate <= 0 -> sampleRate
-            else -> requestedTargetRate
-        }
-        val requestedFormat = when {
-            dsdMode != null -> Pair(dsdMode.deviceBits, dsdMode.deviceSubslot)
-            strictBitPerfectForUsb || pcmDsdActive -> Pair(
-                sourceBitsForUsb,
-                preferredUsbSubslotFor(sourceBitsForUsb, requestedTargetBits, pcmMode, strictBitPerfectForUsb, pcmDsdActive)
-            )
-            pcmMode == UsbPcmOutputMode.PCM_16 -> Pair(16, 2)
-            pcmMode == UsbPcmOutputMode.PCM_24_PACKED -> Pair(24, 3)
-            pcmMode == UsbPcmOutputMode.PCM_24_IN_32 -> Pair(24, 4)
-            pcmMode == UsbPcmOutputMode.PCM_32 -> Pair(32, 4)
-            requestedTargetBits <= 0 -> Pair(
-                sourceBitsForUsb,
-                preferredUsbSubslotFor(sourceBitsForUsb, requestedTargetBits, pcmMode, strictBitPerfectForUsb, pcmDsdActive)
-            )
-            else -> Pair(
-                AudioOutputManager.usbDeviceBitResolutionForTarget(requestedTargetBits, sourceBitsForUsb).coerceAtMost(32),
-                AudioOutputManager.usbDeviceSubslotForTarget(requestedTargetBits, sourceBitsForUsb).coerceAtMost(4)
-            )
-        }
-        val deviceBits = requestedFormat.first.coerceAtMost(32)
-        val deviceSubslot = requestedFormat.second.coerceAtMost(4)
+        val deviceSampleRate = profile.deviceSampleRate
+        val deviceBits = profile.deviceBits
+        val deviceSubslot = profile.deviceSubslot
         AppLogger.w(TAG, "prepareForPlayback CHAIN: sourceSr=$sampleRate requestedTargetRate=$requestedTargetRate pcmMode=$pcmMode bitPerfect=$bitPerfect strictUsb=$strictBitPerfectForUsb sourceDsd=$sourceIsDsd sourceDsdRateHz=$sourceDsdRateHz pcmToDsd=$pcmDsdActive dsdMode=$dsdMode suppressDsdForRetry=$suppressDsdForRetry -> deviceSr=$deviceSampleRate deviceBits=$deviceBits deviceSubslot=$deviceSubslot")
         AppLogger.i(TAG, "prepareForPlayback: sourceSr=$sampleRate sourceDsdRateHz=$sourceDsdRateHz deviceSr=$deviceSampleRate sourceBits=$sourceBitsForUsb rawSourceBits=$bits deviceBits=$deviceBits deviceSubslot=$deviceSubslot ch=$channels fallback=$allowFallback bitPerfect=$bitPerfect sourceDsd=$sourceIsDsd pcmToDsd=$pcmDsdActive dsdMode=$dsdMode suppressDsdForRetry=$suppressDsdForRetry targetRatePref=$requestedTargetRate targetBitsPref=$requestedTargetBits pcmMode=$pcmMode")
         val device = currentDevice ?: findUsbAudioDevice()?.also {
@@ -622,7 +385,13 @@ class UsbExclusiveManager(private val context: Context) {
             return false
         }
 
-        var cfg = selectConfigForFormat(deviceSampleRate, deviceBits, deviceSubslot, channels, sourceBitsForUsb)
+        var cfg = UsbAudioFormatPolicy.selectConfigForFormat(
+            deviceSampleRate,
+            deviceBits,
+            deviceSubslot,
+            channels,
+            sourceBitsForUsb
+        )
         if (cfg == null) {
             if (dsdMode != null) {
                 AppLogger.w(
@@ -655,12 +424,15 @@ class UsbExclusiveManager(private val context: Context) {
                 AppLogger.e(TAG, "No native USB config and no source file for soft-resample")
                 return false
             }
-            val (newPath, fmt) = softResampleIfNeeded(
+            val (newPath, fmt) = pcmFallbackProcessor.process(
                 srcPath = srcFilePath,
                 srcRate = deviceSampleRate,
                 srcBits = sourceBitsForUsb,
-                srcCh = channels,
-                forceFallback = false
+                srcChannels = channels,
+                forceFallback = false,
+                supportsNative = { rate, bits, subslot, channelCount ->
+                    UsbAudioFormatPolicy.selectConfigForFormat(rate, bits, subslot, channelCount) != null
+                }
             )
             return prepareForPlayback(fmt.sampleRate, fmt.bitsPerSample, fmt.channels, newPath, allowFallback)
         }
@@ -803,7 +575,16 @@ class UsbExclusiveManager(private val context: Context) {
             }
             AppLogger.e(TAG, "nativeInitUsbDevice failed, trying soft-resample fallback")
             if (srcFilePath != null && allowFallback) {
-                val (newPath, fmt) = softResampleIfNeeded(srcFilePath, sampleRate, bits, channels, forceFallback = true)
+                val (newPath, fmt) = pcmFallbackProcessor.process(
+                    srcPath = srcFilePath,
+                    srcRate = sampleRate,
+                    srcBits = bits,
+                    srcChannels = channels,
+                    forceFallback = true,
+                    supportsNative = { rate, sourceBits, subslot, channelCount ->
+                        UsbAudioFormatPolicy.selectConfigForFormat(rate, sourceBits, subslot, channelCount) != null
+                    }
+                )
                 return prepareForPlayback(
                     sampleRate = fmt.sampleRate,
                     bits = fmt.bitsPerSample.coerceAtMost(32),
@@ -882,70 +663,7 @@ class UsbExclusiveManager(private val context: Context) {
         bits: Int,
         channels: Int,
         firstPcmChunks: List<ByteArray>
-    ): Boolean {
-        AppLogger.i(TAG, "prepareAndStartForTrack: sr=$sampleRate bits=$bits ch=$channels chunks=${firstPcmChunks.size}")
-
-        val subslot = preferredUsbSubslotFor(
-            sourceBits = bits.coerceAtMost(32),
-            requestedTargetBits = AppPreferences.Player.usbTargetBitDepth,
-            pcmMode = UsbPcmOutputMode.fromId(AppPreferences.Player.usbPcmOutputMode),
-            strictBitPerfect = AppPreferences.Player.bitPerfectEnabled && bits <= 32,
-            pcmDsdActive = AppPreferences.Player.dsdConversionEnabled
-        )
-        val config = selectConfigForFormat(sampleRate, bits.coerceAtMost(32), subslot, channels, sourceBits = bits.coerceAtMost(32))
-        if (config == null) {
-            AppLogger.e(TAG, "No USB config for ${sampleRate}/${bits}/${channels}")
-            return false
-        }
-
-        val oldConfig = currentConfig
-        val sameFormat = UsbAudioEngine.currentHandle != 0L && oldConfig == config
-
-        if (sameFormat) {
-            AppLogger.i(TAG, "Same format, keeping USB streaming running, just write new data")
-            val handle = UsbAudioEngine.currentHandle
-            if (handle == 0L) {
-                AppLogger.e(TAG, "handle=0 unexpectedly")
-                return false
-            }
-            for (chunk in firstPcmChunks) {
-                UsbAudioEngine.safeNativeWriteHandle(handle, chunk, 0, chunk.size)
-            }
-            return true
-        }
-
-        AppLogger.i(TAG, "Format changed: old=$oldConfig new=$config, need stop/reinit")
-
-        // 1. fade out 当前播放（如果有）
-        fadeOutIfStreaming(durationMs = TransitionPreferences.transportDurationOrZero())
-
-        // 2. stop
-        stopStreaming("format_change")
-
-        // 3. 重新初始化
-        val ok = prepareForPlayback(sampleRate, bits, channels)
-        if (!ok) {
-            AppLogger.e(TAG, "prepareForPlayback failed")
-            return false
-        }
-        val handle = UsbAudioEngine.currentHandle
-        if (handle == 0L) {
-            AppLogger.e(TAG, "handle=0 after prepare")
-            return false
-        }
-
-        // 4. 先预填充，不要马上 start
-        for (chunk in firstPcmChunks) {
-            UsbAudioEngine.safeNativeWriteHandle(handle, chunk, 0, chunk.size)
-        }
-
-        // 5. 再启动
-        val started = startStreaming()
-        if (started) {
-            setStreamingState(true)
-        }
-        return started
-    }
+    ): Boolean = trackStartCoordinator.prepareAndStart(sampleRate, bits, channels, firstPcmChunks)
 
     /**
      * 简单软件 fade out：通过 SoftwareVolume 渐变。
@@ -1134,63 +852,30 @@ class UsbExclusiveManager(private val context: Context) {
     /**
      * Try to start HID listening for remote control support
      */
-    private fun tryStartHidListening() {
-        try {
-            if (UsbAudioEngine.hasHidInterface()) {
-                AppLogger.i(TAG, "Device has HID interface, starting HID listening")
-                val started = UsbAudioEngine.startHidListening()
-                if (started) {
-                    AppLogger.i(TAG, "HID listening started successfully")
-                } else {
-                    AppLogger.w(TAG, "Failed to start HID listening")
-                }
-            } else {
-                AppLogger.d(TAG, "Device does not have HID interface")
-            }
-        } catch (t: Throwable) {
-            AppLogger.w(TAG, "HID initialization failed", t)
-        }
-    }
+    private fun tryStartHidListening() = UsbHidSession.start()
 
     /**
      * Stop HID listening
      */
-    private fun stopHidListening() {
-        try {
-            if (UsbAudioEngine.isHidListening()) {
-                AppLogger.i(TAG, "Stopping HID listening")
-                UsbAudioEngine.stopHidListening()
-            }
-        } catch (t: Throwable) {
-            AppLogger.w(TAG, "Failed to stop HID listening", t)
-        }
-    }
+    private fun stopHidListening() = UsbHidSession.stop()
 
     /**
      * Check if device has HID interface
      */
     fun hasHidInterface(): Boolean {
-        return try {
-            UsbAudioEngine.hasHidInterface()
-        } catch (_: Throwable) {
-            false
-        }
+        return UsbHidSession.hasInterface()
     }
 
     /**
      * Check if HID is currently listening
      */
     fun isHidListening(): Boolean {
-        return try {
-            UsbAudioEngine.isHidListening()
-        } catch (_: Throwable) {
-            false
-        }
+        return UsbHidSession.isListening()
     }
 
     fun register() {
         val filter = IntentFilter().apply {
-            addAction(ACTION_USB_PERMISSION)
+            addAction(UsbPermissionIntentFactory.ACTION_USB_PERMISSION)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
         }
@@ -1429,208 +1114,6 @@ class UsbExclusiveManager(private val context: Context) {
         return null
     }
 
-    // ====================== 新增：软重采样入口 ======================
-    private fun softResampleIfNeeded(
-        srcPath: String,
-        srcRate: Int,
-        srcBits: Int,
-        srcCh: Int,
-        forceFallback: Boolean = false
-    ): Pair<String, AudioFormat> {
-        if (!forceFallback) {
-            // 1. 优先尝试原始采样率 + 原始位深
-            val srcSubslot = if (srcBits > 16) 4 else 2
-            if (selectConfigForFormat(srcRate, srcBits, srcSubslot, srcCh) != null) {
-                AppLogger.i(TAG, "Soft-resample bypass: device supports native $srcRate/${srcBits}b")
-                return Pair(srcPath, AudioFormat(srcRate, srcCh, srcBits))
-            }
-        }
-        // 2. 尝试原始采样率 + 降级位深（24bit → 16bit）—— 无论 forceFallback 与否
-        if (srcBits > 16) {
-            AppLogger.i(TAG, "Soft-resample: try downgrade bits $srcRate/${srcBits}b → $srcRate/16b")
-            val cacheDir = File(context.cacheDir, "resampled_pcm").apply { mkdirs() }
-            trimCacheDirThrottled(cacheDir, 500L * 1024 * 1024) // 限制缓存 500MB
-            val hash = (srcPath + "_r${srcRate}_b16_c${srcCh}").hashCode().toString(16)
-            val outFile = File(cacheDir, "$hash.pcm")
-            if (!outFile.exists() || outFile.length() <= 0) {
-                FFmpegBridge.convertToRawPcm(
-                    inputPath = srcPath,
-                    outputPath = outFile.absolutePath,
-                    targetSampleRate = srcRate,
-                    bitsPerSample = 16,
-                    channels = srcCh
-                )
-            }
-            return Pair(outFile.absolutePath, AudioFormat(srcRate, srcCh, 16))
-        }
-        // 3. Fallback to nearest standard rate
-        val targetRate = when {
-            srcRate <= 48000 -> {
-                val d44 = kotlin.math.abs(srcRate - 44100)
-                val d48 = kotlin.math.abs(srcRate - 48000)
-                if (d44 <= d48) 44100 else 48000
-            }
-            srcRate <= 96000 -> {
-                val d88 = kotlin.math.abs(srcRate - 88200)
-                val d96 = kotlin.math.abs(srcRate - 96000)
-                if (d88 <= d96) 88200 else 96000
-            }
-            else -> {
-                val d176 = kotlin.math.abs(srcRate - 176400)
-                val d192 = kotlin.math.abs(srcRate - 192000)
-                if (d176 <= d192) 176400 else 192000
-            }
-        }
-        val targetBits = if (srcBits <= 16) 16 else 24
-        AppLogger.i(TAG, "Soft-resampling $srcPath ${srcRate}Hz/${srcBits}b → $targetRate/$targetBits")
-        val cacheDir = File(context.cacheDir, "resampled_pcm").apply { mkdirs() }
-        trimCacheDirThrottled(cacheDir, 500L * 1024 * 1024) // 限制缓存 500MB
-        val hash = (srcPath + "_r${targetRate}_b${targetBits}_c${srcCh}").hashCode().toString(16)
-        val outFile = File(cacheDir, "$hash.pcm")
-        if (!outFile.exists() || outFile.length() <= 0) {
-            FFmpegBridge.convertToRawPcm(
-                inputPath = srcPath,
-                outputPath = outFile.absolutePath,
-                targetSampleRate = targetRate,
-                bitsPerSample = targetBits,
-                channels = srcCh
-            )
-        }
-        return Pair(outFile.absolutePath, AudioFormat(targetRate, srcCh, targetBits))
-    }
-
-    /** 清理目录使其不超过 maxSize，删除最旧的文件 */
-    private fun trimCacheDirThrottled(dir: File, maxSize: Long) {
-        val now = System.currentTimeMillis()
-        if (now - lastResampledCacheTrimMs < 60_000L) return
-        lastResampledCacheTrimMs = now
-        trimCacheDir(dir, maxSize)
-    }
-
-    private fun trimCacheDir(dir: File, maxSize: Long) {
-        try {
-            val files = dir.listFiles()?.filter { it.isFile }?.sortedBy { it.lastModified() } ?: return
-            var totalSize = files.sumOf { it.length() }
-            for (file in files) {
-                if (totalSize <= maxSize) break
-                AppLogger.i(TAG, "Trimming cache: deleting ${file.name} (${file.length()} bytes)")
-                totalSize -= file.length()
-                file.delete()
-            }
-        } catch (_: Exception) {}
-    }
-
-    private fun isUsbAudioOutputDevice(device: UsbDevice): Boolean {
-        for (i in 0 until device.interfaceCount) {
-            val intf = device.getInterface(i)
-            if (intf.interfaceClass == USB_CLASS_AUDIO && intf.interfaceSubclass == USB_SUBCLASS_AUDIOSTREAMING) {
-                for (e in 0 until intf.endpointCount) {
-                    val ep = intf.getEndpoint(e)
-                    val isIso = ep.type == UsbConstants.USB_ENDPOINT_XFER_ISOC
-                    val isOut = ep.direction == UsbConstants.USB_DIR_OUT
-                    if (isIso && isOut) {
-                        return true
-                    }
-                }
-            }
-        }
-        return false
-    }
-
-    /**
-     * 配置选择。
-     * 不再硬编码 iface/alt/ep —— C++ 层 parseAudioInterfaceFromConfig 会从实际描述符
-     * 扫描并选择最佳接口。iface=0, alt=0 表示"让 native 层自动决定"。
-     * 采样率由 C++ 层通过 GET_RANGE 验证设备真实支持。
-     *
-     * 只返回常见格式（16/24bit stereo），其他格式返回 null 触发软重采样。
-     */
-    private fun selectConfigForFormat(
-        sampleRate: Int,
-        bits: Int,
-        subslot: Int,
-        channels: Int
-    ): UsbAudioConfig? = selectConfigForFormat(sampleRate, bits, subslot, channels, sourceBits = bits)
-
-    private fun selectConfigForFormat(
-        sampleRate: Int,
-        bits: Int,
-        subslot: Int,
-        channels: Int,
-        sourceBits: Int
-    ): UsbAudioConfig? {
-        // 只对常见格式返回配置，其他格式交给软重采样
-        return when {
-            channels == 2 && bits == 16 && subslot == 2 -> UsbAudioConfig(
-                iface = 0,      // 0 = 让 native 自动选择
-                alt = 0,        // 0 = 让 native 自动选择
-                outEp = 0,      // 0 = 让 native 从描述符解析
-                fbEp = 0,       // 0 = 让 native 从描述符解析
-                sampleRate = sampleRate,
-                bits = 16,
-                channels = 2,
-                subslot = 2,
-                sourceBits = sourceBits
-            )
-            channels == 2 && bits == 24 && subslot == 3 -> UsbAudioConfig(
-                iface = 0,
-                alt = 0,
-                outEp = 0,
-                fbEp = 0,
-                sampleRate = sampleRate,
-                bits = 24,
-                channels = 2,
-                subslot = 3,
-                sourceBits = sourceBits
-            )
-            channels == 2 && bits == 24 && subslot == 4 -> UsbAudioConfig(
-                iface = 0,
-                alt = 0,
-                outEp = 0,
-                fbEp = 0,
-                sampleRate = sampleRate,
-                bits = 24,
-                channels = 2,
-                subslot = 4,
-                sourceBits = 32
-            )
-            channels == 2 && bits == 32 && subslot == 4 -> UsbAudioConfig(
-                iface = 0,
-                alt = 0,
-                outEp = 0,
-                fbEp = 0,
-                sampleRate = sampleRate,
-                bits = 32,
-                channels = 2,
-                subslot = 4,
-                sourceBits = sourceBits
-            )
-            else -> null // 没有匹配的格式 → 交给外层软重采样
-        }
-    }
-
-    private fun dumpInterfaces(device: UsbDevice) {
-        AppLogger.i(TAG, "========== USB Interfaces (all) ==========")
-        for (i in 0 until device.interfaceCount) {
-            val intf = device.getInterface(i)
-            AppLogger.i(
-                TAG,
-                "  Interface[$i]: id=${intf.id} alt=${intf.alternateSetting} " +
-                        "class=${intf.interfaceClass} subclass=${intf.interfaceSubclass} " +
-                        "protocol=${intf.interfaceProtocol} eps=${intf.endpointCount}"
-            )
-            for (e in 0 until intf.endpointCount) {
-                val ep = intf.getEndpoint(e)
-                val dir = if (ep.direction == UsbConstants.USB_DIR_IN) "IN" else "OUT"
-                AppLogger.i(
-                    TAG,
-                    "    Endpoint[$e]: addr=0x${ep.address.toString(16)} dir=$dir " +
-                            "type=${ep.type} attr=0x${ep.attributes.toString(16)} " +
-                            "maxPacket=${ep.maxPacketSize} interval=${ep.interval}"
-                )
-            }
-        }
-        AppLogger.i(TAG, "==========================================")
-    }
+    private fun dumpInterfaces(device: UsbDevice) = usbDiscovery.dumpInterfaces(device)
 
 }

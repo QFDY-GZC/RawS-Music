@@ -6,14 +6,7 @@ import android.os.SystemClock
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 
 /**
  * Owns the USB Feature Unit volume runtime.
@@ -32,8 +25,6 @@ internal class UsbHardwareVolumeCoordinator(
     private val currentDevice: () -> UsbDevice?,
     private val isHardwareRouteActive: () -> Boolean,
 ) {
-    private val commands = Channel<UsbHardwareVolumeCommand>(Channel.CONFLATED)
-
     @Volatile
     private var safeCommandHoldUntilMs = 0L
 
@@ -43,82 +34,50 @@ internal class UsbHardwareVolumeCoordinator(
     @Volatile
     private var initializedDeviceKey: String? = null
 
-    private val commandJob: Job = scope.launch(Dispatchers.IO) {
-        for (first in commands) {
-            var command = first
-            delay(24L)
-            while (true) {
-                val newer = commands.tryReceive().getOrNull() ?: break
-                command = newer
-            }
-            while ((isTransportTransitioning() || isRecovering()) && isActive) {
-                delay(24L)
-                while (true) {
-                    val newer = commands.tryReceive().getOrNull() ?: break
-                    command = newer
-                }
-            }
-            if (isReleased() || !isActive) continue
-
-            val device = currentDevice() ?: continue
-            if (UsbHardwareVolumeStore.deviceKey(device) != command.deviceKey) {
-                AppLogger.w(TAG, "Discard stale USB hardware-volume command reason=${command.reason}")
-                continue
-            }
-            if (!isHardwareRouteActive()) {
-                AppLogger.i(TAG, "Skip USB hardware-volume command after route change reason=${command.reason}")
-                continue
-            }
+    private val commandPump = UsbHardwareVolumeCommandPump(
+        scope = scope,
+        engine = engine,
+        transportMutex = transportMutex,
+        isReleased = isReleased,
+        isTransportTransitioning = isTransportTransitioning,
+        isRecovering = isRecovering,
+        currentDevice = currentDevice,
+        isHardwareRouteActive = isHardwareRouteActive,
+        shouldAccept = { command ->
             if (command.reason.startsWith("system_volume_changed")) {
                 AppLogger.w(
                     TAG,
                     "Discard system-volume bridge command in USB hardware route " +
                         "reason=${command.reason} ui=${command.uiVolume}",
                 )
-                continue
-            }
-
-            val holdUntil = safeCommandHoldUntilMs
-            if (!command.userInitiated &&
-                (holdUntil == Long.MAX_VALUE || SystemClock.elapsedRealtime() < holdUntil)
-            ) {
-                AppLogger.w(
-                    TAG,
-                    "Discard automatic USB hardware-volume command during safety hold " +
-                        "reason=${command.reason} holdUntil=$holdUntil",
-                )
-                continue
-            }
-
-            val result = transportMutex.withLock {
-                AppLogger.i(
-                    TAG,
-                    "HW_VOL_TRACE command type=${if (command.adjustDirection != 0) "step" else "slider"} " +
-                        "direction=${command.adjustDirection} ui=${command.uiVolume} " +
-                        "reason=${command.reason} handle=0x${java.lang.Long.toUnsignedString(engine.currentHandle, 16)}",
-                )
-                if (isTransportTransitioning() || isRecovering() || !isHardwareRouteActive()) {
-                    AppLogger.i(TAG, "Skip USB hardware-volume command at transport boundary reason=${command.reason}")
-                    UsbAudioEngine.ERR_NOT_INITIALIZED
-                } else if (command.adjustDirection != 0) {
-                    adjustNativeAndPersist(command.adjustDirection, command.reason)
+                false
+            } else {
+                val holdUntil = safeCommandHoldUntilMs
+                if (!command.userInitiated &&
+                    (holdUntil == Long.MAX_VALUE || SystemClock.elapsedRealtime() < holdUntil)
+                ) {
+                    AppLogger.w(
+                        TAG,
+                        "Discard automatic USB hardware-volume command during safety hold " +
+                            "reason=${command.reason} holdUntil=$holdUntil",
+                    )
+                    false
                 } else {
-                    setUiAndPersist(command.uiVolume, command.reason)
+                    true
                 }
             }
-            if (result != 0 && result != UsbAudioEngine.ERR_NOT_INITIALIZED) {
-                AppLogger.e(
-                    TAG,
-                    "USB hardware-volume command failed result=$result ui=${command.uiVolume} " +
-                        "reason=${command.reason}",
-                )
+        },
+        execute = { command ->
+            if (command.adjustDirection != 0) {
+                adjustNativeAndPersist(command.adjustDirection, command.reason)
+            } else {
+                setUiAndPersist(command.uiVolume, command.reason)
             }
-            AppLogger.i(TAG, "HW_VOL_TRACE command_result result=$result reason=${command.reason}")
-        }
-    }
+        },
+    )
 
     fun clearPendingCommands() {
-        while (commands.tryReceive().isSuccess) Unit
+        commandPump.clearPending()
     }
 
     fun resetInitialization() {
@@ -134,8 +93,7 @@ internal class UsbHardwareVolumeCoordinator(
     }
 
     fun close() {
-        commands.close()
-        commandJob.cancel()
+        commandPump.close()
     }
 
     fun currentStep(): Int {
@@ -204,7 +162,7 @@ internal class UsbHardwareVolumeCoordinator(
             userInitiated = true,
             adjustDirection = direction.sign(),
         )
-        val accepted = commands.trySend(command).isSuccess
+        val accepted = commandPump.enqueue(command)
         AppLogger.i(
             TAG,
             "USB HW native step queued: direction=${command.adjustDirection} accepted=$accepted reason=$reason",
@@ -245,7 +203,7 @@ internal class UsbHardwareVolumeCoordinator(
                 reason.startsWith("ui_button") ||
                 reason.startsWith("media_session"),
         )
-        val accepted = commands.trySend(command).isSuccess
+        val accepted = commandPump.enqueue(command)
         AppLogger.i(
             TAG,
             "USB HW volume command queued: step=$boundedStep nominalDb=${db}dB ui=$uiVolume " +
