@@ -12,7 +12,18 @@ class BottomChromeScrollState {
     var hidden by mutableStateOf(false)
         private set
 
+    // While the PLAYER sheet is expanded or transitioning, the underlying MAIN content must
+    // not retarget floating MiniPlayer/navigation geometry from incidental scroll deltas.
+    // AM keeps stacked navigation as a stable sibling of the player sheet; its collapsed
+    // endpoint does not react to the list behind the sheet while the sheet owns the gesture.
+    private var interactionLocked: Boolean = false
+
+    fun setInteractionLocked(locked: Boolean) {
+        interactionLocked = locked
+    }
+
     fun onContentScroll(deltaY: Float) {
+        if (interactionLocked) return
         when {
             deltaY > 1f -> hidden = true
             deltaY < -1f -> hidden = false

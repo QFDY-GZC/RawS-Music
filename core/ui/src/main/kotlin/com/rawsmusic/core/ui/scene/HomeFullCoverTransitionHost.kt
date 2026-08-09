@@ -35,7 +35,6 @@ import androidx.compose.ui.zIndex
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
 import com.rawsmusic.core.ui.widget.bitmaps.PlayerArtworkDirection
 import com.rawsmusic.core.ui.widget.bitmaps.rememberPlaybackArtworkTransitionState
@@ -186,9 +185,6 @@ internal fun HomeFullCoverTransitionHost(
         returningToHome = false
         // Start the fullscreen decode before ownership moves to the overlay. The home holder may
         // only have a low/medium cache entry when the user long-presses immediately after launch.
-        if (homePortraitDialSharedArtworkPolicy.prewarmFullCover) {
-            BitmapProvider.warmFullCoverArt(sceneArtworkKey)
-        }
         predictiveBackActive = false
         transitionProgress = 0f
         // Own the centre lane immediately, but keep it exactly on the measured home holder until
@@ -229,9 +225,6 @@ internal fun HomeFullCoverTransitionHost(
         )
         sharedSceneArtworkKey = sceneArtworkKey
         returningToHome = true
-        if (homePortraitDialSharedArtworkPolicy.prewarmFullCover) {
-            BitmapProvider.warmFullCoverArt(sceneArtworkKey)
-        }
         pendingOpenAnimation = false
         predictiveBackActive = false
         animateSceneTo(target = 0f, baseDurationMs = 320, onFinished = ::finishClosed)
@@ -246,9 +239,6 @@ internal fun HomeFullCoverTransitionHost(
             )
             sharedSceneArtworkKey = sceneArtworkKey
             returningToHome = true
-            if (homePortraitDialSharedArtworkPolicy.prewarmFullCover) {
-                BitmapProvider.warmFullCoverArt(sceneArtworkKey)
-            }
             transitionJob?.cancel()
             transitionJob = null
             predictiveBackStartProgress = transitionProgress.coerceIn(0f, 1f)

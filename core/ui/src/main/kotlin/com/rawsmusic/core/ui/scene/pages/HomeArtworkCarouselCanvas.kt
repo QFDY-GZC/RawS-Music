@@ -17,9 +17,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect as ComposeRect
@@ -31,14 +30,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AppLogger
-import com.rawsmusic.core.ui.widget.bitmaps.ArtworkDisplayResolver
-import com.rawsmusic.core.ui.widget.bitmaps.ArtworkHandle
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
-import com.rawsmusic.core.ui.widget.bitmaps.decodeDefaultAlbumArtwork
+import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
-import com.rawsmusic.core.ui.widget.bitmaps.shouldShowDefaultAlbumArtwork
 import com.rawsmusic.core.ui.widget.player.HOME_HORIZONTAL_CAROUSEL_CORNER_RADIUS_DP
 import kotlin.math.abs
 
@@ -113,20 +107,11 @@ internal fun HomeArtworkCarouselCanvas(
     }
     val laneBitmaps = laneSongs.mapIndexed { laneIndex, song ->
         val artworkKey = song?.resolvePlaybackArtworkKey(null).orEmpty()
-        val playbackIdentityBase = song?.let {
-            "${it.path}|${it.cueOffsetMs}|${it.cueTrackIndex}"
-        } ?: "empty-lane-$laneIndex"
         val logicalOffset = laneIndex - CanvasLaneRadius
-        // A virtual queue coordinate follows the same card while it moves from a side rail into
-        // the center. Using the physical lane index here recreated every bitmap holder at commit
-        // and produced the visible one-frame shake.
-        val virtualQueueIndex = centerIndex + logicalOffset
-        val playbackIdentity = if (songs.size < CanvasLaneRadius * 2 + 1) {
-            "$playbackIdentityBase|virtual=$virtualQueueIndex"
-        } else {
-            playbackIdentityBase
-        }
-        key(playbackIdentity) {
+        // The lane is the physical holder. Only its source key changes as the queue moves; using
+        // the song identity here destroys the holder on every commit and briefly releases the old
+        // bitmap before the next source callback arrives.
+        key("home-canvas-lane-$logicalOffset") {
             rememberHomeCarouselBitmap(artworkKey)
         }
     }
@@ -243,127 +228,19 @@ internal fun HomeArtworkCarouselCanvas(
 @Composable
 private fun rememberHomeCarouselBitmap(key: String): Bitmap? {
     val context = LocalContext.current
-    remember(context) {
-        BitmapProvider.init(context)
-        true
-    }
-
-    val initialHandle = remember(key) {
-        ArtworkDisplayResolver.acquireBest(
+    val bitmap by produceState<Bitmap?>(initialValue = null, key1 = key, key2 = context) {
+        value = CoilArtworkRuntime.executeBitmap(
+            context = context,
             key = key,
-            targetWidth = CanvasDecodeSizePx,
-            targetHeight = CanvasDecodeSizePx,
-            surface = ArtworkSurface.Playback,
-            allowHiRes = true
-        )?.handle
-    }
-    var handle by remember(key) { mutableStateOf<ArtworkHandle?>(initialHandle) }
-    var fallback by remember(key) {
-        mutableStateOf(
-            if (shouldShowDefaultAlbumArtwork(key, CanvasDecodeSizePx, CanvasDecodeSizePx)) {
-                decodeDefaultAlbumArtwork(context.resources, 1024)
-            } else {
-                null
-            }
+            width = CanvasDecodeSizePx,
+            height = CanvasDecodeSizePx,
+            surface = ArtworkSurface.Playback
         )
-    }
-
-    DisposableEffect(key, context) {
-        var active = true
-        var highRequestFinished = false
-
-        fun acceptLoaded(
-            loaded: Bitmap?,
-            targetSize: Int,
-            tier: String
-        ) {
-            if (!active) return
-            val next = BitmapProvider.acquireLoaded(
-                key = key,
-                bitmap = loaded,
-                targetWidth = targetSize,
-                targetHeight = targetSize,
-                surface = ArtworkSurface.Playback
-            )
-            if (next?.isValid == true) {
-                val current = handle?.takeIf { it.isValid }
-                val currentBitmap = current?.bitmap
-                val currentSide = currentBitmap
-                    ?.let { maxOf(it.width, it.height) }
-                    ?: 0
-                val nextSide = maxOf(next.bitmap.width, next.bitmap.height)
-                val shouldReplace = current == null || nextSide > currentSide
-                if (shouldReplace) {
-                    val oldBitmapId = currentBitmap?.let { System.identityHashCode(it) } ?: 0
-                    val nextBitmapId = System.identityHashCode(next.bitmap)
-                    // Publish the new handle before releasing the previous one. A released handle
-                    // becomes invalid immediately, so the opposite order can expose one empty
-                    // Compose frame while a lane is being promoted to a higher-resolution bitmap.
-                    handle = next
-                    current?.release()
-                    fallback?.takeIf { !it.isRecycled }?.recycle()
-                    fallback = null
-                    AppLogger.i(
-                        "HOME_CAROUSEL_ART",
-                        "bitmap_swap tier=$tier key=${key.takeLast(64)} " +
-                            "old=${currentSide}px#$oldBitmapId new=${nextSide}px#$nextBitmapId"
-                    )
-                } else {
-                    next.release()
-                    AppLogger.i(
-                        "HOME_CAROUSEL_ART",
-                            "bitmap_keep tier=$tier key=${key.takeLast(64)} " +
-                            "current=${currentSide}px#${currentBitmap?.let { System.identityHashCode(it) } ?: 0} " +
-                            "candidate=${nextSide}px#${System.identityHashCode(next.bitmap)}"
-                    )
-                }
-                return
-            }
-            next?.release()
-            AppLogger.w(
-                "HOME_CAROUSEL_ART",
-                "load miss tier=$tier key=${key.takeLast(64)}"
-            )
-            if (
-                highRequestFinished &&
-                handle?.isValid != true &&
-                fallback == null
-            ) {
-                fallback = decodeDefaultAlbumArtwork(context.resources, 1024)
-                AppLogger.d(
-                    "HOME_CAROUSEL_ART",
-                    "using default key=${key.takeLast(64)}"
-                )
-            }
-        }
-
-        val highRequest = if (key.isBlank()) {
-            null
-        } else {
-            BitmapProvider.load(
-                key = key,
-                targetWidth = CanvasDecodeSizePx,
-                targetHeight = CanvasDecodeSizePx,
-                priority = BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
-                surface = ArtworkSurface.Playback
-            ) { loaded ->
-                if (!active) return@load
-                highRequestFinished = true
-                acceptLoaded(loaded, CanvasDecodeSizePx, "high")
-            }
-        }
-
-        onDispose {
-            active = false
-            highRequest?.let { BitmapProvider.cancel(it, keepDecoding = true) }
-            handle?.release()
-            handle = null
-            fallback?.takeIf { !it.isRecycled }?.recycle()
-            fallback = null
+        if (value == null && key.isNotBlank()) {
+            AppLogger.w("HOME_CAROUSEL_ART", "Coil load miss key=${key.takeLast(64)}")
         }
     }
-
-    return handle?.takeIf { it.isValid }?.bitmap ?: fallback
+    return bitmap
 }
 
 

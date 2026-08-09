@@ -1,6 +1,5 @@
 package com.rawsmusic.core.ui.scene.pages
 
-import android.content.Context
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -48,7 +47,6 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -82,11 +80,6 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Settings
 
-private const val HOME_HEADER_PREFS = "home_header_preferences"
-private const val HOME_WEATHER_VISIBLE_KEY = "weather_visible"
-private const val HOME_CAROUSEL_STYLE_KEY = "carousel_style"
-private const val HOME_CAROUSEL_LYRIC_VISIBLE_KEY = "carousel_lyric_visible"
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HomePage(
@@ -107,6 +100,8 @@ fun HomePage(
     onSearchClick: () -> Unit,
     showSettingsShortcut: Boolean = false,
     onSettingsClick: () -> Unit = {},
+    onHeaderMenuActionOverride: (() -> Unit)? = null,
+    headerOptions: HomeHeaderOptionsState = rememberHomeHeaderOptionsState(),
     onCurrentPlayPause: () -> Unit,
     onSongClick: (AudioFile, Int) -> Unit,
     onQueueSongClick: (List<AudioFile>, AudioFile, Int) -> Unit,
@@ -116,25 +111,8 @@ fun HomePage(
     centerReflectionAlpha: Float = 1f,
     centerReflectionArtworkKey: String = "",
 ) {
-    val context = LocalContext.current.applicationContext
-    val headerPreferences = remember(context) {
-        context.getSharedPreferences(HOME_HEADER_PREFS, Context.MODE_PRIVATE)
-    }
     var showFlowModeDialog by remember { mutableStateOf(false) }
     var showHeaderMenuDialog by remember { mutableStateOf(false) }
-    var weatherVisible by remember {
-        mutableStateOf(headerPreferences.getBoolean(HOME_WEATHER_VISIBLE_KEY, true))
-    }
-    var carouselLyricVisible by remember {
-        mutableStateOf(headerPreferences.getBoolean(HOME_CAROUSEL_LYRIC_VISIBLE_KEY, true))
-    }
-    var carouselStyle by remember {
-        mutableStateOf(
-            HomeArtworkCarouselStyle.from(
-                headerPreferences.getInt(HOME_CAROUSEL_STYLE_KEY, HomeArtworkCarouselStyle.CurrentCarousel.value)
-            )
-        )
-    }
     val rawFlowMode = LocalRawFlowMode.current
     val setRawFlowMode = LocalRawFlowModeSetter.current
     val carouselSongs = remember(queueSongs, currentSong) {
@@ -154,8 +132,8 @@ fun HomePage(
             currentSong = currentSong,
             queueSongs = carouselSongs,
             carouselState = carouselState,
-            carouselStyle = carouselStyle,
-            carouselLyricVisible = carouselLyricVisible,
+            carouselStyle = headerOptions.carouselStyle,
+            carouselLyricVisible = headerOptions.carouselLyricVisible,
             currentLyric = currentLyric,
             currentLyricTranslation = currentLyricTranslation,
             lyricSong = lyricSong,
@@ -165,8 +143,8 @@ fun HomePage(
             listState = listState,
             onNavigate = onNavigate,
             onSearchClick = onSearchClick,
-            weatherVisible = weatherVisible,
-            onHeaderMenuClick = { showHeaderMenuDialog = true },
+            weatherVisible = headerOptions.weatherVisible,
+            onHeaderMenuClick = onHeaderMenuActionOverride ?: { showHeaderMenuDialog = true },
             onFlowBackgroundClick = { showFlowModeDialog = true },
             showSettingsShortcut = showSettingsShortcut,
             onSettingsClick = onSettingsClick,
@@ -182,23 +160,12 @@ fun HomePage(
 
         HomeHeaderMenuDialog(
             show = showHeaderMenuDialog,
-            weatherVisible = weatherVisible,
-            onWeatherVisibleChange = { visible ->
-                weatherVisible = visible
-                headerPreferences.edit().putBoolean(HOME_WEATHER_VISIBLE_KEY, visible).apply()
-            },
-            carouselLyricVisible = carouselLyricVisible,
-            onCarouselLyricVisibleChange = { visible ->
-                carouselLyricVisible = visible
-                headerPreferences.edit()
-                    .putBoolean(HOME_CAROUSEL_LYRIC_VISIBLE_KEY, visible)
-                    .apply()
-            },
-            carouselStyle = carouselStyle,
-            onCarouselStyleChange = { style ->
-                carouselStyle = style
-                headerPreferences.edit().putInt(HOME_CAROUSEL_STYLE_KEY, style.value).apply()
-            },
+            weatherVisible = headerOptions.weatherVisible,
+            onWeatherVisibleChange = headerOptions::updateWeatherVisible,
+            carouselLyricVisible = headerOptions.carouselLyricVisible,
+            onCarouselLyricVisibleChange = headerOptions::updateCarouselLyricVisible,
+            carouselStyle = headerOptions.carouselStyle,
+            onCarouselStyleChange = headerOptions::updateCarouselStyle,
             onDismissRequest = { showHeaderMenuDialog = false }
         )
 

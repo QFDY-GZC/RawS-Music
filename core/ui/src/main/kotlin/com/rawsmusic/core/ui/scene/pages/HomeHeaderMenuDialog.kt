@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -27,6 +28,106 @@ import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+@Composable
+internal fun HomeHeaderSettingsSection(
+    options: HomeHeaderOptionsState,
+) {
+    val scheme = MiuixTheme.colorScheme
+    Text(
+        text = stringResource(R.string.side_rail_home_settings_title),
+        color = scheme.onSurface,
+        fontSize = 16.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+    )
+    HomeHeaderToggleRow(
+        title = stringResource(R.string.home_header_weather_title),
+        summary = stringResource(R.string.home_header_weather_summary),
+        checked = options.weatherVisible,
+        onCheckedChange = options::updateWeatherVisible,
+    )
+    Spacer(Modifier.height(7.dp))
+    HomeHeaderToggleRow(
+        title = stringResource(R.string.home_header_carousel_lyric_title),
+        summary = stringResource(R.string.home_header_carousel_lyric_summary),
+        checked = options.carouselLyricVisible,
+        onCheckedChange = options::updateCarouselLyricVisible,
+    )
+    Spacer(Modifier.height(7.dp))
+    val styleDropdown = DropdownEntry(
+        items = HomeArtworkCarouselStyle.entries.map { style ->
+            DropdownItem(
+                text = stringResource(style.titleRes()),
+                summary = stringResource(style.summaryRes()),
+                selected = style == options.carouselStyle,
+                onClick = { options.updateCarouselStyle(style) },
+            )
+        },
+    )
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(15.dp))
+            .background(scheme.surfaceContainer.copy(alpha = 0.82f)),
+    ) {
+        RawWindowDropdownPreference(
+            entry = styleDropdown,
+            title = stringResource(R.string.home_header_artwork_style_title),
+            summary = null,
+            insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+            showValue = true,
+            maxHeight = 220.dp,
+            collapseOnSelection = false,
+        )
+    }
+}
+
+@Composable
+private fun HomeHeaderToggleRow(
+    title: String,
+    summary: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val scheme = MiuixTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(15.dp))
+            .background(scheme.surfaceContainer.copy(alpha = 0.82f))
+            .clickable { onCheckedChange(!checked) }
+            .padding(horizontal = 11.dp, vertical = 9.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+            Text(
+                text = title,
+                color = scheme.onSurface,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = summary,
+                color = scheme.onSurfaceVariantSummary,
+                fontSize = 11.sp,
+                maxLines = 2,
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+private fun HomeArtworkCarouselStyle.titleRes(): Int = when (this) {
+    HomeArtworkCarouselStyle.CurrentCarousel -> R.string.home_header_artwork_style_current
+    HomeArtworkCarouselStyle.VerticalDial -> R.string.home_header_artwork_style_dial
+}
+
+private fun HomeArtworkCarouselStyle.summaryRes(): Int = when (this) {
+    HomeArtworkCarouselStyle.CurrentCarousel -> R.string.home_header_artwork_style_current_summary
+    HomeArtworkCarouselStyle.VerticalDial -> R.string.home_header_artwork_style_dial_summary
+}
 
 @Composable
 internal fun HomeHeaderMenuDialog(
@@ -122,24 +223,14 @@ internal fun HomeHeaderMenuDialog(
 
         val carouselStyleDropdown = DropdownEntry(
             items = HomeArtworkCarouselStyle.entries.map { style ->
-                val (title, summary) = when (style) {
-                    HomeArtworkCarouselStyle.CurrentCarousel ->
-                        "当前专辑图轮播" to "保留主界面现有的横向封面轨道与倒影"
-                    HomeArtworkCarouselStyle.VerticalDial ->
-                        "表盘轮播" to "五条逻辑轨道，紧凑空间至少显示上中下三张封面"
-                }
                 DropdownItem(
-                    text = title,
-                    summary = summary,
+                    text = stringResource(style.titleRes()),
+                    summary = stringResource(style.summaryRes()),
                     selected = style == carouselStyle,
                     onClick = { onCarouselStyleChange(style) }
                 )
             }
         )
-        val selectedCarouselStyle = when (carouselStyle) {
-            HomeArtworkCarouselStyle.CurrentCarousel -> "当前专辑图轮播"
-            HomeArtworkCarouselStyle.VerticalDial -> "表盘轮播"
-        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -149,7 +240,8 @@ internal fun HomeHeaderMenuDialog(
             RawWindowDropdownPreference(
                 entry = carouselStyleDropdown,
                 title = stringResource(R.string.home_header_artwork_style_title),
-                summary = selectedCarouselStyle,
+                summary = null,
+                insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                 showValue = true,
                 maxHeight = 260.dp,
                 collapseOnSelection = true

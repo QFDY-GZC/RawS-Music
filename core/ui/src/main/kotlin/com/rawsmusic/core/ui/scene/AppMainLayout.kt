@@ -1,6 +1,7 @@
 package com.rawsmusic.core.ui.scene
 
 import android.os.Build
+import android.view.ViewConfiguration
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
@@ -9,6 +10,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,22 +20,31 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.key
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -43,17 +54,24 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.rawsmusic.core.ui.widget.ComposeMiniPlayer
 import com.rawsmusic.core.ui.scene.pages.HomeArtworkCarouselBackdrop
 import com.rawsmusic.core.ui.scene.pages.rememberHomeArtworkCarouselState
+import com.rawsmusic.core.ui.scene.pages.HomeHeaderSettingsSection
+import com.rawsmusic.core.ui.scene.pages.rememberHomeHeaderOptionsState
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.core.ui.widget.flow.ProvideRawFlowMode
-import com.rawsmusic.core.ui.widget.flow.RawFlowBackground
 import com.rawsmusic.core.ui.widget.flow.rememberRawFlowModeState
 import com.rawsmusic.core.ui.widget.bottombar.LiquidBottomTab
 import com.rawsmusic.core.ui.widget.bottombar.LiquidBottomTabs
+import com.rawsmusic.core.ui.widget.bottombar.NormalBottomChrome
+import com.rawsmusic.core.ui.widget.player.rememberUappBottomAccentColor
+import com.rawsmusic.module.data.prefs.BottomBarStyle
 import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import com.rawsmusic.core.ui.systemui.rawNavigationBarsPadding
+import com.rawsmusic.core.ui.systemui.rawReducedNavigationBottomPadding
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
+import kotlinx.coroutines.flow.distinctUntilChanged
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import kotlin.math.exp
 
 internal val LocalAppHazeState = staticCompositionLocalOf<HazeState?> { null }
 
@@ -73,8 +91,14 @@ fun AppMainLayout(
     onSettingsClick: (() -> Unit)? = null,
     onAudioEffectsClick: (() -> Unit)? = null,
     onSideRailDestination: (AppSideRailDestination) -> Unit = {},
+    onOpenSideRail: () -> Unit = {},
+    sideRailOpenRequestToken: Long = 0L,
+    sideRailCloseRequestToken: Long = 0L,
+    onSideRailExpandedChanged: (Boolean) -> Unit = {},
     onHomeFullCoverActiveChange: (Boolean) -> Unit = {},
     onHomeFullCoverLaunchRequest: (Rect) -> Boolean = { false },
+    onMiniPlayerGestureBoundsChanged: (Rect?) -> Unit = {},
+    playerSceneProgressState: State<Float>? = null,
 ) {
     NavigationPersistenceEffect(navState)
 
@@ -82,6 +106,20 @@ fun AppMainLayout(
     val contentColor = if (isLightTheme) Color.Black else Color.White
 
     val bottomNavigationEnabled by PersonalizationPreferences.bottomNavigationEnabled.collectAsState()
+    val bottomBarStyle by PersonalizationPreferences.bottomBarStyle.collectAsState()
+    val density = LocalDensity.current
+    val windowInfo = LocalWindowInfo.current
+    val context = LocalContext.current
+    val floatingMiniFlingBounds = remember(context) {
+        ViewConfiguration.get(context).let { config ->
+            config.scaledMinimumFlingVelocity.toFloat() to config.scaledMaximumFlingVelocity.toFloat()
+        }
+    }
+    val floatingMiniBottomPadding = rawReducedNavigationBottomPadding(reduceBy = 12.dp)
+    val floatingMiniSheetTravelPx = with(density) {
+        (windowInfo.containerSize.height.toFloat() - (122.dp + floatingMiniBottomPadding).toPx())
+            .coerceAtLeast(1f)
+    }
     val configuredTabTags by PersonalizationPreferences.bottomNavigationSceneTags.collectAsState()
     val tabScenes = remember(configuredTabTags) {
         resolveBottomNavigationScenes(configuredTabTags)
@@ -128,17 +166,9 @@ fun AppMainLayout(
         currentSong = navData.currentSong,
         reportedQueueIndex = navData.queueCurrentIndex,
     )
-    var sceneTransitionActive by remember { mutableStateOf(false) }
-    val homeBackdropActive by remember {
-        derivedStateOf {
-            !sceneTransitionActive && (
-                navState.currentScene == NavScene.HOME ||
-                    navState.backPreviewScene == NavScene.HOME ||
-                    (navState.isTransitioning &&
-                    (navState.transitionFromScene == NavScene.HOME ||
-                        navState.transitionToScene == NavScene.HOME))
-            )
-        }
+    val homeHeaderOptions = rememberHomeHeaderOptionsState()
+    val sceneTransitionFrame = remember {
+        SceneTransitionFrameState(navState.currentScene)
     }
     val homeCarouselBackdropTransitionActive by remember {
         derivedStateOf {
@@ -185,6 +215,22 @@ fun AppMainLayout(
     }
     val bottomChromeScrollState = remember { BottomChromeScrollState() }
     var miniPlayerGestureBounds by remember { mutableStateOf<Rect?>(null) }
+    // Do NOT read playerSceneProgressState.value in the AppMainLayout composition body. Doing so
+    // recomposes the entire MAIN navigation tree on every pointer frame and makes the sheet feel
+    // one frame behind the finger. Observe only the binary ownership edge with snapshotFlow; this
+    // state changes once when p leaves 0 and once when it returns to 0, while the actual p value is
+    // still consumed inside graphicsLayer lambdas in the player/mini-player subtree.
+    var playerSheetOwnsBottomChrome by remember { mutableStateOf(false) }
+    LaunchedEffect(playerSceneProgressState, bottomChromeScrollState) {
+        snapshotFlow {
+            (playerSceneProgressState?.value?.coerceIn(0f, 1f) ?: 0f) > 0f
+        }
+            .distinctUntilChanged()
+            .collect { ownsSheet ->
+                playerSheetOwnsBottomChrome = ownsSheet
+                bottomChromeScrollState.setInteractionLocked(ownsSheet)
+            }
+    }
     LaunchedEffect(navState.currentScene) {
         bottomChromeScrollState.reset()
     }
@@ -205,9 +251,17 @@ fun AppMainLayout(
                 AppSideRailHost(
                     enabled = sideRailEnabled,
                     onDestinationClick = onSideRailDestination,
+                    openRequestToken = sideRailOpenRequestToken,
+                    closeRequestToken = sideRailCloseRequestToken,
+                    onExpandedChanged = onSideRailExpandedChanged,
+                    homeSettingsContent = {
+                        HomeHeaderSettingsSection(options = homeHeaderOptions)
+                    },
                     background = {
-                        // One fixed background is shared by the rail and every sliding page. The
-                        // previous rail-owned solid background caused a visible seam against flow.
+                        // Poweramp keeps one background renderer mounted below every scene. Keep
+                        // both layers alive here as well; only their alpha changes during a
+                        // transition, so returning never exposes the theme background for a
+                        // single frame.
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -221,24 +275,20 @@ fun AppMainLayout(
                                     }
                                 ),
                         ) {
-                            when {
-                                homeBackdropActive && homeCarouselBackdropTransitionActive ->
-                                    HomeArtworkCarouselBackdrop(
-                                    songs = homeCarouselSongs,
-                                    currentSong = navData.currentSong,
-                                    state = homeCarouselState,
-                                    modifier = Modifier.fillMaxSize(),
-                                )
-                                homeBackdropActive || rawFlowLayerActive -> RawFlowBackground(
-                                    mode = rawFlowModeState.value,
-                                    sourceCoverKey = navData.currentSong
-                                        .resolvePlaybackArtworkKey(null),
-                                    modifier = Modifier.fillMaxSize(),
-                                    active = navData.uiForeground,
-                                    motionEnabled = rawFlowMotionActive,
-                                    frameIntervalMs = MAIN_RAW_FLOW_FRAME_INTERVAL_MS,
-                                )
-                            }
+                            PersistentSceneBackgroundLayers(
+                                navState = navState,
+                                transitionFrame = sceneTransitionFrame,
+                                rawFlowMode = rawFlowModeState.value,
+                                homeCarouselSongs = homeCarouselSongs,
+                                currentSong = navData.currentSong,
+                                homeCarouselState = homeCarouselState,
+                                homeCarouselBackdropTransitionActive =
+                                    homeCarouselBackdropTransitionActive,
+                                rawFlowLayerActive = rawFlowLayerActive,
+                                rawFlowMotionActive = rawFlowMotionActive,
+                                uiForeground = navData.uiForeground,
+                                modifier = Modifier.fillMaxSize(),
+                            )
                         }
                     },
                 ) {
@@ -267,7 +317,13 @@ fun AppMainLayout(
                                 externalPageRenderer = externalPageRenderer,
                                 showHomeSettingsShortcut = showHomeSettingsShortcut,
                                 onSettingsClick = onSettingsClick ?: { navState.navigateToSettings() },
+                                onHomeHeaderMenuAction = if (!bottomNavigationEnabled) {
+                                    { onOpenSideRail() }
+                                } else {
+                                    null
+                                },
                                 homeCarouselState = homeCarouselState,
+                                homeHeaderOptions = homeHeaderOptions,
                                 renderHomeBackdrop = false,
                                 homeFullCoverActive = homeFullCoverActive,
                                 homeFullCoverCenterReflectionAlpha = homeCenterReflectionAlpha,
@@ -275,8 +331,11 @@ fun AppMainLayout(
                                 onHomeCarouselCurrentArtworkLongPress = onCurrentArtworkLongPress,
                                 onHomeCarouselCurrentArtworkBoundsChanged = onCurrentArtworkBoundsChanged,
                                 sceneGestureExclusionBounds = miniPlayerGestureBounds,
-                                onSceneTransitionActiveChanged = { active ->
-                                    sceneTransitionActive = active
+                                onSceneTransitionActiveChanged = { _ ->
+                                    // Kept for callers that still observe the boolean callback.
+                                },
+                                onSceneTransitionFrameChanged = { frame ->
+                                    sceneTransitionFrame.update(frame)
                                 },
                             )
 
@@ -284,80 +343,45 @@ fun AppMainLayout(
                             if (!isSettingsScene && !isIndependentSourceScene) {
                                 val showBottomChrome = !navData.bottomChromeHidden
                                 val chromeHidden = bottomChromeScrollState.hidden
-                                val miniPlayerOffsetY by animateDpAsState(
+                                val animatedMiniPlayerOffsetY by animateDpAsState(
                                     targetValue = if (chromeHidden || !bottomNavigationEnabled) (-4).dp else (-68).dp,
                                     animationSpec = tween(durationMillis = 240),
                                     label = "mini-player-chrome-offset"
                                 )
-                                val bottomTabsOffsetY by animateDpAsState(
+                                val animatedBottomTabsOffsetY by animateDpAsState(
                                     targetValue = if (chromeHidden) 92.dp else (-4).dp,
                                     animationSpec = tween(durationMillis = 240),
                                     label = "bottom-tabs-scroll-offset"
                                 )
+                                // AM's stacked chrome is a stable sibling while the sheet is being
+                                // dragged. Freezing only BottomChromeScrollState.hidden is not
+                                // enough: animateDpAsState may already be mid-flight when PLAYER
+                                // captures the sheet. Snapshot the actually rendered offsets at
+                                // session start and hold those exact pixels until p returns to 0.
+                                val sheetSessionMiniPlayerOffsetY = remember(playerSheetOwnsBottomChrome) {
+                                    if (playerSheetOwnsBottomChrome) animatedMiniPlayerOffsetY else null
+                                }
+                                val sheetSessionBottomTabsOffsetY = remember(playerSheetOwnsBottomChrome) {
+                                    if (playerSheetOwnsBottomChrome) animatedBottomTabsOffsetY else null
+                                }
+                                val miniPlayerOffsetY = sheetSessionMiniPlayerOffsetY ?: animatedMiniPlayerOffsetY
+                                val bottomTabsOffsetY = sheetSessionBottomTabsOffsetY ?: animatedBottomTabsOffsetY
                                 // MiniPlayer：在导航栏上方，所有页面可见
                                 val hasSong = navData.miniPlayerTitle.isNotBlank() &&
                                     navData.miniPlayerTitle != "暂无音乐播放"
                                 LaunchedEffect(hasSong, showBottomChrome) {
                                     if (!hasSong || !showBottomChrome) {
                                         miniPlayerGestureBounds = null
+                                        onMiniPlayerGestureBoundsChanged(null)
                                     }
                                 }
-                                AnimatedVisibility(
-                                    visible = hasSong && showBottomChrome,
-                                    enter = fadeIn() + slideInVertically { it },
-                                    exit = fadeOut() + slideOutVertically { it },
-                                    modifier = Modifier.align(Alignment.BottomCenter)
-                                ) {
-                                    val miniCoverPath = navData.currentSong.resolvePlaybackArtworkKey(
-                                        navData.miniPlayerCoverPath
-                                    )
+                                val miniCoverPath = navData.currentSong.resolvePlaybackArtworkKey(
+                                    navData.miniPlayerCoverPath
+                                )
+                                val miniPlayerAccent = rememberUappBottomAccentColor(miniCoverPath)
 
-                                    ComposeMiniPlayer(
-                                        title = navData.miniPlayerTitle,
-                                        artist = navData.miniPlayerArtist,
-                                        lyricText = navData.miniPlayerLyric,
-                                        lyricTranslation = navData.miniPlayerLyricTranslation,
-                                        isPlaying = navData.miniPlayerIsPlaying,
-                                        progress = navData.miniPlayerProgress,
-                                        coverPath = miniCoverPath,
-                                        currentSong = navData.currentSong,
-                                        previousSong = navData.miniPlayerPreviousSong,
-                                        nextSong = navData.miniPlayerNextSong,
-                                        queueCurrentIndex = navData.queueCurrentIndex,
-                                        queueSize = navData.queueSongs.size,
-                                        animateArtwork = false,
-                                        backdrop = backdrop,
-                                        onPlayPause = navCallbacks.onMiniPlayerPlayPause,
-                                        onSkipPrevious = navCallbacks.onMiniPlayerPrevious,
-                                        onSkipNext = navCallbacks.onMiniPlayerNext,
-                                        // The mini-player and home artwork carousel render the same queue, but
-                                        // they own independent transition timelines. Feeding this progress into
-                                        // the home carousel starts a second transition after a carousel gesture
-                                        // commits, producing the visible target -> old -> target flash.
-                                        onSwitchProgress = { _, _ -> Unit },
-                                        onClick = navCallbacks.onNavigateToPlayer,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 24.dp)
-                                            .offset(y = miniPlayerOffsetY)
-                                            .rawNavigationBarsPadding(reduceBy = 12.dp)
-                                            .onGloballyPositioned { coordinates ->
-                                                miniPlayerGestureBounds = coordinates.boundsInRoot()
-                                            }
-                                    )
-                                }
-
-                                AnimatedVisibility(
-                                    visible = showBottomChrome && bottomNavigationEnabled,
-                                    enter = fadeIn() + slideInVertically { it },
-                                    exit = fadeOut() + slideOutVertically { it },
-                                    modifier = Modifier.align(Alignment.BottomCenter)
-                                ) {
-                                    key(tabScenes.joinToString(separator = "|") { it.tag }) {
-                                        LiquidBottomTabs(
-                                            selectedTabIndex = selectedTabIndex,
-                                            onTabSelected = { index ->
-                                                tabScenes.getOrNull(index)?.let { targetScene ->
+                                fun selectBottomTab(index: Int) {
+                                    tabScenes.getOrNull(index)?.let { targetScene ->
                                         if (targetScene == NavScene.SETTINGS) {
                                             onSettingsClick?.invoke() ?: navState.navigateToSettings()
                                         } else if (targetScene == NavScene.AUDIO_EFFECTS) {
@@ -366,38 +390,214 @@ fun AppMainLayout(
                                         } else if (navState.currentScene.bottomNavigationRoot() != targetScene) {
                                             navState.navigateFromBottomNavigation(targetScene)
                                         }
+                                    }
+                                }
+
+                                // The floating mini-player should enter the same persistent PLAYER
+                                // sheet as NORMAL chrome. Keep horizontal track switching in
+                                // ComposeMiniPlayer; this parent only wins a vertical upward drag
+                                // and feeds the exact same PlayerSceneController progress callbacks,
+                                // so shared artwork/background/content use the existing animation.
+                                var floatingExpandProgress by remember { mutableStateOf(0f) }
+                                var floatingExpandActive by remember { mutableStateOf(false) }
+                                var floatingDragTravelPx by remember { mutableFloatStateOf(floatingMiniSheetTravelPx) }
+                                val floatingMiniExpandModifier = Modifier.pointerInput(
+                                    floatingMiniSheetTravelPx,
+                                    windowInfo.containerSize.width,
+                                ) {
+                                    val tracker = VelocityTracker()
+                                    detectVerticalDragGestures(
+                                        onDragStart = { position ->
+                                            floatingExpandProgress = playerSceneProgressState?.value?.coerceIn(0f, 1f) ?: 0f
+                                            // Match the live collapsed geometry. With stacked
+                                            // navigation the floating bar is physically higher
+                                            // than the old synthetic 122dp peek, so its drag
+                                            // distance must start from the bar's real top edge.
+                                            floatingDragTravelPx = (miniPlayerGestureBounds?.top
+                                                ?: floatingMiniSheetTravelPx).coerceAtLeast(1f)
+                                            floatingExpandActive = false
+                                            tracker.resetTracking()
+                                            tracker.addPosition(android.os.SystemClock.uptimeMillis(), position)
+                                        },
+                                        onVerticalDrag = { change, dragAmount ->
+                                            tracker.addPosition(change.uptimeMillis, change.position)
+                                            if (!floatingExpandActive && dragAmount < 0f) {
+                                                // MAIN has no lower anchor to drag toward. Ignore a
+                                                // downward-first stream; upward motion claims the
+                                                // gesture and starts the normal shared-sheet handoff.
+                                                floatingExpandActive = true
+                                                navCallbacks.onMiniPlayerExpandDragStart()
+                                            }
+                                            if (floatingExpandActive) {
+                                                floatingExpandProgress = (
+                                                    floatingExpandProgress - dragAmount / floatingDragTravelPx
+                                                ).coerceIn(0f, 1f)
+                                                navCallbacks.onMiniPlayerExpandDragProgress(floatingExpandProgress)
+                                                change.consume()
+                                            }
+                                        },
+                                        onDragEnd = {
+                                            if (floatingExpandActive) {
+                                                val minVelocity = floatingMiniFlingBounds.first
+                                                val maxVelocity = floatingMiniFlingBounds.second
+                                                val rawVelocityY = tracker.calculateVelocity().y
+                                                val velocityY = when {
+                                                    kotlin.math.abs(rawVelocityY) < minVelocity -> 0f
+                                                    rawVelocityY > maxVelocity -> maxVelocity
+                                                    rawVelocityY < -maxVelocity -> -maxVelocity
+                                                    else -> rawVelocityY
                                                 }
-                                            },
+                                                val shouldOpen = when {
+                                                    velocityY < 0f -> true
+                                                    velocityY > 0f -> false
+                                                    else -> floatingExpandProgress >= 0.5f
+                                                }
+                                                val parentWidthPx = windowInfo.containerSize.width.toFloat().coerceAtLeast(1f)
+                                                navCallbacks.onMiniPlayerExpandDragEnd(shouldOpen, velocityY / parentWidthPx)
+                                            }
+                                            floatingExpandActive = false
+                                        },
+                                        onDragCancel = {
+                                            if (floatingExpandActive) {
+                                                navCallbacks.onMiniPlayerExpandDragEnd(
+                                                    floatingExpandProgress >= 0.5f,
+                                                    0f,
+                                                )
+                                            }
+                                            floatingExpandActive = false
+                                        },
+                                    )
+                                }
+
+                                if (bottomBarStyle == BottomBarStyle.NORMAL && bottomNavigationEnabled) {
+                                    if (hasSong && showBottomChrome) {
+                                        NormalBottomChrome(
+                                            title = navData.miniPlayerTitle,
+                                            artist = navData.miniPlayerArtist,
+                                            lyricText = navData.miniPlayerLyric,
+                                            lyricTranslation = navData.miniPlayerLyricTranslation,
+                                            isPlaying = navData.miniPlayerIsPlaying,
+                                            progress = navData.miniPlayerProgress,
+                                            coverPath = miniCoverPath,
+                                            currentSong = navData.currentSong,
+                                            previousSong = navData.miniPlayerPreviousSong,
+                                            nextSong = navData.miniPlayerNextSong,
+                                            queueCurrentIndex = navData.queueCurrentIndex,
+                                            queueSize = navData.queueSongs.size,
+                                            accentColor = miniPlayerAccent,
                                             backdrop = backdrop,
-                                            tabsCount = tabScenes.size,
+                                            tabScenes = tabScenes,
+                                            selectedTabIndex = selectedTabIndex,
+                                            onTabSelected = ::selectBottomTab,
+                                            onOpenPlayer = navCallbacks.onNavigateToPlayer,
+                                            onPlayPause = navCallbacks.onMiniPlayerPlayPause,
+                                            onSkipPrevious = navCallbacks.onMiniPlayerPrevious,
+                                            onSkipNext = navCallbacks.onMiniPlayerNext,
+                                            onExpandDragStart = navCallbacks.onMiniPlayerExpandDragStart,
+                                            onExpandDragProgress = navCallbacks.onMiniPlayerExpandDragProgress,
+                                            onExpandDragEnd = navCallbacks.onMiniPlayerExpandDragEnd,
+                                            drivePlayerScene = true,
+                                            playerSceneProgressState = playerSceneProgressState,
+                                            onCoverBoundsChanged = navCallbacks.onMiniPlayerCoverBoundsChanged,
+                                            onCoverTargetChanged = navCallbacks.onMiniPlayerCoverTargetChanged,
+                                            modifier = Modifier
+                                                .align(Alignment.BottomCenter)
+                                                .fillMaxWidth()
+                                                .rawNavigationBarsPadding(reduceBy = 12.dp)
+                                                .onGloballyPositioned { coordinates ->
+                                                    val bounds = coordinates.boundsInRoot()
+                                                    miniPlayerGestureBounds = bounds
+                                                    onMiniPlayerGestureBoundsChanged(bounds)
+                                                },
+                                        )
+                                    }
+                                } else {
+                                    AnimatedVisibility(
+                                        visible = hasSong && showBottomChrome,
+                                        enter = fadeIn() + slideInVertically { it },
+                                        exit = fadeOut() + slideOutVertically { it },
+                                        modifier = Modifier.align(Alignment.BottomCenter),
+                                    ) {
+                                        ComposeMiniPlayer(
+                                            title = navData.miniPlayerTitle,
+                                            artist = navData.miniPlayerArtist,
+                                            lyricText = navData.miniPlayerLyric,
+                                            lyricTranslation = navData.miniPlayerLyricTranslation,
+                                            isPlaying = navData.miniPlayerIsPlaying,
+                                            progress = navData.miniPlayerProgress,
+                                            coverPath = miniCoverPath,
+                                            currentSong = navData.currentSong,
+                                            previousSong = navData.miniPlayerPreviousSong,
+                                            nextSong = navData.miniPlayerNextSong,
+                                            queueCurrentIndex = navData.queueCurrentIndex,
+                                            queueSize = navData.queueSongs.size,
+                                            animateArtwork = false,
+                                            backdrop = backdrop,
+                                            onPlayPause = navCallbacks.onMiniPlayerPlayPause,
+                                            onSkipPrevious = navCallbacks.onMiniPlayerPrevious,
+                                            onSkipNext = navCallbacks.onMiniPlayerNext,
+                                            onSwitchProgress = { _, _ -> Unit },
+                                            onClick = navCallbacks.onNavigateToPlayer,
+                                            onCoverBoundsChanged = navCallbacks.onMiniPlayerCoverBoundsChanged,
+                                            onCoverTargetChanged = navCallbacks.onMiniPlayerCoverTargetChanged,
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .padding(horizontal = 24.dp)
-                                                .offset(y = bottomTabsOffsetY)
+                                                .offset(y = miniPlayerOffsetY)
                                                 .rawNavigationBarsPadding(reduceBy = 12.dp)
-                                        ) {
-                                            tabScenes.forEach { scene ->
-                                                LiquidBottomTab(
-                                                    onClick = {
-                                            if (scene == NavScene.SETTINGS) {
-                                                onSettingsClick?.invoke() ?: navState.navigateToSettings()
-                                            } else if (scene == NavScene.AUDIO_EFFECTS) {
-                                                onAudioEffectsClick?.invoke()
-                                                    ?: navState.navigateFromBottomNavigation(scene)
-                                            } else if (navState.currentScene.bottomNavigationRoot() != scene) {
-                                                navState.navigateFromBottomNavigation(scene)
-                                            }
+                                                // Keep the gesture owner on the *placed* floating
+                                                // mini-player. When stacked navigation is visible
+                                                // the bar is shifted upward by ~68dp; attaching the
+                                                // pointerInput to AnimatedVisibility leaves the hit
+                                                // region at the unshifted bottom slot, so a finger
+                                                // on the visible bar can never start the upward drag.
+                                                .then(floatingMiniExpandModifier)
+                                                .graphicsLayer {
+                                                    // Use the same content handoff curve as the
+                                                    // NORMAL mini-player while the floating bar
+                                                    // drives MAIN -> PLAYER interactively.
+                                                    alpha = exp(-300f * (playerSceneProgressState?.value ?: 0f).coerceIn(0f, 1f))
+                                                }
+                                                .onGloballyPositioned { coordinates ->
+                                                    val bounds = coordinates.boundsInRoot()
+                                                    miniPlayerGestureBounds = bounds
+                                                    onMiniPlayerGestureBoundsChanged(bounds)
+                                                },
+                                        )
+                                    }
+
+                                    AnimatedVisibility(
+                                        visible = showBottomChrome && bottomNavigationEnabled,
+                                        enter = fadeIn() + slideInVertically { it },
+                                        exit = fadeOut() + slideOutVertically { it },
+                                        modifier = Modifier.align(Alignment.BottomCenter),
+                                    ) {
+                                        key(tabScenes.joinToString(separator = "|") { it.tag }) {
+                                            LiquidBottomTabs(
+                                                selectedTabIndex = selectedTabIndex,
+                                                onTabSelected = ::selectBottomTab,
+                                                backdrop = backdrop,
+                                                tabsCount = tabScenes.size,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 24.dp)
+                                                    .offset(y = bottomTabsOffsetY)
+                                                    .rawNavigationBarsPadding(reduceBy = 12.dp),
+                                            ) {
+                                                tabScenes.forEach { scene ->
+                                                    LiquidBottomTab(
+                                                        onClick = { selectBottomTab(tabScenes.indexOf(scene)) },
+                                                    ) {
+                                                        BottomNavigationEntryIcon(
+                                                            scene = scene,
+                                                            tint = contentColor,
+                                                            modifier = Modifier.size(24.dp),
+                                                        )
+                                                        BasicText(
+                                                            scene.bottomNavigationLabel(),
+                                                            style = TextStyle(contentColor, 10.sp, FontWeight.SemiBold),
+                                                        )
                                                     }
-                                                ) {
-                                                    BottomNavigationEntryIcon(
-                                                        scene = scene,
-                                                        tint = contentColor,
-                                                        modifier = Modifier.size(24.dp),
-                                                    )
-                                                    BasicText(
-                                                        scene.bottomNavigationLabel(),
-                                                        style = TextStyle(contentColor, 10.sp, FontWeight.SemiBold)
-                                                    )
                                                 }
                                             }
                                         }

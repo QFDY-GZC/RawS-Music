@@ -33,7 +33,6 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -59,6 +58,7 @@ enum class AppSideRailDestination {
 }
 
 private const val SIDE_RAIL_REVEAL_START_FRACTION = 0.5f
+private const val SIDE_RAIL_WIDTH_FRACTION = 0.5f
 
 private enum class SideRailAnchor {
     Collapsed,
@@ -89,14 +89,15 @@ private val sideRailItems = listOf(
 internal fun AppSideRailHost(
     enabled: Boolean,
     onDestinationClick: (AppSideRailDestination) -> Unit,
+    openRequestToken: Long = 0L,
+    closeRequestToken: Long = 0L,
+    onExpandedChanged: (Boolean) -> Unit = {},
+    homeSettingsContent: @Composable () -> Unit = {},
     modifier: Modifier = Modifier,
     background: @Composable () -> Unit = {},
     content: @Composable () -> Unit,
 ) {
-    val density = LocalDensity.current
     val scope = rememberCoroutineScope()
-    val railWidth = 264.dp
-    val railWidthPx = with(density) { railWidth.toPx() }
     // The collapsed rail may be revealed from the whole left half of the screen. Direction
     // arbitration below still requires a rightward, horizontally dominant drag, so vertical list
     // scrolling and leftward gestures remain available.
@@ -110,11 +111,27 @@ internal fun AppSideRailHost(
         ) {
             progress = value
         }
+        onExpandedChanged(target == SideRailAnchor.Expanded)
     }
 
     LaunchedEffect(enabled) {
         if (!enabled && progress != 0f) {
             progress = 0f
+            onExpandedChanged(false)
+        }
+    }
+
+    // Use a token rather than a Boolean so the header button can reopen the rail after it was
+    // dismissed by predictive back.
+    LaunchedEffect(openRequestToken) {
+        if (enabled && openRequestToken > 0L && progress < 1f) {
+            settle(SideRailAnchor.Expanded)
+        }
+    }
+
+    LaunchedEffect(closeRequestToken) {
+        if (closeRequestToken > 0L && progress > 0f) {
+            settle(SideRailAnchor.Collapsed)
         }
     }
 
@@ -126,7 +143,7 @@ internal fun AppSideRailHost(
         modifier = modifier
             .fillMaxSize()
             .clipToBounds()
-            .pointerInput(enabled, railWidthPx) {
+            .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(
@@ -134,6 +151,7 @@ internal fun AppSideRailHost(
                         pass = PointerEventPass.Initial,
                     )
                     val startedExpanded = progress > 0f
+                    val railWidthPx = (size.width * SIDE_RAIL_WIDTH_FRACTION).coerceAtLeast(1f)
                     val revealStartLimitPx = size.width * SIDE_RAIL_REVEAL_START_FRACTION
                     if (!startedExpanded && down.position.x > revealStartLimitPx) {
                         return@awaitEachGesture
@@ -187,6 +205,7 @@ internal fun AppSideRailHost(
         content = {
             Box(Modifier.fillMaxSize()) { background() }
             AppSideRail(
+                homeSettingsContent = homeSettingsContent,
                 modifier = Modifier.fillMaxHeight(),
                 onItemClick = { destination ->
                     scope.launch {
@@ -200,7 +219,7 @@ internal fun AppSideRailHost(
     ) { measurables, constraints ->
         val width = constraints.maxWidth
         val height = constraints.maxHeight
-        val railWidthInt = railWidthPx.toInt().coerceAtMost(width)
+        val railWidthInt = (width * SIDE_RAIL_WIDTH_FRACTION).toInt().coerceAtMost(width)
         val backgroundPlaceable = measurables[0].measure(
             constraints.copy(
                 minWidth = width,
@@ -240,6 +259,7 @@ internal fun AppSideRailHost(
 @Composable
 private fun AppSideRail(
     onItemClick: (AppSideRailDestination) -> Unit,
+    homeSettingsContent: @Composable () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = MiuixTheme.colorScheme
@@ -258,6 +278,8 @@ private fun AppSideRail(
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
         )
+
+        homeSettingsContent()
 
         sideRailItems.forEach { item ->
             Card(

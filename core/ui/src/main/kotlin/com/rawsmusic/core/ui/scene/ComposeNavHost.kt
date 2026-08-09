@@ -26,6 +26,7 @@ import com.rawsmusic.core.ui.scene.pages.GenresPage
 import com.rawsmusic.core.ui.scene.pages.YearsPage
 import com.rawsmusic.core.ui.scene.pages.HomePage
 import com.rawsmusic.core.ui.scene.pages.HomeArtworkCarouselState
+import com.rawsmusic.core.ui.scene.pages.HomeHeaderOptionsState
 import com.rawsmusic.core.ui.scene.pages.LogViewerPage
 import com.rawsmusic.core.ui.scene.pages.LibraryChromeInfo
 import com.rawsmusic.core.ui.scene.pages.LocalLibraryChromeInfo
@@ -67,6 +68,9 @@ data class NavCallbacks(
     val onMiniPlayerPlayPause: () -> Unit = {},
     val onMiniPlayerPrevious: () -> Unit = {},
     val onMiniPlayerNext: () -> Unit = {},
+    val onMiniPlayerExpandDragStart: () -> Unit = {},
+    val onMiniPlayerExpandDragProgress: (Float) -> Unit = {},
+    val onMiniPlayerExpandDragEnd: (Boolean, Float) -> Unit = { _, _ -> },
     val onPlayerSeek: (Long) -> Unit = {},
     val onOpenFolderPicker: () -> Unit = {},
     val onSortClick: () -> Unit = {},
@@ -86,7 +90,8 @@ data class NavCallbacks(
     val onPlayingCoverBoundsChanged: (RectF?) -> Unit = {},
     val onPlayingCoverTargetChanged: (CoverTransitionTarget?) -> Unit = {},
     val onRevealCoverTargetResolved: (CoverTransitionTarget?) -> Unit = {},
-    val onMiniPlayerCoverBoundsChanged: (RectF?) -> Unit = {}
+    val onMiniPlayerCoverBoundsChanged: (RectF?) -> Unit = {},
+    val onMiniPlayerCoverTargetChanged: (CoverTransitionTarget?) -> Unit = {}
 )
 
 /**
@@ -137,7 +142,9 @@ fun ComposeNavHost(
     externalPageRenderer: ExternalPageRenderer? = null,
     showHomeSettingsShortcut: Boolean = false,
     onSettingsClick: () -> Unit = {},
+    onHomeHeaderMenuAction: (() -> Unit)? = null,
     homeCarouselState: HomeArtworkCarouselState,
+    homeHeaderOptions: HomeHeaderOptionsState,
     renderHomeBackdrop: Boolean = true,
     homeFullCoverActive: Boolean = false,
     homeFullCoverCenterReflectionAlpha: Float = 1f,
@@ -146,6 +153,7 @@ fun ComposeNavHost(
     onHomeCarouselCurrentArtworkBoundsChanged: (AudioFile, Rect) -> Unit = { _, _ -> },
     sceneGestureExclusionBounds: Rect? = null,
     onSceneTransitionActiveChanged: (Boolean) -> Unit = {},
+    onSceneTransitionFrameChanged: (SceneTransitionFrame) -> Unit = {},
 ) {
     val homeListState = rememberLazyListState()
     val songsPowerListState = rememberComposePowerListState("songs")
@@ -205,6 +213,7 @@ fun ComposeNavHost(
         modifier = modifier,
         horizontalGestureExclusionBounds = sceneGestureExclusionBounds,
         onTransitionActiveChanged = onSceneTransitionActiveChanged,
+        onTransitionFrameChanged = onSceneTransitionFrameChanged,
     ) { scene ->
         val onBack: () -> Unit = { state.navigateBackAnimated() }
 
@@ -227,6 +236,8 @@ fun ComposeNavHost(
                 onSearchClick = { callbacks.onSearchClick(null) },
                 showSettingsShortcut = showHomeSettingsShortcut,
                 onSettingsClick = onSettingsClick,
+                onHeaderMenuActionOverride = onHomeHeaderMenuAction,
+                headerOptions = homeHeaderOptions,
                 onCurrentPlayPause = callbacks.onMiniPlayerPlayPause,
                 onSongClick = callbacks.onSongClick,
                 onQueueSongClick = callbacks.onHomeCarouselSongClick,

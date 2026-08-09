@@ -14,6 +14,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableFloatStateOf
@@ -57,6 +59,7 @@ private const val POWER_LIST_CANCEL_MS = 500
 private const val POWER_LIST_COMMIT_PROGRESS = 0.3f
 private const val POWER_LIST_VELOCITY_DP_PER_S = 500f
 private const val SHARED_PAIR_WAIT_FRAMES = 6
+private const val SCENE_PREPARE_FRAMES = 4
 private const val SETTINGS_FRAGMENT_ANIM_MS = 300
 private const val EDGE_DETECT_WIDTH_DP = 24
 private const val OVER_DRAG_UNIT = 0.05f
@@ -78,6 +81,59 @@ private enum class PageMotion {
     FolderSharedBack,
     SettingsForward,
     SettingsBack,
+}
+
+/**
+ * A frame of the page transition shared with persistent chrome/background layers.
+ *
+ * Poweramp keeps its background renderer alive while pages move above it. Exposing the same
+ * normalized progress prevents the background from being committed one frame after the page.
+ */
+data class SceneTransitionFrame(
+    val active: Boolean,
+    val progress: Float,
+    val fromScene: NavScene,
+    val toScene: NavScene,
+    val isBack: Boolean,
+) {
+    companion object {
+        fun idle(scene: NavScene): SceneTransitionFrame = SceneTransitionFrame(
+            active = false,
+            progress = 1f,
+            fromScene = scene,
+            toScene = scene,
+            isBack = false,
+        )
+    }
+}
+
+/**
+ * Stable holder for the frame shared with persistent chrome/background layers.
+ *
+ * The transition animation changes only [progress]. Keeping the holder identity stable lets
+ * Compose invalidate the readers of that field instead of rebuilding AppMainLayout on every
+ * display frame. This is the Compose equivalent of Poweramp's long-lived renderer state.
+ */
+@Stable
+class SceneTransitionFrameState(initialScene: NavScene) {
+    var active by mutableStateOf(false)
+        private set
+    var progress by mutableFloatStateOf(1f)
+        private set
+    var fromScene by mutableStateOf(initialScene)
+        private set
+    var toScene by mutableStateOf(initialScene)
+        private set
+    var isBack by mutableStateOf(false)
+        private set
+
+    fun update(frame: SceneTransitionFrame) {
+        if (active != frame.active) active = frame.active
+        if (progress != frame.progress) progress = frame.progress
+        if (fromScene != frame.fromScene) fromScene = frame.fromScene
+        if (toScene != frame.toScene) toScene = frame.toScene
+        if (isBack != frame.isBack) isBack = frame.isBack
+    }
 }
 
 private val settingsScenes = setOf(
@@ -258,6 +314,7 @@ fun SceneTransitionHost(
     prewarmScenes: List<NavScene> = emptyList(),
     horizontalGestureExclusionBounds: Rect? = null,
     onTransitionActiveChanged: (Boolean) -> Unit = {},
+    onTransitionFrameChanged: (SceneTransitionFrame) -> Unit = {},
     content: @Composable (NavScene) -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -318,8 +375,12 @@ fun SceneTransitionHost(
         // instead of paying its first composition/layout cost in the opening animation.
         if (retainedScene != newScene) {
             preparingScene = newScene
-            withFrameNanos { }
-            withFrameNanos { }
+            // Poweramp measures and records the target list before its first visible frame.
+            // Four frame callbacks give Compose time to finish composition, layout and the
+            // first RenderNode recording without making the opening animation pay that cost.
+            repeat(SCENE_PREPARE_FRAMES) {
+                withFrameNanos { }
+            }
         }
         fromScene = oldScene
         isBackTransition = false
@@ -719,6 +780,30 @@ fun SceneTransitionHost(
             onTransitionActiveChanged(inTransition)
         }
 
+        // Publish the same frame used to render both page slots. The background host must not
+        // infer transition state from NavigationState after the page has already committed.
+        val backgroundFromScene = if (inTransition && isBackTransition) {
+            displayedScene
+        } else {
+            fromScene
+        }
+        val backgroundToScene = if (inTransition && isBackTransition) {
+            fromScene
+        } else {
+            displayedScene
+        }
+        SideEffect {
+            onTransitionFrameChanged(
+                SceneTransitionFrame(
+                    active = inTransition,
+                    progress = if (isBackTransition) progress else 1f - progress,
+                    fromScene = backgroundFromScene,
+                    toScene = backgroundToScene,
+                    isBack = isBackTransition,
+                )
+            )
+        }
+
         // 按方向计算共享进度：forward progress 1→0 需反转，back/gesture progress 0→1 直接用
         val sharedProgress = when (pageMotion) {
             PageMotion.SettingsForward -> 1f - progress
@@ -840,7 +925,10 @@ fun SceneTransitionHost(
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer {
-                                alpha = 0f
+                                // Keep the target drawable for the GPU warm-up pass while it is
+                                // translated outside the viewport. A zero alpha may be skipped
+                                // by some render backends and would defeat the pre-recording.
+                                alpha = 0.001f
                                 translationX = screenWidthPx.coerceAtLeast(1f) * 2f
                                 compositingStrategy = CompositingStrategy.ModulateAlpha
                             }
@@ -862,8 +950,9 @@ fun SceneTransitionHost(
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer {
-                                alpha = 0f
+                                alpha = 0.001f
                                 translationX = screenWidthPx.coerceAtLeast(1f) * 2f
+                                compositingStrategy = CompositingStrategy.ModulateAlpha
                             }
                     ) {
                         SceneContent(scene)

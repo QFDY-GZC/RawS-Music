@@ -68,7 +68,6 @@ import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.core.ui.widget.bitmaps.NativePlayerArtworkSwitchEasing
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.flow.LocalRawFlowMode
 import com.rawsmusic.core.ui.widget.flow.RawFlowBackground
 import com.rawsmusic.core.ui.widget.player.PORTRAIT_DIAL_VISIBLE_RADIUS
@@ -99,7 +98,7 @@ private fun sameCarouselQueue(left: List<AudioFile>, right: List<AudioFile>): Bo
         carouselSongIdentity(left[index]) == carouselSongIdentity(right[index])
     }
 
-internal enum class HomeArtworkCarouselStyle(val value: Int) {
+enum class HomeArtworkCarouselStyle(val value: Int) {
     CurrentCarousel(0),
     VerticalDial(1);
 
@@ -311,6 +310,8 @@ internal fun HomeArtworkCarouselBackdrop(
     songs: List<AudioFile>,
     currentSong: AudioFile?,
     state: HomeArtworkCarouselState,
+    active: Boolean = true,
+    motionEnabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val availableSongs = state.renderSongs
@@ -341,36 +342,37 @@ internal fun HomeArtworkCarouselBackdrop(
     val sameBackdrop = targetSong != null && targetKey == baseKey
     val blend = (absoluteProgress - completedSteps).coerceIn(0f, 1f)
     val targetAlpha = blend
-    val baseArtwork = baseKey?.let { key ->
-        BitmapProvider.peekThumbnail(key, 256, 256) ?: BitmapProvider.peekAny(key)
-    }
-    val targetArtwork = targetKey?.let { key ->
-        BitmapProvider.peekThumbnail(key, 256, 256) ?: BitmapProvider.peekAny(key)
-    }
     val nativeBlend = NativePlayerArtworkSwitchEasing.transform(targetAlpha)
 
     Box(modifier = modifier.fillMaxSize()) {
-        key("home-carousel-bg:${baseKey.orEmpty()}") {
+        // Keep the two render surfaces physically stable while the source artwork changes.
+        // Re-keying by cover makes Compose tear down the background and recreate it during
+        // a carousel step, which exposes a transparent frame and resets the motion phase.
+        key("home-carousel-base-bg") {
             RawFlowBackground(
                 mode = flowMode,
                 sourceCoverKey = baseKey,
-                sourceArtwork = baseArtwork,
+                sourceArtwork = null,
                 modifier = Modifier
                     .fillMaxSize()
                     // The current scene is the opaque fallback while the target texture is built.
-                    .graphicsLayer { alpha = 1f }
+                    .graphicsLayer { alpha = 1f },
+                active = active,
+                motionEnabled = motionEnabled,
             )
         }
         if (targetSong != null && targetKey != baseKey) {
-            key("home-carousel-bg:${targetKey.orEmpty()}") {
+            key("home-carousel-target-bg") {
                 RawFlowBackground(
                     mode = flowMode,
                     sourceCoverKey = targetKey,
                     fallbackSourceCoverKey = baseKey,
-                    sourceArtwork = targetArtwork,
+                sourceArtwork = null,
                     modifier = Modifier
                         .fillMaxSize()
-                        .graphicsLayer { alpha = nativeBlend }
+                        .graphicsLayer { alpha = nativeBlend },
+                    active = active,
+                    motionEnabled = motionEnabled,
                 )
             }
         }
@@ -765,12 +767,12 @@ private fun HomeArtworkDial(
             val song = songs[songIndex]
             val artworkKey = song.resolvePlaybackArtworkKey(null).orEmpty()
             val transform = resolvePortraitDialLaneTransform(position, widthPx, heightPx)
-            val virtualQueueIndex = centerIndex + logicalOffset
-            val stableLaneKey =
-                "home-dial:$virtualQueueIndex:$songIndex:${carouselSongIdentity(song)}"
             val hiddenCenter = hideCenterLane && abs(position) < 0.02f
 
-            key(stableLaneKey) {
+            // Keep the five visible physical lanes alive. The queue/song identity is bound to the
+            // BitmapImage inside the lane; using it as the Compose key recreates every card on a
+            // commit and releases its old artwork before the replacement arrives.
+            key("home-dial-lane-$logicalOffset") {
                 Box(
                     modifier = Modifier
                         .size(cardSide)
@@ -797,7 +799,10 @@ private fun HomeArtworkDial(
                             targetWidth = 1024,
                             targetHeight = 1024,
                             priority = BitmapRequest.Priority.LOADING_WIDGET,
-                            holdPreviousOnKeyChange = false,
+                            // Keep the physical dial lane mounted while its source changes. The
+                            // provider replaces the bitmap atomically, matching Poweramp's
+                            // artwork holder instead of exposing an empty transition frame.
+                            holdPreviousOnKeyChange = true,
                             fadeInMillis = 0,
                             filterQuality = FilterQuality.Medium,
                         )
