@@ -46,7 +46,7 @@ import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.scene.bottomNavigationLabel
 import com.rawsmusic.core.ui.systemui.rawReducedNavigationBottomPadding
 import com.rawsmusic.core.ui.widget.ComposeMiniPlayer
-import com.rawsmusic.core.ui.widget.flow.uappDarkAlbumGradient
+import com.rawsmusic.core.ui.widget.flow.darkAlbumGradient
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Text
 import kotlin.math.abs
@@ -57,10 +57,10 @@ private const val NORMAL_BOTTOM_BAR_ANCHOR = 0.5f
 /**
  * The resource-backed, stacked bottom chrome used by the Normal style.
  *
- * AM's `bottom_navigation_root_stacked` is one full-width root. The mini-player is a
+ * The stacked bottom-navigation surface is one full-width root. The mini-player is a
  * 64dp touch panel in that root and the 56dp navigation layer is a sibling below it;
  * neither layer is wrapped in a floating card. During an upward sheet drag only the
- * navigation layer moves, using AM's `1 - exp(-20 * slideOffset)` curve. The player
+ * navigation layer moves, using the `1 - exp(-20 * slideOffset)` curve. The player
  * scene receives the same normalized offset and takes over the remaining expansion.
  */
 @Composable
@@ -116,7 +116,7 @@ fun NormalBottomChrome(
     val latestExpandDragEnd by rememberUpdatedState(onExpandDragEnd)
     val miniPlayerHeight = 66.dp
     val navigationHeight = 56.dp
-    // AppMainLayout lifts NORMAL chrome by the same reduced gesture-navigation inset. AM includes
+    // AppMainLayout lifts NORMAL chrome by the same reduced gesture-navigation inset. Include
     // that inset in both the bottom-sheet peek height and the stacked navigation exit distance.
     val reducedNavigationBottomPadding = rawReducedNavigationBottomPadding(reduceBy = 12.dp)
     val miniPlayerHeightPx = with(density) { miniPlayerHeight.toPx() }
@@ -150,9 +150,9 @@ fun NormalBottomChrome(
     }
 
     val backgroundColors = remember(accentColor) {
-        uappDarkAlbumGradient(accentColor)
+        darkAlbumGradient(accentColor)
     }
-    // UAPP's dark-album-gradient branch uses C2087s6.m12285R(), which is always white,
+    // Dark artwork uses a white foreground so controls remain legible,
     // for the mini-player foreground. Keep navigation foreground in the same high-contrast family.
     val dividerColor = Color.White.copy(alpha = 0.12f)
     val selectedColor = Color.White
@@ -161,7 +161,7 @@ fun NormalBottomChrome(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            // AM does not treat the stacked mini-player + navigation as one fading visual
+            // Do not treat the stacked mini-player + navigation as one fading visual
             // surface. Keep the parent transparent: the mini-player owns its own background and
             // fades as one source bar, while navigation remains a separate translating sibling.
             .pointerInput(expandedDistancePx, drivePlayerScene) {
@@ -224,8 +224,8 @@ fun NormalBottomChrome(
                 )
             },
     ) {
-        // AM fades the MiniPlayer binding/content root, not the stacked bottom-chrome substrate.
-        // Keep the UAPP-derived bar background mounted and opaque while only the actual MiniPlayer
+        // Fade the MiniPlayer binding/content root, not the stacked bottom-chrome substrate.
+        // Keep the bar background mounted and opaque while only the actual MiniPlayer
         // content participates in exp(-300p). Otherwise PLAYER -> MAIN ends with the player-sheet
         // backdrop fading away at the same time as this whole bar (including its background) fades
         // back in, which reads as a one-frame brightness dip/flash. The navigation sibling already
@@ -241,7 +241,7 @@ fun NormalBottomChrome(
                     .fillMaxWidth()
                     .height(miniPlayerHeight)
                     .graphicsLayer {
-                        // AM C12192q0: MiniPlayer content alpha = exp(-300 * slideOffset).
+                        // MiniPlayer content alpha follows exp(-300 * slideOffset).
                         // Keep the content node mounted for interrupted reverse drags, but do not
                         // include the bottom-chrome background in this alpha handoff.
                         alpha = exp(-300f * currentExpansion())

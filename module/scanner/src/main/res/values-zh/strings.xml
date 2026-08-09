@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_scan_notification_title">RawS Music 正在扫描音乐</string>
+    <string name="library_scan_notification_text">正在扫描音乐库</string>
+    <string name="common_cancel">取消</string>
+</resources>

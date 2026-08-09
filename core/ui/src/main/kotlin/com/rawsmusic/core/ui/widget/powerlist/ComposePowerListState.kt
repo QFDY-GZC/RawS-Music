@@ -424,16 +424,16 @@ private fun elasticScale(signedDelta: Float, isZoomIn: Boolean): Float {
         else -> return 1f
     }
     val direction = if (isZoomIn) 1f else -1f
-    val elasticOffset = computePowerampElasticOffset(overPull)
+    val elasticOffset = computeElasticOverpullOffset(overPull)
     return (1f + elasticOffset * direction).coerceIn(0.9105f, 1.0895f)
 }
 
 private fun computeBoundaryElasticScale(rawOverPull: Float): Float {
-    val easedOffset = computePowerampElasticOffset(rawOverPull)
+    val easedOffset = computeElasticOverpullOffset(rawOverPull)
     return (1f + easedOffset).coerceIn(0.9105f, 1.0895f)
 }
 
-private fun computePowerampElasticOffset(rawOverPull: Float): Float = when {
+private fun computeElasticOverpullOffset(rawOverPull: Float): Float = when {
     rawOverPull > 0f -> {
         boundaryEasing((rawOverPull.coerceAtMost(3f) / 3f).coerceIn(0f, 1f))
     }

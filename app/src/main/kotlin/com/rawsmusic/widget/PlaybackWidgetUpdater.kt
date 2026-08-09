@@ -25,7 +25,8 @@ import com.rawsmusic.MainActivity
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.PlayState
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
+import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
 import com.rawsmusic.core.ui.widget.bitmaps.decodeDefaultAlbumArtwork
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.PlayerService
@@ -33,6 +34,8 @@ import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToInt
@@ -135,10 +138,17 @@ internal object PlaybackWidgetUpdater {
             return
         }
 
-        BitmapProvider.init(context)
         val snapshot = currentSnapshot()
         val sourceArtwork = snapshot.song?.let { song ->
-            BitmapProvider.execute(song.coverKey, 768, 768)
+            runBlocking(Dispatchers.IO) {
+                CoilArtworkRuntime.executeBitmap(
+                    context = context,
+                    key = song.coverKey,
+                    width = 768,
+                    height = 768,
+                    surface = ArtworkSurface.Widget
+                )
+            }
         } ?: if (AppPreferences.AlbumArt.useDefaultArtwork) {
             decodeDefaultAlbumArtwork(context.resources, 768)
         } else {

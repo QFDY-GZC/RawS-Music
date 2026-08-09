@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -157,7 +158,7 @@ class ImmersiveLyricActivity : ComponentActivity() {
             )
 
             Text(
-                text = "译",
+                text = stringResource(R.string.lyric_translation_short),
                 color = ComposeColor(0xB0FFFFFF),
                 fontSize = 14.sp,
                 modifier = Modifier

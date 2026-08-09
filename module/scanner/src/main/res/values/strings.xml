@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_scan_notification_title">RawS Music is scanning music</string>
+    <string name="library_scan_notification_text">Scanning the music library</string>
+    <string name="common_cancel">Cancel</string>
+</resources>

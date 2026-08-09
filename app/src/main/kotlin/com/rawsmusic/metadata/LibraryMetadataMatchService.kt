@@ -15,7 +15,7 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.core.common.utils.AppLogger
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
+import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
 import com.rawsmusic.lyrico.LyricoCoverCandidate
 import com.rawsmusic.lyrico.LyricoPreferredSource
 import com.rawsmusic.lyrico.LyricoSourceEngine
@@ -67,7 +67,10 @@ class LibraryMetadataMatchService : Service() {
         }
 
         LibraryMetadataMatchProgressBus.started(request.id, request.songs.size)
-        startForeground(NOTIFICATION_ID, notification("准备自动匹配…", 0, request.songs.size, indeterminate = true))
+        startForeground(
+            NOTIFICATION_ID,
+            notification(getString(R.string.metadata_match_preparing), 0, request.songs.size, indeterminate = true)
+        )
         activeJob = scope.launch {
             runRequest(request, startId)
         }
@@ -161,7 +164,7 @@ class LibraryMetadataMatchService : Service() {
                 engine.clearTransientCache()
                 cleanupTransientFiles()
             }
-            BitmapProvider.notifyLibraryArtworkChanged("metadata_match_complete")
+            CoilArtworkRuntime.invalidate()
             LibraryMetadataMatchContract.deleteRequest(this, request.id)
             activeJob = null
             stopSelf(startId)
@@ -300,7 +303,11 @@ class LibraryMetadataMatchService : Service() {
         val now = SystemClock.elapsedRealtime()
         if (done < total && now - lastNotificationUptimeMs < NOTIFICATION_UPDATE_INTERVAL_MS) return
         lastNotificationUptimeMs = now
-        val text = "已处理 $done/$total · 写入 $matched${if (failed > 0) " · 失败 $failed" else ""}"
+        val text = if (failed > 0) {
+            getString(R.string.metadata_match_progress_failed, done, total, matched, failed)
+        } else {
+            getString(R.string.metadata_match_progress, done, total, matched)
+        }
         notificationManager().notify(
             NOTIFICATION_ID,
             notification(text, done, total, indeterminate = false)
@@ -312,7 +319,12 @@ class LibraryMetadataMatchService : Service() {
             NOTIFICATION_ID,
             NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_music_note)
-                .setContentTitle(if (success) "自动匹配完成" else "自动匹配结束")
+                .setContentTitle(
+                    getString(
+                        if (success) R.string.metadata_match_complete
+                        else R.string.metadata_match_finished
+                    )
+                )
                 .setContentText(text)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                 .setAutoCancel(true)
@@ -324,7 +336,7 @@ class LibraryMetadataMatchService : Service() {
     private fun notification(text: String, progress: Int, total: Int, indeterminate: Boolean): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_music_note)
-            .setContentTitle("RawSMusic 正在匹配歌词与专辑图")
+            .setContentTitle(getString(R.string.metadata_match_notification_title))
             .setContentText(text)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -336,7 +348,7 @@ class LibraryMetadataMatchService : Service() {
         notificationManager().createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
-                "歌词与专辑图自动匹配",
+                getString(R.string.metadata_match_channel_name),
                 NotificationManager.IMPORTANCE_LOW,
             )
         )

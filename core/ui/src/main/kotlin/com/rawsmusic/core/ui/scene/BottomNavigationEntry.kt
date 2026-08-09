@@ -7,6 +7,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import com.rawsmusic.core.ui.R
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.icon.MiuixIcons
@@ -45,19 +46,20 @@ fun resolveBottomNavigationScenes(tags: List<String>): List<NavScene> {
 const val MAX_BOTTOM_NAVIGATION_ITEMS = 5
 const val MIN_BOTTOM_NAVIGATION_ITEMS = 2
 
+@Composable
 fun NavScene.bottomNavigationLabel(): String = when (this) {
-    NavScene.HOME -> "主界面"
-    NavScene.SONGS -> "音乐库"
-    NavScene.FOLDERS -> "文件夹"
-    NavScene.ALBUMS -> "专辑"
-    NavScene.ARTISTS -> "艺术家"
-    NavScene.PLAYLISTS -> "歌单"
-    NavScene.QUEUE -> "播放队列"
-    NavScene.RECENTLY_ADDED -> "最近添加"
-    NavScene.GENRE -> "流派"
-    NavScene.AUDIO_EFFECTS -> "音效"
-    NavScene.SEARCH -> "搜索"
-    NavScene.SETTINGS -> "设置"
+    NavScene.HOME -> stringResource(R.string.bottom_nav_home)
+    NavScene.SONGS -> stringResource(R.string.bottom_nav_library)
+    NavScene.FOLDERS -> stringResource(R.string.library_title_folders)
+    NavScene.ALBUMS -> stringResource(R.string.library_title_albums)
+    NavScene.ARTISTS -> stringResource(R.string.library_title_artists)
+    NavScene.PLAYLISTS -> stringResource(R.string.library_title_playlists)
+    NavScene.QUEUE -> stringResource(R.string.library_title_queue)
+    NavScene.RECENTLY_ADDED -> stringResource(R.string.library_title_recently_added)
+    NavScene.GENRE -> stringResource(R.string.library_title_genres)
+    NavScene.AUDIO_EFFECTS -> stringResource(R.string.bottom_nav_effects)
+    NavScene.SEARCH -> stringResource(R.string.bottom_nav_search)
+    NavScene.SETTINGS -> stringResource(R.string.bottom_nav_settings)
     else -> label
 }
 
@@ -87,20 +89,21 @@ fun BottomNavigationEntryIcon(
     scene: NavScene,
     tint: Color,
     modifier: Modifier = Modifier,
-    contentDescription: String? = scene.bottomNavigationLabel(),
+    contentDescription: String? = null,
 ) {
+    val resolvedContentDescription = contentDescription ?: scene.bottomNavigationLabel()
     val customIconRes = scene.customBottomNavigationIconResOrNull()
     if (customIconRes != null) {
         Image(
             painter = painterResource(customIconRes),
-            contentDescription = contentDescription,
+            contentDescription = resolvedContentDescription,
             modifier = modifier,
             colorFilter = ColorFilter.tint(tint),
         )
     } else {
         Icon(
             imageVector = scene.miuixBottomNavigationIcon(),
-            contentDescription = contentDescription,
+            contentDescription = resolvedContentDescription,
             modifier = modifier,
             tint = tint,
         )

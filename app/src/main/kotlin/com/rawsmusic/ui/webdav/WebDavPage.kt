@@ -96,12 +96,15 @@ fun WebDavPageCompose(onBack: () -> Unit) {
                     AppPreferences.WebDav.lastUrl = url
                     items.clear()
                     items.addAll(result.sortedWith(compareByDescending<WebDavItem> { it.isDirectory }.thenBy { it.fileName }))
-                    if (items.isEmpty()) emptyMessage = "此目录为空"
+                    if (items.isEmpty()) emptyMessage = context.getString(R.string.webdav_empty_directory)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     isLoading = false
-                    emptyMessage = "加载失败: ${e.message}"
+                    emptyMessage = context.getString(
+                        R.string.webdav_load_failed,
+                        e.message.orEmpty()
+                    )
                 }
             }
         }
@@ -114,7 +117,7 @@ fun WebDavPageCompose(onBack: () -> Unit) {
             path = fileUrl,
             title = item.fileName.substringBeforeLast("."),
             artist = "WebDAV",
-            album = "WebDAV 远程音乐",
+            album = context.getString(R.string.webdav_remote_album),
             duration = 0,
             format = item.fileName.substringAfterLast(".", "").uppercase(),
             fileSize = item.size
@@ -129,7 +132,7 @@ fun WebDavPageCompose(onBack: () -> Unit) {
             path = fileUrl,
             title = item.fileName.substringBeforeLast("."),
             artist = "WebDAV",
-            album = "WebDAV 远程音乐",
+            album = context.getString(R.string.webdav_remote_album),
             duration = 0,
             format = item.fileName.substringAfterLast(".", "").uppercase(),
             fileSize = item.size
@@ -169,7 +172,7 @@ fun WebDavPageCompose(onBack: () -> Unit) {
             }) {
                 Text(stringResource(R.string.webdav_back), color = colors.primary, fontSize = 14.sp)
             }
-            Text("WebDAV", fontSize = 18.sp, fontWeight = FontWeight.Medium, color = colors.onSurface)
+            Text(stringResource(R.string.webdav_title), fontSize = 18.sp, fontWeight = FontWeight.Medium, color = colors.onSurface)
             TextButton(onClick = { showSettings = true }) {
                 Text(stringResource(R.string.settings), color = colors.primary, fontSize = 14.sp)
             }

@@ -3,11 +3,11 @@ package com.rawsmusic.lyric
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
+import com.rawsmusic.core.common.utils.AppLogger
 
 internal class XiaomiSuperIslandLyricReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        Log.d(
+        AppLogger.d(
             "RawSuperIsland",
             "receiver action=${intent.action} hasLyric=${intent.hasExtra("lineText")}"
         )

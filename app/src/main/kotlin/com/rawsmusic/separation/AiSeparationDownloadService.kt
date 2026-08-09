@@ -193,7 +193,10 @@ class AiSeparationDownloadService : Service() {
                         modelVersion = modelVersion,
                         modelName = modelName,
                         phase = AiSeparationDownloadPhase.FAILED,
-                        message = error.message ?: if (runtimeRequest) "运行库下载失败" else "模型下载失败",
+                        message = error.message ?: getString(
+                            if (runtimeRequest) R.string.ai_runtime_download_failed
+                            else R.string.ai_model_download_failed
+                        ),
                     )
                 )
                 notificationManager().notify(
@@ -201,9 +204,12 @@ class AiSeparationDownloadService : Service() {
                     NotificationCompat.Builder(this@AiSeparationDownloadService, CHANNEL_ID)
                         .setSmallIcon(R.drawable.ic_music_note)
                         .setContentTitle(
-                            if (runtimeRequest) "AI 运行库安装失败" else "AI 模型安装失败"
+                            getString(
+                                if (runtimeRequest) R.string.ai_runtime_install_failed
+                                else R.string.ai_model_install_failed
+                            )
                         )
-                        .setContentText(error.message ?: "请检查可信仓库和网络")
+                        .setContentText(error.message ?: getString(R.string.ai_download_check_source))
                         .setStyle(NotificationCompat.BigTextStyle().bigText(error.message.orEmpty()))
                         .setAutoCancel(true)
                         .build()
@@ -265,7 +271,7 @@ class AiSeparationDownloadService : Service() {
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_music_note)
-            .setContentTitle("下载 AI 人声分离模型")
+            .setContentTitle(getString(R.string.ai_model_download_title))
             .setContentText("$modelName · $text")
             .setOnlyAlertOnce(true)
             .setOngoing(true)
@@ -274,7 +280,7 @@ class AiSeparationDownloadService : Service() {
                 if (total > 0L) ((downloaded.coerceIn(0L, total) * 1000L) / total).toInt() else 0,
                 indeterminate || total <= 0L,
             )
-            .addAction(0, "取消", cancelIntent)
+            .addAction(0, getString(R.string.common_cancel), cancelIntent)
             .build()
     }
 

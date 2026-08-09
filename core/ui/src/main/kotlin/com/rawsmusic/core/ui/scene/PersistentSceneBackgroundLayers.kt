@@ -18,7 +18,7 @@ private const val PERSISTENT_BACKGROUND_FRAME_INTERVAL_MS = 16L
  * Persistent background host for the app scene stack.
  *
  * The page host owns the transition, but this host stays mounted below it. This mirrors
- * Poweramp's TopMilk/MilkRenderer arrangement: a return transition changes layer alpha instead
+ * A persistent layered renderer lets return transitions change layer alpha instead
  * of disposing the old background and recreating it from a fallback palette.
  */
 @Composable

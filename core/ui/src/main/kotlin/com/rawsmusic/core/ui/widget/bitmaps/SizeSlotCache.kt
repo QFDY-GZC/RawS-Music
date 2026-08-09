@@ -20,7 +20,7 @@ class SizeSlotCache(
     private val maxBytes: Int = defaultMaxBytes()
 ) {
     // A fast fling can detach and reattach the same row within a few frames. Keep the last
-    // detached artwork warm for that short interval, matching Poweramp's retained image wrapper,
+    // detached artwork warm for that short interval, preserving the retained image wrapper,
     // without pinning the entire library in memory.
     companion object {
         private const val RECENT_RELEASE_GRACE_MS = 900L

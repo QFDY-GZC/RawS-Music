@@ -8,7 +8,7 @@ import java.util.LinkedHashMap
  * Keeps low/high decoded software records for a versioned artwork source.
  *
  * Target-size bitmaps remain owned by SizeSlotCache. This cache only owns decoded source tiers and
- * is used as the Java-side equivalent of Poweramp's provider source record. A source bitmap is
+ * is used as a process-local provider source record. A source bitmap is
  * never returned directly to a UI holder, so it can safely be reused for several target sizes.
  */
 internal object DecodedArtworkSourceCache {

@@ -1,6 +1,6 @@
 package com.rawsmusic.core.ui.widget
 
-internal data class AmPlayerArtworkRect(
+internal data class PlayerArtworkHandoffRect(
     val left: Float,
     val top: Float,
     val width: Float,
@@ -8,13 +8,13 @@ internal data class AmPlayerArtworkRect(
 )
 
 /**
- * Recreates the curved screen-space path of AM's artwork handoff.
+ * Recreates the curved screen-space path of the artwork handoff.
  *
- * AM transforms the artwork inside a moving bottom sheet. RawSMusic draws the handoff in a root
+ * The source layout transforms artwork inside a moving bottom sheet. RawS Music draws it in a root
  * overlay, so a direct rectangle lerp loses the compound motion and looks like a straight diagonal.
  * These control points preserve that compound path while keeping size strictly tied to the finger.
  */
-internal fun resolveAmPlayerArtworkRect(
+internal fun resolvePlayerArtworkHandoffRect(
     sourceLeft: Float,
     sourceTop: Float,
     sourceWidth: Float,
@@ -24,7 +24,7 @@ internal fun resolveAmPlayerArtworkRect(
     targetWidth: Float,
     targetHeight: Float,
     fraction: Float,
-): AmPlayerArtworkRect {
+): PlayerArtworkHandoffRect {
     val t = fraction.coerceIn(0f, 1f)
     val sourceCenterX = sourceLeft + sourceWidth * 0.5f
     val sourceCenterY = sourceTop + sourceHeight * 0.5f
@@ -55,7 +55,7 @@ internal fun resolveAmPlayerArtworkRect(
     )
     val width = lerpMotionValue(sourceWidth, targetWidth, t)
     val height = lerpMotionValue(sourceHeight, targetHeight, t)
-    return AmPlayerArtworkRect(
+    return PlayerArtworkHandoffRect(
         left = centerX - width * 0.5f,
         top = centerY - height * 0.5f,
         width = width,

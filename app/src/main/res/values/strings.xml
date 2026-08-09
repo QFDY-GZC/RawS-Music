@@ -371,6 +371,8 @@
     <string name="settings_audio_internal_precision_section">Internal processing</string>
     <string name="settings_audio_internal_precision_title">64-bit processing</string>
     <string name="settings_audio_internal_precision_summary">Use double-precision working buffers in the DSP path. Output format is unchanged and USB bit-perfect bypasses it.</string>
+    <string name="settings_audio_mono_output_title">Mono output</string>
+    <string name="settings_audio_mono_output_summary">Mix left and right channels and send the same signal to both outputs.</string>
     <string name="settings_audio_dither_title">PCM dither</string>
     <string name="settings_audio_dither_summary">Integer down-conversion: %1$s</string>
     <string name="settings_audio_dither_menu_title">PCM dither</string>
@@ -444,10 +446,8 @@
     <string name="settings_audio_info_gapless_body">When the current song ends, switch directly to the next song decoder stream to remove the short silent gap commonly heard between tracks.
 
 Useful for live albums, DJ mixes, and other continuous playback.</string>
-    <string name="settings_audio_info_crossfade_title">Crossfade</string>
-    <string name="settings_audio_info_crossfade_body">Starts the next song before the current one ends and overlaps both audio streams. A constant-power curve keeps the transition natural.
-
-The overlap can be set from 1 to 12 seconds; 0 means off.</string>
+    <string name="settings_audio_info_crossfade_title">Automatic Crossfade</string>
+    <string name="settings_audio_info_crossfade_body">During natural playback, automatically compose the transition from the final lyric line; when lyrics are insufficient, analyze the outgoing tail envelope. The next track enters at a low but audible level, then takes over near the ending. Sequential album tracks and DSD/strict Bit-Perfect stay gapless. No duration setting is required.</string>
     <string name="settings_audio_info_sco_title">SCO downsample</string>
     <string name="settings_audio_info_sco_body">Bluetooth SCO (Synchronous Connection Oriented) call-channel bandwidth is limited and usually supports only 8 kHz or 16 kHz.
 
@@ -848,22 +848,18 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="scan_complete_no_changes">Scan complete: no changes, %1$d tracks total, %2$.1f s</string>
     <string name="scan_complete_summary">Scan complete: %1$d added, %2$d updated, %3$d removed; %4$d unchanged, %5$d total, %6$.1f s</string>
     <string name="update_dialog_title">RawS Music v%1$s</string>
-    <string name="update_dialog_time">更新时间：2026 年 7 月 31 日</string>
+    <string name="update_dialog_time">Updated: August 9, 2026</string>
     <string name="update_developer_message_title">A word from the developer</string>
     <string name="update_join_qq_group">点击链接加入群聊【RawS Music交流群】：https://qm.qq.com/q/bOvqTQPABi</string>
     <string name="update_close">Close</string>
     <string-array name="update_notes">
-        <item>V0.9.68 USB fix vision</item>
-        <item>修复 USB 独占下 Native DSD 输出路径异常导致目标格式不匹配，最终无法播放的问题。</item>
-        <item>修复 USB 独占下目标格式为多声道时无法播放的问题；现已加入自动降级行为，避免因设备不支持目标多声道格式而完全无法播放。</item>
-        <item>修复 USB 独占硬件音量模式下，切歌后连续执行硬件音量调整可能触发手机 OEM USB 异常，最终导致系统强制重启的问题。</item>
-        <item>修复 USB 独占可能失效、无法重新进入独占链路的问题。</item>
-        <item>修复 USB 授权完成后当前播放歌曲未立即进入 USB 链路，必须切歌后才正式进入独占的问题。</item>
-        <item>优化 USB 独占后台播放，加入 OpenSL 静音送包保活。该方案会增加后台耗电；如需稳定后台播放，请在系统设置中手动关闭 RawS Music 的电池优化。</item>
-        <item>修复主界面轮播过程中专辑图闪烁、闪图的问题。</item>
-        <item>修复歌词格式兼容性，提高异常 ID3 内嵌歌词等格式的解析能力。</item>
-        <item>修复音效界面抢占上下滑手势的问题，并修复分类界面播放栏相关手势冲突。</item>
-        <item>为在线播放接入 DSP 功能，使在线音源可使用均衡器及其他音效处理。</item>
+        <item>V0.9.80 beta</item>
+        <item>Fixed some lyric formats causing lyrics to advance too early.</item>
+        <item>Fixed several issues in USB exclusive mode.</item>
+        <item>Fixed screen jitter when swiping right from the right half of the lyrics page, including the same gesture issue in blank areas of the player page.</item>
+        <item>Added a swipe-up animation for entering the player. It currently supports the standard player; immersive mode support will follow.</item>
+        <item>Added automatic crossfade.</item>
+        <item>Added the standard bottom bar style.</item>
     </string-array>
     <string-array name="update_developer_quotes">
         <item>“永远快乐”这句话，不但渺茫得不能实现，并且荒谬得不能成立。快过的决不会永久；我们说永远快乐，正好像说四方的圆形、静止的动作，同样地自相矛盾。在高兴的时候，我们空对瞬息即逝的时间喊着说：“逗留一会儿吧！你太美了！”那有什么用？你要永久，你该向痛苦里去找。不讲别的，只要一个失眠的晚上，或者有约不来的下午，或者一课沉闷的听讲，这许多比一切宗教信仰更有效力，能使你尝到什么叫做“永生”的滋味。人生的刺就在这里：留恋着不肯快走的，偏是你所不留恋的东西。</item>
@@ -924,6 +920,7 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="landscape_player_preferences">Player preferences</string>
     <string name="landscape_player_more">More</string>
     <string name="landscape_player_translation">Translation</string>
+    <string name="lyric_translation_short">Trans</string>
     <string name="landscape_player_romanization">Romanization</string>
     <string name="landscape_player_lyric_blur">Lyric depth blur</string>
     <string name="landscape_player_highlight_all">Highlight all lyrics</string>
@@ -1469,4 +1466,141 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="scan_enrich_progress">%1$s: %2$s %3$d/%4$d, cache hits %5$d, newly read %6$d</string>
     <string name="scan_enrich_completed">%1$s: enrichment complete, %2$d songs, cache hits %3$d, newly read %4$d</string>
     <string name="scan_error_with_reason">%1$s: scan failed: %2$s</string>
+    <string name="settings_bottom_bar_style_section">Bottom bar style</string>
+    <string name="settings_bottom_bar_style_normal">Normal</string>
+    <string name="settings_bottom_bar_style_normal_summary">Player and navigation are joined; swipe up to open the player</string>
+    <string name="settings_bottom_bar_style_floating">Floating</string>
+    <string name="settings_bottom_bar_style_floating_summary">Player and navigation stay separate as floating glass bars</string>
+    <string name="settings_system_lyric_delivery_title">System lyric and media delivery</string>
+    <string name="settings_system_lyric_delivery_summary">Live activity lyrics, Super Island, and media notification buttons</string>
+    <string name="settings_live_update_lyric_section">Live activity lyrics</string>
+    <string name="settings_live_update_lyric_enabled">Publish live lyric updates</string>
+    <string name="settings_live_update_lyric_enabled_summary">Show the current lyric in Android live activity surfaces when supported</string>
+    <string name="settings_live_update_lyric_content">Lyric content</string>
+    <string name="settings_live_update_lyric_original">Original</string>
+    <string name="settings_live_update_lyric_translation">Translation</string>
+    <string name="settings_live_update_lyric_pronunciation">Pronunciation</string>
+    <string name="settings_live_update_lyric_display_mode">Layout</string>
+    <string name="settings_live_update_lyric_compact">Compact</string>
+    <string name="settings_live_update_lyric_full">Full lyric</string>
+    <string name="settings_live_update_lyric_secondary">Secondary text</string>
+    <string name="settings_live_update_lyric_secondary_song">Song information</string>
+    <string name="settings_live_update_lyric_secondary_off">Off</string>
+    <string name="settings_media_notification_buttons">Media notification buttons</string>
+    <string name="settings_media_notification_buttons_summary">Choose the two optional actions shown with playback controls</string>
+    <string name="settings_media_notification_buttons_playback_desktop">Playback mode + desktop lyrics</string>
+    <string name="settings_media_notification_buttons_playback_favorite">Playback mode + favorite</string>
+    <string name="settings_media_notification_buttons_desktop_favorite">Desktop lyrics + favorite</string>
+    <string name="settings_xiaomi_super_island_title">Xiaomi Super Island lyrics</string>
+    <string name="settings_xiaomi_super_island_summary">Live lyrics for Xiaomi HyperOS Super Island surfaces</string>
+    <string name="settings_xiaomi_super_island_enable">Enable Xiaomi Super Island lyrics</string>
+    <string name="settings_xiaomi_super_island_enable_summary">Requires a Xiaomi/HyperOS surface that supports the Super Island protocol</string>
+    <string name="settings_xiaomi_super_island_custom">Super Island customization</string>
+    <string name="settings_xiaomi_super_island_display_section">Lyric display</string>
+    <string name="settings_xiaomi_super_island_mode_standard">Current line</string>
+    <string name="settings_xiaomi_super_island_mode_full">Full lyric</string>
+    <string name="settings_xiaomi_super_island_lyric_mode">Lyric mode</string>
+    <string name="settings_xiaomi_super_island_left_cover">Show cover in full lyric mode</string>
+    <string name="settings_xiaomi_super_island_left_cover_summary">Keep artwork beside the left lyric segment</string>
+    <string name="settings_xiaomi_super_island_scrolling">Scroll long lyric text</string>
+    <string name="settings_xiaomi_super_island_scrolling_summary">Marquee text when the current line exceeds the available width</string>
+    <string name="settings_xiaomi_super_island_right_limit">Right text limit</string>
+    <string name="settings_xiaomi_super_island_left_limit">Left text limit</string>
+    <string name="settings_xiaomi_super_island_text_limit_summary">Visual character budget for each side</string>
+    <string name="settings_xiaomi_super_island_chars">%1$d characters</string>
+    <string name="settings_xiaomi_super_island_colorize">Colorize lyric and progress</string>
+    <string name="settings_xiaomi_super_island_colorize_summary">Use album colors or a custom color for the island</string>
+    <string name="settings_xiaomi_super_island_color_source">Color source</string>
+    <string name="settings_xiaomi_super_island_color_album">Album artwork</string>
+    <string name="settings_xiaomi_super_island_color_custom">Custom color</string>
+    <string name="settings_xiaomi_super_island_custom_color">Custom color</string>
+    <string name="settings_xiaomi_super_island_notification_section">Actions and sharing</string>
+    <string name="settings_xiaomi_super_island_progress_color">Color the progress indicator</string>
+    <string name="settings_xiaomi_super_island_actions">Island actions</string>
+    <string name="settings_xiaomi_super_island_actions_off">Disabled</string>
+    <string name="settings_xiaomi_super_island_actions_media">Media controls</string>
+    <string name="settings_xiaomi_super_island_style_standard">Standard notification</string>
+    <string name="settings_xiaomi_super_island_style_advanced">Advanced notification</string>
+    <string name="settings_xiaomi_super_island_notification_style">Notification style</string>
+    <string name="settings_xiaomi_super_island_buttons_two">Two buttons</string>
+    <string name="settings_xiaomi_super_island_buttons_three">Three buttons</string>
+    <string name="settings_xiaomi_super_island_button_layout">Media button layout</string>
+    <string name="settings_xiaomi_super_island_click">Click behavior</string>
+    <string name="settings_xiaomi_super_island_click_default">System default</string>
+    <string name="settings_xiaomi_super_island_click_player">Open media controls</string>
+    <string name="settings_xiaomi_super_island_click_app">Open RawS Music</string>
+    <string name="settings_xiaomi_super_island_share">Enable sharing</string>
+    <string name="settings_xiaomi_super_island_share_summary">Expose the configured share payload on supported Xiaomi surfaces</string>
+    <string name="settings_xiaomi_super_island_share_format">Share format</string>
+    <string name="settings_xiaomi_super_island_share_format_one">Lyric and song link</string>
+    <string name="settings_xiaomi_super_island_share_format_two">Inline lyric</string>
+    <string name="settings_xiaomi_super_island_share_format_three">Artist and song link</string>
+    <string name="settings_xiaomi_super_island_compat_section">Compatibility</string>
+    <string name="settings_xiaomi_super_island_xmsf_mode">XMSF delivery mode</string>
+    <string name="settings_xiaomi_super_island_xmsf_disabled">Disabled</string>
+    <string name="settings_xiaomi_super_island_xmsf_standard">Standard</string>
+    <string name="settings_xiaomi_super_island_xmsf_custom">Custom duration</string>
+    <string name="settings_xiaomi_super_island_xmsf_aggressive">Aggressive</string>
+    <string name="settings_xiaomi_super_island_xmsf_disabled_summary">Do not use the Xiaomi bridge</string>
+    <string name="settings_xiaomi_super_island_xmsf_standard_summary">Use the normal HyperOS update path</string>
+    <string name="settings_xiaomi_super_island_xmsf_custom_summary">Use a custom transition duration</string>
+    <string name="settings_xiaomi_super_island_xmsf_aggressive_summary">Prefer the low-latency update path</string>
+    <string name="settings_xiaomi_super_island_xmsf_duration">Custom transition duration</string>
+    <string name="settings_xiaomi_super_island_xmsf_duration_summary">Controls the HyperOS transition window</string>
+    <string name="settings_xiaomi_super_island_dismiss_delay">Dismiss delay</string>
+    <string name="settings_xiaomi_super_island_dismiss_immediate">Immediate</string>
+    <string name="settings_xiaomi_super_island_dismiss_one">1 second</string>
+    <string name="settings_xiaomi_super_island_dismiss_three">3 seconds</string>
+    <string name="settings_xiaomi_super_island_dismiss_five">5 seconds</string>
+    <string name="settings_xiaomi_super_island_diagnostics_section">Diagnostics</string>
+    <string name="settings_xiaomi_super_island_export_log">Export Super Island log</string>
+    <string name="settings_xiaomi_super_island_export_log_summary">Share Super Island lyric, bridge, and foreground-service diagnostics</string>
+    <string name="notification_action_desktop_lyric">Desktop lyrics</string>
+    <string name="super_island_lyric_placeholder">♪</string>
+    <string name="super_island_action_previous">Previous</string>
+    <string name="super_island_action_play_pause">Play/Pause</string>
+    <string name="super_island_action_next">Next</string>
+    <string name="super_island_unknown_song">Unknown song</string>
+    <string name="super_island_unknown_artist">Unknown artist</string>
+    <string name="super_island_channel_name">Xiaomi Super Island lyrics</string>
+    <string name="super_island_channel_description">HyperOS Super Island lyric updates</string>
+    <string name="settings_long_text_title">Long text</string>
+    <string name="settings_long_text_animate">Animate long labels</string>
+    <string name="settings_long_text_animate_summary">Animate overflowing player labels after a short pause</string>
+    <string name="settings_long_text_everywhere">Animate long labels everywhere</string>
+    <string name="settings_long_text_everywhere_summary">Also animate overflowing labels in lists; disabled while scrolling</string>
+    <string name="settings_language_title">Language</string>
+    <string name="settings_language_summary">Choose the language used by RawS Music</string>
+    <string name="settings_language_system">System</string>
+    <string name="settings_language_chinese">简体中文</string>
+    <string name="settings_language_english">English</string>
+    <string name="webdav_title">WebDAV</string>
+    <string name="metadata_match_progress">Processed %1$d/%2$d · written %3$d</string>
+    <string name="metadata_match_progress_failed">Processed %1$d/%2$d · written %3$d · failed %4$d</string>
+    <string name="audio_information_title">Audio information</string>
+    <string name="usb_dac_device_status_title">USB DAC device status</string>
+    <string name="common_refresh">Refresh</string>
+    <string name="common_close">Close</string>
+    <string name="metadata_match_preparing">Preparing automatic matching…</string>
+    <string name="metadata_match_complete">Automatic matching complete</string>
+    <string name="metadata_match_finished">Automatic matching finished</string>
+    <string name="metadata_match_channel_name">Automatic lyric and artwork matching</string>
+    <string name="metadata_match_started">Processing %1$d songs in the background. Parallel matching may make the device slightly warm.</string>
+    <string name="metadata_match_result">Matching finished: %1$d total, %2$d succeeded, %3$d failed</string>
+    <string name="metadata_match_running">Matching · %1$d processed · %2$d remaining</string>
+    <string name="song_delete_complete">Deleted</string>
+    <string name="song_delete_cancelled">Deletion cancelled</string>
+    <string name="song_delete_failed">Deletion failed</string>
+    <string name="ai_runtime_download_failed">Runtime download failed</string>
+    <string name="ai_model_download_failed">Model download failed</string>
+    <string name="ai_runtime_install_failed">AI runtime installation failed</string>
+    <string name="ai_model_install_failed">AI model installation failed</string>
+    <string name="ai_download_check_source">Check the trusted repository and network connection</string>
+    <string name="ai_model_download_title">Downloading AI separation model</string>
+    <string name="ai_separation_notification_title">AI separation · %1$s</string>
+    <string name="common_cancel">Cancel</string>
+    <string name="metadata_match_notification_title">RawS Music is matching lyrics and artwork</string>
+    <string name="webdav_empty_directory">This folder is empty</string>
+    <string name="webdav_load_failed">Failed to load: %1$s</string>
+    <string name="webdav_remote_album">WebDAV remote music</string>
 </resources>

@@ -55,7 +55,6 @@ import top.yukonga.miuix.kmp.shader.isRenderEffectSupported
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val PROJECT_URL = "https://github.com/QFDY-GZC/RawS-Music"
-private const val HALCYON_URL = "https://github.com/Kifranei/Halcyon"
 private const val LYRICO_URL = "https://github.com/Replica0110/Lyrico"
 private const val QQ_GROUP_URL = "https://qm.qq.com/q/bOvqTQPABi"
 
@@ -160,7 +159,6 @@ fun AboutPage(onBack: () -> Unit) {
             item {
                 SmallTitle(text = stringResource(R.string.about_open_source_projects))
                 AboutFrostedCard(backdrop, blurEnabled, cardBlend, scrollProgress) {
-                    AboutLibrary("Halcyon", R.string.about_halcyon_summary, HALCYON_URL)
                     AboutLibrary("AndroidLiquidGlass", R.string.about_android_liquid_glass_summary, "https://github.com/Kyant0/AndroidLiquidGlass")
                     AboutLibrary("Miuix", R.string.about_miuix_summary, "https://github.com/compose-miuix-ui/miuix")
                     AboutLibrary("FFmpeg", R.string.about_ffmpeg_summary, "https://ffmpeg.org")

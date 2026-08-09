@@ -332,7 +332,6 @@ internal fun FftConvolverSettingsCard(
         }
     }
 }
-
 private fun queryDisplayName(context: android.content.Context, uri: Uri): String {
     var cursor: Cursor? = null
     return try {
@@ -376,4 +375,3 @@ private fun openExternalIrResource(context: android.content.Context, url: String
         ).show()
     }
 }
-

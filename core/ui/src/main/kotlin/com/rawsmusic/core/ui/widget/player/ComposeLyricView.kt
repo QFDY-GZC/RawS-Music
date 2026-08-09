@@ -61,6 +61,7 @@ import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -70,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.sp
+import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.widget.PlayerLyricsArtworkVisibility
 import com.rawsmusic.core.ui.widget.PlayerLyricsScrollDirection
 import com.rawsmusic.core.ui.widget.PlayerLyricsTransitionCoordinator
@@ -133,7 +135,7 @@ private data class LyricAnchorTransition(
     val pullFollowingRows: Boolean
 )
 
-private val AppleLyricsEasing = CubicBezierEasing(0.40f, 0.10f, 0f, 1f)
+private val LyricFollowEasing = CubicBezierEasing(0.40f, 0.10f, 0f, 1f)
 
 private sealed interface LyricDisplayItem {
     val key: String
@@ -269,7 +271,8 @@ fun ComposeLyricView(
                 }
             }
             Text(
-                text = song?.name?.takeIf { it.isNotBlank() } ?: "暂无歌词",
+                text = song?.name?.takeIf { it.isNotBlank() }
+                    ?: stringResource(R.string.player_no_lyric),
                 color = secondaryColor,
                 fontSize = 18.sp,
                 fontFamily = resolvedFontFamily,
@@ -312,7 +315,7 @@ fun ComposeLyricView(
             compactStackOffset.snapTo(compactStackOffset.value + transitionDistancePx)
             compactStackOffset.animateTo(
                 targetValue = 0f,
-                animationSpec = tween(durationMillis = 550, easing = AppleLyricsEasing)
+                animationSpec = tween(durationMillis = 550, easing = LyricFollowEasing)
             )
         }
 
@@ -661,7 +664,7 @@ fun ComposeLyricView(
                 lyricPullField.cancel()
                 listState.animateScrollBy(
                     value = scrollDeltaPx,
-                    animationSpec = tween(durationMillis = 550, easing = AppleLyricsEasing)
+                    animationSpec = tween(durationMillis = 550, easing = LyricFollowEasing)
                 )
             }
         } else {
@@ -695,7 +698,7 @@ fun ComposeLyricView(
             }
             listState.animateScrollBy(
                 value = residualPx,
-                animationSpec = tween(durationMillis = 120, easing = AppleLyricsEasing)
+                animationSpec = tween(durationMillis = 120, easing = LyricFollowEasing)
             )
         }
     }
@@ -988,7 +991,7 @@ private fun ComposeLyricLine(
             }
             AnimatedVisibility(
                 visible = backgroundActive,
-                // AM C11983A: reveal the background-line container height over ~750 ms, then
+                // Reveal the background-line container height over about 750 ms, then
                 // start its 0.9 -> 1 scale + alpha at 85% of that geometry animation. This is
                 // intentionally not a generic spring: the stagger is what makes backing vocals
                 // feel like they unfold underneath the lead line instead of popping into layout.
@@ -1012,7 +1015,7 @@ private fun ComposeLyricLine(
                         easing = AM_LYRIC_BG_GEOMETRY_EASING
                     )
                 ),
-                // AM exit: scale 1 -> .9 over 500 ms, alpha 1 -> 0 over 250 ms, while height
+                // Exit: scale 1 -> .9 over 500 ms, alpha 1 -> 0 over 250 ms, while height
                 // collapses over ~750 ms after a 50 ms delay. Keep those owners independent.
                 exit = shrinkVertically(
                     animationSpec = tween(
@@ -1153,7 +1156,7 @@ private fun Modifier.lyricLineVisuals(
         label = "lyricLineScale"
     )
 
-    // AM keeps its line-follow motion on View properties instead of relaying every animation
+    // Keep line-follow motion on local properties instead of relaying every animation
     // frame through RecyclerView layout.  During RawSMusic's natural follow, keep the expensive
     // blur effect completely out of the 550 ms pull/scroll window; alpha/scale and trailing pull
     // remain GPU-layer properties. Manual scrolling already disables blur through blurEnabled.

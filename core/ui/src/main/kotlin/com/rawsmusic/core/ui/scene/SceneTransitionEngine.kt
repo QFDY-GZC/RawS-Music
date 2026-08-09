@@ -86,7 +86,7 @@ private enum class PageMotion {
 /**
  * A frame of the page transition shared with persistent chrome/background layers.
  *
- * Poweramp keeps its background renderer alive while pages move above it. Exposing the same
+ * Keep the background renderer alive while pages move above it. Exposing the same
  * normalized progress prevents the background from being committed one frame after the page.
  */
 data class SceneTransitionFrame(
@@ -112,7 +112,7 @@ data class SceneTransitionFrame(
  *
  * The transition animation changes only [progress]. Keeping the holder identity stable lets
  * Compose invalidate the readers of that field instead of rebuilding AppMainLayout on every
- * display frame. This is the Compose equivalent of Poweramp's long-lived renderer state.
+ * display frame. This is the Compose representation of a long-lived renderer state.
  */
 @Stable
 class SceneTransitionFrameState(initialScene: NavScene) {
@@ -375,7 +375,7 @@ fun SceneTransitionHost(
         // instead of paying its first composition/layout cost in the opening animation.
         if (retainedScene != newScene) {
             preparingScene = newScene
-            // Poweramp measures and records the target list before its first visible frame.
+            // Measure and record the target list before its first visible frame.
             // Four frame callbacks give Compose time to finish composition, layout and the
             // first RenderNode recording without making the opening animation pay that cost.
             repeat(SCENE_PREPARE_FRAMES) {

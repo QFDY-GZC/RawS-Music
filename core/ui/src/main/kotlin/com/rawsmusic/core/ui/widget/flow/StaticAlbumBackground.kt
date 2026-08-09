@@ -17,20 +17,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
-internal const val UAPP_DARK_ALBUM_BACKGROUND_BRIGHTNESS = 50
-internal val UAPP_DARK_ALBUM_FALLBACK_ACCENT = Color(0xFF202125)
+internal const val STATIC_ALBUM_BACKGROUND_BRIGHTNESS = 50
+internal val STATIC_ALBUM_FALLBACK_ACCENT = Color(0xFF202125)
 
-private val UappStaticAccentCache = ConcurrentHashMap<String, Color>()
+private val StaticAccentCache = ConcurrentHashMap<String, Color>()
 
 /**
- * UAPP `C2087s6.m12287T()` album-background swatch selection.
- *
- * Order in the decompiled UAPP build:
+ * Album-background swatch selection ordered from vivid to subdued colors:
  * Vibrant -> Muted -> LightMuted -> Dominant -> DarkVibrant -> DarkMuted.
  * Keep the raw swatch RGB. The dark-album transform is applied separately by
- * [uappDarkAlbumGradient].
+ * [darkAlbumGradient].
  */
-internal fun uappStaticAlbumAccent(bitmap: Bitmap): Color? {
+internal fun staticAlbumAccent(bitmap: Bitmap): Color? {
     if (bitmap.isRecycled) return null
     val softwareCopy = if (
         android.os.Build.VERSION.SDK_INT >= 26 &&
@@ -60,17 +58,13 @@ internal fun uappStaticAlbumAccent(bitmap: Bitmap): Color? {
 }
 
 /**
- * Exact color math from UAPP `C2087s6.m12274G()`.
- *
- * UAPP stores `BackgroundBrightness` as 0..200-ish UI units, adds 100, clamps the
- * resulting value to 100..300 and then mixes two HSV value targets. Its current
- * default is 50. Both MiniPlayer and CurrentSong use the same two endpoint colors.
+ * Produces two dark HSV endpoints from an artwork accent and a user brightness value.
  */
-internal fun uappDarkAlbumGradient(
+internal fun darkAlbumGradient(
     accent: Color,
-    brightness: Int = UAPP_DARK_ALBUM_BACKGROUND_BRIGHTNESS,
+    brightness: Int = STATIC_ALBUM_BACKGROUND_BRIGHTNESS,
 ): List<Color> {
-    val source = if (accent != Color.Unspecified) accent else UAPP_DARK_ALBUM_FALLBACK_ACCENT
+    val source = if (accent != Color.Unspecified) accent else STATIC_ALBUM_FALLBACK_ACCENT
     val adjusted = (brightness + 100).coerceIn(100, 300)
     val darkness = 1f - ((adjusted - 100) / 200f)
     val brightnessMix = 1f - darkness * darkness
@@ -95,36 +89,36 @@ internal fun uappDarkAlbumGradient(
 }
 
 @Composable
-internal fun rememberUappStaticAlbumAccent(
+internal fun rememberStaticAlbumAccent(
     coverKey: String?,
     sourceArtwork: Bitmap? = null,
 ): Color {
     val context = LocalContext.current
     val key = coverKey?.takeIf { it.isNotBlank() }
     var accent by remember(key) {
-        mutableStateOf(key?.let { UappStaticAccentCache[it] } ?: UAPP_DARK_ALBUM_FALLBACK_ACCENT)
+        mutableStateOf(key?.let { StaticAccentCache[it] } ?: STATIC_ALBUM_FALLBACK_ACCENT)
     }
 
     LaunchedEffect(key, sourceArtwork) {
         if (key == null) {
-            accent = UAPP_DARK_ALBUM_FALLBACK_ACCENT
+            accent = STATIC_ALBUM_FALLBACK_ACCENT
             return@LaunchedEffect
         }
-        UappStaticAccentCache[key]?.let {
+        StaticAccentCache[key]?.let {
             accent = it
             return@LaunchedEffect
         }
 
         val provided = sourceArtwork
             ?.takeUnless { it.isRecycled }
-            ?.let { bitmap -> withContext(Dispatchers.Default) { uappStaticAlbumAccent(bitmap) } }
+            ?.let { bitmap -> withContext(Dispatchers.Default) { staticAlbumAccent(bitmap) } }
         if (provided != null) {
-            UappStaticAccentCache[key] = provided
+            StaticAccentCache[key] = provided
             accent = provided
             return@LaunchedEffect
         }
 
-        accent = UAPP_DARK_ALBUM_FALLBACK_ACCENT
+        accent = STATIC_ALBUM_FALLBACK_ACCENT
         val bitmap = CoilArtworkRuntime.executeBitmap(
             context = context,
             key = key,
@@ -133,9 +127,9 @@ internal fun rememberUappStaticAlbumAccent(
             surface = ArtworkSurface.Playback
         )
         if (bitmap != null && !bitmap.isRecycled) {
-            val next = withContext(Dispatchers.Default) { uappStaticAlbumAccent(bitmap) }
+            val next = withContext(Dispatchers.Default) { staticAlbumAccent(bitmap) }
             if (next != null) {
-                UappStaticAccentCache[key] = next
+                StaticAccentCache[key] = next
                 accent = next
             }
         }

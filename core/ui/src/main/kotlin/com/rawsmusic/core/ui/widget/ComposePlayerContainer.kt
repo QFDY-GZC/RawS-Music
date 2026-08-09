@@ -83,14 +83,14 @@ import io.github.proify.lyricon.lyric.model.Song
 // The list-to-player shared handoff made the default artwork disappear during the gesture.
 private const val ENABLE_PLAYER_LIST_COVER_TRANSITION = true
 
-// AM resource-backed values are not present in the decompiled source archive. Keep the only two
+// Keep the two measured geometry values local to the transition implementation.
 // resource magnitudes centralized so they can be replaced directly if resources.arsc/dimens.xml
 // becomes available. The behavior/formulas around them are source-exact.
 private val AM_PLAYER_SHEET_TOP_RADIUS = 16.dp
 private val AM_PLAYER_SHEET_SHADOW_HEIGHT = 12.dp
 private const val AM_PLAYER_SHEET_SHADOW_START_ALPHA = 0.24f
 
-// Apple Music's player transition uses the same 500ms path interpolator for the regular
+// The player transition uses the same 500ms path interpolator for the regular
 // transition and the shared-element handoff. Keep the Compose implementation on that curve so
 // the measured artwork bounds and the page content arrive together.
 
@@ -196,7 +196,7 @@ fun ComposePlayerContainer(
     playerLyricsTransitionCoordinator: PlayerLyricsTransitionCoordinator? = null,
     sourceCoverTarget: CoverTransitionTarget? = null,
     /**
-     * Live top edge of a floating MiniPlayer in root coordinates. AM derives the collapsed sheet
+     * Live top edge of a floating MiniPlayer in root coordinates. Derive the collapsed sheet
      * geometry from the actual MiniPlayer/stacked chrome views instead of a synthetic screen
      * strip. Raw's floating style has no persistent BottomSheet child, so use its measured bar top
      * as the collapsed backdrop origin when available.
@@ -975,7 +975,7 @@ private fun StandardComposePlayerContainer(
     val scene = if (resolvedScene == PlayerScene.QUEUE) PlayerScene.PLAYER else resolvedScene
     if (scene == PlayerScene.MAIN && !persistentBottomSheet) return
 
-    // A seek gesture is a child-owned interaction in AM. Publish that ownership from DOWN until
+    // A seek gesture is a child-owned interaction. Publish that ownership from DOWN until
     // seek completion so the stationary Initial-pass BottomSheet recognizer can decline the same
     // pointer stream before vertical finger drift crosses touchSlop.
     val timelineSeekGestureActive = remember { mutableStateOf(false) }
@@ -1412,7 +1412,7 @@ private fun StandardPlayerLyricStack(
             RectF(side, top, side + coverWidth, top + coverHeight)
         }
         // PlayerMainPage reports the real AlbumArtCard bounds. Prefer them over the old
-        // synthetic full-width rectangle; this is the Compose equivalent of Apple's
+        // synthetic full-width rectangle; this is the Compose equivalent of a
         // ChangeImageTransform capturing the source and destination views.
         val measuredPlayerCoverRect = playerArtworkAnchor
             ?.takeIf { it.artworkKey == coverPath && it.rect?.isUsable == true }
@@ -1511,7 +1511,7 @@ private fun StandardPlayerLyricStack(
             )
         }
 
-        // AM keeps the player page as one bottom sheet. The sheet is laid out at its final size
+        // Keep the player page as one bottom sheet. The sheet is laid out at its final size
         // and enters by translation from the bottom; the cover is a separate shared element.
         fun currentPlayerRevealFraction(): Float = when {
             mainPlayerTransition && mainPlayerExpansionState != null ->
@@ -1537,7 +1537,7 @@ private fun StandardPlayerLyricStack(
                 !(persistentBottomSheet && currentScene == PlayerSceneController.Scene.MAIN)
             ) return 1f
             val reveal = currentPlayerRevealFraction()
-            // AM's backdrop itself is opaque inside the sheet. RawSMusic still needs a tiny
+            // The backdrop itself is opaque inside the sheet. RawS Music still needs a tiny
             // ownership handoff at the collapsed endpoint because its MiniPlayer is composed in a
             // sibling tree above MAIN rather than as a child/elevation layer of the BottomSheet.
             // Keep this endpoint-only guard until those roots are physically merged; do not reuse
@@ -1559,7 +1559,7 @@ private fun StandardPlayerLyricStack(
         // parent coordinate space. In floating mode the old PLAYER -> MAIN recognizer lived on
         // AlbumArtCard, which is a descendant of the translated sheet. Every translation changed
         // that pointer node's local Y coordinates, feeding the sheet movement back into the next
-        // drag sample and producing the remaining oscillation/jitter. AM's BottomSheetBehavior /
+        // drag sample and producing the remaining oscillation/jitter. The sheet behavior /
         // ViewDragHelper always reads MotionEvents in CoordinatorLayout coordinates and moves the
         // sheet child separately. Treat a valid floating collapsed top as the same root-owned
         // draggable sheet geometry instead of falling back to the moving artwork recognizer.
@@ -1569,11 +1569,11 @@ private fun StandardPlayerLyricStack(
             onMainPlayerSheetGeometryChanged(playerSheetTravelPx, widthPx)
         }
 
-        // AM keeps the whole Now Playing root attached to one BottomSheetBehavior. Once PLAYER is
+        // Keep the whole Now Playing root attached to one sheet behavior. Once PLAYER is
         // expanded, a downward drag can start from any ordinary player area; while the sheet is
         // settling, a new pointer may recapture it and reverse direction. Keep that ownership on
         // this persistent sheet instead of limiting PLAYER -> MAIN to AlbumArtCard. Scrollable
-        // queue content remains authoritative while it is visible; matching AM's nested-scroll
+        // queue content remains authoritative while it is visible; matching nested-scroll
         // handoff for that child can be layered on separately without stealing its scrolling.
         val context = LocalContext.current
         val sheetFlingVelocityBoundsPx = remember(context) {
@@ -1592,7 +1592,7 @@ private fun StandardPlayerLyricStack(
         val latestSheetDragStart by rememberUpdatedState(onPlayerCoverSwipeDownStart)
         val latestSheetDragProgress by rememberUpdatedState(onPlayerCoverSwipeDownProgress)
         val latestSheetDragEnd by rememberUpdatedState(onPlayerCoverSwipeDownEnd)
-        // AM's ViewDragHelper only receives a DOWN that actually lands inside the sheet child.
+        // The drag helper only receives a DOWN that actually lands inside the sheet child.
         // Our stationary parent pointer node intentionally avoids the translated-child coordinate
         // feedback loop, but keeping that node active across a non-interactive PLAYER -> MAIN
         // settle would make the *whole screen* a sheet hit target. Then an early list scroll on the
@@ -1670,7 +1670,7 @@ private fun StandardPlayerLyricStack(
                             val absX = kotlin.math.abs(dx)
                             val absY = kotlin.math.abs(dy)
 
-                            // SeekBar owns its pointer stream from DOWN to stopTrackingTouch in AM.
+                            // SeekBar owns its pointer stream from DOWN to stopTrackingTouch.
                             // Our parent is intentionally observing Initial pass, so explicitly
                             // abandon capture before evaluating touchSlop once the child has started
                             // seeking. This prevents small vertical drift while scrubbing from
@@ -1999,7 +1999,7 @@ private fun StandardPlayerLyricStack(
                 .fillMaxSize()
                 .then(lyricSwipeBackModifier)
                 .then(playerLyricSwipeUpModifier)
-                // Keep gesture tracking in the stationary parent coordinate space. AM's
+                // Keep gesture tracking in the stationary parent coordinate space. The
                 // ViewDragHelper reads MotionEvent coordinates from CoordinatorLayout and moves
                 // the captured sheet child separately. Attaching pointerInput to the translated
                 // sheet creates a feedback loop: moving the sheet changes the pointer's local Y,
@@ -2007,7 +2007,7 @@ private fun StandardPlayerLyricStack(
                 .then(playerSheetDragModifier)
         ) {
             if (persistentBottomSheet) {
-                // CoordinatorLayout draws Behavior.getScrimOpacity() behind the sheet. AM's
+                // Draw the behavior scrim behind the sheet. The
                 // stacked holder writes the raw slide offset here, so p=0 is clear and p=1 is
                 // fully black. The sheet itself covers the screen at p=1; the scrim is primarily
                 // visible above it during the drag and through the two rounded top corners.
@@ -2260,7 +2260,7 @@ private fun StandardPlayerLyricStack(
                     )
                     .graphicsLayer {
                         val f = currentPlayerRevealFraction()
-                        val rect = resolveAmPlayerArtworkRect(
+                        val rect = resolvePlayerArtworkHandoffRect(
                             sourceLeft = mainSourceRect.left,
                             sourceTop = mainSourceRect.top,
                             sourceWidth = mainSourceRect.width(),

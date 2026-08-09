@@ -15,13 +15,13 @@ class PlayerGaplessControlCoordinatorTest {
         var plan: GaplessPlaybackPlan? = null
         coordinator(
             gaplessEnabled = false,
-            crossfadeSeconds = 0,
+            automaticCrossfadeEnabled = false,
             queue = PlayQueue(listOf(song("/a"), song("/b")), currentIndex = 0),
             apply = { plan = it },
         ).prepareNextSong()
 
         assertNull(plan?.nextSongPath)
-        assertEquals(0, plan?.crossfadeDurationMs)
+        assertEquals(false, plan?.automaticCrossfadeEnabled)
     }
 
     @Test
@@ -31,7 +31,7 @@ class PlayerGaplessControlCoordinatorTest {
         coordinator(
             queue = PlayQueue(songs, currentIndex = 0),
             playMode = PlayMode.SEQUENTIAL,
-            crossfadeSeconds = 3,
+            automaticCrossfadeEnabled = true,
             apply = plans::add,
         ).prepareNextSong()
         coordinator(
@@ -41,7 +41,7 @@ class PlayerGaplessControlCoordinatorTest {
         ).prepareNextSong()
 
         assertEquals("/b", plans[0].nextSongPath)
-        assertEquals(3_000, plans[0].crossfadeDurationMs)
+        assertEquals(true, plans[0].automaticCrossfadeEnabled)
         assertEquals("/b", plans[1].nextSongPath)
     }
 
@@ -64,7 +64,7 @@ class PlayerGaplessControlCoordinatorTest {
         val coordinator = PlayerGaplessControlCoordinator(
             PlayerGaplessControlCoordinator.Callbacks(
                 gaplessEnabled = { true },
-                crossfadeSeconds = { 0 },
+                automaticCrossfadeEnabled = { false },
                 currentQueue = { PlayQueue(songs, currentIndex = 0) },
                 currentPlayMode = { PlayMode.SHUFFLE_ALL },
                 peekShuffleIndex = { previewCalls += 1; 2 },
@@ -82,14 +82,14 @@ class PlayerGaplessControlCoordinatorTest {
 
     private fun coordinator(
         gaplessEnabled: Boolean = true,
-        crossfadeSeconds: Int = 0,
+        automaticCrossfadeEnabled: Boolean = false,
         queue: PlayQueue,
         playMode: PlayMode = PlayMode.SEQUENTIAL,
         apply: (GaplessPlaybackPlan) -> Unit,
     ) = PlayerGaplessControlCoordinator(
         PlayerGaplessControlCoordinator.Callbacks(
             gaplessEnabled = { gaplessEnabled },
-            crossfadeSeconds = { crossfadeSeconds },
+            automaticCrossfadeEnabled = { automaticCrossfadeEnabled },
             currentQueue = { queue },
             currentPlayMode = { playMode },
             peekShuffleIndex = { -1 },

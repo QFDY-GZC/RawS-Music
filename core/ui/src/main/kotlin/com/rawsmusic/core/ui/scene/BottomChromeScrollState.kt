@@ -14,7 +14,7 @@ class BottomChromeScrollState {
 
     // While the PLAYER sheet is expanded or transitioning, the underlying MAIN content must
     // not retarget floating MiniPlayer/navigation geometry from incidental scroll deltas.
-    // AM keeps stacked navigation as a stable sibling of the player sheet; its collapsed
+    // Keep stacked navigation as a stable sibling of the player sheet; its collapsed
     // endpoint does not react to the list behind the sheet while the sheet owns the gesture.
     private var interactionLocked: Boolean = false
 

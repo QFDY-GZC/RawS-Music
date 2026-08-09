@@ -800,7 +800,7 @@ private fun HomeArtworkDial(
                             targetHeight = 1024,
                             priority = BitmapRequest.Priority.LOADING_WIDGET,
                             // Keep the physical dial lane mounted while its source changes. The
-                            // provider replaces the bitmap atomically, matching Poweramp's
+                            // provider replaces the bitmap atomically, preserving a stable
                             // artwork holder instead of exposing an empty transition frame.
                             holdPreviousOnKeyChange = true,
                             fadeInMillis = 0,

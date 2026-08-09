@@ -42,7 +42,7 @@ fun TransitionSettingsScreen(onBack: () -> Unit) {
     var expandedCard by remember { mutableStateOf(TransitionCard.Manual) }
     var manualMode by remember { mutableStateOf(TransitionPreferences.manualTrackTransitionMode) }
     var manualDurationMs by remember { mutableStateOf(TransitionPreferences.manualTrackFadeMs) }
-    var crossfadeSec by remember { mutableStateOf(AppPreferences.Player.crossfadeDuration) }
+    var automaticCrossfadeEnabled by remember { mutableStateOf(AppPreferences.Player.automaticCrossfadeEnabled) }
     var transportEnabled by remember { mutableStateOf(TransitionPreferences.transportFadeEnabled) }
     var transportDurationMs by remember { mutableStateOf(TransitionPreferences.transportFadeMs) }
     var seekEnabled by remember { mutableStateOf(TransitionPreferences.seekFadeEnabled) }
@@ -117,22 +117,15 @@ fun TransitionSettingsScreen(onBack: () -> Unit) {
             expanded = expandedCard == TransitionCard.Crossfade,
             onClick = { expandedCard = expandedCard.toggle(TransitionCard.Crossfade) }
         ) {
-            SliderPreference(
+            SwitchPreference(
                 title = stringResource(R.string.settings_audio_info_crossfade_title),
                 summary = stringResource(R.string.settings_audio_info_crossfade_body),
-                valueText = if (crossfadeSec == 0) {
-                    stringResource(R.string.settings_audio_crossfade_off)
-                } else {
-                    stringResource(R.string.settings_audio_crossfade_seconds, crossfadeSec)
-                },
-                value = crossfadeSec.toFloat(),
-                onValueChange = { value ->
-                    crossfadeSec = value.toInt()
-                    AppPreferences.Player.crossfadeDuration = crossfadeSec
-                },
-                valueRange = 0f..12f,
-                steps = 11,
-                hapticEffect = SliderDefaults.SliderHapticEffect.Step
+                checked = automaticCrossfadeEnabled,
+                onCheckedChange = {
+                    automaticCrossfadeEnabled = it
+                    AppPreferences.Player.automaticCrossfadeEnabled = it
+                    notifyChanged()
+                }
             )
         }
 

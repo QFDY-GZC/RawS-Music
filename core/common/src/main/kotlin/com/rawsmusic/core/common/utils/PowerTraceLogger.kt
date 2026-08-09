@@ -49,7 +49,7 @@ object PowerTraceLogger {
         val frames = flowFrames.incrementAndGet()
         if (enabled) flowActiveFrames.incrementAndGet()
         // This path is called once per rendered frame. Avoid a ConcurrentHashMap lookup and
-        // getOrPut on every vsync; Poweramp keeps frame scheduling separate from diagnostics.
+        // Avoid getOrPut on every vsync; frame scheduling stays separate from diagnostics.
         val now = SystemClock.elapsedRealtime()
         val previous = lastFlowLogAt.get()
         if (now - previous < FLOW_INTERVAL_MS ||

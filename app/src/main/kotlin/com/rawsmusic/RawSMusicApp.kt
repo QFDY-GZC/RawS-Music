@@ -2,6 +2,7 @@ package com.rawsmusic
 
 import android.app.Activity
 import android.app.Application
+import android.content.Context
 import android.os.Bundle
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -18,15 +19,21 @@ import com.rawsmusic.module.player.PlayerService
 import com.rawsmusic.module.scanner.LibraryScannerDependencies
 import com.rawsmusic.module.scanner.MusicRepositoryAudioLibraryRepository
 import com.rawsmusic.memory.FairRuntimeMemoryManager
+import com.rawsmusic.locale.AppLocaleManager
 import com.rawsmusic.lyric.DesktopLyricService
 import com.rawsmusic.ui.songs.PlayerHolder
 
 class RawSMusicApp : Application(), ImageLoaderFactory {
 
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(AppLocaleManager.wrap(base))
+    }
+
     override fun newImageLoader(): ImageLoader = CoilArtworkRuntime.newImageLoader(this)
 
     override fun onCreate() {
         super.onCreate()
+        AppLocaleManager.apply(this)
 
         // 进程启动追踪：检测是否被系统杀死后重建
         val pid = android.os.Process.myPid()

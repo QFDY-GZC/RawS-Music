@@ -1,6 +1,7 @@
 package com.rawsmusic.core.ui.widget.player
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -29,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.ui.theme.RawThemeRuntimeState
 import com.rawsmusic.module.data.prefs.FontManager
+import com.rawsmusic.core.ui.widget.text.LongTextMotionState
 import kotlinx.coroutines.delay
 import kotlin.math.ceil
 
@@ -139,20 +141,35 @@ private fun MarqueeCanvasText(
     val textWidth = remember(text, paint.textSize, fontWeight) {
         paint.measureText(text)
     }
-    val speed = paint.textSize * 0.8f
+    val speed = with(density) { 42.5.dp.toPx() }
     var measuredWidth by remember { mutableFloatStateOf(0f) }
     val availableWidth = (measuredWidth - endPaddingDp * density.density).coerceAtLeast(0f)
     val overflowWidth = (textWidth - availableWidth).coerceAtLeast(0f)
     val offset = remember(text, fontRuntimeVersion) { Animatable(0f) }
     LaunchedEffect(text, overflowWidth, speed) {
         offset.snapTo(0f)
-        if (overflowWidth <= 0f) return@LaunchedEffect
-        delay(1_200L)
+        if (!LongTextMotionState.enabled || overflowWidth <= 10f * density.density) {
+            return@LaunchedEffect
+        }
+        delay(1_500L)
         val duration = ceil(overflowWidth / speed * 1000f).toInt().coerceAtLeast(1_000)
-        offset.animateTo(
-            targetValue = overflowWidth,
-            animationSpec = tween(durationMillis = duration, easing = LinearEasing)
-        )
+        val easing = if (overflowWidth > 50f * density.density) {
+            CubicBezierEasing(0.42f, 0f, 0.58f, 1f)
+        } else {
+            LinearEasing
+        }
+        while (true) {
+            offset.animateTo(
+                targetValue = overflowWidth,
+                animationSpec = tween(durationMillis = duration, easing = easing)
+            )
+            delay(3_000L)
+            offset.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(durationMillis = duration, easing = easing)
+            )
+            delay(3_000L)
+        }
     }
 
     Canvas(modifier = modifier.onSizeChanged { measuredWidth = it.width.toFloat() }) {

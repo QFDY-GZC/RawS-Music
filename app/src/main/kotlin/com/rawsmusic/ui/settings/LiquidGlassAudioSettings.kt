@@ -216,6 +216,21 @@ fun LiquidGlassAudioSettingsScreen(
                         ?.setInternalDoublePrecisionProcessing(checked)
                 }
             )
+            var monoOutputEnabled by remember {
+                mutableStateOf(AppPreferences.MonoOutput.isEnabled)
+            }
+            SwitchPreference(
+                title = stringResource(R.string.settings_audio_mono_output_title),
+                summary = stringResource(R.string.settings_audio_mono_output_summary),
+                checked = monoOutputEnabled,
+                onCheckedChange = { checked ->
+                    monoOutputEnabled = checked
+                    AppPreferences.MonoOutput.isEnabled = checked
+                    com.rawsmusic.ui.songs.PlayerHolder.controller
+                        ?.monoOutputController
+                        ?.setEnabled(checked)
+                }
+            )
             DitherSettingsPreference(
                 title = stringResource(R.string.settings_audio_dither_title),
                 description = stringResource(R.string.settings_audio_dither_summary, selectedDitherName),

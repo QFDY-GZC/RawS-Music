@@ -8,8 +8,8 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import android.util.Log
 import androidx.core.content.ContextCompat
+import com.rawsmusic.core.common.utils.AppLogger
 
 /** Keeps the vendor Focus notification alive without coupling it to the media service. */
 internal class XiaomiSuperIslandLyricService : Service() {
@@ -29,13 +29,13 @@ internal class XiaomiSuperIslandLyricService : Service() {
                 else ContextCompat.startForegroundService(context, intent)
             }.recoverCatching {
                 running = false
-                Log.w(TAG, "Super Island service restart requested", it)
+                AppLogger.w(TAG, "Super Island service restart requested", it)
                 ContextCompat.startForegroundService(context, intent)
             }
             if (result.isSuccess) {
                 running = true
             } else {
-                Log.w(TAG, "Unable to start Super Island service; posting directly", result.exceptionOrNull())
+                AppLogger.w(TAG, "Unable to start Super Island service; posting directly", result.exceptionOrNull())
                 context.getSystemService(NotificationManager::class.java)
                     ?.notify(XiaomiSuperIslandLyricBridge.NOTIFICATION_ID, notification)
             }
@@ -59,15 +59,15 @@ internal class XiaomiSuperIslandLyricService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "Super Island lyric service created")
+        AppLogger.d(TAG, "Super Island lyric service created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_PUBLISH -> pendingNotification?.let(::publishNotification)
-                ?: Log.w(TAG, "No Super Island lyric notification available to publish")
+                ?: AppLogger.w(TAG, "No Super Island lyric notification available to publish")
             ACTION_STOP -> stopNotificationService()
-            else -> Log.d(TAG, "Ignoring service action=${intent?.action}")
+            else -> AppLogger.d(TAG, "Ignoring service action=${intent?.action}")
         }
         return START_NOT_STICKY
     }
@@ -77,15 +77,15 @@ internal class XiaomiSuperIslandLyricService : Service() {
             val startedWithLyric = runCatching {
                 startForegroundWithType(notification)
                 foregroundStarted = true
-                Log.d(TAG, "Super Island lyric foreground service started with Focus payload")
+                AppLogger.d(TAG, "Super Island lyric foreground service started with Focus payload")
             }.isSuccess
             if (startedWithLyric) return
 
             runCatching {
                 startForegroundWithType(buildWarmNotification())
                 foregroundStarted = true
-                Log.d(TAG, "Super Island lyric foreground service started with warm payload")
-            }.onFailure { error -> Log.w(TAG, "Focus foreground start failed", error) }
+                AppLogger.d(TAG, "Super Island lyric foreground service started with warm payload")
+            }.onFailure { error -> AppLogger.w(TAG, "Focus foreground start failed", error) }
         }
         if (foregroundStarted) {
             notificationManager?.notify(XiaomiSuperIslandLyricBridge.NOTIFICATION_ID, notification)
@@ -133,7 +133,7 @@ internal class XiaomiSuperIslandLyricService : Service() {
         foregroundStarted = false
         running = false
         pendingNotification = null
-        Log.d(TAG, "Super Island lyric service destroyed")
+        AppLogger.d(TAG, "Super Island lyric service destroyed")
         super.onDestroy()
     }
 

@@ -41,10 +41,12 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -88,6 +90,7 @@ import com.rawsmusic.core.ui.widget.bitmaps.PowerListCoilArtworkModel
 import com.rawsmusic.core.ui.widget.bitmaps.SizeSlotCache
 import com.rawsmusic.core.ui.widget.player.copySongInfoToClipboard
 import com.rawsmusic.module.data.prefs.FontManager
+import com.rawsmusic.core.ui.widget.text.LongTextMotionState
 import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
 import java.util.concurrent.atomic.AtomicLong
@@ -459,7 +462,7 @@ fun ComposePowerList(
 
             if (persistentHeaderHeightPx > 0) {
                 // Keep the exact scroll read inside the header subtree. Reading viewportScrollY
-                // here would invalidate this whole PowerList on every pixel; Poweramp scrolls its
+                // here would invalidate this whole list on every pixel; the retained layout
                 // existing child views without rebuilding the rows during a fling.
                 ComposePowerListPersistentHeader(
                     state = state,
@@ -627,7 +630,7 @@ private fun ComposePowerListViewportLayer(
             sectionHeaderHeightPx = sectionHeaderHeightPx
         )
     }
-    // Match Poweramp's FastLayout contract: children are laid out only when a row enters or
+    // Retained layout contract: children are laid out only when a row enters or
     // leaves the viewport; the remaining pixel motion belongs to the parent container. Passing
     // exact scrollY into every item makes every Canvas/text/click target recompute on every touch
     // frame, which is the main source of the dense-grid hitch.
@@ -1370,7 +1373,7 @@ private fun ComposePowerListDrawnItem(
     }
     // Keep the shader attached to the physical holder. Drawing a rounded bitmap with a
     // BitmapShader avoids rebuilding a Path and entering/leaving a clip stack for every cell on
-    // every scroll frame. This is the same retained-source shape used by Poweramp's AAImageView.
+    // every scroll frame. This keeps artwork sources retained across holder movement.
     val previousBitmap = artworkState.previousBitmap
         ?.takeIf { !it.isRecycled && it !== drawableBitmap }
     val drawableShader = remember(drawableBitmap) {
@@ -1410,11 +1413,13 @@ private fun ComposePowerListDrawnItem(
     val subtitleColor = colors.secondary
     val metaColor = colors.meta
     val configuredTypeface = FontManager.typeface
+    val animateListText = LongTextMotionState.enabled && LongTextMotionState.enabledEverywhere
     val titleText = rememberPowerListPreparedText(
         text = title,
         rect = rects.title,
         density = density.density * density.fontScale,
         bold = true,
+        animate = animateListText,
         configuredTypeface = configuredTypeface
     )
     val subtitleText = rememberPowerListPreparedText(
@@ -1422,6 +1427,7 @@ private fun ComposePowerListDrawnItem(
         rect = rects.subtitle,
         density = density.density * density.fontScale,
         bold = false,
+        animate = animateListText,
         configuredTypeface = configuredTypeface
     )
     val metaText = rememberPowerListPreparedText(
@@ -1430,8 +1436,22 @@ private fun ComposePowerListDrawnItem(
         density = density.density * density.fontScale,
         bold = false,
         leftInsetPx = if (hasCollectionMetaIcon) 16f * density.density else 0f,
+        animate = animateListText,
         configuredTypeface = configuredTypeface
     )
+    val listMarqueeEnabled = animateListText && !interactionActive
+    var marqueeElapsedMs by remember(title, subtitle, meta) { mutableLongStateOf(0L) }
+    LaunchedEffect(listMarqueeEnabled, title, subtitle, meta) {
+        marqueeElapsedMs = 0L
+        if (!listMarqueeEnabled) return@LaunchedEffect
+        var startNanos = 0L
+        while (true) {
+            withFrameNanos { frameNanos ->
+                if (startNanos == 0L) startNanos = frameNanos
+                marqueeElapsedMs = (frameNanos - startNanos) / 1_000_000L
+            }
+        }
+    }
 
     // The bounds are only read when this physical holder is clicked. Keeping them in a stable
     // slot avoids invalidating every list cell on every scroll-layout callback; the old
@@ -1516,7 +1536,7 @@ private fun ComposePowerListDrawnItem(
             } else {
                 // Keep the placeholder behind the accepted source while a holder is resolving.
                 // When a new source is accepted, draw the retained source first and fade the new
-                // shader over it. This is the same two-layer operation used by Poweramp's
+                // shader over it. This keeps source content separate from its transition overlay.
                 // AAImageView, with its normal 200 ms artwork transition.
                 val fade = artworkState.fadeProgress.coerceIn(0f, 1f)
                 if (drawableShader == null && previousShader == null) {
@@ -1567,7 +1587,12 @@ private fun ComposePowerListDrawnItem(
                 density = density.density * density.fontScale,
                 bold = true,
                 typefaceOverride = titleText.typeface,
-                alreadyEllipsized = true
+                alreadyEllipsized = true,
+                horizontalOffsetPx = titleText.marqueeOffset(
+                    elapsedMs = marqueeElapsedMs,
+                    speedPxPerSecond = 42.5f * density.density,
+                    enabled = listMarqueeEnabled
+                )
             )
             drawPowerListText(
                 canvas = canvas,
@@ -1577,7 +1602,12 @@ private fun ComposePowerListDrawnItem(
                 density = density.density * density.fontScale,
                 bold = false,
                 typefaceOverride = subtitleText.typeface,
-                alreadyEllipsized = true
+                alreadyEllipsized = true,
+                horizontalOffsetPx = subtitleText.marqueeOffset(
+                    elapsedMs = marqueeElapsedMs,
+                    speedPxPerSecond = 42.5f * density.density,
+                    enabled = listMarqueeEnabled
+                )
             )
             drawPowerListText(
                 canvas = canvas,
@@ -1588,7 +1618,12 @@ private fun ComposePowerListDrawnItem(
                 bold = false,
                 leftInsetPx = if (hasCollectionMetaIcon) 16f * density.density else 0f,
                 typefaceOverride = metaText.typeface,
-                alreadyEllipsized = true
+                alreadyEllipsized = true,
+                horizontalOffsetPx = metaText.marqueeOffset(
+                    elapsedMs = marqueeElapsedMs,
+                    speedPxPerSecond = 42.5f * density.density,
+                    enabled = listMarqueeEnabled
+                )
             )
             canvas.restore()
         }
@@ -1976,7 +2011,7 @@ private fun rememberPowerListBitmap(
         SizeSlotCache.computeBucket(decodeWidth, decodeHeight)
     }
     // Keep this state attached to the physical PowerList slot, not to the song identity. This is
-    // the Compose equivalent of Poweramp's AAImageView retaining its current wrapper while a new
+    // Retain the current artwork wrapper while a new
     // source record is being resolved. Re-keying this state by id cleared the drawable at every
     // row reuse and made a fast fling look like a decode failure.
     val bitmapState = remember(decodeWidth, decodeHeight, modeLabel) {
@@ -2013,7 +2048,7 @@ private fun rememberPowerListBitmap(
         )
     }
     // A physical PowerList slot can be rebound before its provider callback returns. Keep a
-    // monotonically increasing bind generation, like Poweramp's AAImageView position/id check,
+    // monotonically increasing bind generation and verify the position/id pair,
     // so an old callback can warm the provider cache but can never mutate the new slot binding.
     val bindGeneration = remember { AtomicLong(0L) }
     val artworkFade = remember { Animatable(1f) }
@@ -2054,7 +2089,7 @@ private fun rememberPowerListBitmap(
     ) {
         val boundKey = id.value
         // Attach an already decoded wrapper immediately. When there is no cached wrapper, keep
-        // the previous one until this source finishes, matching Poweramp's holder behavior.
+        // the previous one until this source finishes, preserving holder continuity.
         if (bitmapState.value.sourceKey != boundKey) {
             val cachedBitmap = BitmapProvider.peekThumbnail(
                 key = boundKey,
@@ -2100,7 +2135,7 @@ private fun rememberPowerListBitmap(
 
         // Do not key this effect by the callback result. A successful callback must update the
         // current holder in place; rebuilding the effect immediately would detach/cancel the
-        // source request and is unlike Poweramp's stable bitmap wrapper lifecycle.
+        // source request and would break the stable bitmap-wrapper lifecycle.
         val cachedBitmapIsReady = bitmapState.value.sourceKey == boundKey && bitmapState.value.bitmap?.let { bitmap ->
             !bitmap.isRecycled && isPowerListBitmapAcceptable(bitmap, decodeWidth, decodeHeight)
         } == true
@@ -2228,7 +2263,7 @@ private const val POWER_LIST_MAX_RENDER_ITEMS = 48
 private const val POWER_LIST_ART_FADE_MS = 200
 
 // Keep artwork ownership in BitmapProvider/ArtworkHandle. Compose only keeps the last accepted
-// physical-cell bitmap while a replacement request is in flight, matching Poweramp's view holder.
+// physical-cell bitmap while a replacement request is in flight.
 // Experimental A/B branch: list/grid covers are painted by Coil while BitmapProvider remains the
 // RawSMusic-specific decoder/cache backend. Flip to false to restore the legacy artwork record path.
 private const val POWER_LIST_USE_COIL_ARTWORK = true
@@ -2481,7 +2516,8 @@ private fun drawPowerListText(
     bold: Boolean,
     leftInsetPx: Float = 0f,
     typefaceOverride: Typeface? = null,
-    alreadyEllipsized: Boolean = false
+    alreadyEllipsized: Boolean = false,
+    horizontalOffsetPx: Float = 0f
 ) {
     if (text.isBlank() || rect.alpha <= 0f || rect.width <= 0 || rect.height <= 0) return
     val fontSizeSp = rect.fontSizeSp.takeIf { it > 0f } ?: 14f
@@ -2508,13 +2544,52 @@ private fun drawPowerListText(
     }
     val fontMetrics = powerListTextPaint.fontMetrics
     val baseline = rect.top + (rect.height - fontMetrics.ascent - fontMetrics.descent) * 0.5f
-    canvas.drawText(display.toString(), rect.left.toFloat() + leftInsetPx, baseline, powerListTextPaint)
+    canvas.save()
+    canvas.clipRect(
+        rect.left.toFloat() + leftInsetPx,
+        rect.top.toFloat(),
+        rect.left + rect.width.toFloat(),
+        rect.top + rect.height.toFloat()
+    )
+    canvas.drawText(
+        display.toString(),
+        rect.left.toFloat() + leftInsetPx - horizontalOffsetPx,
+        baseline,
+        powerListTextPaint
+    )
+    canvas.restore()
 }
 
 private data class PreparedPowerListText(
     val display: String,
-    val typeface: Typeface
+    val typeface: Typeface,
+    val overflowPx: Float
 )
+
+private fun PreparedPowerListText.marqueeOffset(
+    elapsedMs: Long,
+    speedPxPerSecond: Float,
+    enabled: Boolean
+): Float {
+    if (!enabled || overflowPx <= 10f || speedPxPerSecond <= 0f) return 0f
+    val travelMs = (overflowPx / speedPxPerSecond * 1_000f).toLong().coerceAtLeast(1_000L)
+    val initialDelay = 1_500L
+    val endpointDelay = 3_000L
+    val cycle = initialDelay + travelMs + endpointDelay + travelMs + endpointDelay
+    val phase = elapsedMs % cycle
+    return when {
+        phase < initialDelay -> 0f
+        phase < initialDelay + travelMs -> {
+            overflowPx * ((phase - initialDelay).toFloat() / travelMs)
+        }
+        phase < initialDelay + travelMs + endpointDelay -> overflowPx
+        phase < initialDelay + travelMs + endpointDelay + travelMs -> {
+            val returning = phase - initialDelay - travelMs - endpointDelay
+            overflowPx * (1f - returning.toFloat() / travelMs)
+        }
+        else -> 0f
+    }
+}
 
 @Composable
 private fun rememberPowerListPreparedText(
@@ -2523,6 +2598,7 @@ private fun rememberPowerListPreparedText(
     density: Float,
     bold: Boolean,
     leftInsetPx: Float = 0f,
+    animate: Boolean,
     configuredTypeface: Typeface?
 ): PreparedPowerListText {
     return remember(
@@ -2532,6 +2608,7 @@ private fun rememberPowerListPreparedText(
         density,
         bold,
         leftInsetPx,
+        animate,
         configuredTypeface
     ) {
         val paint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
@@ -2543,14 +2620,20 @@ private fun rememberPowerListPreparedText(
             }
         }
         val availableWidth = (rect.width.toFloat() - leftInsetPx).coerceAtLeast(1f)
+        val measuredWidth = paint.measureText(text)
         PreparedPowerListText(
-            display = TextUtils.ellipsize(
-                text,
-                paint,
-                availableWidth,
-                TextUtils.TruncateAt.END
-            ).toString(),
-            typeface = paint.typeface ?: Typeface.DEFAULT
+            display = if (animate && measuredWidth - availableWidth > 10f) {
+                text
+            } else {
+                TextUtils.ellipsize(
+                    text,
+                    paint,
+                    availableWidth,
+                    TextUtils.TruncateAt.END
+                ).toString()
+            },
+            typeface = paint.typeface ?: Typeface.DEFAULT,
+            overflowPx = (measuredWidth - availableWidth).coerceAtLeast(0f)
         )
     }
 }
@@ -2818,52 +2901,7 @@ private fun AudioFile.subtitle(): String {
 }
 
 private fun AudioFile.metaText(): String {
-    return buildString {
-        if (duration > 0) append(formatDuration(duration))
-        if (sampleRate > 0) {
-            val normalizedSampleRate = com.rawsmusic.core.common.utils.SampleRateNormalizer.formatKhz(
-                sampleRate = sampleRate,
-                codecName = encodingFormat,
-                formatName = format,
-                filePath = path
-            )
-            if (normalizedSampleRate.isNotBlank()) {
-                if (isNotBlank()) append(" · ")
-                append(normalizedSampleRate)
-            }
-        }
-        if (bitsPerSample > 0) {
-            if (isNotBlank()) append(" · ")
-            append(bitsPerSample)
-            append("bit")
-        }
-        val bitrateText = com.rawsmusic.core.common.utils.BitrateNormalizer
-            .formatKbps(
-                rawBitrate = bitRate,
-                durationMs = duration,
-                fileSizeBytes = fileSize,
-                codecName = encodingFormat,
-                formatName = format,
-                filePath = path
-            )
-            .takeIf { it != "未知" }
-            ?.replace(" ", "")
-        if (!bitrateText.isNullOrBlank()) {
-            if (isNotBlank()) append(" · ")
-            append(bitrateText)
-        }
-        if (format.isNotBlank()) {
-            if (isNotBlank()) append(" · ")
-            append(format.uppercase())
-        }
-    }
-}
-
-private fun formatDuration(durationMs: Long): String {
-    val totalSeconds = durationMs / 1000
-    val minutes = totalSeconds / 60
-    val seconds = totalSeconds % 60
-    return "$minutes:${seconds.toString().padStart(2, '0')}"
+    return formatPowerListSongMeta(this)
 }
 
 private fun powerListKey(song: AudioFile, index: Int): Any {

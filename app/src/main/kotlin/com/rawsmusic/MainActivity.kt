@@ -34,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.lifecycleScope
 import com.rawsmusic.core.common.ext.isDarkMode
 import com.rawsmusic.core.common.model.AudioFile
@@ -322,7 +323,7 @@ class MainActivity : ComponentActivity() {
     // never depend on a transient/null MiniPlayer callback or on the ListCover used for entry.
     private var stableMiniPlayerCoverGeometryForTransition by mutableStateOf<CoverTransitionTarget?>(null)
     private var miniPlayerGestureBoundsForSceneGesture by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
-    // FLOATING MiniPlayer is a sibling of the player sheet, unlike AM's in-sheet MiniPlayer.
+    // FLOATING MiniPlayer is a sibling of the player sheet rather than an in-sheet child.
     // Keep one stable MAIN-layout top and freeze it for MAIN <-> PLAYER handoffs; feeding the
     // live AnimatedVisibility/offset position back into the sheet travel makes the collapsed
     // anchor move while the sheet itself is settling, producing whole-screen shake.
@@ -1019,7 +1020,11 @@ class MainActivity : ComponentActivity() {
                 }
                 Toast.makeText(
                     this,
-                    if (result.deleted > 0) "已删除" else if (result.cancelled) "已取消删除" else "删除失败",
+                    getString(
+                        if (result.deleted > 0) R.string.song_delete_complete
+                        else if (result.cancelled) R.string.song_delete_cancelled
+                        else R.string.song_delete_failed
+                    ),
                     Toast.LENGTH_SHORT,
                 ).show()
             }
@@ -1470,13 +1475,22 @@ class MainActivity : ComponentActivity() {
                 lastMetadataMatchCompletionToken = metadataMatchProgress.completionToken
                 Toast.makeText(
                     this@MainActivity,
-                    "匹配结束：总计 ${metadataMatchProgress.total} 首，成功 ${metadataMatchProgress.succeeded} 首，失败 ${metadataMatchProgress.failed} 首",
+                    getString(
+                        R.string.metadata_match_result,
+                        metadataMatchProgress.total,
+                        metadataMatchProgress.succeeded,
+                        metadataMatchProgress.failed
+                    ),
                     Toast.LENGTH_LONG,
                 ).show()
             }
         }
         val metadataMatchProgressText = if (metadataMatchProgress.isRunning) {
-            "匹配中 · 已处理 ${metadataMatchProgress.processed} · 剩余 ${metadataMatchProgress.remaining}"
+            stringResource(
+                R.string.metadata_match_running,
+                metadataMatchProgress.processed,
+                metadataMatchProgress.remaining
+            )
         } else {
             ""
         }
@@ -1582,7 +1596,7 @@ class MainActivity : ComponentActivity() {
             },
             onNavigateToPlayer = {
                 if (playerController?.currentOrRequestedSongForUi() != null) {
-                    // This action originates from the MiniPlayer. AM always interpolates the
+                    // This action originates from the MiniPlayer. Always interpolate the
                     // player artwork from the live MiniPlayer CardView, even with stacked bottom
                     // navigation present; never borrow a list-cell/fixed region for this entry.
                     openPlayPageWithSharedElement(preferMiniPlayerSource = true)
@@ -1786,7 +1800,7 @@ class MainActivity : ComponentActivity() {
             externalPageRenderer = AppPageRendererImpl(mainNavState),
             onNavigateToPlayer = {
                 if (playerController?.currentOrRequestedSongForUi() != null) {
-                    // This action originates from the MiniPlayer. AM always interpolates the
+                    // This action originates from the MiniPlayer. Always interpolate the
                     // player artwork from the live MiniPlayer CardView, even with stacked bottom
                     // navigation present; never borrow a list-cell/fixed region for this entry.
                     openPlayPageWithSharedElement(preferMiniPlayerSource = true)
@@ -2143,7 +2157,7 @@ class MainActivity : ComponentActivity() {
                     // Keep the floating return owner through the first committed MAIN frame.
                     // Compose can still be retiring the shared overlay while list cells publish
                     // fresh bounds; releasing in the same animator callback lets that final frame
-                    // retarget to ListCover. AM hands ownership back only after the collapsed
+                    // retarget to ListCover. Hand ownership back only after the collapsed
                     // MiniPlayer is already the visible endpoint.
                     if (floatingReturnOwnsMiniPlayerTarget) {
                         window.decorView.postOnAnimation {
@@ -2963,7 +2977,7 @@ class MainActivity : ComponentActivity() {
                         // gating it on an already-started return leaves AlbumArtCard as the owner
                         // for the capture frame and reintroduces the moving-child coordinate loop.
                         // During a transition the locked/stable value remains immutable, matching
-                        // AM's CoordinatorLayout/ViewDragHelper child geometry.
+                        // Keep parity with draggable-sheet child geometry.
                         lockedFloatingMiniPlayerTopPxForTransition
                             ?: stableFloatingMiniPlayerTopPx
                             ?: miniPlayerGestureBoundsForSceneGesture?.top
@@ -3169,7 +3183,7 @@ class MainActivity : ComponentActivity() {
         lockedPlayerCoverPathForTransition = uiCoverPath
         updateComposeRootVisibility(true)
         registerCoverCollapseParams()
-        // AM resolves the MiniPlayer artwork from its live CardView geometry on every sheet
+        // Resolve MiniPlayer artwork from its live geometry on every sheet
         // slide. NORMAL always uses that source; floating MiniPlayer taps explicitly request the
         // same behavior so stacked navigation cannot make the transition originate from a list
         // cell or an old fixed region.

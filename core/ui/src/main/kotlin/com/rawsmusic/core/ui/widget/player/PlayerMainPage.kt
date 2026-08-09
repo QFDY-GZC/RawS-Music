@@ -97,7 +97,7 @@ import com.rawsmusic.core.ui.widget.PlayerLyricsScrollDirection
 import com.rawsmusic.core.ui.widget.PlayerLyricsTransitionCoordinator
 import com.rawsmusic.core.ui.widget.flow.rememberCurrentRawFlowMode
 import com.rawsmusic.core.ui.widget.flow.RawFlowBackground
-import com.rawsmusic.core.ui.widget.flow.rememberUappStaticAlbumAccent
+import com.rawsmusic.core.ui.widget.flow.rememberStaticAlbumAccent
 import com.rawsmusic.core.ui.widget.bitmaps.AlbumArtTiers
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
@@ -1042,7 +1042,7 @@ private fun AlbumArtCard(
                                     }
                                     absY > absX * 1.20f -> {
                                         val candidateDirection = if (dy < 0f) -1 else 1
-                                        // In the persistent AM-style sheet, the parent owns
+                                        // In the persistent player sheet, the parent owns
                                         // PLAYER -> MAIN and settling recapture. Keep only the
                                         // stable PLAYER upward artwork gesture here for lyrics.
                                         if (
@@ -1925,8 +1925,8 @@ private fun QualityPill(song: AudioFile?, text: String, onClick: () -> Unit, onL
 }
 
 @Composable
-internal fun rememberUappBottomAccentColor(coverPath: String?): Color =
-    rememberUappStaticAlbumAccent(coverPath)
+internal fun rememberBottomAccentColor(coverPath: String?): Color =
+    rememberStaticAlbumAccent(coverPath)
 
 @Composable
 internal fun rememberCoverAccentColor(coverPath: String?): Color {

@@ -561,7 +561,7 @@ private fun UsbDeviceStatusDialog(
     val maxDialogHeight = LocalConfiguration.current.screenHeightDp.dp * 0.76f
     RawMiuixOverlayDialog(
         show = visible,
-        title = "USB DAC \u8bbe\u5907\u72b6\u6001",
+        title = stringResource(R.string.usb_dac_device_status_title),
         backgroundColor = MiuixTheme.colorScheme.surface,
         onDismissRequest = onDismiss,
             renderInRootScaffold = true
@@ -630,11 +630,11 @@ private fun UsbDeviceStatusDialog(
                 horizontalArrangement = Arrangement.End
             ) {
                 TextButton(
-                    text = "\u5237\u65b0",
+                    text = stringResource(R.string.common_refresh),
                     onClick = onRefresh
                 )
                 TextButton(
-                    text = "\u5173\u95ed",
+                    text = stringResource(R.string.common_close),
                     onClick = onDismiss
                 )
             }

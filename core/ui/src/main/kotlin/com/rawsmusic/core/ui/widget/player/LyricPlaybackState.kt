@@ -117,7 +117,7 @@ private fun calculateCurrentWordState(
 }
 
 /**
- * Visual start for a lyric row. AM schedules line and word events independently; a line may be
+ * Visual start for a lyric row. Line and word events are scheduled independently; a line may be
  * known/layout-ready before its first karaoke syllable actually starts. For timed-word lines, do
  * not promote/center/highlight the row until the first real main/background word event.
  *

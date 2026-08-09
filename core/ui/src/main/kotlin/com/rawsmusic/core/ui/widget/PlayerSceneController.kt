@@ -52,7 +52,7 @@ class PlayerSceneController {
      * Stable state object for the persistent MAIN/PLAYER sheet.
      *
      * Passing the float through MainActivity made the whole activity content recompose on every
-     * drag/settle frame. Apple Music updates the already-laid-out sheet and artwork views instead;
+     * drag/settle frame. Updating already-laid-out sheet and artwork nodes avoids this;
      * consumers should pass this State object down and read it only in the sheet subtree.
      */
     val mainPlayerSheetExpansionState: State<Float> = derivedStateOf {
@@ -194,7 +194,7 @@ class PlayerSceneController {
     fun endCoverDrag(shouldClose: Boolean, duration: Long = SCENE_ANIM_DURATION, velocity: Float = 0f) {
         if (mainPlayerSheetDragActive) {
             // The gesture owner has already applied the platform minimum-fling threshold and
-            // nearest-anchor rule. Do not make a second decision in normalized coordinates: AM's
+            // nearest-anchor rule. Do not make a second decision in normalized coordinates: the
             // ViewDragHelper chooses the anchor once, then the settler only animates to it.
             settleMainPlayerSheet(expanded = !shouldClose, velocity = -velocity)
             return
@@ -426,7 +426,7 @@ class PlayerSceneController {
     }
 
     /**
-     * Starts the AM-style main -> player bottom-sheet gesture.
+     * Starts the main-to-player bottom-sheet gesture.
      *
      * Unlike opening the player after the gesture, this mounts the player scene at ratio 0 and
      * lets the caller drive the same transition ratio for the whole drag. The release only
@@ -456,7 +456,7 @@ class PlayerSceneController {
     }
 
     /**
-     * AM keeps MAIN and PLAYER as the two anchors of one draggable sheet. A new pointer may
+     * MAIN and PLAYER remain the two anchors of one draggable sheet. A new pointer may
      * capture that sheet while ViewDragHelper is still settling it, so preserve the absolute
      * expansion instead of restarting a route-relative transition at zero.
      */
@@ -582,7 +582,7 @@ class PlayerSceneController {
      *
      * The old path started the animator immediately and asked MainActivity for the list target
      * afterwards. That left one frame with no valid shared target, so the player flashed and the
-     * next open was committed silently. Apple waits until both endpoints are measured first.
+     * next open was committed silently. Wait until both endpoints are measured first.
      */
     private fun closePlayerStackToMain(animated: Boolean) {
         if (currentScene == Scene.MAIN) return

@@ -18,19 +18,19 @@ enum class ArtworkSurface(
     val allowDiskThumbnailWrite: Boolean
 ) {
     List(
-        // Poweramp's list holder asks the central provider for the source record. The provider
+        // A list holder asks the central provider for the source record. The provider
         // performs source probing on its background lane, so this does not decode on Compose's
         // thread and avoids the second List -> Indexer request that could lose the holder callback.
         allowsSourceDecode = true,
         // A list holder is a cold, transient observer. A single null while the media provider,
         // native extractor, or storage mount is settling must not become a provider-wide
-        // no-art decision. Poweramp only commits its not-found wrapper after the source record
+        // no-art decision. Commit the not-found wrapper only after the source record
         // has completed its probe; list rows retry through the same source record instead.
         rememberNullAsNoArt = false,
         scheduleIndexerOnMiss = false,
         // A visible holder must not start JPEG compression while a fling is decoding rows. The
         // provider still reads an existing thumbnail; persistent warming is owned by Playback or
-        // Indexer, just like Poweramp's source wrapper cache is independent of a row holder.
+        // Indexer, keeping the source-wrapper cache independent of a row holder.
         allowDiskThumbnailWrite = false
     ),
     MiniPlayer(

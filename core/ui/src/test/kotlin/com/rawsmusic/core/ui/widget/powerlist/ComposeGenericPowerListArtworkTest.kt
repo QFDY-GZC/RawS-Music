@@ -3,6 +3,7 @@ package com.rawsmusic.core.ui.widget.powerlist
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.rawsmusic.core.common.model.AudioFile
 
 class ComposeGenericPowerListArtworkTest {
     @Test
@@ -32,6 +33,32 @@ class ComposeGenericPowerListArtworkTest {
         )
 
         assertEquals(artworkKey, item.toPowerListAudioFile().coverKey)
+    }
+
+    @Test
+    fun songMetaContainsOnlyFormatBitDepthAndSampleRate() {
+        val song = AudioFile(
+            path = "/music/example.flac",
+            duration = 245_000L,
+            format = "flac",
+            encodingFormat = "flac",
+            bitsPerSample = 24,
+            sampleRate = 96_000,
+            bitRate = 1_200_000
+        )
+
+        assertEquals("FLAC｜24bit｜96 kHz", formatPowerListSongMeta(song))
+    }
+
+    @Test
+    fun songMetaOmitsUnknownFieldsInsteadOfShowingPlaceholders() {
+        val song = AudioFile(
+            path = "/music/example.mp3",
+            format = "mp3",
+            sampleRate = 44_100
+        )
+
+        assertEquals("MP3｜44.1 kHz", formatPowerListSongMeta(song))
     }
 
     private data class TestVisualItem(

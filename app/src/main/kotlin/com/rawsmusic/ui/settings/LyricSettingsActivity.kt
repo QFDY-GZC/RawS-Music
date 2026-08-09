@@ -21,6 +21,9 @@ class LyricSettingsActivity : BaseSettingsActivity() {
                 onNavigateToStatusBar = {
                     navigateToSettings(StatusBarLyricActivity::class.java)
                 },
+                onNavigateToSystemDelivery = {
+                    navigateToSettings(SystemLyricDeliveryActivity::class.java)
+                },
             )
         }
     }
@@ -32,6 +35,7 @@ private fun LyricSettingsScreen(
     onNavigateToManagement: () -> Unit,
     onNavigateToFont: () -> Unit,
     onNavigateToStatusBar: () -> Unit,
+    onNavigateToSystemDelivery: () -> Unit,
 ) {
     SettingsPage(
         title = stringResource(R.string.settings_lyrics_title),
@@ -53,6 +57,11 @@ private fun LyricSettingsScreen(
                 title = stringResource(R.string.settings_status_bar_lyric_title),
                 description = stringResource(R.string.settings_status_bar_lyric_summary),
                 onClick = onNavigateToStatusBar,
+            )
+            SettingsNavigationEntry(
+                title = stringResource(R.string.settings_system_lyric_delivery_title),
+                description = stringResource(R.string.settings_system_lyric_delivery_summary),
+                onClick = onNavigateToSystemDelivery,
             )
         }
     }

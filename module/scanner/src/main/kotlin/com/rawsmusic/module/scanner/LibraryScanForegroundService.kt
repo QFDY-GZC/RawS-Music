@@ -238,8 +238,8 @@ class LibraryScanForegroundService : Service() {
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("RawSMusic 正在扫描音乐")
-            .setContentText(state.message.ifBlank { "正在扫描音乐库" })
+            .setContentTitle(getString(R.string.library_scan_notification_title))
+            .setContentText(state.message.ifBlank { getString(R.string.library_scan_notification_text) })
             .setOnlyAlertOnce(true)
             .setOngoing(state.isScanning)
             .setSilent(true)
@@ -248,7 +248,11 @@ class LibraryScanForegroundService : Service() {
         if (state.isScanning) {
             builder.setProgress(100, state.progressPercent, state.total <= 0)
             if (state.canCancel) {
-                builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPending)
+                builder.addAction(
+                    android.R.drawable.ic_menu_close_clear_cancel,
+                    getString(R.string.common_cancel),
+                    cancelPending
+                )
             }
         } else {
             builder.setProgress(0, 0, false)

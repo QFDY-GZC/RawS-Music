@@ -11,7 +11,7 @@ import java.util.ArrayDeque
  * Lyrics-first automatic track transition policy.
  *
  * The controller builds a recipe from semantic timing (lyrics) when it is trustworthy. The audio
- * thread then owns the real-time envelope fallback and final gain automation. This mirrors AM's
+ * thread then owns the real-time envelope fallback and final gain automation. This keeps
  * split between a composer recipe and renderer automation, while using RawSMusic's richer lyric
  * timing as the primary structural feature.
  */
@@ -428,7 +428,7 @@ internal object PcmLevelMeter {
             .takeIf { it.isFinite() }
             ?: defaultFloorDb
         // The underlay is ambience, not an equal-power crossfade yet. Keep the follow track
-        // clearly behind the lead until the formal handover starts. This also mirrors AM's
+        // clearly behind the lead until the formal handover starts. This also follows the
         // independent lead/follow automation: the lead does not get ducked merely because the
         // follow renderer has become audible.
         val bedSafetyDb = max(10f, safetyMarginDb - 4f)

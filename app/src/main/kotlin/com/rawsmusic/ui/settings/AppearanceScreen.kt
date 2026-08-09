@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import top.yukonga.miuix.kmp.basic.Slider
+import top.yukonga.miuix.kmp.preference.SwitchPreference
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,6 +38,9 @@ import com.rawsmusic.core.ui.widget.flow.RawBackgroundStyle
 import com.rawsmusic.core.ui.widget.flow.RawFlowTuningState
 import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.text.style.TextAlign
+import com.rawsmusic.core.ui.widget.text.LongTextMotionState
+import com.rawsmusic.locale.AppLocaleManager
+import android.app.Activity
 
 @Composable
 fun LiquidGlassAppearanceScreen(
@@ -49,8 +53,91 @@ fun LiquidGlassAppearanceScreen(
 
     val themeRuntimeVersion = RawThemeRuntimeState.version
     var currentTheme by remember(themeRuntimeVersion) { mutableStateOf(ThemeManager.getCurrentTheme()) }
+    var animateLongLabels by remember { mutableStateOf(LongTextMotionState.enabled) }
+    var animateLongLabelsEverywhere by remember {
+        mutableStateOf(LongTextMotionState.enabledEverywhere)
+    }
+    var applicationLanguage by remember {
+        mutableStateOf(AppLocaleManager.currentLanguage(context))
+    }
 
     SettingsPage(title = stringResource(R.string.settings_appearance_title), onBack = onBack) {
+        SettingsCard {
+            SectionHeader(stringResource(R.string.settings_language_title))
+            Text(
+                text = stringResource(R.string.settings_language_summary),
+                fontSize = 13.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                fontFamily = fontFamily
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(
+                    AppLocaleManager.SYSTEM to stringResource(R.string.settings_language_system),
+                    AppLocaleManager.SIMPLIFIED_CHINESE to stringResource(R.string.settings_language_chinese),
+                    AppLocaleManager.ENGLISH to stringResource(R.string.settings_language_english)
+                ).forEach { (language, label) ->
+                    val selected = applicationLanguage == language
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (selected) MiuixTheme.colorScheme.primary
+                                else MiuixTheme.colorScheme.surfaceContainer
+                            )
+                            .clickable {
+                                if (applicationLanguage != language) {
+                                    applicationLanguage = language
+                                    AppLocaleManager.setLanguage(context, language)
+                                    (context as? Activity)?.recreate()
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = label,
+                            color = if (selected) MiuixTheme.colorScheme.onPrimary
+                            else MiuixTheme.colorScheme.onBackgroundVariant,
+                            fontSize = 14.sp,
+                            fontFamily = fontFamily
+                        )
+                    }
+                }
+            }
+        }
+
+        SettingsCard {
+            SectionHeader(stringResource(R.string.settings_long_text_title))
+            SwitchPreference(
+                title = stringResource(R.string.settings_long_text_animate),
+                summary = stringResource(R.string.settings_long_text_animate_summary),
+                checked = animateLongLabels,
+                onCheckedChange = { checked ->
+                    animateLongLabels = checked
+                    LongTextMotionState.updateEnabled(checked)
+                    if (!checked) {
+                        animateLongLabelsEverywhere = false
+                        LongTextMotionState.updateEnabledEverywhere(false)
+                    }
+                }
+            )
+            SwitchPreference(
+                title = stringResource(R.string.settings_long_text_everywhere),
+                summary = stringResource(R.string.settings_long_text_everywhere_summary),
+                checked = animateLongLabelsEverywhere,
+                enabled = animateLongLabels,
+                onCheckedChange = { checked ->
+                    animateLongLabelsEverywhere = checked
+                    LongTextMotionState.updateEnabledEverywhere(checked)
+                }
+            )
+        }
+
         SettingsCard {
             SectionHeader(stringResource(R.string.settings_appearance_theme_mode))
             Text(

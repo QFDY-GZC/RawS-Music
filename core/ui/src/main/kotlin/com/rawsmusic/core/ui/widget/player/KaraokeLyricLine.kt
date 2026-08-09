@@ -41,11 +41,11 @@ import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.roundToInt
 
-// AM sources expose this as R.dimen.lyrics_karaoke_gradient_feather_width, but the decompiled
+// Keep the karaoke gradient feather width as an explicit local rendering parameter.
 // archive does not contain resource values. Keep the fallback centralized; the gradient geometry
 // and progress math below match C11983A.m15398q0().
 private val AM_KARAOKE_FEATHER_WIDTH_FALLBACK = 12.dp
-// R.dimen.lyrics_karaoke_emphasis_shadow_radius is referenced by AM but its resource value is
+// Keep the emphasis shadow radius as an explicit local rendering parameter.
 // missing from the decompiled archive. Keep the fallback in one place so it can be replaced when
 // resources.arsc/dimens.xml is available.
 private val AM_KARAOKE_EMPHASIS_SHADOW_RADIUS_FALLBACK = 5.dp
@@ -65,7 +65,7 @@ private fun amKaraokeFeatherScaleForText(text: String): Float {
     // scales the resource width by 0.5 for very short words and 0.25 for longer words. Keep that
     // source-backed distinction here instead of applying the full resource width to every word.
     // The remaining 1.0 edge case depends on FullWidthAlphaGradientFlexboxLayout row geometry and
-    // will be added when the mask owner is moved to an AM-like whole-line layout.
+    // will be added when the mask owner is moved to a whole-line layout.
     val glyphCount = splitGraphemeClusters(text.trim()).size
     return when {
         glyphCount <= 0 -> 1f
@@ -74,7 +74,7 @@ private fun amKaraokeFeatherScaleForText(text: String): Float {
     }
 }
 
-// C11983A.f38923k0 / f38924l0: these scripts stay in AM's shaped-word lane instead of the
+// These scripts stay in the shaped-word lane instead of the
 // split-on-glyph emphasis lane because splitting would break script shaping. CJK/Kana are the
 // exception: multi-glyph long notes are explicitly allowed through the split lane.
 private val AM_KARAOKE_SHAPED_SCRIPT_BLOCKS = setOf(
@@ -183,7 +183,7 @@ fun KaraokeTimedText(
                     )
                     val isCurrentWord = timing.progress > 0f && timing.progress < 1f
                     val isCompleted = timing.progress >= 1f
-                    // AM uses LyricsWord.getDuration() for long-note emphasis. Keep that raw word
+                    // Use LyricsWord.getDuration() for long-note emphasis. Keep that raw word
                     // duration separate from RawSMusic's sweep end, which may be clipped to the
                     // next word begin to avoid karaoke-color overlap.
                     val emphasisEndMs = segment.word.end
@@ -235,11 +235,11 @@ private fun KaraokeWordGroup(
     val maxLiftPx = with(density) { wordLiftDp.toPx() }
     val shadowRadiusPx = with(density) { AM_KARAOKE_EMPHASIS_SHADOW_RADIUS_FALLBACK.toPx() }
 
-    // Keep RawSMusic's existing AM-matched word lift spring (0.93 / 25). This is a separate axis
-    // from AM's long-note emphasis scale; the default wordLiftScale is 0, so emphasis does not get
+    // Keep the existing word-lift spring (0.93 / 25). This is a separate axis
+    // from the long-note emphasis scale; the default wordLiftScale is 0, so emphasis does not get
     // accidentally double-scaled.
     val lift = remember(text, wordBeginMs) { Animatable(0f) }
-    // AM drives lift from the timed word event itself, not from a partially-filled karaoke mask.
+    // Drive lift from the timed word event itself, not from a partially-filled karaoke mask.
     // Once fired, the word stays lifted until line/reset ownership releases it.
     val shouldLift = liftEnabled && positionMs >= wordBeginMs
 
@@ -269,7 +269,7 @@ private fun KaraokeWordGroup(
         transformOrigin = TransformOrigin(0.5f, 1f)
     }
     val splitGlyphBaseModifier = Modifier.graphicsLayer {
-        // Split-character AM lanes own vertical lift per glyph. Keep only the legacy whole-word
+        // Split-character lanes own vertical lift per glyph. Keep only the legacy whole-word
         // scale here so the outer node never double-applies translationY.
         val legacyScale = 1f + wordLiftScale * lift.value
         scaleX = legacyScale
@@ -298,7 +298,7 @@ private fun KaraokeWordGroup(
             )
         }
         emphasisEligible -> {
-            // AM keeps CJK single-glyph and shaping-sensitive scripts in one text view instead of
+            // Keep CJK single-glyph and shaping-sensitive scripts in one text view instead of
             // splitting them into characters.  They still need the long-note emphasis owner; our
             // previous port incorrectly treated "do not split" as "do not emphasize", which made
             // the glow disappear for the most common single-character CJK long notes.
@@ -375,7 +375,7 @@ private fun AMShapedEmphasisWord(
 }
 
 /**
- * AM long-note emphasis reconstructed from C11983A.m15423a0() + C12217i.
+ * Long-note emphasis with timed attack, hold, and release phases.
  *
  * Each glyph has two independent ValueAnimator-equivalent phases:
  *  - grow: startDelay = index * min(0.4 * rawDuration / glyphCount, 400ms)
@@ -437,7 +437,7 @@ private fun AMEmphasisWord(
         suffixPresent = suffix.isNotEmpty(),
         content = {
             glyphs.forEachIndexed { index, glyph ->
-                // AM splits these words into individual CustomTextViews. Map the global karaoke
+                // Split these words into individual glyph lanes. Map the global karaoke
                 // sweep into the same logical glyph slots while keeping the feather inside each
                 // glyph. The emphasis timing itself is independent from highlight sweep timing.
                 val totalWidth = glyphWidths.sum().coerceAtLeast(1f)
@@ -502,7 +502,7 @@ private fun AMEmphasisWord(
 }
 
 /**
- * Equivalent of AM's TimeAnimator spacing compensation. C12217i stores half of each glyph's
+ * Time-based spacing compensation stores half of each glyph's
  * scale-induced width growth; C11983A then walks from the visual centre outward and translates
  * neighbours so scaled glyphs do not collide. The parent width intentionally stays at the
  * unscaled width, matching View scaling + translation rather than relayout.
@@ -964,7 +964,7 @@ private fun isAMLongNoteEmphasisEligible(
     if (text.isBlank()) return false
     if (durationMs < AM_KARAOKE_EMPHASIS_MIN_DURATION_MS) return false
     if (glyphCount <= 0) return false
-    // AM stores C15891t.m21948B0(text).toString().length(), i.e. UTF-16 String.length.
+    // Store UTF-16 String.length so surrogate pairs keep stable timing boundaries.
     if (text.length !in 1..AM_KARAOKE_EMPHASIS_MAX_GLYPHS) return false
 
     return true
@@ -977,7 +977,7 @@ private fun shouldSplitAMLongNoteEmphasis(
     if (glyphs.size <= 1) return false
     val blocks = unicodeBlocksOf(text)
     if (blocks.any { it in AM_KARAOKE_SHAPED_SCRIPT_BLOCKS }) return false
-    // CJK/Kana can use AM's per-character lane once there is more than one visible glyph.
+    // CJK/Kana can use a per-character lane once there is more than one visible glyph.
     return true
 }
 

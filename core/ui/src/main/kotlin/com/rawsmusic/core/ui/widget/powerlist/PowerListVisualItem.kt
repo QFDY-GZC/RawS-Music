@@ -1,9 +1,9 @@
 package com.rawsmusic.core.ui.widget.powerlist
 
 import com.rawsmusic.core.common.model.AudioFile
-import com.rawsmusic.core.common.utils.BitrateNormalizer
 import com.rawsmusic.core.common.utils.SampleRateNormalizer
 import java.io.File
+import java.util.Locale
 
 /**
  * 所有集合页共用的 PowerList item。
@@ -41,45 +41,33 @@ data class SongPowerListItem(
         get() = song.artist.ifBlank { song.album.ifBlank { "Music" } }
 
     override val meta: String
-        get() = buildString {
-            if (song.duration > 0L) append(formatPowerListDuration(song.duration))
-            if (song.sampleRate > 0) {
-                val normalizedSampleRate = SampleRateNormalizer.formatKhz(
-                    sampleRate = song.sampleRate,
-                    codecName = song.encodingFormat,
-                    formatName = song.format,
-                    filePath = song.path
-                )
-                if (normalizedSampleRate.isNotBlank()) {
-                    if (isNotBlank()) append(" · ")
-                    append(normalizedSampleRate)
-                }
-            }
-            if (song.bitsPerSample > 0) {
-                if (isNotBlank()) append(" · ")
-                append(song.bitsPerSample)
-                append("bit")
-            }
-            val bitrateText = BitrateNormalizer
-                .formatKbps(
-                    rawBitrate = song.bitRate,
-                    durationMs = song.duration,
-                    fileSizeBytes = song.fileSize,
-                    codecName = song.encodingFormat,
-                    formatName = song.format,
-                    filePath = song.path
-                )
-                .takeIf { it != "未知" }
-                ?.replace(" ", "")
-            if (!bitrateText.isNullOrBlank()) {
-                if (isNotBlank()) append(" · ")
-                append(bitrateText)
-            }
-            if (song.format.isNotBlank()) {
-                if (isNotBlank()) append(" · ")
-                append(song.format.uppercase())
-            }
-        }
+        get() = formatPowerListSongMeta(song)
+}
+
+/**
+ * The third song-list line intentionally contains source information only.
+ * Keep it short so the retained list renderer can ellipsize it without starting
+ * a marquee animation for every physical holder during a fling.
+ */
+internal fun formatPowerListSongMeta(song: AudioFile): String {
+    val format = song.format
+        .ifBlank { song.encodingFormat }
+        .ifBlank { song.extension }
+        .trim()
+        .uppercase(Locale.ROOT)
+    val sampleRate = SampleRateNormalizer.formatKhz(
+        sampleRate = song.sampleRate,
+        codecName = song.encodingFormat,
+        formatName = song.format,
+        filePath = song.path
+    )
+    return buildList {
+        format.takeIf { it.isNotBlank() }?.let(::add)
+        song.bitsPerSample
+            .takeIf { it > 0 }
+            ?.let { add("${it}bit") }
+        sampleRate.takeIf { it.isNotBlank() }?.let(::add)
+    }.joinToString("｜")
 }
 
 data class AlbumPowerListItem(

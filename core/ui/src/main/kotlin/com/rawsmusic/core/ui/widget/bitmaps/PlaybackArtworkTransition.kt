@@ -399,7 +399,7 @@ class PlaybackArtworkTransitionState internal constructor(
     }
 
     /**
-     * Poweramp keeps three AA item holders alive for the complete pointer sequence. Compose only
+     * Keep three item holders alive for the complete pointer sequence. Compose only
      * draws the centre and the currently exposed neighbour, but the hidden neighbour must retain
      * its exact bitmap token while the finger crosses zero. Rebuilding the secondary slot here
      * caused the visible B -> C -> B flash and prevented the same drag from continuing toward A.
@@ -1576,16 +1576,16 @@ private fun perspectiveDepthTransform(
         rotationZ = signedDistance * PERSPECTIVE_MAX_ROTATION_Z_DEGREES,
         rotationX = absoluteDistance * PERSPECTIVE_MAX_ROTATION_X_DEGREES,
         rotationY = signedDistance * PERSPECTIVE_MAX_ROTATION_Y_DEGREES,
-        alpha = powerampPerspectiveAlpha(absoluteDistance),
+        alpha = perspectiveSlotAlpha(absoluteDistance),
         // Android View's default camera distance is 1280dp. Compose uses a much shorter default,
-        // which exaggerates Poweramp's small rotations into a severe trapezoid on dense screens.
+        // which would exaggerate small rotations into a severe trapezoid on dense screens.
         cameraDistance = ANDROID_VIEW_DEFAULT_CAMERA_DISTANCE_DP * density.coerceAtLeast(0.1f),
         pivotFractionX = 0.5f,
         pivotFractionY = 0.5f
     )
 }
 
-private fun powerampPerspectiveAlpha(distanceFromCenter: Float): Float {
+private fun perspectiveSlotAlpha(distanceFromCenter: Float): Float {
     val visibleAmount = (1f - distanceFromCenter.coerceIn(0f, 1f)).coerceIn(0f, 1f)
     return if (visibleAmount < PERSPECTIVE_ALPHA_CUTOFF) {
         0f
@@ -1714,7 +1714,7 @@ fun PlaybackArtworkTransition(
     val progress = state.ratio.coerceIn(0f, 1f)
     val outgoingSuppressed = state.isAutomaticOutgoingSuppressed(currentToken)
 
-    // Poweramp's player list explicitly disables child clipping. The side slot is therefore
+    // Child clipping is disabled so the side slot remains visible beyond the center bounds.
     // allowed to keep its full perspective silhouette while crossing the artwork bounds instead
     // of being reduced to a narrow, page-like strip at the edge.
     BoxWithConstraints(modifier = modifier) {
@@ -1800,7 +1800,7 @@ fun PlaybackArtworkTransition(
             }
         }
 
-        // Recycler child order is stable for the whole Poweramp transition: the higher queue index
+        // Child order remains stable for the whole transition: the higher queue index
         // is drawn last. Do not swap Z order at 50%, because that creates a visible midpoint pop in
         // a perspective transition even when both transforms are otherwise identical.
         if (state.direction == PlayerArtworkDirection.Next) {

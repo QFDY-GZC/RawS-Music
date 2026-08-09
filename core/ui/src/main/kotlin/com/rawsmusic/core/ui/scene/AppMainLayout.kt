@@ -45,9 +45,11 @@ import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.rawsmusic.core.ui.R
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
@@ -62,7 +64,7 @@ import com.rawsmusic.core.ui.widget.flow.rememberRawFlowModeState
 import com.rawsmusic.core.ui.widget.bottombar.LiquidBottomTab
 import com.rawsmusic.core.ui.widget.bottombar.LiquidBottomTabs
 import com.rawsmusic.core.ui.widget.bottombar.NormalBottomChrome
-import com.rawsmusic.core.ui.widget.player.rememberUappBottomAccentColor
+import com.rawsmusic.core.ui.widget.player.rememberBottomAccentColor
 import com.rawsmusic.module.data.prefs.BottomBarStyle
 import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import com.rawsmusic.core.ui.systemui.rawNavigationBarsPadding
@@ -258,7 +260,7 @@ fun AppMainLayout(
                         HomeHeaderSettingsSection(options = homeHeaderOptions)
                     },
                     background = {
-                        // Poweramp keeps one background renderer mounted below every scene. Keep
+                        // Keep one background renderer mounted below every scene so
                         // both layers alive here as well; only their alpha changes during a
                         // transition, so returning never exposes the theme background for a
                         // single frame.
@@ -353,7 +355,7 @@ fun AppMainLayout(
                                     animationSpec = tween(durationMillis = 240),
                                     label = "bottom-tabs-scroll-offset"
                                 )
-                                // AM's stacked chrome is a stable sibling while the sheet is being
+                                // Stacked chrome is a stable sibling while the sheet is being
                                 // dragged. Freezing only BottomChromeScrollState.hidden is not
                                 // enough: animateDpAsState may already be mid-flight when PLAYER
                                 // captures the sheet. Snapshot the actually rendered offsets at
@@ -367,8 +369,9 @@ fun AppMainLayout(
                                 val miniPlayerOffsetY = sheetSessionMiniPlayerOffsetY ?: animatedMiniPlayerOffsetY
                                 val bottomTabsOffsetY = sheetSessionBottomTabsOffsetY ?: animatedBottomTabsOffsetY
                                 // MiniPlayer：在导航栏上方，所有页面可见
+                                val emptyPlayerTitle = stringResource(R.string.player_no_music)
                                 val hasSong = navData.miniPlayerTitle.isNotBlank() &&
-                                    navData.miniPlayerTitle != "暂无音乐播放"
+                                    navData.miniPlayerTitle != emptyPlayerTitle
                                 LaunchedEffect(hasSong, showBottomChrome) {
                                     if (!hasSong || !showBottomChrome) {
                                         miniPlayerGestureBounds = null
@@ -378,7 +381,7 @@ fun AppMainLayout(
                                 val miniCoverPath = navData.currentSong.resolvePlaybackArtworkKey(
                                     navData.miniPlayerCoverPath
                                 )
-                                val miniPlayerAccent = rememberUappBottomAccentColor(miniCoverPath)
+                                val miniPlayerAccent = rememberBottomAccentColor(miniCoverPath)
 
                                 fun selectBottomTab(index: Int) {
                                     tabScenes.getOrNull(index)?.let { targetScene ->

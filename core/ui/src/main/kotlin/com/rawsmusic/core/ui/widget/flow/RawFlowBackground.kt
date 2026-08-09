@@ -511,7 +511,7 @@ fun RawFlowBackground(
 
     val fallbackColors = remember(flowMode, isSystemDark, backgroundStyle) {
         if (backgroundStyle == RawBackgroundStyle.STATIC) {
-            uappDarkAlbumGradient(UAPP_DARK_ALBUM_FALLBACK_ACCENT)
+            darkAlbumGradient(STATIC_ALBUM_FALLBACK_ACCENT)
         } else {
             defaultFlowColors(flowMode, isSystemDark)
         }
@@ -704,7 +704,7 @@ fun RawFlowBackground(
     ) {
         val raw = targetColors.ifEmpty { fallbackColors }.take(FLOW_MAX_COLOR_COUNT)
         if (backgroundStyle == RawBackgroundStyle.STATIC) {
-            // UAPP m12274G() already performs the static HSV saturation/value transform.
+            // Static endpoints already include their HSV saturation/value transform.
             // Applying RawFlow's second saturation/brightness normalization here is what made
             // the non-bottom background drift away from the MiniPlayer for the same cover.
             raw
@@ -775,7 +775,7 @@ fun RawFlowBackground(
                 NativeStaticBackground.createPlayer(
                     artwork = staticArtwork,
                     colors = nativeColors,
-                    // UAPP endpoints already contain its brightness/saturation policy. The native
+                    // Static endpoints already contain the brightness/saturation policy. The native
                     // player renderer contributes only texture/blur/detail; do not recolor twice.
                     saturation = 1f,
                     brightness = 1f,
@@ -1340,8 +1340,8 @@ private fun extractRawBackgroundColors(
     isSystemDark: Boolean,
 ): List<Color> {
     if (backgroundStyle == RawBackgroundStyle.STATIC) {
-        val accent = uappStaticAlbumAccent(bitmap) ?: return emptyList()
-        return uappDarkAlbumGradient(accent)
+        val accent = staticAlbumAccent(bitmap) ?: return emptyList()
+        return darkAlbumGradient(accent)
     }
     return RawFlowPaletteExtractor.extract(bitmap, mode, isSystemDark)
 }

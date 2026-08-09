@@ -13,13 +13,13 @@ import android.graphics.Paint
 import android.graphics.drawable.Icon
 import android.os.Bundle
 import android.os.SystemClock
-import android.util.Log
 import android.widget.RemoteViews
 import androidx.palette.graphics.Palette
 import com.rawsmusic.MainActivity
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricLine
+import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.XiaomiSuperIslandSettings
 import com.rawsmusic.module.player.PlayerService
@@ -195,10 +195,10 @@ internal class XiaomiSuperIslandLyricBridge(
 
     private fun renderAndDispatch(request: RenderRequest) {
         val notification = runCatching { buildNotification(request) }.getOrElse { error ->
-            Log.w(TAG, "Focus payload rejected; using direct notification fallback", error)
+            AppLogger.w(TAG, "Focus payload rejected; using direct notification fallback", error)
             buildFallbackNotification(request)
         }
-        Log.d(
+        AppLogger.d(
             TAG,
             "Publishing Super Island lyric advanced=${request.settings.notificationStyle == XiaomiSuperIslandSettings.NOTIFICATION_STYLE_ADVANCED} " +
                 "text=${request.displayLyric.take(48)}"
@@ -243,7 +243,7 @@ internal class XiaomiSuperIslandLyricBridge(
             XiaomiXmsfNetworkHelper.setNetworkingEnabled(appContext, false)
         }
         xmsfNetworkingBlocked = blocked
-        if (!blocked) Log.w(TAG, "XMSF bypass unavailable; sending Focus notification directly")
+        if (!blocked) AppLogger.w(TAG, "XMSF bypass unavailable; sending Focus notification directly")
     }
 
     private fun restoreXmsfNetworkingAsync(expectedGeneration: Long? = null) {
@@ -361,7 +361,7 @@ internal class XiaomiSuperIslandLyricBridge(
             standardExtras
         }
         if (useAdvancedFocus) {
-            Log.d(TAG, "Publishing Super Island lyric with advanced RemoteViews")
+            AppLogger.d(TAG, "Publishing Super Island lyric with advanced RemoteViews")
         }
         return Notification.Builder(appContext, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_music_note)
@@ -382,7 +382,7 @@ internal class XiaomiSuperIslandLyricBridge(
     }
 
     /**
-     * Halcyon uses a custom Focus template when media controls are enabled. Keep the standard
+     * A custom Focus template may be used when media controls are enabled. Keep the standard
      * island payload merged into it so HyperOS can still render the compact and expanded island
      * on firmware versions that ignore one of the custom RemoteViews variants.
      */
@@ -577,7 +577,7 @@ internal class XiaomiSuperIslandLyricBridge(
                 customRoot.put("param_island", island)
                 merged.putString("miui.focus.param.custom", customRoot.toString())
             }
-        }.onFailure { error -> Log.w(TAG, "Unable to merge standard island parameters", error) }
+        }.onFailure { error -> AppLogger.w(TAG, "Unable to merge standard island parameters", error) }
         return merged
     }
 

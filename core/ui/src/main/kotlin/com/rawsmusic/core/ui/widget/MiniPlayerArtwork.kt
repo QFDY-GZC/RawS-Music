@@ -86,7 +86,7 @@ fun MiniPlayerArtwork(
         enabled = animateArtwork && isPlaying && mode == MiniPlayerArtworkMode.Vinyl
     )
 
-    // Keep the physical holder mounted while the source key changes. Poweramp changes the
+    // Keep the physical holder mounted while the source key changes. Updating the
     // bitmap owned by a stable artwork view, rather than disposing the view and exposing an
     // empty frame between two songs. BitmapImage keeps the previous frame until the provider
     // confirms a replacement or a terminal no-art result.

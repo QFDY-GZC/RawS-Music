@@ -2963,7 +2963,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                                 // ahead while the RingBuffer/output clock still owns audible old-track PCM.
                                 // Never reset an AUTOMATIC envelope here: wait for RingBuffer.markEOF()/drain
                                 // and let the eight-second renderer timeline decide the handoff. This mirrors
-                                // AM's separation between media preparation and renderer automation.
+                                // Keep media preparation separate from renderer automation.
                                 AppLogger.d(
                                     TAG,
                                     "AutoCrossfade: producer EOF observed; keep renderer timeline " +
@@ -4204,7 +4204,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                 // The current feeder is the only owner allowed to cut the native PCM
                 // generation. Endpoint, clock, alt setting, event thread, submit
                 // thread and URB pool stay alive.
-                engine.flushForNextTrack("uapp_same_profile_feeder:$reason")
+                engine.flushForNextTrack("same_profile_feeder:$reason")
                 armUsbPostStartVolumeRestore("usb_same_profile_feeder:$reason")
             }
 

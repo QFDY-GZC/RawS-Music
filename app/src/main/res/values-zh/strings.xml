@@ -371,6 +371,8 @@
     <string name="settings_audio_internal_precision_section">内部处理</string>
     <string name="settings_audio_internal_precision_title">64 位处理</string>
     <string name="settings_audio_internal_precision_summary">在 DSP 处理路径使用双精度工作缓冲。不会改变输出位宽，USB 完美比特会自动旁路。</string>
+    <string name="settings_audio_mono_output_title">单声道输出</string>
+    <string name="settings_audio_mono_output_summary">混合左右声道，并将相同信号输出到左右声道。</string>
     <string name="settings_audio_dither_title">PCM 抖动</string>
     <string name="settings_audio_dither_summary">整数降位：%1$s</string>
     <string name="settings_audio_dither_menu_title">PCM 抖动</string>
@@ -444,10 +446,8 @@
     <string name="settings_audio_info_gapless_body">在当前歌曲播放结束时，直接无缝切换到下一首歌曲的解码流，消除曲目之间常见的短暂静音间隙（Gap）。
 
 适用于现场专辑、DJ 混音等需要连续播放的场景。</string>
-    <string name="settings_audio_info_crossfade_title">交叉淡入淡出</string>
-    <string name="settings_audio_info_crossfade_body">在当前歌曲结束前，提前开始播放下一首歌曲，两首歌的音频重叠混合。使用恒定功率曲线（Constant-Power）进行淡入淡出，保持听感自然。
-
-可设置 1~12 秒的重叠时长，0 表示关闭。</string>
+    <string name="settings_audio_info_crossfade_title">自动交叉淡入淡出</string>
+    <string name="settings_audio_info_crossfade_body">自然播放时自动根据最后一句歌词生成过渡窗口；歌词不足时分析歌曲尾部包络。下一首先以低但可感知的音量铺底，再在收尾阶段完成交叉淡入淡出；同专辑连续曲与 DSD/严格 Bit-Perfect 保持无缝播放。无需设置时长。</string>
     <string name="settings_audio_info_sco_title">SCO 降采样</string>
     <string name="settings_audio_info_sco_body">蓝牙 SCO（Synchronous Connection Oriented）通话信道的音频带宽有限，通常仅支持 8kHz 或 16kHz 采样率。
 
@@ -828,22 +828,18 @@
     <string name="scan_complete_no_changes">扫描完成：未发现变化，共 %1$d 首，用时 %2$.1f 秒</string>
     <string name="scan_complete_summary">扫描完成：新增 %1$d 首，更新 %2$d 首，移除 %3$d 首；未变化 %4$d 首，共 %5$d 首，用时 %6$.1f 秒</string>
     <string name="update_dialog_title">RawS Music v%1$s 更新</string>
-    <string name="update_dialog_time">更新时间：2026 年 7 月 31 日</string>
+    <string name="update_dialog_time">更新时间：2026 年 8 月 9 日</string>
     <string name="update_developer_message_title">开发者的话</string>
     <string name="update_join_qq_group">点击链接加入群聊【RawS Music交流群】：https://qm.qq.com/q/bOvqTQPABi</string>
     <string name="update_close">关闭</string>
     <string-array name="update_notes">
-        <item>V0.9.68 USB fix vision</item>
-        <item>修复 USB 独占下 Native DSD 输出路径异常导致目标格式不匹配，最终无法播放的问题。</item>
-        <item>修复 USB 独占下目标格式为多声道时无法播放的问题；现已加入自动降级行为，避免因设备不支持目标多声道格式而完全无法播放。</item>
-        <item>修复 USB 独占硬件音量模式下，切歌后连续执行硬件音量调整可能触发手机 OEM USB 异常，最终导致系统强制重启的问题。</item>
-        <item>修复 USB 独占可能失效、无法重新进入独占链路的问题。</item>
-        <item>修复 USB 授权完成后当前播放歌曲未立即进入 USB 链路，必须切歌后才正式进入独占的问题。</item>
-        <item>优化 USB 独占后台播放，加入 OpenSL 静音送包保活。该方案会增加后台耗电；如需稳定后台播放，请在系统设置中手动关闭 RawS Music 的电池优化。</item>
-        <item>修复主界面轮播过程中专辑图闪烁、闪图的问题。</item>
-        <item>修复歌词格式兼容性，提高异常 ID3 内嵌歌词等格式的解析能力。</item>
-        <item>修复音效界面抢占上下滑手势的问题，并修复分类界面播放栏相关手势冲突。</item>
-        <item>为在线播放接入 DSP 功能，使在线音源可使用均衡器及其他音效处理。</item>
+        <item>V0.9.80 beta</item>
+        <item>修复某些歌词格式可能导致歌词提前加载的问题。</item>
+        <item>修复 USB 独占模式下的部分问题。</item>
+        <item>修复在歌词界面右半部分进行右滑手势时屏幕抖动的问题，同时修复在播放界面部分空白区域使用手势时的同类问题。</item>
+        <item>新增上滑进入播放界面的动画，暂时仅支持普通播放界面，沉浸模式将在后续版本中支持。</item>
+        <item>新增自动交叉淡入淡出。</item>
+        <item>新增普通底栏样式。</item>
     </string-array>
     <string-array name="update_developer_quotes">
         <item>“永远快乐”这句话，不但渺茫得不能实现，并且荒谬得不能成立。快过的决不会永久；我们说永远快乐，正好像说四方的圆形、静止的动作，同样地自相矛盾。在高兴的时候，我们空对瞬息即逝的时间喊着说：“逗留一会儿吧！你太美了！”那有什么用？你要永久，你该向痛苦里去找。不讲别的，只要一个失眠的晚上，或者有约不来的下午，或者一课沉闷的听讲，这许多比一切宗教信仰更有效力，能使你尝到什么叫做“永生”的滋味。人生的刺就在这里：留恋着不肯快走的，偏是你所不留恋的东西。</item>
@@ -904,6 +900,7 @@
     <string name="landscape_player_preferences">播放界面偏好</string>
     <string name="landscape_player_more">更多</string>
     <string name="landscape_player_translation">显示歌词翻译</string>
+    <string name="lyric_translation_short">译</string>
     <string name="landscape_player_romanization">显示歌词注音</string>
     <string name="landscape_player_lyric_blur">歌词景深模糊</string>
     <string name="landscape_player_highlight_all">所有歌词高亮</string>
@@ -1447,4 +1444,141 @@
     <string name="scan_enrich_progress">%1$s：%2$s %3$d/%4$d，缓存 %5$d，新读 %6$d</string>
     <string name="scan_enrich_completed">%1$s：补全完成，%2$d 首，缓存 %3$d，新读 %4$d</string>
     <string name="scan_error_with_reason">%1$s：扫描失败 %2$s</string>
+    <string name="settings_bottom_bar_style_section">底栏样式</string>
+    <string name="settings_bottom_bar_style_normal">普通</string>
+    <string name="settings_bottom_bar_style_normal_summary">播放栏与导航栏合并，上滑进入播放界面</string>
+    <string name="settings_bottom_bar_style_floating">悬浮</string>
+    <string name="settings_bottom_bar_style_floating_summary">播放栏与导航栏分离，以悬浮液态玻璃显示</string>
+    <string name="settings_system_lyric_delivery_title">系统歌词与媒体通知</string>
+    <string name="settings_system_lyric_delivery_summary">实时活动歌词、小米超级岛与媒体通知按键</string>
+    <string name="settings_live_update_lyric_section">实时活动歌词</string>
+    <string name="settings_live_update_lyric_enabled">发布实时活动歌词</string>
+    <string name="settings_live_update_lyric_enabled_summary">在支持的 Android 实时活动界面显示当前歌词</string>
+    <string name="settings_live_update_lyric_content">歌词内容</string>
+    <string name="settings_live_update_lyric_original">原文</string>
+    <string name="settings_live_update_lyric_translation">翻译</string>
+    <string name="settings_live_update_lyric_pronunciation">注音</string>
+    <string name="settings_live_update_lyric_display_mode">布局</string>
+    <string name="settings_live_update_lyric_compact">紧凑</string>
+    <string name="settings_live_update_lyric_full">完整歌词</string>
+    <string name="settings_live_update_lyric_secondary">辅助文本</string>
+    <string name="settings_live_update_lyric_secondary_song">歌曲信息</string>
+    <string name="settings_live_update_lyric_secondary_off">关闭</string>
+    <string name="settings_media_notification_buttons">媒体通知按键</string>
+    <string name="settings_media_notification_buttons_summary">选择播放控制旁显示的两个附加功能</string>
+    <string name="settings_media_notification_buttons_playback_desktop">播放模式 + 桌面歌词</string>
+    <string name="settings_media_notification_buttons_playback_favorite">播放模式 + 收藏</string>
+    <string name="settings_media_notification_buttons_desktop_favorite">桌面歌词 + 收藏</string>
+    <string name="settings_xiaomi_super_island_title">小米超级岛歌词</string>
+    <string name="settings_xiaomi_super_island_summary">为小米 HyperOS 超级岛发布实时歌词</string>
+    <string name="settings_xiaomi_super_island_enable">启用小米超级岛歌词</string>
+    <string name="settings_xiaomi_super_island_enable_summary">需要设备提供小米/HyperOS 超级岛协议支持</string>
+    <string name="settings_xiaomi_super_island_custom">超级岛自定义设置</string>
+    <string name="settings_xiaomi_super_island_display_section">歌词显示</string>
+    <string name="settings_xiaomi_super_island_mode_standard">当前行</string>
+    <string name="settings_xiaomi_super_island_mode_full">完整歌词</string>
+    <string name="settings_xiaomi_super_island_lyric_mode">歌词模式</string>
+    <string name="settings_xiaomi_super_island_left_cover">完整歌词模式显示专辑图</string>
+    <string name="settings_xiaomi_super_island_left_cover_summary">在左侧歌词旁保留专辑图</string>
+    <string name="settings_xiaomi_super_island_scrolling">滚动长歌词</string>
+    <string name="settings_xiaomi_super_island_scrolling_summary">当前句超出宽度时启用跑马灯</string>
+    <string name="settings_xiaomi_super_island_right_limit">右侧文本长度</string>
+    <string name="settings_xiaomi_super_island_left_limit">左侧文本长度</string>
+    <string name="settings_xiaomi_super_island_text_limit_summary">两侧可显示的视觉字符数量</string>
+    <string name="settings_xiaomi_super_island_chars">%1$d 个字符</string>
+    <string name="settings_xiaomi_super_island_colorize">为歌词和进度着色</string>
+    <string name="settings_xiaomi_super_island_colorize_summary">使用专辑取色或自定义颜色</string>
+    <string name="settings_xiaomi_super_island_color_source">取色来源</string>
+    <string name="settings_xiaomi_super_island_color_album">专辑图</string>
+    <string name="settings_xiaomi_super_island_color_custom">自定义颜色</string>
+    <string name="settings_xiaomi_super_island_custom_color">自定义颜色</string>
+    <string name="settings_xiaomi_super_island_notification_section">按键与分享</string>
+    <string name="settings_xiaomi_super_island_progress_color">为进度指示器着色</string>
+    <string name="settings_xiaomi_super_island_actions">超级岛按键</string>
+    <string name="settings_xiaomi_super_island_actions_off">关闭</string>
+    <string name="settings_xiaomi_super_island_actions_media">媒体控制</string>
+    <string name="settings_xiaomi_super_island_style_standard">标准通知</string>
+    <string name="settings_xiaomi_super_island_style_advanced">高级通知</string>
+    <string name="settings_xiaomi_super_island_notification_style">通知样式</string>
+    <string name="settings_xiaomi_super_island_buttons_two">两个按键</string>
+    <string name="settings_xiaomi_super_island_buttons_three">三个按键</string>
+    <string name="settings_xiaomi_super_island_button_layout">媒体按键布局</string>
+    <string name="settings_xiaomi_super_island_click">点击行为</string>
+    <string name="settings_xiaomi_super_island_click_default">系统默认</string>
+    <string name="settings_xiaomi_super_island_click_player">打开媒体控制</string>
+    <string name="settings_xiaomi_super_island_click_app">打开 RawS Music</string>
+    <string name="settings_xiaomi_super_island_share">启用分享</string>
+    <string name="settings_xiaomi_super_island_share_summary">在支持的小米界面提供已配置的分享内容</string>
+    <string name="settings_xiaomi_super_island_share_format">分享格式</string>
+    <string name="settings_xiaomi_super_island_share_format_one">歌词与歌曲链接</string>
+    <string name="settings_xiaomi_super_island_share_format_two">内联歌词</string>
+    <string name="settings_xiaomi_super_island_share_format_three">艺术家与歌曲链接</string>
+    <string name="settings_xiaomi_super_island_compat_section">兼容性</string>
+    <string name="settings_xiaomi_super_island_xmsf_mode">XMSF 发布模式</string>
+    <string name="settings_xiaomi_super_island_xmsf_disabled">关闭</string>
+    <string name="settings_xiaomi_super_island_xmsf_standard">标准</string>
+    <string name="settings_xiaomi_super_island_xmsf_custom">自定义时长</string>
+    <string name="settings_xiaomi_super_island_xmsf_aggressive">激进</string>
+    <string name="settings_xiaomi_super_island_xmsf_disabled_summary">不使用小米桥接</string>
+    <string name="settings_xiaomi_super_island_xmsf_standard_summary">使用标准 HyperOS 更新路径</string>
+    <string name="settings_xiaomi_super_island_xmsf_custom_summary">使用自定义过渡时长</string>
+    <string name="settings_xiaomi_super_island_xmsf_aggressive_summary">优先使用低延迟更新路径</string>
+    <string name="settings_xiaomi_super_island_xmsf_duration">自定义过渡时长</string>
+    <string name="settings_xiaomi_super_island_xmsf_duration_summary">控制 HyperOS 过渡窗口</string>
+    <string name="settings_xiaomi_super_island_dismiss_delay">消失延迟</string>
+    <string name="settings_xiaomi_super_island_dismiss_immediate">立即</string>
+    <string name="settings_xiaomi_super_island_dismiss_one">1 秒</string>
+    <string name="settings_xiaomi_super_island_dismiss_three">3 秒</string>
+    <string name="settings_xiaomi_super_island_dismiss_five">5 秒</string>
+    <string name="settings_xiaomi_super_island_diagnostics_section">诊断</string>
+    <string name="settings_xiaomi_super_island_export_log">导出超级岛日志</string>
+    <string name="settings_xiaomi_super_island_export_log_summary">分享超级岛歌词、桥接和前台服务诊断日志</string>
+    <string name="notification_action_desktop_lyric">桌面歌词</string>
+    <string name="super_island_lyric_placeholder">♪</string>
+    <string name="super_island_action_previous">上一首</string>
+    <string name="super_island_action_play_pause">播放/暂停</string>
+    <string name="super_island_action_next">下一首</string>
+    <string name="super_island_unknown_song">未知歌曲</string>
+    <string name="super_island_unknown_artist">未知歌手</string>
+    <string name="super_island_channel_name">小米超级岛歌词</string>
+    <string name="super_island_channel_description">HyperOS 超级岛歌词更新</string>
+    <string name="settings_long_text_title">长文本</string>
+    <string name="settings_long_text_animate">长文本动画显示</string>
+    <string name="settings_long_text_animate_summary">播放器中的文本溢出后，短暂停留再开始往返滚动</string>
+    <string name="settings_long_text_everywhere">在所有地方动画显示长文本</string>
+    <string name="settings_long_text_everywhere_summary">同时应用于列表；滑动列表时暂停动画</string>
+    <string name="settings_language_title">语言</string>
+    <string name="settings_language_summary">选择 RawS Music 的界面语言</string>
+    <string name="settings_language_system">跟随系统</string>
+    <string name="settings_language_chinese">简体中文</string>
+    <string name="settings_language_english">English</string>
+    <string name="webdav_title">WebDAV</string>
+    <string name="metadata_match_progress">已处理 %1$d/%2$d · 写入 %3$d</string>
+    <string name="metadata_match_progress_failed">已处理 %1$d/%2$d · 写入 %3$d · 失败 %4$d</string>
+    <string name="audio_information_title">音频信息</string>
+    <string name="usb_dac_device_status_title">USB DAC 设备状态</string>
+    <string name="common_refresh">刷新</string>
+    <string name="common_close">关闭</string>
+    <string name="metadata_match_preparing">准备自动匹配…</string>
+    <string name="metadata_match_complete">自动匹配完成</string>
+    <string name="metadata_match_finished">自动匹配结束</string>
+    <string name="metadata_match_channel_name">歌词与专辑图自动匹配</string>
+    <string name="metadata_match_started">已在后台开始处理 %1$d 首，八线程并发可能导致轻微发热</string>
+    <string name="metadata_match_result">匹配结束：总计 %1$d 首，成功 %2$d 首，失败 %3$d 首</string>
+    <string name="metadata_match_running">匹配中 · 已处理 %1$d · 剩余 %2$d</string>
+    <string name="song_delete_complete">已删除</string>
+    <string name="song_delete_cancelled">已取消删除</string>
+    <string name="song_delete_failed">删除失败</string>
+    <string name="ai_runtime_download_failed">运行库下载失败</string>
+    <string name="ai_model_download_failed">模型下载失败</string>
+    <string name="ai_runtime_install_failed">AI 运行库安装失败</string>
+    <string name="ai_model_install_failed">AI 模型安装失败</string>
+    <string name="ai_download_check_source">请检查可信仓库和网络</string>
+    <string name="ai_model_download_title">下载 AI 人声分离模型</string>
+    <string name="ai_separation_notification_title">AI 人声分离 · %1$s</string>
+    <string name="common_cancel">取消</string>
+    <string name="metadata_match_notification_title">RawS Music 正在匹配歌词与专辑图</string>
+    <string name="webdav_empty_directory">此目录为空</string>
+    <string name="webdav_load_failed">加载失败：%1$s</string>
+    <string name="webdav_remote_album">WebDAV 远程音乐</string>
 </resources>

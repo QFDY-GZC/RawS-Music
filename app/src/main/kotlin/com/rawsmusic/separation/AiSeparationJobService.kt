@@ -574,12 +574,12 @@ class AiSeparationJobService : Service() {
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_music_note)
-            .setContentTitle("AI 人声分离 · ${progress.sourceName}")
+            .setContentTitle(getString(R.string.ai_separation_notification_title, progress.sourceName))
             .setContentText(text)
             .setOnlyAlertOnce(true)
             .setOngoing(true)
             .setProgress(1000, percent, indeterminate)
-            .addAction(0, "取消", cancelIntent)
+            .addAction(0, getString(R.string.common_cancel), cancelIntent)
             .setContentIntent(settingsPendingIntent())
             .build()
     }

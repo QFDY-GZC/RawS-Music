@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.MarqueeAnimationMode
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -49,6 +50,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -62,6 +64,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.rawsmusic.core.ui.theme.ThemeManager
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.core.ui.widget.bitmaps.NativePlayerArtworkSwitchEasing
+import com.rawsmusic.core.ui.widget.text.LongTextMotionState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -218,7 +221,7 @@ fun ComposeMiniPlayer(
     var transitionJob by remember { mutableStateOf<Job?>(null) }
     // The mini-player owns both horizontal track switching and tap-to-open. Keep a short
     // post-drag suppression window so the UP that commits a track switch can never leak through
-    // the sibling clickable/tap detector and force-open the full player. AM treats dragging the
+    // the sibling clickable/tap detector and force-open the full player. Treat dragging the
     // mini player and tapping it as mutually exclusive gesture outcomes.
     var suppressOpenUntilUptimeMs by remember { mutableStateOf(0L) }
     fun blockOpenFromCurrentHorizontalGesture() {
@@ -559,7 +562,7 @@ private fun MiniPlayerSlidingContent(
     val primaryText = if (hasLyric) {
         snapshot.lyricText.trim()
     } else {
-        snapshot.title.ifBlank { "暂无音乐播放" }
+        snapshot.title.ifBlank { stringResource(R.string.player_no_music) }
     }
     val secondaryText = if (hasLyric) snapshot.lyricTranslation.trim() else snapshot.artist
     val centerLyrics = hasLyric && isLikelyChineseLyric(primaryText)
@@ -604,9 +607,16 @@ private fun MiniPlayerSlidingContent(
                     overflow = TextOverflow.Clip,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .basicMarquee(
-                            iterations = 1,
-                            repeatDelayMillis = 900
+                        .then(
+                            if (LongTextMotionState.enabled) {
+                                Modifier.basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    animationMode = MarqueeAnimationMode.Immediately,
+                                    repeatDelayMillis = 3_000,
+                                    initialDelayMillis = 1_500,
+                                    velocity = 42.5.dp
+                                )
+                            } else Modifier
                         )
                 )
                 if (secondaryText.isNotBlank()) {
@@ -621,9 +631,16 @@ private fun MiniPlayerSlidingContent(
                         overflow = TextOverflow.Clip,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .basicMarquee(
-                                iterations = 1,
-                                repeatDelayMillis = 900
+                            .then(
+                                if (LongTextMotionState.enabled) {
+                                    Modifier.basicMarquee(
+                                        iterations = Int.MAX_VALUE,
+                                        animationMode = MarqueeAnimationMode.Immediately,
+                                        repeatDelayMillis = 3_000,
+                                        initialDelayMillis = 1_500,
+                                        velocity = 42.5.dp
+                                    )
+                                } else Modifier
                             )
                     )
                 }
@@ -650,7 +667,9 @@ private fun MiniPlayerSlidingContent(
                 painter = painterResource(
                     id = if (snapshot.isPlaying) R.drawable.ic_pause else R.drawable.ic_play
                 ),
-                contentDescription = if (snapshot.isPlaying) "暂停" else "播放",
+                contentDescription = stringResource(
+                    if (snapshot.isPlaying) R.string.common_pause else R.string.common_play
+                ),
                 tint = textColor,
                 modifier = Modifier.size(24.dp)
             )

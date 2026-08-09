@@ -34,7 +34,9 @@ import com.rawsmusic.core.ui.scene.bottomNavigationLabel
 import com.rawsmusic.core.ui.scene.customizableBottomNavigationScenes
 import com.rawsmusic.core.ui.scene.resolveBottomNavigationScenes
 import com.rawsmusic.module.data.prefs.PersonalizationPreferences
+import com.rawsmusic.module.data.prefs.BottomBarStyle
 import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.RadioButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -42,6 +44,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 @Composable
 fun BottomNavigationSettingsScreen(onBack: () -> Unit) {
     val bottomNavigationEnabled by PersonalizationPreferences.bottomNavigationEnabled.collectAsState()
+    val bottomBarStyle by PersonalizationPreferences.bottomBarStyle.collectAsState()
     val savedTags by PersonalizationPreferences.bottomNavigationSceneTags.collectAsState()
     val selectedScenes = resolveBottomNavigationScenes(savedTags)
 
@@ -62,6 +65,21 @@ fun BottomNavigationSettingsScreen(onBack: () -> Unit) {
                 onCheckedChange = { enabled ->
                     PersonalizationPreferences.isBottomNavigationEnabled = enabled
                 },
+            )
+        }
+
+        SmallTitle(text = stringResource(R.string.settings_bottom_bar_style_section))
+        SettingsCard {
+            BottomBarStyleChoice(
+                style = BottomBarStyle.NORMAL,
+                selected = bottomBarStyle == BottomBarStyle.NORMAL,
+                onClick = { PersonalizationPreferences.bottomBarStyleValue = BottomBarStyle.NORMAL },
+            )
+            Spacer(Modifier.height(4.dp))
+            BottomBarStyleChoice(
+                style = BottomBarStyle.FLOATING,
+                selected = bottomBarStyle == BottomBarStyle.FLOATING,
+                onClick = { PersonalizationPreferences.bottomBarStyleValue = BottomBarStyle.FLOATING },
             )
         }
 
@@ -200,6 +218,47 @@ fun BottomNavigationSettingsScreen(onBack: () -> Unit) {
                 color = MiuixTheme.colorScheme.primary,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
+            )
+        }
+    }
+}
+
+@Composable
+private fun BottomBarStyleChoice(
+    style: BottomBarStyle,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val titleRes = when (style) {
+        BottomBarStyle.NORMAL -> R.string.settings_bottom_bar_style_normal
+        BottomBarStyle.FLOATING -> R.string.settings_bottom_bar_style_floating
+    }
+    val summaryRes = when (style) {
+        BottomBarStyle.NORMAL -> R.string.settings_bottom_bar_style_normal_summary
+        BottomBarStyle.FLOATING -> R.string.settings_bottom_bar_style_floating_summary
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(titleRes),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MiuixTheme.colorScheme.onBackground,
+            )
+            Text(
+                text = stringResource(summaryRes),
+                fontSize = 12.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = Modifier.padding(top = 2.dp),
             )
         }
     }

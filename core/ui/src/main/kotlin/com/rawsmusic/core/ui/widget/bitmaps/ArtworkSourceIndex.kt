@@ -44,7 +44,7 @@ internal object ArtworkSourceIndex {
             val file = File(record.sourcePath)
             // The source record is already validated as a regular readable file. Do not impose a
             // 1 KiB policy here: tiny but valid embedded covers are still usable image sources, and
-            // Poweramp keeps the source record independent from thumbnail-size heuristics.
+            // Keep the source record independent from thumbnail-size heuristics.
             if (file.isFile && file.canRead() && file.length() > 0L) {
                 return record
             }

@@ -54,7 +54,7 @@ object BitmapProvider {
     private const val MSG_LOAD = 1
     private const val MSG_CANCEL = 2
 
-    // Poweramp keeps one provider dispatch lane.  The lane serializes source probing while the
+    // Keep one provider dispatch lane. The lane serializes source probing while the
     // holder callbacks are posted asynchronously, so a fling cannot start several native
     // TagLib/FFmpeg/MMR probes that compete with Compose for CPU time.
     private const val WORKER_COUNT = 1
@@ -386,7 +386,7 @@ object BitmapProvider {
             return request
         }
 
-        // Poweramp resolves the source record before consulting its not-found sentinel. A prior
+        // Resolve the source record before consulting its not-found sentinel. A prior
         // transient probe can leave a failure entry behind while another surface has already
         // decoded the same source. Checking the sentinel first would hide that valid wrapper and
         // make the cover disappear until the TTL expires.
@@ -506,7 +506,7 @@ object BitmapProvider {
         forceFront: Boolean
     ) {
         // There is intentionally one dispatch lane.  Priority is expressed by message position,
-        // not by starting another decoder thread; this is the same boundary Poweramp uses for its
+        // not by starting another decoder thread; this is the source-dispatch boundary for
         // source-record request table.
         val selectedWorkerIndex = 0
         val handler = handlers[selectedWorkerIndex]
@@ -518,7 +518,7 @@ object BitmapProvider {
                 "ENQUEUE key=${request.key.takeLast(40)} size=${request.targetWidth}x${request.targetHeight} worker=$selectedWorkerIndex"
             )
         }
-        // Match Poweramp's provider: ordinary requests stay FIFO on the single Handler. Only an
+        // Ordinary requests stay FIFO on the single Handler. Only an
         // explicit promotion (or the high-priority playback path) goes to the front. Putting every
         // visible row at the front turns a fling into LIFO and makes the same source fight the UI.
         val front = forceFront || request.priority == BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH
@@ -770,7 +770,7 @@ object BitmapProvider {
         // Do not hand a smaller bucket to a larger PowerList cell.  The old path returned the
         // first source bitmap regardless of its dimensions, so a reused 192px/list bitmap could
         // be painted into a 384px/512px grid cell for one frame and then be replaced by a second
-        // decode.  Poweramp keeps the source record separate from the drawable tier; mirror that
+        // decode. Keep the source record separate from the drawable tier so
         // boundary by accepting only a bitmap that covers this request's minimum tier.
         return memoryCache.get(cacheKey)
             ?.let { reusableSourceBitmap(it, actualWidth, actualHeight) }
@@ -988,7 +988,7 @@ object BitmapProvider {
     }
 
     fun cancel(request: BitmapRequest, keepDecoding: Boolean = false) {
-        // A holder disappearing must not cancel the source flight. Poweramp detaches the
+        // A holder disappearing must not cancel the source flight. Detach the
         // holder listener while the source record continues decoding, so a reused or neighboring
         // holder can join the same flight instead of restarting it after every pixel of scroll.
         val keepRunning = keepDecoding
@@ -1027,7 +1027,7 @@ object BitmapProvider {
 
     fun notifyLibraryArtworkChanged(reason: String = "library_changed") {
         // A scan completion is only a library snapshot notification. It does not prove that
-        // every source changed. Poweramp keeps source records and their decoded wrappers alive;
+        // every source changed. Keep source records and their decoded wrappers alive;
         // only an explicit file/artwork mutation calls invalidateArtworkKeys(). Clearing all
         // records here made every visible holder lose its bitmap and re-decode at once.
         failedLogLastAt.clear()
@@ -1265,7 +1265,7 @@ object BitmapProvider {
             // Keep the source flight occupied until the main-thread delivery has detached all
             // waiters. Clearing it in the worker's finally block creates a race: a recycled
             // holder can enqueue a second decode before the first callback is dispatched, and the
-            // old callback then removes the new waiters. Poweramp releases a source record only
+            // old callback then removes the new waiters. Release a source record only
             // after its holder callbacks have been posted; mirror that ordering here.
             clearInFlightForRequest(ownerRequest)
         }
@@ -1597,7 +1597,7 @@ object BitmapProvider {
 
                 SourceDecodeResult.TransientFailure -> {
                     // Do not turn a source-open/native decoder race into the five-minute no-art
-                    // sentinel. Poweramp retries the source record after a transient failure.
+                    // sentinel. Retry the source record after a transient failure.
                     return ArtworkDecodeResult.LightweightMiss
                 }
 
@@ -1646,7 +1646,7 @@ object BitmapProvider {
         val bitmap = decodeImageFile(cleanPath, targetWidth, targetHeight)
         if (bitmap == null || bitmap.isRecycled) return SourceDecodeResult.ConfirmedAbsent
         // The audio probe above keeps embedded art authoritative. This record is only a fallback
-        // after that probe confirms absence, matching Poweramp's source-record precedence.
+        // after that probe confirms absence, preserving source-record precedence.
         rememberReusableArtworkSource(
             storageKey = storageKey,
             sourcePath = cleanPath,
@@ -1862,7 +1862,7 @@ object BitmapProvider {
                 origWidth = cachedBounds.width
                 origHeight = cachedBounds.height
             } else {
-                // Poweramp's source record keeps dimensions alongside the decoded wrapper. Avoid
+                // Keep dimensions alongside the decoded wrapper. Avoid
                 // repeating the bounds pass for every physical list holder while still versioning
                 // the record by canonical path, file length, and lastModified.
                 opts.inJustDecodeBounds = true
@@ -1880,7 +1880,7 @@ object BitmapProvider {
                 return null
             }
 
-            // Keep the same two source tiers as Poweramp's lowRes/hiRes records. The source
+            // Keep separate low-resolution and high-resolution source tiers. The source
             // record is upgraded by the actual request, not by an unconditional 512px decode:
             // small list cells stay cheap, while a later larger cell can promote the record.
             val requestedSide = maxOf(targetWidth, targetHeight)
@@ -2803,7 +2803,7 @@ object BitmapProvider {
                     val failureSourceKey = stableArtworkCacheSourceKey(request.decodeKey)
                     // A list holder is a transient observer. Its request must still probe the
                     // source record even when an older playback/indexer request remembered a
-                    // no-art result for the same file. Poweramp keeps that decision on the
+                    // no-art result for the same file. Keep that decision on the
                     // source wrapper; applying it here made every reused list holder inherit a
                     // stale sentinel and was the direct cause of covers disappearing in bulk.
                     if (request.surface.rememberNullAsNoArt &&
@@ -2877,7 +2877,7 @@ object BitmapProvider {
                         trace("DECODE_DONE seq=${request.traceSeq} result=${bitmap != null} elapsed=${elapsed}ms bitmap=${bitmap?.width}x${bitmap?.height} thread=${Thread.currentThread().name} key=${request.key.tailForTrace()}")
                     } catch (e: Exception) {
                         // An exception is a transient provider failure, not proof that the file
-                        // has no artwork.  Poweramp only installs its not-found sentinel after
+                        // has no artwork. Install the not-found sentinel only after
                         // the complete source probe; poisoning the source here makes one codec,
                         // permission, or file race hide the cover for the whole TTL.
                         request.terminalNoArt = false

@@ -510,6 +510,16 @@ object AppPreferences {
             get() = kv.decodeBool("ui_status_bar_hidden", false)
             set(value) { kv.encode("ui_status_bar_hidden", value) }
 
+        /** Animate overflowing labels in player surfaces. */
+        var animateLongLabels: Boolean
+            get() = kv.decodeBool("ui_animate_long_labels", true)
+            set(value) { kv.encode("ui_animate_long_labels", value) }
+
+        /** Extend long-label animation to dense list surfaces. */
+        var animateLongLabelsEverywhere: Boolean
+            get() = kv.decodeBool("ui_animate_long_labels_everywhere", false)
+            set(value) { kv.encode("ui_animate_long_labels_everywhere", value) }
+
         var scanPaths: List<String>
             get() {
                 val json = kv.decodeString("ui_scan_paths", "") ?: ""

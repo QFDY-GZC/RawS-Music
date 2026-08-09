@@ -94,6 +94,56 @@ class LyricPlaybackStateTest {
         assertEquals(setOf(0), state.activeLineIndices)
     }
 
+
+    @Test
+    fun karaokeLineDoesNotActivateBeforeItsFirstTimedWord() {
+        val lines = listOf(
+            RichLyricLine(
+                begin = 10_000L,
+                end = 13_000L,
+                text = "Delayed karaoke",
+                words = listOf(
+                    LyricWord(begin = 10_800L, end = 11_400L, text = "Delayed"),
+                    LyricWord(begin = 11_400L, end = 12_500L, text = " karaoke")
+                )
+            )
+        )
+
+        val early = calculateLyricPlaybackState(lines, 10_400L)
+        assertEquals(-1, early.currentLineIndex)
+        assertEquals(0, early.anchorLineIndex)
+        assertTrue(early.activeLineIndices.isEmpty())
+
+        val started = calculateLyricPlaybackState(lines, 10_800L)
+        assertEquals(0, started.currentLineIndex)
+        assertEquals(setOf(0), started.activeLineIndices)
+        assertEquals(0, started.currentWordIndex)
+    }
+
+    @Test
+    fun currentWordIsUnsetUntilTheTimedWordActuallyBegins() {
+        val lines = listOf(
+            RichLyricLine(
+                begin = 1_000L,
+                end = 4_000L,
+                text = "Lead in",
+                secondary = "early background",
+                secondaryWords = listOf(
+                    LyricWord(begin = 1_000L, end = 1_800L, text = "early background")
+                ),
+                words = listOf(
+                    LyricWord(begin = 2_000L, end = 3_000L, text = "Lead in")
+                )
+            )
+        )
+
+        val state = calculateLyricPlaybackState(lines, 1_500L)
+
+        assertEquals(0, state.currentLineIndex)
+        assertEquals(-1, state.currentWordIndex)
+        assertEquals(0f, state.wordProgress)
+    }
+
     @Test
     fun punctuationAndTrailingCharactersFollowThePreviousTimedWord() {
         val words = listOf(

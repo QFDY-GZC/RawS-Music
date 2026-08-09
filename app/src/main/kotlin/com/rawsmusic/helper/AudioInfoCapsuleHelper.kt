@@ -62,6 +62,7 @@ import androidx.core.content.ContextCompat
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.rawsmusic.R
+import androidx.compose.ui.res.stringResource
 import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.core.common.model.isDsdSourceFile
 import com.rawsmusic.core.common.utils.AppLogger
@@ -1068,7 +1069,7 @@ fun AudioInfoCapsuleOverlay(
                             modifier = Modifier.size(22.dp)
                         )
                         Text(
-                            text = "音频信息",
+                            text = stringResource(R.string.audio_information_title),
                             color = ComposeColor.White,
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Bold,

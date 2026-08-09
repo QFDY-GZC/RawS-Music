@@ -349,7 +349,7 @@ class QuickJsRuntime(
                     return hostCall("http.postBytesResponse", payload);
                   }
                 },
-                
+
                 xml: {
                   getRootAttributes: function(xml) {
                     return hostCall("xml.getRootAttributes", {
@@ -378,7 +378,7 @@ class QuickJsRuntime(
                     });
                   }
                 },
-                
+
                 log: {
                   debug: function(tag, message) {
                     if (message === undefined) {

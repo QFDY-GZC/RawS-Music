@@ -157,9 +157,9 @@ dependencies {
     implementation(libs.miuix.ui)
     implementation(libs.miuix.icons)
     implementation(libs.miuix.preference)
-    implementation(libs.focus.api)
-    implementation(libs.shizuku.api)
-    implementation(libs.shizuku.provider)
+    implementation("com.xzakota.hyper.notification:focus-api:1.4")
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
     // navigationevent-compose (miuix SearchBar 内部需要 LocalNavigationEventDispatcherOwner)
     implementation("androidx.navigationevent:navigationevent-compose:1.1.1")
 }

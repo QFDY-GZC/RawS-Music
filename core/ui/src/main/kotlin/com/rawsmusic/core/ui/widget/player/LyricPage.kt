@@ -459,7 +459,7 @@ fun LyricPage(
                 modifier = Modifier
                     .fillMaxSize()
                     .lyricAmViewportEdgeMask(
-                        // AM fades the whole lyrics viewport from its physical top edge. RawSMusic
+                        // Fade the whole lyrics viewport from its physical top edge. RawS Music
                         // additionally supports fixed headers; keep those pixels fully punched out
                         // before starting the same 7%-of-viewport top feather.
                         headerBottomPx = if (
@@ -1204,11 +1204,11 @@ private fun Modifier.lyricAmViewportEdgeMask(
         endY = heightPx,
     )
 
-    // AM's bottom fade size is: (distance from the controls' top to the viewport bottom)
+    // Bottom fade size is the distance from the controls' top to the viewport bottom
     // + 27.75% of the viewport height.  RawSMusic's dedicated LYRIC scene has no controls
     // overlaying this viewport; its bottomPadding is only LazyColumn trailing space.  Treat the
     // controls top as the physical viewport bottom instead of turning bottomPadding into a fully
-    // transparent block.  This yields AM's exact no-overlay stops:
+    // transparent block. This yields stable no-overlay stops:
     //   72.25% = full alpha, 96.25% = 5% alpha, 100% = transparent.
     val bottomFadeStartStop = 1f - 0.2775f
     val bottomFivePercentStop = 1f - (0.2775f - 0.24f)

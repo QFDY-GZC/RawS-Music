@@ -46,7 +46,7 @@ internal class MainActivityLibraryMetadataCoordinator(
             ContextCompat.startForegroundService(activity, intent)
             Toast.makeText(
                 activity,
-                "已在后台开始处理 ${snapshot.size} 首，八线程并发可能导致轻微发热",
+                activity.getString(R.string.metadata_match_started, snapshot.size),
                 Toast.LENGTH_LONG,
             ).show()
         }

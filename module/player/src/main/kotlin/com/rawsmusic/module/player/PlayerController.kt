@@ -4575,7 +4575,7 @@ class PlayerController private constructor(context: Context) {
                 ensureUsbForegroundImmediate("play_usb_exclusive_before_native")
                 sharedUsbAudioEngine.setBackgroundPlaybackActiveSafely(
                     true,
-                    "uapp_pre_native_media_identity"
+                    "pre_native_media_identity"
                 )
             }
 
