@@ -726,7 +726,7 @@ class AudioInfoCapsuleHelper(
         lines += InfoLine("音量控制", isLabel = true)
         lines += InfoLine("软件音量 ${"%.0f".format(AppPreferences.Player.volume * 100f)}%，硬件 Feature Unit ${if (AppPreferences.Player.hardwareFeatureUnitEnabled) "开启" else "关闭"}")
         lines += InfoLine("交叉淡入淡出", isLabel = true)
-        lines += InfoLine(if (AppPreferences.Player.crossfadeDuration > 0) "${AppPreferences.Player.crossfadeDuration} 秒" else "关闭")
+        lines += InfoLine(if (AppPreferences.Player.automaticCrossfadeEnabled) "自动（歌词优先）" else "关闭")
         lines += InfoLine("缓冲区", isLabel = true)
         lines += InfoLine("播放器实时缓冲，输出端按设备水位自适应")
         lines += InfoLine("延迟", isLabel = true)

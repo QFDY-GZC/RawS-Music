@@ -1,11 +1,13 @@
 package com.rawsmusic.separation
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
@@ -16,6 +18,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.rawsmusic.R
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
+import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.ui.settings.AiSeparationActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -90,11 +93,30 @@ class AiSeparationJobService : Service() {
         activeTaskId = taskId
         cancelled.set(false)
         acquireWakeLock()
-        startForeground(NOTIFICATION_ID, buildNotification(initial, indeterminate = true))
+        startProcessingForeground(buildNotification(initial, indeterminate = true))
         activeJob = scope.launch {
             runTask(startId, taskId, Uri.parse(sourceUri), sourceName, selected, contract)
         }
         return START_NOT_STICKY
+    }
+
+    /**
+     * Use an explicit type because targetSdk 37 no longer accepts an implicit
+     * foreground-service type. dataSync is available on the older Android
+     * versions supported by the app, while still covering this long-running
+     * local processing task on newer versions.
+     */
+    @Suppress("DEPRECATION")
+    private fun startProcessingForeground(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     private suspend fun runTask(
@@ -147,6 +169,9 @@ class AiSeparationJobService : Service() {
                 )
                 AiOnnxRuntimeLoader.ensureLoaded(this).getOrThrow()
             }
+            // M4A is only a container. Probe the actual stream so ALAC is not sent
+            // through the AAC output path when the source filename ends in .m4a.
+            val losslessOutput = isLosslessSource(sourceUri, sourceName)
             val decodeStartedMs = android.os.SystemClock.elapsedRealtime()
             val sourceMode = decodeSourceToPcm(
                 sourceUri = sourceUri,
@@ -250,7 +275,6 @@ class AiSeparationJobService : Service() {
                 ).getOrThrow()
                 ensureNotCancelled(taskId)
 
-                val losslessOutput = isLosslessSource(sourceUri, sourceName)
                 val outputFormat = if (losslessOutput) "flac" else "m4a"
                 val encodedVocals = File(
                     taskDir,
@@ -324,6 +348,14 @@ class AiSeparationJobService : Service() {
         } catch (error: Throwable) {
             val cancelledTask = error.message == CANCELLED_MESSAGE || cancelled.get() ||
                 AiSeparationJobProgressBus.isCancelRequested(taskId)
+            if (!cancelledTask) {
+                AppLogger.e(
+                    TAG,
+                    "AI separation failed task=$taskId source=$sourceName " +
+                        "phase=${AiSeparationJobProgressBus.state.value.phase}",
+                    error,
+                )
+            }
             if (liveStreamStarted) {
                 AiSeparationLiveStreamBus.fail(
                     taskId,
@@ -444,8 +476,38 @@ class AiSeparationJobService : Service() {
 
     private fun isLosslessSource(sourceUri: Uri, sourceName: String): Boolean {
         val extension = sourceName.substringAfterLast('.', "").lowercase()
-        if (extension in LOSSLESS_EXTENSIONS) return true
-        return contentResolver.getType(sourceUri)?.lowercase() in LOSSLESS_MIME_TYPES
+        val mime = runCatching { contentResolver.getType(sourceUri)?.lowercase() }.getOrNull()
+        if (extension in LOSSLESS_EXTENSIONS || mime in LOSSLESS_MIME_TYPES ||
+            mime?.contains("alac") == true
+        ) {
+            Log.i(
+                TAG,
+                "AI_SOURCE_FORMAT source=$sourceName extension=$extension mime=$mime " +
+                    "codec=extension-or-mime lossless=true",
+            )
+            return true
+        }
+
+        // Containers such as M4A can contain either AAC or ALAC. Use the same
+        // FFmpeg probe as the scanner while the original content Uri is open.
+        val codec = runCatching {
+            contentResolver.openFileDescriptor(sourceUri, "r")?.use { descriptor ->
+                val mediaInfo = FFmpegBridge.getMediaInfo("/proc/self/fd/${descriptor.fd}")
+                mediaInfo.orEmpty()
+                    .asSequence()
+                    .filter { (key, _) -> key.contains("codec_name", ignoreCase = true) }
+                    .map { (_, value) -> value }
+                    .firstOrNull { it.contains("alac", ignoreCase = true) }
+                    .orEmpty()
+            }.orEmpty()
+        }.getOrDefault("")
+        val lossless = codec.isNotBlank()
+        Log.i(
+            TAG,
+            "AI_SOURCE_FORMAT source=$sourceName extension=$extension mime=$mime " +
+                "codec=${codec.ifBlank { "unknown" }} lossless=$lossless",
+        )
+        return lossless
     }
 
     private fun ensureFreeSpace(requiredBytes: Long) {

@@ -28,7 +28,7 @@ class LyricsPublisher(
         lastSong = song
         lastLyrics = LyricData()
 
-        PlayerService.updateLyrics(null)
+        PlayerService.updateLyrics(null, song)
         pushServiceLyrics()
 
         // LyriconProviderManager 的签名包含 stable song id 和歌词数量。先发送
@@ -49,7 +49,7 @@ class LyricsPublisher(
         setComposeLyrics?.invoke(lyrics)
 
         // 1. PlayerService 是状态栏 / MediaSession 词幕的数据源
-        PlayerService.updateLyrics(lyrics.takeUnless { it.isEmpty })
+        PlayerService.updateLyrics(lyrics.takeUnless { it.isEmpty }, song)
 
         // 2. 刷新通知 / MediaSession metadata
         pushServiceLyrics()
@@ -70,7 +70,7 @@ class LyricsPublisher(
 
     fun publishEmpty() {
         lastLyrics = LyricData()
-        PlayerService.updateLyrics(null)
+        PlayerService.updateLyrics(null, lastSong)
         pushServiceLyrics()
         LyriconProviderManager.setPosition(0L)
     }

@@ -8,7 +8,7 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.isFileBackedArtworkSource
 import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.core.common.utils.AppLogger
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
+import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -94,13 +94,7 @@ class CoverUriResolver(
         val resolvedKey = if (song.path.isFileBackedArtworkSource()) song.coverKey else coverUri
         val previous = coverKeyCache.put(stableKey, resolvedKey)
         if (previous != resolvedKey) {
-            BitmapProvider.invalidateArtworkForSong(
-                path = song.path,
-                fileSize = song.fileSize,
-                dateModified = song.dateModified,
-                albumArtPath = coverUri,
-                reason = "cover_resolver_update"
-            )
+            CoilArtworkRuntime.invalidate(song.coverKey)
         }
     }
 
@@ -136,13 +130,7 @@ class CoverUriResolver(
 
     fun invalidate(song: AudioFile) {
         coverKeyCache.remove(stableSongCacheKey(song))
-        BitmapProvider.invalidateArtworkForSong(
-            path = song.path,
-            fileSize = song.fileSize,
-            dateModified = song.dateModified,
-            albumArtPath = song.albumArtPath,
-            reason = "cover_resolver_invalidate"
-        )
+        CoilArtworkRuntime.invalidate(song.coverKey)
     }
 
     /**
@@ -169,13 +157,7 @@ class CoverUriResolver(
 
             withContext(Dispatchers.Main) {
                 if (!result.isNullOrBlank()) {
-                    BitmapProvider.invalidateArtworkForSong(
-                        path = song.path,
-                        fileSize = song.fileSize,
-                        dateModified = song.dateModified,
-                        albumArtPath = result,
-                        reason = "cover_async_extract_done"
-                    )
+                    CoilArtworkRuntime.invalidate(song.coverKey)
                 }
                 _coverExtractedEvent.value = song.path to resolveCoverUri(song)
             }

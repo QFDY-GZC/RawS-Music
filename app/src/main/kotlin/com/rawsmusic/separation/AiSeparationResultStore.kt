@@ -69,6 +69,10 @@ data class AiSeparationResult(
 class AiSeparationResultStore private constructor(context: Context) {
     private val appContext = context.applicationContext
     private val legacyRoot = File(appContext.filesDir, "ai_separation/results")
+    // Shared Music directories may accept media files but reject non-media sidecars
+    // such as JSON on some Android/FUSE implementations. Keep the manifest private
+    // while leaving the generated audio files in the public RawSMusic directory.
+    private val metadataRoot = File(appContext.filesDir, "ai_separation/result_metadata")
     private val root = File(
         Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
         "RawSMusic/AI Separation",
@@ -99,6 +103,9 @@ class AiSeparationResultStore private constructor(context: Context) {
             require(vocals.length() > 44L && instrumental.length() > 44L) { "分离输出为空" }
             require(root.isDirectory || root.mkdirs()) {
                 "无法创建公共结果目录：${root.absolutePath}"
+            }
+            require(metadataRoot.isDirectory || metadataRoot.mkdirs()) {
+                "无法创建 AI 分离结果清单目录"
             }
             val sourceIdentity = querySourceIdentity(
                 sourceUri = sourceUri,
@@ -141,8 +148,15 @@ class AiSeparationResultStore private constructor(context: Context) {
                     sourceDurationMs = sourceIdentity.durationMs,
                     outputFormat = extension,
                 )
-                atomicWrite(File(staging, RESULT_MANIFEST), resultJson(result).toByteArray())
-                require(staging.renameTo(target)) { "无法原子提交分离结果" }
+                val metadataFile = File(metadataRoot, "$id.json")
+                writeMetadataManifest(
+                    target = metadataFile,
+                    bytes = resultJson(result).toByteArray(),
+                )
+                if (!staging.renameTo(target)) {
+                    metadataFile.delete()
+                    error("无法原子提交分离结果")
+                }
                 val committed = result.copy(directory = target.absolutePath)
                 publishToMediaLibrary(committed)
                 mutable.value = scan()
@@ -166,6 +180,7 @@ class AiSeparationResultStore private constructor(context: Context) {
                     "结果目录无效"
                 }
                 if (target.exists() && !target.deleteRecursively()) error("无法删除分离结果")
+                File(metadataRoot, "$id.json").delete()
                 mutable.value = scan()
             }
         }
@@ -178,6 +193,7 @@ class AiSeparationResultStore private constructor(context: Context) {
                 managedRoots().forEach { directory ->
                     directory.listFiles().orEmpty().forEach { it.deleteRecursively() }
                 }
+                metadataRoot.listFiles().orEmpty().forEach { it.deleteRecursively() }
                 mutable.value = emptyList()
             }
         }
@@ -211,7 +227,7 @@ class AiSeparationResultStore private constructor(context: Context) {
         .filter { it.isDirectory && !it.name.startsWith('.') }
         .mapNotNull { directory ->
             runCatching {
-                val manifest = File(directory, RESULT_MANIFEST)
+                val manifest = manifestFor(directory)
                 val rootJson = JsonParser.parseString(manifest.readText()).asJsonObject
                 val result = AiSeparationResult(
                     id = rootJson.get("id").asString,
@@ -242,6 +258,15 @@ class AiSeparationResultStore private constructor(context: Context) {
 
     private fun managedRoots(): List<File> = listOf(root, legacyRoot)
         .distinctBy { it.absolutePath }
+
+    private fun manifestFor(directory: File): File {
+        val publicManifest = File(directory, RESULT_MANIFEST)
+        return if (publicManifest.isFile) {
+            publicManifest
+        } else {
+            File(metadataRoot, "${directory.name}.json")
+        }
+    }
 
     private fun isManagedDirectory(directory: File): Boolean {
         val canonical = directory.canonicalPath
@@ -351,13 +376,11 @@ class AiSeparationResultStore private constructor(context: Context) {
         val durationMs: Long,
     )
 
-    private fun atomicWrite(target: File, bytes: ByteArray) {
-        val temporary = File(target.parentFile, ".${target.name}.${System.nanoTime()}.tmp")
-        FileOutputStream(temporary).use { output ->
+    private fun writeMetadataManifest(target: File, bytes: ByteArray) {
+        FileOutputStream(target, false).use { output ->
             output.write(bytes)
-            output.fd.sync()
+            output.flush()
         }
-        require(temporary.renameTo(target)) { "无法保存 ${target.name}" }
     }
 
     companion object {

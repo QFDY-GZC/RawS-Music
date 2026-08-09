@@ -15,7 +15,6 @@ import android.os.Process
 import android.os.SystemClock
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.waveform.RawWaveformCache
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.bitmaps.PowerListCoilArtwork
 import com.rawsmusic.core.ui.widget.flow.clearRawFlowMemoryCache
 import com.rawsmusic.core.ui.widget.index.RawAlphabetIndexCache
@@ -148,7 +147,6 @@ object FairRuntimeMemoryManager {
 
     private fun trimReconstructableCaches() {
         PowerListCoilArtwork.trimMemory()
-        BitmapProvider.trimMemory()
         RawWaveformCache.clearMemory()
         clearRawFlowMemoryCache()
         RawAlphabetIndexCache.clear()
