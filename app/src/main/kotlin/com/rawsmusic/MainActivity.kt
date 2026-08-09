@@ -10,11 +10,14 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Locale
 import android.util.Log
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.view.KeyEvent
 import android.view.OrientationEventListener
 import android.widget.Toast
@@ -53,7 +56,9 @@ import com.rawsmusic.core.ui.widget.bitmaps.rememberPlaybackArtworkTransitionSta
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.module.data.repository.MusicRepository
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.prefs.BottomBarStyle
 import com.rawsmusic.module.data.prefs.FontManager
+import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import com.rawsmusic.module.data.prefs.PlaybackStatsStore
 import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.LyriconProviderManager
@@ -127,7 +132,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -147,13 +151,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.zIndex
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.changedToDown
-import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
-import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
-import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
@@ -320,6 +317,18 @@ class MainActivity : ComponentActivity() {
     }
     private var playingCoverBoundsForTransition by mutableStateOf<android.graphics.RectF?>(null)
     private var miniPlayerCoverBoundsForTransition by mutableStateOf<android.graphics.RectF?>(null)
+    private var miniPlayerCoverTargetForTransition by mutableStateOf<CoverTransitionTarget?>(null)
+    // Stable collapsed MiniPlayer cover geometry retained while PLAYER covers MAIN. Return must
+    // never depend on a transient/null MiniPlayer callback or on the ListCover used for entry.
+    private var stableMiniPlayerCoverGeometryForTransition by mutableStateOf<CoverTransitionTarget?>(null)
+    private var miniPlayerGestureBoundsForSceneGesture by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
+    // FLOATING MiniPlayer is a sibling of the player sheet, unlike AM's in-sheet MiniPlayer.
+    // Keep one stable MAIN-layout top and freeze it for MAIN <-> PLAYER handoffs; feeding the
+    // live AnimatedVisibility/offset position back into the sheet travel makes the collapsed
+    // anchor move while the sheet itself is settling, producing whole-screen shake.
+    private var stableFloatingMiniPlayerTopPx by mutableStateOf<Float?>(null)
+    private var lockedFloatingMiniPlayerTopPxForTransition by mutableStateOf<Float?>(null)
+    private var floatingReturnOwnsMiniPlayerTarget by mutableStateOf(false)
     private var coverTargetForTransition by mutableStateOf<CoverTransitionTarget?>(null)
     private var lockedPlayerCoverBoundsForTransition by mutableStateOf<android.graphics.RectF?>(null)
     private var lockedPlayerCoverPathForTransition by mutableStateOf<String?>(null)
@@ -327,8 +336,6 @@ class MainActivity : ComponentActivity() {
     private var coldStartRevealPending = true
     private var coldStartRevealAwaitingResolve = false
     private var coldStartRevealJob: kotlinx.coroutines.Job? = null
-    private var acceptingReturnCoverBounds = false
-    private var returnCoverBoundsResolved = false
 
     /** 手势锁协调器：统一管理"谁正在禁止父级手势" */
     private val gestureLockCoordinator by lazy {
@@ -420,6 +427,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private var isSideMenuOpen by mutableStateOf(false)
+    private var sideRailOpenRequestToken by mutableLongStateOf(0L)
+    private var sideRailCloseRequestToken by mutableLongStateOf(0L)
 
     /** 进入播放器前的 Fragment 导航目标，用于返回时恢复正确的页面 */
     private var prePlayerFragmentDest: Int? = null
@@ -621,6 +630,7 @@ class MainActivity : ComponentActivity() {
         scheduleDeferredStartupWork()
         intentCoordinator.handlePlaybackWidgetIntent(intent, delayMs = 420L)
         intentCoordinator.handleLauncherShortcutIntent(intent, delayMs = 520L)
+        handleExternalAudioIntent(intent, delayMs = 700L)
         window.decorView.postDelayed({
             if (!isFinishing && !isDestroyed) {
                 val handled = PlayerService.dispatchAppProcessForeground(
@@ -640,6 +650,91 @@ class MainActivity : ComponentActivity() {
         usbIntentCoordinator.handleAttachIntent(intent, reason = "activity_on_new_intent")
         intentCoordinator.handlePlaybackWidgetIntent(intent, delayMs = 80L)
         intentCoordinator.handleLauncherShortcutIntent(intent, delayMs = 80L)
+        handleExternalAudioIntent(intent, delayMs = 120L)
+    }
+
+    /** Receives audio files opened by file managers and other media applications. */
+    private fun handleExternalAudioIntent(intent: Intent, delayMs: Long) {
+        if (intent.action != Intent.ACTION_VIEW) return
+        val uri = intent.data ?: return
+        val mimeType = intent.type.orEmpty()
+        if (mimeType.isNotBlank() &&
+            !mimeType.startsWith("audio/", ignoreCase = true) &&
+            mimeType != "application/octet-stream"
+        ) {
+            return
+        }
+
+        AppLogger.i("ExternalAudioIntent", "received uri=$uri mime=$mimeType")
+        lifecycleScope.launch {
+            delay(delayMs)
+            val song = withContext(Dispatchers.IO) {
+                stageExternalAudio(uri, mimeType)
+            }
+            if (song == null) {
+                AppLogger.e("ExternalAudioIntent", "stage_failed uri=$uri")
+                return@launch
+            }
+            if (isFinishing || isDestroyed) return@launch
+            AppLogger.i(
+                "ExternalAudioIntent",
+                "play path=${song.path} title=${song.title} format=${song.format}",
+            )
+            primePlayerUi(song)
+            playbackQueueHelper.playQueue(listOf(song), 0)
+            openPlayPageWithSharedElement()
+        }
+    }
+
+    private fun stageExternalAudio(uri: Uri, mimeType: String): AudioFile? {
+        val displayName = queryExternalAudioName(uri)
+            ?: uri.lastPathSegment?.substringAfterLast('/')
+            ?: "external_audio"
+        val directPath = uri.path?.takeIf { uri.scheme.equals("file", ignoreCase = true) }
+        val sourcePath = directPath?.takeIf { File(it).isFile }
+        val extensionFromName = displayName.substringAfterLast('.', "")
+            .takeIf { it.isNotBlank() && it.length <= 8 }
+        val extension = extensionFromName
+            ?: mimeType.substringAfterLast('/').substringBefore(';')
+                .replace("mpeg", "mp3", ignoreCase = true)
+                .takeIf { it.isNotBlank() }
+            ?: "audio"
+        val stagedPath = sourcePath ?: run {
+            val directory = File(cacheDir, "external_audio").apply { mkdirs() }
+            val target = File(directory, "${Integer.toHexString(uri.toString().hashCode())}.$extension")
+            if (!target.isFile || target.length() == 0L) {
+                val temporary = File(target.parentFile, "${target.name}.part")
+                contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(temporary).use { output -> input.copyTo(output) }
+                } ?: return null
+                if (!temporary.renameTo(target)) {
+                    temporary.delete()
+                    return null
+                }
+            }
+            target.absolutePath
+        }
+        val title = displayName.substringBeforeLast('.', displayName).ifBlank { displayName }
+        return AudioFile(
+            path = stagedPath,
+            title = title,
+            format = extension.uppercase(Locale.ROOT),
+        )
+    }
+
+    private fun queryExternalAudioName(uri: Uri): String? {
+        return runCatching {
+            contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+            }
+        }.getOrNull()
     }
 
     private fun openPlaylistPickerFromWidget(attempt: Int = 0) {
@@ -851,7 +946,7 @@ class MainActivity : ComponentActivity() {
             },
             mainNavigation = { mainNavState },
             ensureController = ::ensureRuntimeController,
-            openPlayerPage = ::openPlayPageWithSharedElement,
+            openPlayerPage = { openPlayPageWithSharedElement() },
             updateRootVisibility = ::updateComposeRootVisibility,
             primePlayerUi = ::primePlayerUi,
             openQueuePage = ::openQueuePage,
@@ -1039,6 +1134,7 @@ class MainActivity : ComponentActivity() {
 
     private fun openSideMenu() {
         isSideMenuOpen = true
+        sideRailOpenRequestToken++
     }
 
     /**
@@ -1126,6 +1222,7 @@ class MainActivity : ComponentActivity() {
 
     private fun closeSideMenu() {
         isSideMenuOpen = false
+        sideRailCloseRequestToken++
     }
 
     private fun setupSideMenu() {
@@ -1178,6 +1275,9 @@ class MainActivity : ComponentActivity() {
             isProgressSeekActive = { progressSeekActive },
             isGestureBlocked = { gestureLockCoordinator.isBlocked },
             isAudioInfoSharedWindowActive = { audioInfoSharedWindowActive },
+            isHorizontalGestureExcluded = { point ->
+                miniPlayerGestureBoundsForSceneGesture?.contains(point) == true
+            },
         )
     }
 
@@ -1250,7 +1350,6 @@ class MainActivity : ComponentActivity() {
                     Modifier
                         .fillMaxSize()
                         .background(rootColor)
-                        .sideMenuDismissInput()
                         .sceneGestureInput()
                 ) {
                     BackgroundLayers()
@@ -1263,6 +1362,10 @@ class MainActivity : ComponentActivity() {
                     }
                     val homeFullCoverHostPolicy =
                         resolveHomeFullCoverActivityHostPolicy(homeFullCoverOverlayActive)
+                    val normalPlayerSheetDormant = usesNormalPlayerSheet() &&
+                        ::playerSceneController.isInitialized &&
+                        playerSceneController.composeCurrentScene == PlayerSceneController.Scene.MAIN &&
+                        !playerSceneController.composeIsTransitioning
                     // Keep one stable player-overlay composition across the complete portrait-dial
                     // round trip. Removing this subtree on open and recreating it on close changes
                     // the Activity root scene in the same frames that own the shared artwork,
@@ -1271,7 +1374,10 @@ class MainActivity : ComponentActivity() {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .zIndex(homeFullCoverHostPolicy.playerOverlayZIndex)
+                            .zIndex(
+                                if (normalPlayerSheetDormant) -1f
+                                else homeFullCoverHostPolicy.playerOverlayZIndex
+                            )
                             .graphicsLayer {
                                 alpha = homeFullCoverHostPolicy.playerOverlayAlpha
                             },
@@ -1285,27 +1391,6 @@ class MainActivity : ComponentActivity() {
                             showUpdateNotes = false
                         }
                     }
-                }
-            }
-        }
-    }
-
-    private fun Modifier.sideMenuDismissInput(): Modifier = pointerInput(Unit) {
-        awaitEachGesture {
-            val down = awaitPointerEvent(PointerEventPass.Final)
-                .changes
-                .firstOrNull { it.changedToDownIgnoreConsumed() }
-                ?: return@awaitEachGesture
-            var moved = false
-            while (true) {
-                val event = awaitPointerEvent(PointerEventPass.Final)
-                val change = event.changes.firstOrNull() ?: return@awaitEachGesture
-                if (change.positionChange().getDistance() > viewConfiguration.touchSlop) {
-                    moved = true
-                }
-                if (change.changedToUpIgnoreConsumed()) {
-                    if (!moved && isSideMenuOpen) closeSideMenu()
-                    return@awaitEachGesture
                 }
             }
         }
@@ -1359,7 +1444,7 @@ class MainActivity : ComponentActivity() {
                     overlayCoordinator.setFolderDialogVisible(true)
                 }
                 com.rawsmusic.module.scanner.ScanStateBus.ScanState.COMPLETED -> {
-                    com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider.notifyLibraryArtworkChanged("scan_completed")
+                    com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime.invalidate()
                 }
                 else -> Unit
             }
@@ -1413,7 +1498,6 @@ class MainActivity : ComponentActivity() {
             onSongClick = { song, _ ->
                 primePlayerUi(song)
                 playbackQueueHelper.playSongFromScene(song, mainNavState.currentScene)
-                openPlayPageWithSharedElement()
             },
             onSongLongClick = { _, _ -> },
             onAlbumClick = { mainNavState.navigateTo(com.rawsmusic.core.ui.scene.NavScene.ALBUMS) },
@@ -1467,7 +1551,6 @@ class MainActivity : ComponentActivity() {
             onQueueSongClick = { song, _ ->
                 primePlayerUi(song)
                 playbackQueueHelper.playSongFromScene(song, mainNavState.currentScene)
-                openPlayPageWithSharedElement()
             },
             onPlayerSeek = { positionMs ->
                 playerController?.seekTo(positionMs)
@@ -1475,7 +1558,6 @@ class MainActivity : ComponentActivity() {
             onRecentlyAddedClick = { song, _ ->
                 primePlayerUi(song)
                 playbackQueueHelper.playSongFromScene(song, mainNavState.currentScene)
-                openPlayPageWithSharedElement()
             },
             onPlayAll = { songs ->
                 songs.firstOrNull()?.let { first ->
@@ -1499,8 +1581,12 @@ class MainActivity : ComponentActivity() {
                 )
             },
             onNavigateToPlayer = {
-                if (playerController?.currentOrRequestedSongForUi() != null) openPlayPageWithSharedElement()
-                else moveTaskToBack(true)
+                if (playerController?.currentOrRequestedSongForUi() != null) {
+                    // This action originates from the MiniPlayer. AM always interpolates the
+                    // player artwork from the live MiniPlayer CardView, even with stacked bottom
+                    // navigation present; never borrow a list-cell/fixed region for this entry.
+                    openPlayPageWithSharedElement(preferMiniPlayerSource = true)
+                } else moveTaskToBack(true)
             },
             onMiniPlayerPlayPause = {
                 dispatchPlayerTransportAction("mini_play_pause") { it.playPause() }
@@ -1510,6 +1596,16 @@ class MainActivity : ComponentActivity() {
             },
             onMiniPlayerNext = {
                 dispatchPlayerTransportAction("mini_next") { it.next() }
+            },
+            onMiniPlayerExpandDragStart = {
+                preparePlayPageForBottomSheetDrag()
+                playerSceneController.startMainToPlayerDrag()
+            },
+            onMiniPlayerExpandDragProgress = { ratio ->
+                playerSceneController.updateMainToPlayerDrag(ratio)
+            },
+            onMiniPlayerExpandDragEnd = { shouldOpen, velocity ->
+                playerSceneController.endMainToPlayerDrag(shouldOpen, velocity)
             },
             onOpenFolderPicker = { overlayCoordinator.showFolderDialog = true },
             onSortClick = {},
@@ -1581,7 +1677,14 @@ class MainActivity : ComponentActivity() {
                 rect?.let {
                     val copy = android.graphics.RectF(it)
                     playingCoverBoundsForTransition = copy
-                    if (playerSceneController.currentScene == PlayerSceneController.Scene.MAIN && !acceptingReturnCoverBounds) {
+                    if (
+                        playerSceneController.currentScene == PlayerSceneController.Scene.MAIN &&
+                        !floatingReturnOwnsMiniPlayerTarget &&
+                        !usesNormalPlayerSheet() &&
+                        !usesFloatingPlayerBar()
+                    ) {
+                        // ListCover shared geometry is only retained for legacy/non-floating
+                        // routes. Floating and NORMAL MAIN<->PLAYER transitions are MiniPlayer-only.
                         lockedPlayerCoverBoundsForTransition = android.graphics.RectF(copy)
                     }
                 }
@@ -1595,7 +1698,9 @@ class MainActivity : ComponentActivity() {
                     target != null &&
                     target.isForSong(currentId, currentCover) &&
                     playerSceneController.currentScene == PlayerSceneController.Scene.MAIN &&
-                    !acceptingReturnCoverBounds
+                    !floatingReturnOwnsMiniPlayerTarget &&
+                    !usesNormalPlayerSheet() &&
+                    !usesFloatingPlayerBar()
                 ) {
                     val bounds = android.graphics.RectF(target.bounds)
                     playingCoverBoundsForTransition = bounds
@@ -1610,7 +1715,6 @@ class MainActivity : ComponentActivity() {
 
                 if (
                     coldStartRevealAwaitingResolve &&
-                    !acceptingReturnCoverBounds &&
                     target != null &&
                     (target.songId == currentId || target.isForSong(currentId, currentCover))
                 ) {
@@ -1619,30 +1723,28 @@ class MainActivity : ComponentActivity() {
                     AppLogger.d("Startup", "cold-start current-song reveal resolved")
                 }
 
-                if (
-                    acceptingReturnCoverBounds &&
-                    target != null &&
-                    target.isForSong(currentId, currentCover)
-                ) {
-                    val bounds = android.graphics.RectF(target.bounds)
-                    playingCoverBoundsForTransition = bounds
-                    lockedPlayerCoverBoundsForTransition = android.graphics.RectF(bounds)
-                    coverTargetForTransition = target.copyBounds()
-                    returnCoverBoundsResolved = true
-                    // The return locator is a one-shot shared-element request. Leaving the index
-                    // armed makes later layout/geometry changes re-run the reveal effect and move
-                    // an already correctly positioned song list.
-                    playerReturnRevealIndex = -1
-                }
             },
             onMiniPlayerCoverBoundsChanged = { rect ->
                 rect?.let {
                     miniPlayerCoverBoundsForTransition = android.graphics.RectF(it)
                 }
+            },
+            onMiniPlayerCoverTargetChanged = { target ->
+                miniPlayerCoverTargetForTransition = target?.copyBounds()
+                target?.bounds?.let { bounds ->
+                    miniPlayerCoverBoundsForTransition = android.graphics.RectF(bounds)
+                }
+                if (
+                    target != null &&
+                    playerSceneController.currentScene == PlayerSceneController.Scene.MAIN &&
+                    !playerSceneController.composeIsTransitioning
+                ) {
+                    stableMiniPlayerCoverGeometryForTransition = target.copyBounds().copy(
+                        source = CoverTransitionTarget.Source.MiniPlayer
+                    )
+                }
             }
         )
-
-        val hidePlayingCoverForReturn = false
 
         val data = com.rawsmusic.core.ui.scene.NavData(
             songs = songs,
@@ -1664,7 +1766,10 @@ class MainActivity : ComponentActivity() {
             nextSongTitle = nextSongTitle,
             miniPlayerCoverPath = miniPlayerCoordinator.coverPath,
             playerReturnRevealIndex = playerReturnRevealIndex,
-            hidePlayingCover = hidePlayingCoverForReturn,
+            // List artwork remains ordinary MAIN content throughout collapse. PLAYER -> MAIN
+            // is already hard-wired to the MiniPlayer endpoint, so hiding the current list cover
+            // only creates a visible hole/recompose pulse and does not provide ownership safety.
+            hidePlayingCover = false,
             currentSortOrder = AppPreferences.Sort.songSortOrder,
             artistDataSource = null,
             playCounts = playbackStats.associate { it.songId to it.playCount },
@@ -1680,8 +1785,12 @@ class MainActivity : ComponentActivity() {
             navData = data,
             externalPageRenderer = AppPageRendererImpl(mainNavState),
             onNavigateToPlayer = {
-                if (playerController?.currentOrRequestedSongForUi() != null) openPlayPageWithSharedElement()
-                else moveTaskToBack(true)
+                if (playerController?.currentOrRequestedSongForUi() != null) {
+                    // This action originates from the MiniPlayer. AM always interpolates the
+                    // player artwork from the live MiniPlayer CardView, even with stacked bottom
+                    // navigation present; never borrow a list-cell/fixed region for this entry.
+                    openPlayPageWithSharedElement(preferMiniPlayerSource = true)
+                } else moveTaskToBack(true)
             },
             onSettingsClick = {
                 launchSettingsActivity(com.rawsmusic.ui.settings.SettingsActivity::class.java)
@@ -1689,6 +1798,28 @@ class MainActivity : ComponentActivity() {
             onAudioEffectsClick = {
                 launchSettingsActivity(com.rawsmusic.ui.settings.AudioEffectsActivity::class.java)
             },
+            onOpenSideRail = { openSideMenu() },
+            sideRailOpenRequestToken = sideRailOpenRequestToken,
+            sideRailCloseRequestToken = sideRailCloseRequestToken,
+            onSideRailExpandedChanged = { expanded ->
+                isSideMenuOpen = expanded
+            },
+            onMiniPlayerGestureBoundsChanged = { bounds ->
+                miniPlayerGestureBoundsForSceneGesture = bounds
+                // Only learn the collapsed anchor from a fully settled MAIN layout. During a
+                // player transition the floating bar may be entering, changing its scroll offset
+                // or moving above stacked navigation; those intermediate positions must never
+                // become the sheet anchor. Preserve the last stable top even if the bar is
+                // temporarily unmounted while PLAYER is visible.
+                if (
+                    bounds != null &&
+                    playerSceneController.currentScene == PlayerSceneController.Scene.MAIN &&
+                    !playerSceneController.composeIsTransitioning
+                ) {
+                    stableFloatingMiniPlayerTopPx = bounds.top
+                }
+            },
+            playerSceneProgressState = playerSceneController.mainPlayerSheetExpansionState,
             onHomeFullCoverActiveChange = { active ->
                 // This is an in-window portrait scene. Do not mutate requestedOrientation while
                 // its shared artwork is moving: on vendor builds that can relayout the decor view
@@ -2009,6 +2140,20 @@ class MainActivity : ComponentActivity() {
                     // 恢复流动光效果
                     playBackgroundState.setDynamic(true)
                     playBackgroundState.setAllowDynamicRunning(true)
+                    // Keep the floating return owner through the first committed MAIN frame.
+                    // Compose can still be retiring the shared overlay while list cells publish
+                    // fresh bounds; releasing in the same animator callback lets that final frame
+                    // retarget to ListCover. AM hands ownership back only after the collapsed
+                    // MiniPlayer is already the visible endpoint.
+                    if (floatingReturnOwnsMiniPlayerTarget) {
+                        window.decorView.postOnAnimation {
+                            if (playerSceneController.currentScene == PlayerSceneController.Scene.MAIN &&
+                                !playerSceneController.composeIsTransitioning
+                            ) {
+                                floatingReturnOwnsMiniPlayerTarget = false
+                            }
+                        }
+                    }
                 }
                 PlayerSceneController.Scene.PLAYER -> {
                     playerSceneController.syncRotationState(playerSceneController.isCurrentlyPlaying)
@@ -2095,86 +2240,9 @@ class MainActivity : ComponentActivity() {
             playerSceneController.closePlayPageWithCoverAlign(true)
         }
 
-        playerSceneController.onPreparePlayerToMain = { onReady ->
-            registerCoverCollapseParams()
-            updateComposeRootVisibility(true)
-            prepareContainerForPlayerReturn()
-            val currentId = playerController?.currentSong?.value?.id ?: -1L
-            playerReturnRevealIndex = MusicRepository.songs.value.indexOfFirst { it.id == currentId }
-            acceptingReturnCoverBounds = playerReturnRevealIndex >= 0
-            returnCoverBoundsResolved = false
-            coverTargetForTransition = null
-
-            // 只有返回 SONGS 场景时，列表才有封面元素可以做共享过渡；
-            // 返回 HOME 等其他场景时，封面坐标全部是过期的，直接跳过。
-            val returningToSongList = prePlayerContainerScene == com.rawsmusic.core.ui.scene.NavScene.SONGS
-
-            if (!returningToSongList) {
-                acceptingReturnCoverBounds = false
-                playerReturnRevealIndex = -1
-                playingCoverBoundsForTransition = null
-                lockedPlayerCoverBoundsForTransition = null
-                onReady()
-            } else {
-                val current = playerController?.currentSong?.value
-                val fallbackTarget = miniPlayerCoverBoundsForTransition?.let {
-                    val source = coverTargetForTransition?.source ?: CoverTransitionTarget.Source.MiniPlayer
-                    val radius = coverTargetForTransition?.radiusDp
-                        ?: if (source == CoverTransitionTarget.Source.MiniPlayer) 22f else 24f
-                    CoverTransitionTarget(
-                        bounds = android.graphics.RectF(it),
-                        radiusDp = radius,
-                        source = source,
-                        songId = current?.id ?: -1L,
-                        coverKey = current?.let { s -> resolveSongCoverForCompose(s) }.orEmpty()
-                    )
-                } ?: playingCoverBoundsForTransition?.let {
-                    val radius = coverTargetForTransition?.radiusDp ?: 24f
-                    CoverTransitionTarget(
-                        bounds = android.graphics.RectF(it),
-                        radiusDp = radius,
-                        source = CoverTransitionTarget.Source.ListCover,
-                        songId = current?.id ?: -1L,
-                        coverKey = current?.let { s -> resolveSongCoverForCompose(s) }.orEmpty()
-                    )
-                } ?: lockedPlayerCoverBoundsForTransition?.let {
-                    val radius = coverTargetForTransition?.radiusDp ?: 24f
-                    CoverTransitionTarget(
-                        bounds = android.graphics.RectF(it),
-                        radiusDp = radius,
-                        source = CoverTransitionTarget.Source.ListCover,
-                        songId = current?.id ?: -1L,
-                        coverKey = current?.let { s -> resolveSongCoverForCompose(s) }.orEmpty()
-                    )
-                }
-                playingCoverBoundsForTransition = null
-                lockedPlayerCoverBoundsForTransition = null
-                if (playerReturnRevealIndex < 0) {
-                    acceptingReturnCoverBounds = false
-                    coverTargetForTransition = fallbackTarget
-                    lockedPlayerCoverBoundsForTransition = fallbackTarget?.bounds?.let { android.graphics.RectF(it) }
-                    onReady()
-                } else {
-                    val startedAt = System.currentTimeMillis()
-                    fun waitForReturnBounds() {
-                        if (!acceptingReturnCoverBounds) return
-                        val hasTarget = returnCoverBoundsResolved && lockedPlayerCoverBoundsForTransition != null
-                        val timedOut = System.currentTimeMillis() - startedAt >= 700L
-                        if (hasTarget || timedOut || playerReturnRevealIndex < 0) {
-                            acceptingReturnCoverBounds = false
-                            playerReturnRevealIndex = -1
-                            if (!hasTarget && fallbackTarget != null) {
-                                coverTargetForTransition = fallbackTarget
-                                lockedPlayerCoverBoundsForTransition = android.graphics.RectF(fallbackTarget.bounds)
-                            }
-                            onReady()
-                        } else {
-                            mainHandler.postDelayed({ waitForReturnBounds() }, 16L)
-                        }
-                    }
-                    waitForReturnBounds()
-                }
-            }
+        playerSceneController.onPreparePlayerToMain = prepare@{ onReady ->
+            preparePlayerToMainMiniPlayerEndpoint()
+            onReady()
         }
 
         playerSceneController.onPreparePlayerToLyric = {
@@ -2236,7 +2304,9 @@ class MainActivity : ComponentActivity() {
     private val overlayCoordinator by lazy {
         OverlayCoordinator(
             isPlayerPageVisible = {
-                if (::playerSceneController.isInitialized) {
+                if (usesNormalPlayerSheet()) {
+                    true
+                } else if (::playerSceneController.isInitialized) {
                     playerSceneController.currentScene != PlayerSceneController.Scene.MAIN ||
                         playerSceneController.isTransitioning
                 } else {
@@ -2326,7 +2396,8 @@ class MainActivity : ComponentActivity() {
         val prewarmedArtworkTransitionState = rememberPlaybackArtworkTransitionState(
             currentKey = prewarmSong.resolvePlaybackArtworkKey(prewarmCoverPath),
             queueCurrentIndex = prewarmQueue.currentIndex + prewarmPriorityCount,
-            queueSize = prewarmQueue.songs.size + prewarmPriorityCount
+            queueSize = prewarmQueue.songs.size + prewarmPriorityCount,
+            automaticCrossfadeEnabled = AppPreferences.Player.automaticCrossfadeEnabled,
         )
 
         if (!overlayCoordinator.composeOverlayContentVisible) return
@@ -2366,7 +2437,8 @@ class MainActivity : ComponentActivity() {
             val standardPlayerOwnsVerticalGesture = !composeImmersiveEnabled &&
                 (controllerVisualScene == PlayerSceneController.Scene.PLAYER ||
                     controllerVisualScene == PlayerSceneController.Scene.LYRIC)
-            if (controllerPlayerVisible || auxiliaryPlayerSceneVisible) {
+            val persistentNormalPlayerSheet = usesNormalPlayerSheet() && !composeImmersiveEnabled
+            if (controllerPlayerVisible || auxiliaryPlayerSceneVisible || persistentNormalPlayerSheet) {
                 com.rawsmusic.core.ui.widget.PlayerDismissMotionHost(
                     openToken = 31 * controllerVisualScene.hashCode() + currentScene.hashCode(),
                     onDismissProgressChange = { /* progress reporting if needed */ },
@@ -2382,18 +2454,20 @@ class MainActivity : ComponentActivity() {
                     // Keep the host composition tree stable while a player modal is shown.
                     // Switching gestureEnabled at runtime disposes and recreates the hosted player,
                     // which drops local sheet state and makes the immersive menu flash for one frame.
-                    gestureEnabled = !standardPlayerOwnsVerticalGesture,
+                    gestureEnabled = controllerPlayerVisible && !standardPlayerOwnsVerticalGesture,
                     gestureBlocked = gestureLockCoordinator.isBlocked
                 ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = {}
-                        )
-                )
+                if (controllerPlayerVisible || auxiliaryPlayerSceneVisible) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = {}
+                            )
+                    )
+                }
                 val committedCurrentSong by playerController?.currentSong?.collectAsState()
                     ?: androidx.compose.runtime.mutableStateOf(null)
                 val requestedUiSong by playerController?.requestedSongForUi?.collectAsState()
@@ -2472,21 +2546,83 @@ class MainActivity : ComponentActivity() {
                 }
                 val isPlayerReturningToMain =
                     playerSceneController.composeIsTransitioning &&
-                        playerSceneController.composeFromScene == PlayerSceneController.Scene.PLAYER &&
-                        playerSceneController.composeToScene == PlayerSceneController.Scene.MAIN
-                val playerSharedSourceBounds = if (isPlayerReturningToMain) {
-                    lockedPlayerCoverBoundsForTransition
-                } else {
-                    lockedPlayerCoverBoundsForTransition
+                        (
+                            (playerSceneController.composeFromScene == PlayerSceneController.Scene.PLAYER &&
+                                playerSceneController.composeToScene == PlayerSceneController.Scene.MAIN) ||
+                                // The persistent sheet stores absolute MAIN->PLAYER expansion even
+                                // while a PLAYER-origin drag is collapsing. The MiniPlayer-owner
+                                // latch is therefore the authoritative direction signal for the
+                                // floating gesture route.
+                                (floatingReturnOwnsMiniPlayerTarget && usesFloatingPlayerBar())
+                            )
+                val normalPlayerSheet = usesNormalPlayerSheet()
+                // NORMAL is a persistent mini-player <-> player sheet. Its source endpoint is
+                // always the live mini-player artwork, never a visible list cell. Resolve it again
+                // at render time so a late list onGloballyPositioned/shared-element callback cannot
+                // steal the return endpoint after the controller commits MAIN.
+                val floatingPlayerReturn = isPlayerReturningToMain && usesFloatingPlayerBar()
+                // Final render guard: PLAYER -> MAIN is MiniPlayer-only. The first composition
+                // after the controller starts settling can still carry the ListCover used to
+                // enter PLAYER, so never consult that target on a floating return.
+                val frozenFloatingReturnTarget = if (floatingPlayerReturn) {
+                    currentSong?.let { song ->
+                        resolveStableMiniPlayerReturnTarget(song, transitionCoverPath.orEmpty())
+                    }
+                } else null
+                val sharedUsesMiniPlayerSource = normalPlayerSheet ||
+                    usesFloatingPlayerBar() ||
+                    floatingPlayerReturn ||
+                    floatingReturnOwnsMiniPlayerTarget ||
+                    (isMainPlayerSharedTransition &&
+                        coverTargetForTransition?.source == CoverTransitionTarget.Source.MiniPlayer)
+                val liveMiniTarget = if (sharedUsesMiniPlayerSource) {
+                    currentSong?.let { song ->
+                        resolveCurrentMiniPlayerCoverTarget(song, transitionCoverPath.orEmpty())
+                    }
+                } else null
+                val playerSharedSourceBounds = when {
+                    floatingPlayerReturn -> frozenFloatingReturnTarget?.bounds?.let { android.graphics.RectF(it) }
+                        ?: lockedPlayerCoverBoundsForTransition?.let { android.graphics.RectF(it) }
+                    sharedUsesMiniPlayerSource -> liveMiniTarget?.bounds?.let { android.graphics.RectF(it) }
+                        ?: miniPlayerCoverBoundsForTransition?.let { android.graphics.RectF(it) }
+                        ?: lockedPlayerCoverBoundsForTransition
+                    else -> lockedPlayerCoverBoundsForTransition
                         ?: if (mainNavState.currentScene == com.rawsmusic.core.ui.scene.NavScene.SONGS) playingCoverBoundsForTransition else null
                 }
-                val playerSharedSourceTarget = if (isPlayerReturningToMain) {
-                    coverTargetForTransition
-                } else {
-                    coverTargetForTransition ?: playerSharedSourceBounds?.let { bounds ->
+                val playerSharedSourceTarget = when {
+                    floatingPlayerReturn -> frozenFloatingReturnTarget
+                        ?: playerSharedSourceBounds?.let { bounds ->
+                            CoverTransitionTarget(
+                                bounds = android.graphics.RectF(bounds),
+                                radiusDp = stableMiniPlayerCoverGeometryForTransition?.radiusDp
+                                    ?: miniPlayerCoverTargetForTransition?.radiusDp
+                                    ?: 10f,
+                                source = CoverTransitionTarget.Source.MiniPlayer,
+                                songId = currentSong?.id ?: -1L,
+                                coverKey = transitionCoverPath.orEmpty(),
+                            )
+                        }
+                    sharedUsesMiniPlayerSource -> (if (!normalPlayerSheet) {
+                        coverTargetForTransition
+                            ?.takeIf { it.source == CoverTransitionTarget.Source.MiniPlayer }
+                            ?.copyBounds()
+                    } else null)
+                        ?: liveMiniTarget
+                        ?: playerSharedSourceBounds?.let { bounds ->
+                            CoverTransitionTarget(
+                                bounds = android.graphics.RectF(bounds),
+                                radiusDp = miniPlayerCoverTargetForTransition?.radiusDp ?: 10f,
+                                source = CoverTransitionTarget.Source.MiniPlayer,
+                                songId = currentSong?.id ?: -1L,
+                                coverKey = transitionCoverPath.orEmpty(),
+                            )
+                        }
+                    else -> coverTargetForTransition ?: playerSharedSourceBounds?.let { bounds ->
                         val source = coverTargetForTransition?.source ?: CoverTransitionTarget.Source.ListCover
                         val radius = coverTargetForTransition?.radiusDp
-                            ?: if (source == CoverTransitionTarget.Source.MiniPlayer) 22f else 24f
+                            ?: if (source == CoverTransitionTarget.Source.MiniPlayer) {
+                                miniPlayerCoverTargetForTransition?.radiusDp ?: 22f
+                            } else 24f
                         val current = playerController?.currentSong?.value
                         CoverTransitionTarget(
                             bounds = android.graphics.RectF(bounds),
@@ -2698,7 +2834,11 @@ class MainActivity : ComponentActivity() {
                     },
                     onPlayerCoverSwipeDownStart = {
                         if (::playerSceneController.isInitialized) {
-                            registerCoverCollapseParams()
+                            // Persistent-sheet drag does not pass through onPreparePlayerToMain.
+                            // Prepare the exact same MiniPlayer-only endpoint synchronously before
+                            // the first drag frame, otherwise the entry-time ListCover can survive
+                            // into a floating PLAYER -> MAIN gesture.
+                            preparePlayerToMainMiniPlayerEndpoint()
                             playerSceneController.startCoverDrag(PlayerSceneController.Scene.MAIN)
                         }
                     },
@@ -2710,6 +2850,14 @@ class MainActivity : ComponentActivity() {
                     onPlayerCoverSwipeDownEnd = { commit, velocity ->
                         if (::playerSceneController.isInitialized) {
                             playerSceneController.endCoverDrag(commit, velocity = velocity)
+                        }
+                    },
+                    onMainPlayerSheetGeometryChanged = { travelPx, parentWidthPx ->
+                        if (::playerSceneController.isInitialized) {
+                            playerSceneController.updateMainPlayerSheetGeometry(
+                                travelPx = travelPx,
+                                parentWidthPx = parentWidthPx,
+                            )
                         }
                     },
                     onLyricCoverSwipeDownStart = {
@@ -2762,6 +2910,7 @@ class MainActivity : ComponentActivity() {
                     onSearchLyrico = ::launchLyricoOnlineSearch,
                     onOpenInLyrico = ::launchCurrentSongInLyrico,
                     isImmersiveEnabled = composeImmersiveEnabled,
+                    persistentBottomSheet = persistentNormalPlayerSheet,
                     overlaySuspended = false,
                     onClosePlayer = {
                         if (::playerSceneController.isInitialized) {
@@ -2786,11 +2935,39 @@ class MainActivity : ComponentActivity() {
                     controllerScene = playerSceneController.composeCurrentScene,
                     controllerFromScene = playerSceneController.composeFromScene,
                     controllerToScene = playerSceneController.composeToScene,
-                    controllerProgress = playerSceneController.composeTransitionProgress,
+                    controllerProgress = if (
+                        persistentNormalPlayerSheet &&
+                        playerSceneController.composeIsTransitioning &&
+                        ((playerSceneController.composeFromScene == PlayerSceneController.Scene.MAIN &&
+                            playerSceneController.composeToScene == PlayerSceneController.Scene.PLAYER) ||
+                            (playerSceneController.composeFromScene == PlayerSceneController.Scene.PLAYER &&
+                                playerSceneController.composeToScene == PlayerSceneController.Scene.MAIN))
+                    ) {
+                        0f
+                    } else {
+                        playerSceneController.composeTransitionProgress
+                    },
+                    controllerProgressState = playerSceneController.mainPlayerSheetExpansionState,
                     controllerIsTransitioning = playerSceneController.composeIsTransitioning,
+                    controllerIsInteractiveGesture =
+                        playerSceneController.composeIsInteractiveGesture,
                     playerLyricsTransitionCoordinator =
                         playerSceneController.playerLyricsTransitionCoordinator,
                     sourceCoverTarget = playerSharedSourceTarget,
+                    floatingMiniPlayerTopPx = if (
+                        !persistentNormalPlayerSheet && usesFloatingPlayerBar()
+                    ) {
+                        // Keep the floating sheet's physical collapsed anchor available even while
+                        // PLAYER is stably expanded. The stationary parent recognizer needs this
+                        // geometry *before* the first downward MOVE so it can capture the gesture;
+                        // gating it on an already-started return leaves AlbumArtCard as the owner
+                        // for the capture frame and reintroduces the moving-child coordinate loop.
+                        // During a transition the locked/stable value remains immutable, matching
+                        // AM's CoordinatorLayout/ViewDragHelper child geometry.
+                        lockedFloatingMiniPlayerTopPxForTransition
+                            ?: stableFloatingMiniPlayerTopPx
+                            ?: miniPlayerGestureBoundsForSceneGesture?.top
+                    } else null,
                     modifier = Modifier.fillMaxSize()
                 )
                 } // PlayerDismissMotionHost
@@ -2963,8 +3140,8 @@ class MainActivity : ComponentActivity() {
     private fun initListener() {}
 
     fun openPlayPageFromSongClick() {
-        if (playerSceneController.currentScene != PlayerSceneController.Scene.MAIN) return
-        openPlayPageWithSharedElement()
+        // List-row selection changes playback only. Opening PLAYER is owned by the MiniPlayer or
+        // an explicit player navigation action, never by selecting a song row.
     }
 
     fun navigateToFolderFromSearch(folderPath: String) {
@@ -2978,7 +3155,7 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    private fun openPlayPageWithSharedElement() {
+    private fun openPlayPageWithSharedElement(preferMiniPlayerSource: Boolean = false) {
         if (playerSceneController.currentScene != PlayerSceneController.Scene.MAIN) return
 
         val uiSong = playerController?.currentOrRequestedSongForUi() ?: return
@@ -2992,19 +3169,47 @@ class MainActivity : ComponentActivity() {
         lockedPlayerCoverPathForTransition = uiCoverPath
         updateComposeRootVisibility(true)
         registerCoverCollapseParams()
-        // playingCoverBounds 和 miniPlayerCoverBounds 都由 SongsPage 的回调设置，
-        // 只有当前场景是 SONGS 时才有效；其他场景（HOME 等）用的是过期坐标，会导致
-        // 返回时封面飞到不存在的位置。
-        val hasCoverBounds = mainNavState.currentScene == com.rawsmusic.core.ui.scene.NavScene.SONGS
-        val entryBounds = if (hasCoverBounds) {
-            playingCoverBoundsForTransition?.let { android.graphics.RectF(it) }
-                ?: miniPlayerCoverBoundsForTransition?.let { android.graphics.RectF(it) }
-        } else {
-            null
+        // AM resolves the MiniPlayer artwork from its live CardView geometry on every sheet
+        // slide. NORMAL always uses that source; floating MiniPlayer taps explicitly request the
+        // same behavior so stacked navigation cannot make the transition originate from a list
+        // cell or an old fixed region.
+        // Floating and NORMAL modes both use the MiniPlayer as the sole MAIN<->PLAYER shared
+        // artwork endpoint. ListCover remains a normal list cell only; it never participates in
+        // this transition pipeline, so it cannot compete with the playback bar on either edge.
+        val useMiniPlayerSource = usesNormalPlayerSheet() || usesFloatingPlayerBar() || preferMiniPlayerSource
+        floatingReturnOwnsMiniPlayerTarget = false
+        if (useMiniPlayerSource && !usesNormalPlayerSheet()) {
+            lockedFloatingMiniPlayerTopPxForTransition = stableFloatingMiniPlayerTopPx
+                ?: miniPlayerGestureBoundsForSceneGesture?.top
         }
+        val exactMiniTarget = if (useMiniPlayerSource) {
+            resolveCurrentMiniPlayerCoverTarget(uiSong, uiCoverPath)
+        } else null
+        val hasCoverBounds = useMiniPlayerSource ||
+            mainNavState.currentScene == com.rawsmusic.core.ui.scene.NavScene.SONGS ||
+            miniPlayerCoverBoundsForTransition != null
+        val entryBounds = if (hasCoverBounds) {
+            if (useMiniPlayerSource) {
+                exactMiniTarget?.bounds?.let { android.graphics.RectF(it) }
+                    ?: miniPlayerCoverBoundsForTransition?.let { android.graphics.RectF(it) }
+            } else {
+                playingCoverBoundsForTransition?.let { android.graphics.RectF(it) }
+                    ?: miniPlayerCoverBoundsForTransition?.let { android.graphics.RectF(it) }
+            }
+        } else null
         lockedPlayerCoverBoundsForTransition = entryBounds?.let { android.graphics.RectF(it) }
         coverTargetForTransition = if (entryBounds != null) {
-            coverTargetForTransition
+            if (useMiniPlayerSource) {
+                exactMiniTarget
+                    ?.copy(bounds = android.graphics.RectF(entryBounds))
+                    ?: CoverTransitionTarget(
+                        bounds = android.graphics.RectF(entryBounds),
+                        radiusDp = miniPlayerCoverTargetForTransition?.radiusDp ?: 10f,
+                        source = CoverTransitionTarget.Source.MiniPlayer,
+                        songId = uiSong.id,
+                        coverKey = uiCoverPath,
+                    )
+            } else coverTargetForTransition
                 ?.takeIf { target ->
                     target.bounds.nearlyEquals(entryBounds, 2f) &&
                         (target.songId < 0L || target.songId == uiSong.id) &&
@@ -3017,8 +3222,8 @@ class MainActivity : ComponentActivity() {
                 )
                 ?: CoverTransitionTarget(
                     bounds = android.graphics.RectF(entryBounds),
-                    radiusDp = if (playingCoverBoundsForTransition != null) 24f else 22f,
-                    source = if (playingCoverBoundsForTransition != null) {
+                    radiusDp = if (!usesNormalPlayerSheet() && playingCoverBoundsForTransition != null) 24f else 22f,
+                    source = if (!usesNormalPlayerSheet() && playingCoverBoundsForTransition != null) {
                         CoverTransitionTarget.Source.ListCover
                     } else {
                         CoverTransitionTarget.Source.MiniPlayer
@@ -3031,6 +3236,118 @@ class MainActivity : ComponentActivity() {
         }
         playerSceneController.openPlayPage(true)
     }
+
+    /** Prepares the same shared-cover source as a tap, without committing the player scene. */
+    private fun preparePlayPageForBottomSheetDrag() {
+        if (playerSceneController.currentScene != PlayerSceneController.Scene.MAIN) return
+        val uiSong = playerController?.currentOrRequestedSongForUi() ?: return
+        val uiCoverPath = resolveSongCoverForCompose(uiSong)
+
+        prePlayerContainerScene = mainNavState.currentScene
+        if (isSideMenuOpen) closeSideMenu()
+        lockedPlayerCoverPathForTransition = uiCoverPath
+        updateComposeRootVisibility(true)
+        registerCoverCollapseParams()
+        floatingReturnOwnsMiniPlayerTarget = false
+        if (!usesNormalPlayerSheet()) {
+            lockedFloatingMiniPlayerTopPxForTransition = stableFloatingMiniPlayerTopPx
+                ?: miniPlayerGestureBoundsForSceneGesture?.top
+        }
+
+        // Normal style has one persistent bottom sheet. Its mini artwork is the only valid
+        // source; borrowing a list cell makes two independently measured covers fight for the
+        // shared position while the sheet is dragged.
+        val exactMiniTarget = resolveCurrentMiniPlayerCoverTarget(uiSong, uiCoverPath)
+        val entryBounds = exactMiniTarget?.bounds?.let { android.graphics.RectF(it) }
+            ?: miniPlayerCoverBoundsForTransition?.let { android.graphics.RectF(it) }
+        lockedPlayerCoverBoundsForTransition = entryBounds
+        coverTargetForTransition = exactMiniTarget
+            ?: entryBounds?.let { bounds ->
+                CoverTransitionTarget(
+                    bounds = android.graphics.RectF(bounds),
+                    // The current default mini artwork is the 40dp vinyl sleeve (10dp corners).
+                    // This fallback is only used before the exact geometry callback arrives.
+                    radiusDp = 10f,
+                    source = CoverTransitionTarget.Source.MiniPlayer,
+                    songId = uiSong.id,
+                    coverKey = uiCoverPath,
+                )
+            }
+    }
+
+    /**
+     * Locks the PLAYER -> MAIN endpoint to the floating/persistent MiniPlayer.
+     *
+     * Both programmatic close and the persistent-sheet downward gesture must call this before
+     * their first transition frame. The sheet drag path intentionally does not run
+     * onPreparePlayerToMain, so keeping this logic only in that callback leaves the entry-time
+     * ListCover as the active shared target during a gesture collapse.
+     */
+    private fun preparePlayerToMainMiniPlayerEndpoint() {
+        registerCoverCollapseParams()
+        updateComposeRootVisibility(true)
+        prepareContainerForPlayerReturn()
+
+        val current = playerController?.currentOrRequestedSongForUi()
+        val currentCoverKey = current?.let { resolveSongCoverForCompose(it) }.orEmpty()
+        val miniTarget = current?.let { song ->
+            resolveStableMiniPlayerReturnTarget(song, currentCoverKey)
+        }
+
+        playerReturnRevealIndex = -1
+        playingCoverBoundsForTransition = null
+        floatingReturnOwnsMiniPlayerTarget = usesFloatingPlayerBar()
+        if (usesFloatingPlayerBar()) {
+            lockedFloatingMiniPlayerTopPxForTransition = stableFloatingMiniPlayerTopPx
+                ?: miniPlayerGestureBoundsForSceneGesture?.top
+        }
+        coverTargetForTransition = miniTarget
+        lockedPlayerCoverBoundsForTransition = miniTarget?.bounds?.let { android.graphics.RectF(it) }
+    }
+
+    private fun resolveStableMiniPlayerReturnTarget(
+        song: AudioFile,
+        coverKey: String,
+    ): CoverTransitionTarget? {
+        stableMiniPlayerCoverGeometryForTransition?.let { stable ->
+            return stable.copyBounds().copy(
+                source = CoverTransitionTarget.Source.MiniPlayer,
+                songId = song.id,
+                coverKey = coverKey,
+            )
+        }
+        return resolveCurrentMiniPlayerCoverTarget(song, coverKey)
+    }
+
+    private fun resolveCurrentMiniPlayerCoverTarget(
+        song: AudioFile,
+        coverKey: String,
+    ): CoverTransitionTarget? {
+        miniPlayerCoverTargetForTransition
+            ?.takeIf { it.isForSong(song.id, coverKey) }
+            ?.let { target ->
+                return target.copyBounds().copy(
+                    songId = song.id,
+                    coverKey = coverKey,
+                )
+            }
+        return miniPlayerCoverBoundsForTransition?.let { bounds ->
+            CoverTransitionTarget(
+                bounds = android.graphics.RectF(bounds),
+                radiusDp = 10f,
+                source = CoverTransitionTarget.Source.MiniPlayer,
+                songId = song.id,
+                coverKey = coverKey,
+            )
+        }
+    }
+
+    private fun usesNormalPlayerSheet(): Boolean =
+        PersonalizationPreferences.isBottomNavigationEnabled &&
+            PersonalizationPreferences.bottomBarStyleValue == BottomBarStyle.NORMAL
+
+    private fun usesFloatingPlayerBar(): Boolean =
+        PersonalizationPreferences.bottomBarStyleValue == BottomBarStyle.FLOATING
 
     // ==================== 封面手势处理 ====================
 

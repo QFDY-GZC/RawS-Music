@@ -6,9 +6,12 @@ import android.os.Bundle
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import coil.ImageLoader
+import coil.ImageLoaderFactory
 import com.rawsmusic.core.common.CoreInit
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.theme.ThemeManager
+import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
 import com.rawsmusic.module.data.DataModule
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.PlayerService
@@ -18,7 +21,9 @@ import com.rawsmusic.memory.FairRuntimeMemoryManager
 import com.rawsmusic.lyric.DesktopLyricService
 import com.rawsmusic.ui.songs.PlayerHolder
 
-class RawSMusicApp : Application() {
+class RawSMusicApp : Application(), ImageLoaderFactory {
+
+    override fun newImageLoader(): ImageLoader = CoilArtworkRuntime.newImageLoader(this)
 
     override fun onCreate() {
         super.onCreate()
@@ -52,8 +57,6 @@ class RawSMusicApp : Application() {
             "app_process_create_bootstrap"
         )
 
-        // 只启动后台封面线程，保持首屏封面请求可用；重型解码仍在 BitmapProvider worker 中执行。
-        com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider.init(this)
         FairRuntimeMemoryManager.initialize(this)
 
         // 版本号只用于记录覆盖安装，不再按 appVersion 清空曲库。

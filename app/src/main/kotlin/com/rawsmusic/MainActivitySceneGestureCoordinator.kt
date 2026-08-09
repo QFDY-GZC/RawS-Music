@@ -2,6 +2,7 @@ package com.rawsmusic
 
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
 import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
@@ -19,6 +20,8 @@ internal class MainActivitySceneGestureCoordinator(
     private val isProgressSeekActive: () -> Boolean,
     private val isGestureBlocked: () -> Boolean,
     private val isAudioInfoSharedWindowActive: () -> Boolean,
+    /** True when a child control owns the complete horizontal pointer sequence. */
+    private val isHorizontalGestureExcluded: (Offset) -> Boolean = { false },
 ) {
     fun install(base: Modifier): Modifier = base.pointerInput(Unit) {
         val pointerDensity = density
@@ -33,6 +36,13 @@ internal class MainActivitySceneGestureCoordinator(
                 playerScene.disableGestureIntercept ||
                 playerScene.isTransitioning
             ) return@awaitEachGesture
+
+            // The mini-player switches tracks horizontally. It is drawn outside the
+            // navigation host, so the root coordinator must make the same ownership
+            // decision as SceneTransitionEngine before it starts observing the drag.
+            if (isHorizontalGestureExcluded(down.position)) {
+                return@awaitEachGesture
+            }
 
             // MAIN owns category-to-category and nested-page gestures in
             // SceneTransitionHost. Keep category-back recognition here because
