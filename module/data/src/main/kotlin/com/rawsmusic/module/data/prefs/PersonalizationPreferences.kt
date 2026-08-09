@@ -8,6 +8,7 @@ object PersonalizationPreferences {
     private const val KEY_PERFORMANCE_MODE = "personalization_performance_mode"
     private const val KEY_PERFORMANCE_MODE_DEFAULT_V2 = "personalization_performance_mode_default_v2"
     private const val KEY_BOTTOM_NAVIGATION_SCENES = "personalization_bottom_navigation_scenes_v1"
+    private const val KEY_BOTTOM_BAR_STYLE = "personalization_bottom_bar_style_v1"
 
     private val allowedBottomNavigationTags = setOf(
         "home",
@@ -50,6 +51,21 @@ object PersonalizationPreferences {
 
     private val _bottomNavigationEnabled = MutableStateFlow(AppPreferences.UI.isBottomBarEnabled)
     val bottomNavigationEnabled = _bottomNavigationEnabled.asStateFlow()
+
+    private val _bottomBarStyle = MutableStateFlow(
+        BottomBarStyle.fromPref(
+            AppPreferences.storage.decodeString(KEY_BOTTOM_BAR_STYLE, BottomBarStyle.FLOATING.prefValue)
+        )
+    )
+    val bottomBarStyle = _bottomBarStyle.asStateFlow()
+
+    var bottomBarStyleValue: BottomBarStyle
+        get() = _bottomBarStyle.value
+        set(value) {
+            if (_bottomBarStyle.value == value) return
+            _bottomBarStyle.value = value
+            AppPreferences.storage.encode(KEY_BOTTOM_BAR_STYLE, value.prefValue)
+        }
 
     var isBottomNavigationEnabled: Boolean
         get() = _bottomNavigationEnabled.value

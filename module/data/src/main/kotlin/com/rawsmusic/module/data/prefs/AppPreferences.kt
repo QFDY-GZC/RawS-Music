@@ -154,9 +154,28 @@ object AppPreferences {
             get() = kv.decodeString("player_queue_songs_json", "") ?: ""
             set(value) { kv.encode("player_queue_songs_json", value) }
 
+        /**
+         * Lyrics-first automatic crossfade master switch.
+         *
+         * Migration: legacy builds stored a 0..12 second value in "player_crossfade".
+         * Any positive legacy value means the user had automatic crossfade enabled.
+         */
+        var automaticCrossfadeEnabled: Boolean
+            get() = if (kv.containsKey("player_auto_crossfade_enabled")) {
+                kv.decodeBool("player_auto_crossfade_enabled", false)
+            } else {
+                kv.decodeInt("player_crossfade", 0) > 0
+            }
+            set(value) {
+                kv.encode("player_auto_crossfade_enabled", value)
+                // Keep the legacy key binary for downgrade compatibility.
+                kv.encode("player_crossfade", if (value) 1 else 0)
+            }
+
+        @Deprecated("Use automaticCrossfadeEnabled; automatic crossfade no longer exposes a duration.")
         var crossfadeDuration: Int
-            get() = kv.decodeInt("player_crossfade", 0)
-            set(value) { kv.encode("player_crossfade", value) }
+            get() = if (automaticCrossfadeEnabled) 1 else 0
+            set(value) { automaticCrossfadeEnabled = value > 0 }
 
         /** Android 系统 Spatializer 委托；仅普通 Android AudioTrack/AAudio 输出生效。 */
         var androidSpatialAudioEnabled: Boolean
@@ -858,6 +877,41 @@ object AppPreferences {
     object Lyrics {
         private const val FLYME_DEFAULT_OFF_MIGRATION = "lyrics_flyme_default_off_v1"
 
+        const val LIVE_UPDATE_LYRIC_MODE_ORIGINAL = 0
+        const val LIVE_UPDATE_LYRIC_MODE_TRANSLATION = 1
+        const val LIVE_UPDATE_LYRIC_MODE_PRONUNCIATION = 2
+        const val LIVE_UPDATE_LYRIC_DISPLAY_MODE_COMPACT = 0
+        const val LIVE_UPDATE_LYRIC_DISPLAY_MODE_FULL = 1
+        const val LIVE_UPDATE_LYRIC_SECONDARY_MODE_SONG = 0
+        const val LIVE_UPDATE_LYRIC_SECONDARY_MODE_TRANSLATION = 1
+        const val LIVE_UPDATE_LYRIC_SECONDARY_MODE_PRONUNCIATION = 2
+        const val MEDIA_NOTIFICATION_BUTTON_PLAYBACK_MODE = "playback_mode"
+        const val MEDIA_NOTIFICATION_BUTTON_DESKTOP_LYRIC = "desktop_lyric"
+        const val MEDIA_NOTIFICATION_BUTTON_FAVORITE = "favorite"
+        val DEFAULT_MEDIA_NOTIFICATION_BUTTON_IDS = listOf(
+            MEDIA_NOTIFICATION_BUTTON_PLAYBACK_MODE,
+            MEDIA_NOTIFICATION_BUTTON_FAVORITE
+        )
+        private val MEDIA_NOTIFICATION_BUTTON_IDS = setOf(
+            MEDIA_NOTIFICATION_BUTTON_PLAYBACK_MODE,
+            MEDIA_NOTIFICATION_BUTTON_DESKTOP_LYRIC,
+            MEDIA_NOTIFICATION_BUTTON_FAVORITE
+        )
+
+        private fun normalizeMediaNotificationButtonIds(value: String): List<String> {
+            val selected = value
+                .split(',', '，', ';', '；', '\n')
+                .asSequence()
+                .map { it.trim().lowercase() }
+                .filter { it in MEDIA_NOTIFICATION_BUTTON_IDS }
+                .distinct()
+                .take(2)
+                .toList()
+            return (selected + DEFAULT_MEDIA_NOTIFICATION_BUTTON_IDS.filterNot(selected::contains))
+                .distinct()
+                .take(2)
+        }
+
         private fun migrateFlymeDefaultOff() {
             if (kv.decodeBool(FLYME_DEFAULT_OFF_MIGRATION, false)) return
             kv.encode("lyrics_ticker_enabled", false)
@@ -878,6 +932,62 @@ object AppPreferences {
         var tickerHeadsUpLyrics: Boolean
             get() = kv.decodeBool("lyrics_ticker_heads_up", false)
             set(value) { kv.encode("lyrics_ticker_heads_up", value) }
+
+        /** System live-activity lyric delivery, independent from Flyme ticker lyrics. */
+        var liveUpdateLyricEnabled: Boolean
+            get() = kv.decodeBool("lyrics_live_update_enabled", false)
+            set(value) { kv.encode("lyrics_live_update_enabled", value) }
+
+        var liveUpdateLyricMode: Int
+            get() = kv.decodeInt("lyrics_live_update_mode", LIVE_UPDATE_LYRIC_MODE_ORIGINAL)
+                .coerceIn(LIVE_UPDATE_LYRIC_MODE_ORIGINAL, LIVE_UPDATE_LYRIC_MODE_PRONUNCIATION)
+            set(value) {
+                kv.encode(
+                    "lyrics_live_update_mode",
+                    value.coerceIn(LIVE_UPDATE_LYRIC_MODE_ORIGINAL, LIVE_UPDATE_LYRIC_MODE_PRONUNCIATION)
+                )
+            }
+
+        var liveUpdateLyricDisplayMode: Int
+            get() = kv.decodeInt("lyrics_live_update_display_mode", LIVE_UPDATE_LYRIC_DISPLAY_MODE_COMPACT)
+                .coerceIn(LIVE_UPDATE_LYRIC_DISPLAY_MODE_COMPACT, LIVE_UPDATE_LYRIC_DISPLAY_MODE_FULL)
+            set(value) {
+                kv.encode(
+                    "lyrics_live_update_display_mode",
+                    value.coerceIn(LIVE_UPDATE_LYRIC_DISPLAY_MODE_COMPACT, LIVE_UPDATE_LYRIC_DISPLAY_MODE_FULL)
+                )
+            }
+
+        var liveUpdateLyricSecondaryMode: Int
+            get() = kv.decodeInt("lyrics_live_update_secondary_mode", LIVE_UPDATE_LYRIC_SECONDARY_MODE_SONG)
+                .coerceIn(LIVE_UPDATE_LYRIC_SECONDARY_MODE_SONG, LIVE_UPDATE_LYRIC_SECONDARY_MODE_PRONUNCIATION)
+            set(value) {
+                kv.encode(
+                    "lyrics_live_update_secondary_mode",
+                    value.coerceIn(LIVE_UPDATE_LYRIC_SECONDARY_MODE_SONG, LIVE_UPDATE_LYRIC_SECONDARY_MODE_PRONUNCIATION)
+                )
+            }
+
+        var mediaNotificationButtonIds: List<String>
+            get() = normalizeMediaNotificationButtonIds(
+                kv.decodeString("lyrics_media_notification_buttons", "") ?: ""
+            )
+            set(value) {
+                kv.encode(
+                    "lyrics_media_notification_buttons",
+                    normalizeMediaNotificationButtonIds(value.joinToString(",")).joinToString(",")
+                )
+            }
+
+        var xiaomiSuperIslandLyricEnabled: Boolean
+            get() = kv.decodeBool("lyrics_xiaomi_super_island_enabled", false)
+            set(value) { kv.encode("lyrics_xiaomi_super_island_enabled", value) }
+
+        var xiaomiSuperIslandSettings: XiaomiSuperIslandSettings
+            get() = XiaomiSuperIslandSettings.decode(
+                kv.decodeString("lyrics_xiaomi_super_island_settings", null)
+            )
+            set(value) { kv.encode("lyrics_xiaomi_super_island_settings", value.sanitized().encode()) }
 
         var samsungFloatingLyricTranslation: Boolean
             get() = kv.decodeBool("lyrics_samsung_floating_translation", false)
@@ -1155,6 +1265,12 @@ object AppPreferences {
                 0f
             }
             set(value) { kv.encode("mono_bass_amount", value.coerceIn(0f, 100f)) }
+    }
+
+    object MonoOutput {
+        var isEnabled: Boolean
+            get() = kv.decodeBool("mono_output_enabled", false)
+            set(value) { kv.encode("mono_output_enabled", value) }
     }
 
     object DynamicEq {
