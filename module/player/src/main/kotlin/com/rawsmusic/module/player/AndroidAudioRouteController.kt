@@ -25,6 +25,7 @@ internal class AndroidAudioRouteController(
     private val nativeAudioEngineProvider: () -> NativeAudioEngine?,
     private val audioTrackProvider: () -> AudioTrack?,
     private val recreateAudioTrackInline: (forceSco: Boolean, forcedDevice: AudioDeviceInfo?) -> AudioTrack?,
+    private val requestNativeOutputRebuild: (reason: String, forcedDeviceId: Int) -> Unit,
     private val runOnPlaybackExecutor: (block: () -> Unit) -> Unit,
     private val wakePlaybackLoop: () -> Unit,
     private val onAndroidUsbAudioRouteAdded: () -> Unit
@@ -79,7 +80,10 @@ internal class AndroidAudioRouteController(
             }
 
             if (nativeAudioEngineProvider() != null) {
-                retargetNativeOutputDevice("audio_device_added")
+                val ok = retargetNativeOutputDevice("audio_device_added")
+                if (!ok) {
+                    requestNativeOutputRebuild("audio_device_added_native_fallback", 0)
+                }
             } else {
                 applyPreferredDeviceToAudioTrack("audio_device_added")
             }
@@ -100,7 +104,10 @@ internal class AndroidAudioRouteController(
                 val hasExternalRemoval = removedDevices?.any { it.isExternalRouteDevice() } == true
 
                 if (nativeAudioEngineProvider() != null) {
-                    retargetNativeOutputDevice("audio_device_removed")
+                    val ok = retargetNativeOutputDevice("audio_device_removed")
+                    if (!ok) {
+                        requestNativeOutputRebuild("audio_device_removed_native_fallback", 0)
+                    }
                     if (hasExternalRemoval) {
                         repairAndroidOutputRoute("audio_device_removed_external_native", forceRebuild = false)
                     }
@@ -197,7 +204,8 @@ internal class AndroidAudioRouteController(
                     if (nativeAudioEngineProvider() != null) {
                         val ok = retargetNativeOutputDevice("${reason}_delayed")
                         if (!ok) {
-                            AppLogger.w(TAG, "Native output retarget failed during route repair: reason=$reason")
+                            AppLogger.w(TAG, "Native output retarget failed during route repair: reason=$reason; arming native rebuild")
+                            requestNativeOutputRebuild("${reason}_delayed_native_fallback", 0)
                         }
                         return@routeRepair
                     }
@@ -310,7 +318,12 @@ internal class AndroidAudioRouteController(
         // Do not enqueue external-device retargeting on the playback executor. During normal
         // AudioTrack playback the executor is occupied by the long-running streaming write loop.
         if (nativeAudioEngineProvider() != null) {
-            retargetNativeOutputDevice("${reason}_external", forcedDeviceId = external.id)
+            val ok = retargetNativeOutputDevice("${reason}_external", forcedDeviceId = external.id)
+            if (!ok) {
+                // OpenSL ES cannot retarget an already-created stream. Recreate the native
+                // output on the active write thread so decoder/ring/position ownership stays intact.
+                requestNativeOutputRebuild("${reason}_external_native_fallback", external.id)
+            }
             return
         }
 
