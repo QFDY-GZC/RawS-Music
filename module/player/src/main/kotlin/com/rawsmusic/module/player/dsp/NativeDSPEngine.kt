@@ -221,6 +221,10 @@ class NativeDSPEngine {
         }
     }
 
+    fun setMonoOutputEnabled(enabled: Boolean) {
+        if (nativeHandle != 0L) nativeSetMonoOutputEnabled(nativeHandle, enabled)
+    }
+
     fun setDynamicEqEnabled(enabled: Boolean) {
         if (nativeHandle != 0L) nativeSetDynamicEqEnabled(nativeHandle, enabled)
     }
@@ -451,6 +455,7 @@ class NativeDSPEngine {
     private external fun nativeSetLoudnessBalanceParameters(handle: Long, loudnessPercent: Float, balance: Float)
     private external fun nativeSetMonoBassEnabled(handle: Long, enabled: Boolean)
     private external fun nativeSetMonoBassParameters(handle: Long, crossoverHz: Float, amountPercent: Float)
+    private external fun nativeSetMonoOutputEnabled(handle: Long, enabled: Boolean)
     private external fun nativeSetDynamicEqEnabled(handle: Long, enabled: Boolean)
     private external fun nativeSetDynamicEqParameters(
         handle: Long,

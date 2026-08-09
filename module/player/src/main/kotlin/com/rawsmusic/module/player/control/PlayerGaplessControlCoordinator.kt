@@ -5,7 +5,7 @@ import com.rawsmusic.core.common.model.PlayQueue
 
 internal data class GaplessPlaybackPlan(
     val nextSongPath: String?,
-    val crossfadeDurationMs: Int,
+    val automaticCrossfadeEnabled: Boolean,
 )
 
 internal fun resolveGaplessNextIndex(
@@ -30,7 +30,7 @@ internal class PlayerGaplessControlCoordinator(
 ) {
     data class Callbacks(
         val gaplessEnabled: () -> Boolean,
-        val crossfadeSeconds: () -> Int,
+        val automaticCrossfadeEnabled: () -> Boolean,
         val currentQueue: () -> PlayQueue,
         val currentPlayMode: () -> PlayMode,
         val peekShuffleIndex: (PlayQueue) -> Int,
@@ -42,9 +42,9 @@ internal class PlayerGaplessControlCoordinator(
     fun prepareNextSong() {
         try {
             val gaplessEnabled = callbacks.gaplessEnabled()
-            val crossfadeSeconds = callbacks.crossfadeSeconds().coerceAtLeast(0)
-            if (!gaplessEnabled && crossfadeSeconds <= 0) {
-                callbacks.applyPlan(GaplessPlaybackPlan(null, 0))
+            val automaticCrossfadeEnabled = callbacks.automaticCrossfadeEnabled()
+            if (!gaplessEnabled && !automaticCrossfadeEnabled) {
+                callbacks.applyPlan(GaplessPlaybackPlan(null, false))
                 return
             }
 
@@ -59,12 +59,12 @@ internal class PlayerGaplessControlCoordinator(
 
             val plan = GaplessPlaybackPlan(
                 nextSongPath = nextSong.path,
-                crossfadeDurationMs = if (crossfadeSeconds > 0) crossfadeSeconds * 1000 else 0,
+                automaticCrossfadeEnabled = automaticCrossfadeEnabled,
             )
             callbacks.applyPlan(plan)
             callbacks.logInfo(
                 "Gapless: nextSong='${nextSong.title}', gapless=$gaplessEnabled, " +
-                    "crossfade=${crossfadeSeconds}s"
+                    "automaticCrossfade=$automaticCrossfadeEnabled"
             )
         } catch (error: Exception) {
             callbacks.logWarning("setupNextSongForGapless failed", error)
