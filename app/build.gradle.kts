@@ -14,8 +14,8 @@ android {
         applicationId = "com.rawsmusic"
         minSdk = 24
         targetSdk = 37
-        versionCode = 68
-        versionName = "0.9.68 USB fix vision"
+        versionCode = 80
+        versionName = "0.9.80 beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -157,6 +157,9 @@ dependencies {
     implementation(libs.miuix.ui)
     implementation(libs.miuix.icons)
     implementation(libs.miuix.preference)
+    implementation(libs.focus.api)
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
     // navigationevent-compose (miuix SearchBar 内部需要 LocalNavigationEventDispatcherOwner)
     implementation("androidx.navigationevent:navigationevent-compose:1.1.1")
 }
