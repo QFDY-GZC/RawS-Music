@@ -34,6 +34,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.rawsmusic.R
+import com.rawsmusic.core.ui.widget.predictiveDialogMotion
+import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 
 class MetadataCardPopupHelper(
     private val resources: Resources,
@@ -105,6 +107,7 @@ fun MetadataCardPopupOverlay(
     modifier: Modifier = Modifier
 ) {
     val visible = helper.visibleTarget != null
+    val dismissProgress = rememberPredictiveDialogProgress(visible, helper::hide)
     AnimatedVisibility(
         visible = visible,
         enter = fadeIn(tween(120)),
@@ -135,6 +138,11 @@ fun MetadataCardPopupOverlay(
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .offsetPx(helper.cardLeftPx, helper.cardTopPx)
+                    .predictiveDialogMotion(
+                        progress = dismissProgress,
+                        translationY = 24.dp,
+                        transformOrigin = TransformOrigin(0.5f, 0f)
+                    )
             ) {
                 Box(
                     modifier = Modifier

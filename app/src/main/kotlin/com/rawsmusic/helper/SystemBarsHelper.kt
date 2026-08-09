@@ -3,6 +3,7 @@ package com.rawsmusic.helper
 import android.app.Activity
 import android.os.Build
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.rawsmusic.core.ui.theme.ColorThemeMode
 import com.rawsmusic.core.ui.theme.getCurrentColorThemeMode
@@ -10,6 +11,15 @@ import com.rawsmusic.core.ui.theme.getCurrentColorThemeMode
 class SystemBarsHelper(
     private val activity: Activity
 ) {
+    fun setStatusBarHidden(hidden: Boolean) {
+        val controller = WindowInsetsControllerCompat(activity.window, activity.window.decorView)
+        if (hidden) {
+            controller.hide(WindowInsetsCompat.Type.statusBars())
+        } else {
+            controller.show(WindowInsetsCompat.Type.statusBars())
+        }
+    }
+
     fun setupEdgeToEdge(isDarkMode: Boolean) {
         val window = activity.window
         WindowCompat.setDecorFitsSystemWindows(window, false)

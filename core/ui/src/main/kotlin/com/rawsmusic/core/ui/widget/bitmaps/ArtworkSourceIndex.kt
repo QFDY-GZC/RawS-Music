@@ -4,57 +4,202 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Provider-level artwork source index, mirroring the artwork resolver behavior where an artwork
- * record can point at an already-known source path and future requests do not have to reopen each
- * audio file just to rediscover the same cover.
+ * Provider-level registry of discovered artwork image sources.
  *
- * This is intentionally conservative: it only indexes reusable image-file sources such as
- * folder.jpg / cover.jpg or a native-extracted embedded-art cache file. Byte-array fallbacks are
- * still served by disk thumbnails, and terminal no-art is kept on file-version keys rather than a
- * broad album alias until the scanner can prove the whole entity is no-art.
+ * Embedded, folder and direct-image records live in independent slots. A late folder result can no
+ * longer overwrite an embedded record merely because both share the same provider key. Folder
+ * records are visible only after embedded absence is confirmed, and new folder records require a
+ * generation-bound permit from [ArtworkSourceAuthority].
  */
 internal object ArtworkSourceIndex {
-    private data class SourceRecord(
+    data class SourceRecord(
         val sourcePath: String,
+        val kind: ArtworkSourceSelectionPolicy.IndexedSourceKind,
         val updatedAtMs: Long
     )
 
-    private val sourceByProviderKey = ConcurrentHashMap<String, SourceRecord>()
+    private val authority = ArtworkSourceAuthority()
+    private val mutationLock = Any()
+    private val sourcesByProviderKey =
+        ConcurrentHashMap<String, ConcurrentHashMap<ArtworkSourceSelectionPolicy.IndexedSourceKind, SourceRecord>>()
 
-    fun sourcePathFor(providerKey: String): String? {
+    fun sourceFor(
+        providerKey: String,
+        acceptedKinds: Set<ArtworkSourceSelectionPolicy.IndexedSourceKind> =
+            ArtworkSourceSelectionPolicy.allIndexedKinds
+    ): SourceRecord? {
         if (providerKey.isBlank()) return null
-        val record = sourceByProviderKey[providerKey] ?: return null
-        val file = File(record.sourcePath)
-        return if (file.exists() && file.canRead() && file.length() > 1024L) {
-            record.sourcePath
-        } else {
-            sourceByProviderKey.remove(providerKey, record)
-            null
+        val records = sourcesByProviderKey[providerKey] ?: return null
+
+        for (kind in ArtworkSourceSelectionPolicy.indexedLookupOrder) {
+            if (kind !in acceptedKinds) continue
+            if (
+                kind == ArtworkSourceSelectionPolicy.IndexedSourceKind.FolderCover &&
+                !authority.mayUseFolderFallback(providerKey)
+            ) {
+                continue
+            }
+
+            val record = records[kind] ?: continue
+            val file = File(record.sourcePath)
+            // The source record is already validated as a regular readable file. Do not impose a
+            // 1 KiB policy here: tiny but valid embedded covers are still usable image sources, and
+            // Keep the source record independent from thumbnail-size heuristics.
+            if (file.isFile && file.canRead() && file.length() > 0L) {
+                return record
+            }
+
+            records.remove(kind, record)
+            if (kind == ArtworkSourceSelectionPolicy.IndexedSourceKind.Embedded) {
+                synchronized(mutationLock) {
+                    authority.reset(providerKey)
+                }
+            }
+        }
+
+        if (records.isEmpty()) sourcesByProviderKey.remove(providerKey, records)
+        return null
+    }
+
+    fun sourcePathFor(
+        providerKey: String,
+        acceptedKinds: Set<ArtworkSourceSelectionPolicy.IndexedSourceKind> =
+            ArtworkSourceSelectionPolicy.allIndexedKinds
+    ): String? = sourceFor(providerKey, acceptedKinds)?.sourcePath
+
+    fun rememberSource(
+        providerKey: String,
+        sourcePath: String,
+        kind: ArtworkSourceSelectionPolicy.IndexedSourceKind
+    ) {
+        val record = validatedRecord(sourcePath, kind) ?: return
+        if (providerKey.isBlank()) return
+
+        synchronized(mutationLock) {
+            val records = sourcesByProviderKey.getOrPut(providerKey) { ConcurrentHashMap() }
+            when (kind) {
+                ArtworkSourceSelectionPolicy.IndexedSourceKind.Embedded -> {
+                    authority.markEmbeddedPresent(providerKey)
+                    records.remove(ArtworkSourceSelectionPolicy.IndexedSourceKind.FolderCover)
+                    records[kind] = record
+                }
+
+                ArtworkSourceSelectionPolicy.IndexedSourceKind.FolderCover -> {
+                    // Legacy/pre-indexed folder records may be remembered before probing, but they
+                    // remain invisible until authority confirms embedded absence. Runtime folder
+                    // decodes use commitFolderSource() instead.
+                    records[kind] = record
+                }
+
+                ArtworkSourceSelectionPolicy.IndexedSourceKind.DirectImage -> {
+                    records[kind] = record
+                }
+            }
         }
     }
 
-    fun rememberSource(providerKey: String, sourcePath: String) {
-        if (providerKey.isBlank() || sourcePath.isBlank()) return
-        val file = File(sourcePath)
-        if (!file.exists() || !file.canRead() || file.length() <= 1024L) return
-        sourceByProviderKey[providerKey] = SourceRecord(
-            sourcePath = file.absolutePath,
-            updatedAtMs = System.currentTimeMillis()
-        )
+    fun markEmbeddedPresent(providerKey: String) {
+        if (providerKey.isBlank()) return
+        synchronized(mutationLock) {
+            authority.markEmbeddedPresent(providerKey)
+            sourcesByProviderKey[providerKey]
+                ?.remove(ArtworkSourceSelectionPolicy.IndexedSourceKind.FolderCover)
+        }
+    }
+
+    fun markEmbeddedAbsent(providerKey: String) {
+        if (providerKey.isBlank()) return
+        synchronized(mutationLock) {
+            authority.markEmbeddedAbsent(providerKey)
+        }
+    }
+
+    fun beginFolderFallback(
+        providerKey: String,
+        confirmsEmbeddedAbsent: Boolean
+    ): ArtworkSourceAuthority.FolderFallbackPermit? {
+        if (providerKey.isBlank()) return null
+        return synchronized(mutationLock) {
+            authority.beginFolderFallback(providerKey, confirmsEmbeddedAbsent)
+        }
+    }
+
+    fun commitFolderSource(
+        permit: ArtworkSourceAuthority.FolderFallbackPermit,
+        sourcePath: String
+    ): Boolean {
+        val record = validatedRecord(
+            sourcePath,
+            ArtworkSourceSelectionPolicy.IndexedSourceKind.FolderCover
+        ) ?: return false
+
+        return synchronized(mutationLock) {
+            if (!authority.canCommitFolderFallback(permit)) return@synchronized false
+            val records = sourcesByProviderKey.getOrPut(permit.providerKey) { ConcurrentHashMap() }
+            records[ArtworkSourceSelectionPolicy.IndexedSourceKind.FolderCover] = record
+            true
+        }
+    }
+
+    fun mayUseFolderFallback(providerKey: String): Boolean {
+        if (providerKey.isBlank()) return false
+        return authority.mayUseFolderFallback(providerKey)
+    }
+
+    fun embeddedStateFor(providerKey: String): ArtworkSourceAuthority.EmbeddedState =
+        authority.stateFor(providerKey)
+
+    /**
+     * A decoder/open exception is not evidence that the file has no embedded art.  Drop only the
+     * authority decision and keep any valid source record so the next provider request can probe it
+     * again without rebuilding the whole artwork registry.
+     */
+    fun resetEmbeddedAuthority(providerKey: String) {
+        if (providerKey.isBlank()) return
+        synchronized(mutationLock) {
+            authority.reset(providerKey)
+        }
     }
 
     fun remove(providerKey: String): Boolean {
         if (providerKey.isBlank()) return false
-        return sourceByProviderKey.remove(providerKey) != null
+        synchronized(mutationLock) {
+            val authorityRemoved = authority.reset(providerKey)
+            val sourceRemoved = sourcesByProviderKey.remove(providerKey) != null
+            return authorityRemoved || sourceRemoved
+        }
     }
 
     fun removeAll(keys: Collection<String>): Int {
-        var removed = 0
-        keys.forEach { key -> if (remove(key)) removed++ }
-        return removed
+        synchronized(mutationLock) {
+            var removed = 0
+            keys.forEach { key ->
+                val sourceRemoved = sourcesByProviderKey.remove(key) != null
+                val authorityRemoved = authority.reset(key)
+                if (sourceRemoved || authorityRemoved) removed++
+            }
+            return removed
+        }
     }
 
     fun clear() {
-        sourceByProviderKey.clear()
+        synchronized(mutationLock) {
+            sourcesByProviderKey.clear()
+            authority.clear()
+        }
+    }
+
+    private fun validatedRecord(
+        sourcePath: String,
+        kind: ArtworkSourceSelectionPolicy.IndexedSourceKind
+    ): SourceRecord? {
+        if (sourcePath.isBlank()) return null
+        val file = File(sourcePath)
+        if (!file.isFile || !file.canRead() || file.length() <= 0L) return null
+        return SourceRecord(
+            sourcePath = file.absolutePath,
+            kind = kind,
+            updatedAtMs = System.currentTimeMillis()
+        )
     }
 }

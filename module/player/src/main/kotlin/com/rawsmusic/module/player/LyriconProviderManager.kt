@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 object LyriconProviderManager {
 
     private const val TAG = "LyriconProvider"
+    private const val POSITION_SYNC_INTERVAL_MS = 50
 
     private var provider: LyriconProvider? = null
     private var positionJob: Job? = null
@@ -31,6 +32,7 @@ object LyriconProviderManager {
     private var lastLyricData: com.rawsmusic.core.common.model.LyricData? = null
     private var lastPositionMs: Long = 0L
     private var lastPlaying: Boolean = false
+    private var lastSentPlaying: Boolean? = null
     private var lastSentSignature: String? = null
 
     private fun com.rawsmusic.core.common.model.AudioFile.lyriconStableId(): String {
@@ -71,12 +73,16 @@ object LyriconProviderManager {
                 onConnected { _ ->
                     Log.d(TAG, "Connected to Lyricon")
                     connectionStatus = ConnectionStatus.CONNECTED
+                    lastSentPlaying = null
+                    provider?.player?.setPositionUpdateInterval(POSITION_SYNC_INTERVAL_MS)
                     onConnectionStatusChanged?.invoke(connectionStatus)
                     onProviderConnected?.invoke()
                 }
                 onReconnected { _ ->
                     Log.d(TAG, "Reconnected to Lyricon")
                     connectionStatus = ConnectionStatus.CONNECTED
+                    lastSentPlaying = null
+                    provider?.player?.setPositionUpdateInterval(POSITION_SYNC_INTERVAL_MS)
                     onConnectionStatusChanged?.invoke(connectionStatus)
                     onProviderConnected?.invoke()
                 }
@@ -108,6 +114,7 @@ object LyriconProviderManager {
             provider?.destroy()
             provider = null
             isInitialized = false
+            lastSentPlaying = null
             connectionStatus = ConnectionStatus.DISCONNECTED
         } catch (e: Exception) {
             Log.e(TAG, "Failed to destroy provider", e)
@@ -120,6 +127,7 @@ object LyriconProviderManager {
      */
     fun resendLastSong() {
         lastSentSignature = null  // 强制重发
+        lastSentPlaying = null
         setSong(lastSong, lastLyricData)
     }
 
@@ -151,12 +159,13 @@ object LyriconProviderManager {
         val player = provider?.player ?: return
         val stableId = song.lyriconStableId()
 
-        // 签名去重：和 Halcyon 一致，避免重复发送相同数据
+        // 签名去重，避免重复发送相同数据
         val signature = "${stableId}|${finalLyricData?.lines?.size ?: 0}|${finalLyricData?.lines?.firstOrNull()?.timeStamp}|${finalLyricData?.lines?.lastOrNull()?.timeStamp}"
         if (signature == lastSentSignature) {
             Log.d(TAG, "setSong skipped: duplicate signature, song=${song.title}")
             player.setPosition(lastPositionMs)
             player.setPlaybackState(lastPlaying)
+            lastSentPlaying = lastPlaying
             return
         }
 
@@ -190,17 +199,20 @@ object LyriconProviderManager {
         player.setDisplayRoma(AppPreferences.Lyricon.displayRoma)
         player.setPosition(lastPositionMs)
         player.setPlaybackState(lastPlaying)
+        lastSentPlaying = lastPlaying
     }
 
     fun setPlaybackState(isPlaying: Boolean) {
         lastPlaying = isPlaying
+        if (lastSentPlaying == isPlaying) return
+        val player = provider?.player ?: return
+        lastSentPlaying = isPlaying
         Log.d(TAG, "setPlaybackState: $isPlaying")
-        provider?.player?.setPlaybackState(isPlaying)
+        player.setPlaybackState(isPlaying)
     }
 
     fun setPosition(positionMs: Long) {
         lastPositionMs = positionMs.coerceAtLeast(0L)
-        Log.d(TAG, "setPosition: $lastPositionMs")
         provider?.player?.setPosition(lastPositionMs)
     }
 
@@ -220,19 +232,19 @@ object LyriconProviderManager {
 
     fun startPositionSync(playerController: PlayerController) {
         stopPositionSync()
+        // Lyricon 从共享内存读取位置；不设置间隔时部分实现只读取初始值。
+        provider?.player?.setPositionUpdateInterval(POSITION_SYNC_INTERVAL_MS)
         positionJob = scope.launch {
             while (isActive) {
                 try {
                     val pos = playerController.position.value
-                    val lyricOffset = playerController.lyricManualOffsetMs.toLong()
                     val state = playerController.playState.value
-                    val lyricPos = (pos - lyricOffset).coerceAtLeast(0L)
 
                     // 不只在播放时同步；暂停、拖动、seek 后也让外部端拿到当前位置
-                    setPosition(lyricPos)
+                    setPosition(pos.coerceAtLeast(0L))
                     setPlaybackState(state == PlayState.PLAYING)
                 } catch (_: Exception) {}
-                delay(200)
+                delay(POSITION_SYNC_INTERVAL_MS.toLong())
             }
         }
     }

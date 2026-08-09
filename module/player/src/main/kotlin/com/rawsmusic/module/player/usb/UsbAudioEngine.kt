@@ -1,8 +1,7 @@
 package com.rawsmusic.module.player.usb
 
+import android.content.Context
 import android.os.Process
-import android.os.SystemClock
-import android.util.Log
 import com.rawsmusic.core.common.utils.AppLogger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -16,14 +15,12 @@ object UsbAudioEngine {
     @Volatile
     private var hidNativeAvailable: Boolean = true
 
-    @Volatile
-    private var backgroundPlaybackNativeAvailable: Boolean = true
-
     const val ERR_NOT_INITIALIZED = -1001
     const val ERR_NOT_RUNNING = -1003
     const val ERR_TRANSPORT_LOST = -1004
     const val ERR_USB_IO = -1005
     const val ERR_START_FAILED = -1010
+    const val ERR_HARDWARE_VOLUME_WRITE_UNCONFIRMED = -1006
 
     data class UsbRuntimeFormat(
         val sampleRate: Int,
@@ -71,13 +68,13 @@ object UsbAudioEngine {
 
     init {
         try {
-            System.loadLibrary("rawsmusic_usb")
+            System.loadLibrary("rawscoreservice")
             nativeLibraryLoaded = true
             AppLogger.d(TAG, "rawsmusic_usb library loaded")
         } catch (e: UnsatisfiedLinkError) {
             nativeLibraryLoaded = false
             hidNativeAvailable = false
-            backgroundPlaybackNativeAvailable = false
+            UsbBackgroundNativeGuard.markUnavailable()
             AppLogger.e(TAG, "Failed to load rawsmusic_usb", e)
         }
     }
@@ -86,21 +83,22 @@ object UsbAudioEngine {
 
     fun isHidNativeAvailable(): Boolean = nativeLibraryLoaded && hidNativeAvailable
 
-    fun isBackgroundPlaybackNativeAvailable(): Boolean = nativeLibraryLoaded && backgroundPlaybackNativeAvailable
+    fun isBackgroundPlaybackNativeAvailable(): Boolean =
+        UsbBackgroundNativeGuard.isAvailable(nativeLibraryLoaded)
+
+    /**
+     * Use Android's actual fast
+     * mixer sample rate and frames-per-buffer, not the USB stream rate. A 384 kHz
+     * USB profile cannot itself create a normal Android fast AudioTrack.
+     */
+    fun configureAndroidAudioSchedulerProfile(context: Context) {
+        if (!nativeLibraryLoaded) return
+        UsbAndroidAudioSchedulerProfile.configure(context, ::nativeSetAndroidAudioSchedulerProfile)
+    }
 
     private fun markHidNativeUnavailable(api: String, t: Throwable) {
         hidNativeAvailable = false
         AppLogger.w(TAG, "USB HID native bridge unavailable at $api; HID remote keys disabled", t)
-    }
-
-    private fun markBackgroundPlaybackNativeUnavailable(api: String, t: Throwable) {
-        backgroundPlaybackNativeAvailable = false
-        AppLogger.w(
-            TAG,
-            "USB background native guard unavailable at $api; native ColorOS/Hans guard disabled, " +
-                "Java foreground service/media identity/wakelock protection remains active",
-            t
-        )
     }
 
     /**
@@ -108,252 +106,12 @@ object UsbAudioEngine {
      * Missing JNI symbols must never crash Activity lifecycle callbacks.
      */
     fun setBackgroundPlaybackActiveSafely(active: Boolean, reason: String = "unspecified"): Boolean {
-        if (!isBackgroundPlaybackNativeAvailable()) {
-            return false
-        }
-        return try {
-            nativeSetBackgroundPlaybackActive(active)
-            true
-        } catch (e: UnsatisfiedLinkError) {
-            markBackgroundPlaybackNativeUnavailable("nativeSetBackgroundPlaybackActive($active,$reason)", e)
-            false
-        } catch (t: Throwable) {
-            AppLogger.w(TAG, "nativeSetBackgroundPlaybackActive($active) failed: reason=$reason", t)
-            false
-        }
-    }
-
-    // ========== UAC20 native session v2 bridge（默认不接管旧播放路径） ==========
-
-    const val UAC20_FLAG_RESET_ALT = 1 shl 0
-    const val UAC20_FLAG_PREFER_EXPLICIT_FEEDBACK = 1 shl 1
-    const val UAC20_FLAG_FORBID_LEARNED_NO_FEEDBACK = 1 shl 2
-    const val UAC20_FLAG_MINIMAL_MIXER_CONTROL = 1 shl 3
-    const val UAC20_FLAG_PREFER_24_IN_32 = 1 shl 4
-    const val UAC20_FLAG_FULL_REOPEN_ON_NOT_OUTPUTTING = 1 shl 5
-    const val UAC20_FLAG_DEBUG_REAL_OUT_SUBMITTER = 1 shl 6
-    const val UAC20_FLAG_DEBUG_REAL_OUT_FEEDER = 1 shl 7
-    const val UAC20_FLAG_DEBUG_REAL_OUT_AUTO_RESUBMIT = 1 shl 8
-    const val UAC20_FLAG_DEBUG_RUNTIME_GUARD = 1 shl 9
-    const val UAC20_FLAG_DEBUG_RECOVERY_EXECUTOR = 1 shl 10
-    const val UAC20_FLAG_DEBUG_FORMAT_FALLBACK_EXECUTOR = 1 shl 11
-
-    const val UAC20_DEFAULT_FLAGS =
-        UAC20_FLAG_RESET_ALT or
-            UAC20_FLAG_PREFER_EXPLICIT_FEEDBACK or
-            UAC20_FLAG_FORBID_LEARNED_NO_FEEDBACK or
-            UAC20_FLAG_MINIMAL_MIXER_CONTROL or
-            UAC20_FLAG_PREFER_24_IN_32 or
-            UAC20_FLAG_FULL_REOPEN_ON_NOT_OUTPUTTING
-
-    external fun nativeCreateUac20Session(
-        fd: Int,
-        sourceSampleRate: Int,
-        sourceBits: Int,
-        sourceChannels: Int,
-        requestedSampleRate: Int,
-        requestedBits: Int,
-        requestedSubslotBytes: Int,
-        flags: Int
-    ): Long
-
-    external fun nativeUac20Start(handle: Long): Boolean
-    external fun nativeUac20Write(handle: Long, data: ByteArray, offset: Int, length: Int): Int
-    external fun nativeUac20Stop(handle: Long)
-    external fun nativeUac20Close(handle: Long)
-    external fun nativeUac20RuntimeJson(handle: Long): String
-    private external fun nativeUac20LastCreateError(): String
-
-    fun getUac20LastCreateError(): String {
-        return runCatching { nativeUac20LastCreateError() }
-            .getOrElse { "nativeUac20LastCreateError failed: ${it.message}" }
-    }
-
-    fun createUac20SessionPreview(
-        fd: Int,
-        sourceSampleRate: Int,
-        sourceBits: Int,
-        sourceChannels: Int,
-        requestedSampleRate: Int = sourceSampleRate,
-        requestedBits: Int = sourceBits,
-        requestedSubslotBytes: Int = if (sourceBits == 24) 4 else ((sourceBits + 7) / 8),
-        flags: Int = UAC20_DEFAULT_FLAGS
-    ): Long {
-        return try {
-            nativeCreateUac20Session(
-                fd,
-                sourceSampleRate,
-                sourceBits,
-                sourceChannels,
-                requestedSampleRate,
-                requestedBits,
-                requestedSubslotBytes,
-                flags
-            )
-        } catch (t: Throwable) {
-            AppLogger.e(TAG, "nativeCreateUac20Session threw", t)
-            0L
-        }
-    }
-
-    /**
-     * v2 shadow-mode preview session wrapper.
-     *
-     * WARNING: Do NOT run this concurrently with a legacy live USB handle on
-     * the same DAC. The v2 preview session claims interfaces, resets alt
-     * settings, and configures clock sources during prepare/start, which will
-     * conflict with an active legacy playback session on the same device.
-     *
-     * This wrapper is diagnostic-only:
-     * - [start] opens the v2 UAC20 path (descriptors → clock → feedback → silent OUT probe)
-     * - [writeShadow] feeds PCM into the native write ring for rate/alignment statistics only
-     * - [runtimeJson] returns the full v2 diagnostic JSON
-     * - [stop] / [close] tear down the session
-     *
-     * It does NOT replace legacy playback and does NOT feed real PCM to ISO OUT transfers.
-     */
-    class Uac20PreviewSession internal constructor(
-        internal val handle: Long,
-        internal val sourceSampleRate: Int,
-        internal val sourceBits: Int,
-        internal val sourceChannels: Int,
-        internal val requestedSampleRate: Int,
-        internal val requestedBits: Int,
-        internal val requestedSubslotBytes: Int,
-    ) {
-        val isValid: Boolean get() = handle != 0L
-
-        fun start(): Boolean {
-            if (!isValid) return false
-            return try {
-                nativeUac20Start(handle)
-            } catch (t: Throwable) {
-                AppLogger.e(TAG, "nativeUac20Start threw", t)
-                false
-            }
-        }
-
-        /**
-         * Shadow write: copies PCM into the native write ring for statistics.
-         * Returns accepted bytes count, or negative error code.
-         */
-        fun writeShadow(data: ByteArray, offset: Int, length: Int): Int {
-            if (!isValid) return ERR_NOT_INITIALIZED
-            return try {
-                nativeUac20Write(handle, data, offset, length)
-            } catch (t: Throwable) {
-                AppLogger.e(TAG, "nativeUac20Write threw", t)
-                -1
-            }
-        }
-
-        fun runtimeJson(): String {
-            if (!isValid) return "{}"
-            return try {
-                nativeUac20RuntimeJson(handle)
-            } catch (t: Throwable) {
-                AppLogger.e(TAG, "nativeUac20RuntimeJson threw", t)
-                "{}"
-            }
-        }
-
-        fun stop() {
-            if (!isValid) return
-            try {
-                nativeUac20Stop(handle)
-            } catch (t: Throwable) {
-                AppLogger.e(TAG, "nativeUac20Stop threw", t)
-            }
-        }
-
-        fun close() {
-            if (!isValid) return
-            try {
-                nativeUac20Close(handle)
-            } catch (t: Throwable) {
-                AppLogger.e(TAG, "nativeUac20Close threw", t)
-            }
-        }
-    }
-
-    /**
-     * Opens a v2 UAC20 preview session for diagnostic shadow-mode testing.
-     *
-     * Returns a [Uac20PreviewSession] that can be used to validate write-ring
-     * input rate, frame alignment, and OUT probe health without replacing the
-     * legacy playback path.
-     *
-     * WARNING: See [Uac20PreviewSession] class docs — do not run concurrently
-     * with a legacy live USB handle on the same DAC.
-     */
-    fun openUac20PreviewSession(
-        fd: Int,
-        sourceSampleRate: Int,
-        sourceBits: Int,
-        sourceChannels: Int,
-        requestedSampleRate: Int = sourceSampleRate,
-        requestedBits: Int = sourceBits,
-        requestedSubslotBytes: Int = if (sourceBits == 24) 4 else ((sourceBits + 7) / 8),
-        flags: Int = UAC20_DEFAULT_FLAGS
-    ): Uac20PreviewSession {
-        val handle = createUac20SessionPreview(
-            fd,
-            sourceSampleRate,
-            sourceBits,
-            sourceChannels,
-            requestedSampleRate,
-            requestedBits,
-            requestedSubslotBytes,
-            flags
+        return UsbBackgroundNativeGuard.setActive(
+            nativeLoaded = nativeLibraryLoaded,
+            active = active,
+            reason = reason,
+            applyNative = { nativeSetBackgroundPlaybackActive(active) },
         )
-        return Uac20PreviewSession(
-            handle,
-            sourceSampleRate,
-            sourceBits,
-            sourceChannels,
-            requestedSampleRate,
-            requestedBits,
-            requestedSubslotBytes
-        )
-    }
-
-    /**
-     * 0043: Debug-only v2 playback session. Opens a UAC20 session with the
-     * debug real-OUT submitter gate enabled. This does NOT replace legacy
-     * playback; it is only used by [UsbExclusiveManager.runDefaultUac20DebugPlaybackSmoke].
-     */
-    fun openUac20DebugPlaybackSession(
-        fd: Int,
-        sourceSampleRate: Int = 192000,
-        sourceBits: Int = 24,
-        sourceChannels: Int = 2,
-        requestedSampleRate: Int = sourceSampleRate,
-        requestedBits: Int = sourceBits,
-        requestedSubslotBytes: Int = if (sourceBits == 24) 4 else ((sourceBits + 7) / 8),
-        feedFromWriteRing: Boolean = true,
-        autoResubmit: Boolean = true
-    ): Uac20PreviewSession {
-        val flags = UAC20_DEFAULT_FLAGS or
-            UAC20_FLAG_DEBUG_REAL_OUT_SUBMITTER or
-            (if (feedFromWriteRing) UAC20_FLAG_DEBUG_REAL_OUT_FEEDER else 0) or
-            (if (autoResubmit) UAC20_FLAG_DEBUG_REAL_OUT_AUTO_RESUBMIT else 0)
-        return openUac20PreviewSession(
-            fd,
-            sourceSampleRate,
-            sourceBits,
-            sourceChannels,
-            requestedSampleRate,
-            requestedBits,
-            requestedSubslotBytes,
-            flags
-        )
-    }
-
-    /**
-     * 0043: Write PCM into a debug playback session's shadow write ring.
-     */
-    fun writeDebugPlayback(handle: Long, data: ByteArray, offset: Int, length: Int): Int {
-        return nativeUac20Write(handle, data, offset, length)
     }
 
     // ========== 4 个核心生命周期 external 方法 ==========
@@ -377,6 +135,10 @@ object UsbAudioEngine {
     external fun nativeStop(handle: Long)
 
     external fun nativePause(handle: Long)
+
+    external fun nativePauseToSilence(handle: Long, reason: String): Boolean
+
+    external fun nativeResumeWritesAfterPause(handle: Long, reason: String): Boolean
 
     external fun nativeStopAndFlush(handle: Long)
 
@@ -410,11 +172,6 @@ object UsbAudioEngine {
     private val nativeHandleRef = AtomicLong(0L)
     private val writerPriorityApplied = ThreadLocal<Boolean>()
 
-    @Volatile
-    private var lastNextTrackFlushMs: Long = 0L
-    @Volatile
-    private var lastNextTrackFlushReason: String = ""
-
     val currentHandle: Long
         get() = nativeHandleRef.get()
 
@@ -427,6 +184,67 @@ object UsbAudioEngine {
 
     @Volatile
     private var cachedDeviceCapabilities: UsbDeviceAudioCapabilities? = null
+
+    private val streamController by lazy {
+        UsbNativeStreamController(
+            currentHandle = { currentHandle },
+            isInitialized = { initialized },
+            isSessionBroken = { nativeSessionBroken },
+            setSessionBroken = { broken -> nativeSessionBroken = broken },
+            refreshRuntimeSnapshot = ::refreshRuntimeSnapshotFromNative,
+            getStreamSessionId = ::getStreamSessionId,
+            nativeStart = ::nativeStart,
+            nativePause = ::nativePause,
+            nativeStopAndFlush = ::nativeStopAndFlush,
+            nativeFlushForNextTrack = ::nativeFlushForNextTrack,
+            nativeRestartIsoTransfersSameProfile = ::nativeRestartIsoTransfersSameProfile,
+            nativeResetSessionForPlayback = ::nativeResetSessionForPlayback,
+            nativeCloseStreamForReconfigure = ::nativeCloseStreamForReconfigure,
+            nativeEnterStandby = ::nativeEnterStandby,
+            nativeResumeFromStandby = ::nativeResumeFromStandby,
+            nativeIsSessionBroken = ::nativeIsSessionBroken,
+            nativeIsActive = ::nativeIsActive,
+        )
+    }
+
+    private val runtimeMetrics by lazy {
+        UsbRuntimeMetricsReader(
+            isInitialized = { initialized },
+            currentHandle = { currentHandle },
+            snapshot = {
+                UsbRuntimeMetricsReader.Snapshot(
+                    sampleRate = currentSampleRate,
+                    channels = currentChannels,
+                    bits = currentBits,
+                    subslotBytes = currentSubslotSize,
+                    outEndpoint = currentOutEndpoint,
+                    feedbackEndpoint = currentFeedbackEndpoint,
+                    interfaceNumber = currentInterfaceNumber,
+                    altSetting = currentAltSetting,
+                )
+            },
+            refreshSnapshot = ::refreshRuntimeSnapshotFromNative,
+            nativeGetPacketSize = ::nativeGetPacketSize,
+            nativeGetTransferCapacityBytes = ::nativeGetTransferCapacityBytes,
+            nativeGetMaxPacketBytes = ::nativeGetMaxPacketBytes,
+            nativeGetServiceIntervalsPerSecond = ::nativeGetServiceIntervalsPerSecond,
+            nativeGetNominalBytesPerInterval = ::nativeGetNominalBytesPerInterval,
+            nativeGetNominalBytesPerTransfer = ::nativeGetNominalBytesPerTransfer,
+            nativeGetCompletedUsbBytesPerSecond = ::nativeGetCompletedUsbBytesPerSecond,
+            nativeGetScheduledUsbBytesPerSecond = ::nativeGetScheduledUsbBytesPerSecond,
+            nativeGetFeedbackState = ::nativeGetFeedbackState,
+            nativeGetFeedbackSampleRateMilli = ::nativeGetFeedbackSampleRateMilli,
+            nativeGetPacingMode = ::nativeGetPacingMode,
+            nativeGetStatsString = ::nativeGetStatsString,
+            nativeGetStreamSessionId = ::nativeGetStreamSessionId,
+            nativeGetRecommendedDelayUs = ::nativeGetRecommendedDelayUs,
+            nativeGetBufferUsedBytes = ::nativeGetBufferUsedBytes,
+            nativeGetOutputBytesPerSecond = ::nativeGetOutputBytesPerSecond,
+            nativeGetOutputSampleRate = ::nativeGetOutputSampleRate,
+            nativeGetCurrentFrameBytes = ::nativeGetCurrentFrameBytes,
+            currentFeedbackEndpoint = { currentFeedbackEndpoint },
+        )
+    }
 
     // ========== 统一关闭入口 ==========
 
@@ -510,26 +328,7 @@ object UsbAudioEngine {
         return handle
     }
 
-    fun start(): Boolean {
-        val h = nativeHandleRef.get()
-        if (h == 0L || !initialized) {
-            AppLogger.e(TAG, "Cannot start: not initialized, handle=0x${java.lang.Long.toUnsignedString(h, 16)} initialized=$initialized")
-            return false
-        }
-        if (nativeSessionBroken) {
-            AppLogger.e(TAG, "start denied: native session broken, full reopen required")
-            return false
-        }
-        val result = nativeStart(h)
-        if (!result) {
-            AppLogger.e(TAG, "nativeStart failed, marking session broken")
-            nativeSessionBroken = true
-        } else {
-            refreshRuntimeSnapshotFromNative()
-            AppLogger.i(TAG, "Streaming started")
-        }
-        return result
-    }
+    fun start(): Boolean = streamController.start()
 
     /**
      * 临时保留旧入口，但任何普通切歌/暂停都不应该再走这里。
@@ -548,15 +347,24 @@ object UsbAudioEngine {
     @Volatile
     var usbSeekingFlag: Boolean = false
 
-    fun pause() {
-        val h = nativeHandleRef.get()
-        if (h == 0L || !initialized) {
-            AppLogger.i(TAG, "pause() ignored: handle=0x${java.lang.Long.toUnsignedString(h, 16)} initialized=$initialized")
-            return
+    fun pause() = streamController.pause()
+
+    fun pauseToSilence(reason: String): Boolean {
+        val handle = currentHandle
+        if (handle == 0L || !initialized) {
+            AppLogger.w(TAG, "pauseToSilence skipped: reason=$reason handle=0x${handle.toString(16)} initialized=$initialized")
+            return false
         }
-        AppLogger.i(TAG, "pause() calling nativePause, handle=0x${java.lang.Long.toUnsignedString(h, 16)}")
-        nativePause(h)
-        AppLogger.i(TAG, "Streaming paused (buffer preserved)")
+        return nativePauseToSilence(handle, reason)
+    }
+
+    fun resumeWritesAfterPause(reason: String): Boolean {
+        val handle = currentHandle
+        if (handle == 0L || !initialized) {
+            AppLogger.w(TAG, "resumeWritesAfterPause skipped: reason=$reason handle=0x${handle.toString(16)} initialized=$initialized")
+            return false
+        }
+        return nativeResumeWritesAfterPause(handle, reason)
     }
 
     fun release() {
@@ -564,101 +372,39 @@ object UsbAudioEngine {
         nativeSessionBroken = false
     }
 
-    fun isActive(): Boolean {
-        if (!initialized) return false
-        return nativeIsActive()
-    }
+    fun isActive(): Boolean = streamController.isActive()
 
     fun isRunning(): Boolean = isActive()
 
     /** Legacy ABI: returns the ISO transfer capacity, not the nominal audio packet payload. */
     fun getPacketSize(): Int = getTransferCapacityBytes()
 
-    fun getTransferCapacityBytes(): Int {
-        if (!initialized) return 0
-        return runCatching { nativeGetTransferCapacityBytes() }.getOrElse { nativeGetPacketSize() }
-    }
+    fun getTransferCapacityBytes(): Int = runtimeMetrics.transferCapacityBytes()
 
-    fun getMaxPacketBytes(): Int {
-        if (!initialized) return 0
-        return runCatching { nativeGetMaxPacketBytes() }.getOrDefault(0)
-    }
+    fun getMaxPacketBytes(): Int = runtimeMetrics.maxPacketBytes()
 
-    fun getServiceIntervalsPerSecond(): Int {
-        if (!initialized) return 0
-        return runCatching { nativeGetServiceIntervalsPerSecond() }.getOrDefault(0)
-    }
+    fun getServiceIntervalsPerSecond(): Int = runtimeMetrics.serviceIntervalsPerSecond()
 
-    fun getNominalBytesPerInterval(): Int {
-        if (!initialized) return 0
-        return runCatching { nativeGetNominalBytesPerInterval() }.getOrDefault(0)
-    }
+    fun getNominalBytesPerInterval(): Int = runtimeMetrics.nominalBytesPerInterval()
 
-    fun getNominalBytesPerTransfer(): Int {
-        if (!initialized) return 0
-        return runCatching { nativeGetNominalBytesPerTransfer() }.getOrDefault(0)
-    }
+    fun getNominalBytesPerTransfer(): Int = runtimeMetrics.nominalBytesPerTransfer()
 
-    fun getCompletedUsbBytesPerSecond(): Long {
-        if (!initialized) return 0L
-        return runCatching { nativeGetCompletedUsbBytesPerSecond() }.getOrDefault(0L)
-    }
+    fun getCompletedUsbBytesPerSecond(): Long = runtimeMetrics.completedUsbBytesPerSecond()
 
-    fun getScheduledUsbBytesPerSecond(): Long {
-        if (!initialized) return 0L
-        return runCatching { nativeGetScheduledUsbBytesPerSecond() }.getOrDefault(0L)
-    }
+    fun getScheduledUsbBytesPerSecond(): Long = runtimeMetrics.scheduledUsbBytesPerSecond()
 
-    fun getFeedbackState(): FeedbackState {
-        if (!initialized) return FeedbackState.NONE
-        return FeedbackState.fromId(runCatching { nativeGetFeedbackState() }.getOrDefault(0))
-    }
+    fun getFeedbackState(): FeedbackState = runtimeMetrics.feedbackState()
 
-    fun getFeedbackSampleRate(): Double {
-        if (!initialized) return 0.0
-        return runCatching { nativeGetFeedbackSampleRateMilli() / 1000.0 }.getOrDefault(0.0)
-    }
+    fun getFeedbackSampleRate(): Double = runtimeMetrics.feedbackSampleRate()
 
-    fun getPacingMode(): PacingMode {
-        if (!initialized) return PacingMode.Unknown
-        val h = currentHandle
-        if (h != 0L) {
-            val raw = runCatching { nativeGetStatsString(h) }.getOrDefault("")
-            Regex("""(?:^|\s)pacingModeId=(-?\d+)""").find(raw)
-                ?.groupValues?.getOrNull(1)?.toIntOrNull()
-                ?.let { id -> if (id >= 0) return PacingMode.fromId(id) }
-            Regex("""(?:^|\s)pacingMode=([^\s]+)""").find(raw)
-                ?.groupValues?.getOrNull(1)
-                ?.let { mode ->
-                    PacingMode.entries.firstOrNull { it.name == mode }?.let { return it }
-                }
-        }
-        return PacingMode.fromId(runCatching { nativeGetPacingMode() }.getOrDefault(-1))
-    }
+    fun getPacingMode(): PacingMode = runtimeMetrics.pacingMode()
 
-    fun feedbackLooksUnsafeForPacer(): Boolean {
-        if (!initialized) return false
-        refreshRuntimeSnapshotFromNative()
-        if (currentFeedbackEndpoint <= 0) return false
-        return getFeedbackState() in setOf(FeedbackState.SUSPECT, FeedbackState.DEGRADED, FeedbackState.FAILED)
-    }
+    fun feedbackLooksUnsafeForPacer(): Boolean = runtimeMetrics.feedbackLooksUnsafeForPacer()
 
-    fun getStreamSessionId(): Long {
-        val h = currentHandle
-        if (h == 0L) return 0L
-        return runCatching { nativeGetStreamSessionId(h) }.getOrDefault(0L)
-    }
+    fun getStreamSessionId(): Long = runtimeMetrics.streamSessionId()
 
-    fun computeRecommendedWriteChunkBytes(deviceBytesPerSecond: Long, frameBytes: Int, targetMs: Long = 32L): Int {
-        val frame = frameBytes.coerceAtLeast(1)
-        val timed = ((deviceBytesPerSecond.coerceAtLeast(1L) * targetMs) / 1000L)
-            .coerceAtMost(Int.MAX_VALUE.toLong())
-            .toInt()
-        val min = frame * 256
-        val max = frame * 8192
-        val bounded = timed.coerceIn(min, max)
-        return bounded - (bounded % frame)
-    }
+    fun computeRecommendedWriteChunkBytes(deviceBytesPerSecond: Long, frameBytes: Int, targetMs: Long = 32L): Int =
+        runtimeMetrics.recommendedWriteChunkBytes(deviceBytesPerSecond, frameBytes, targetMs)
 
     fun setSampleRate(sampleRate: Int): Boolean {
         if (!initialized) return false
@@ -698,24 +444,6 @@ object UsbAudioEngine {
         return nativeSetPcmSoftwareGain(h, gain.coerceIn(0f, 1f))
     }
 
-    fun setHardwareUserVolume(linear: Float): Int {
-        val h = currentHandle
-        if (h == 0L) return ERR_NOT_INITIALIZED
-        return nativeSetHardwareUserVolume(h, linear.coerceIn(0f, 1f))
-    }
-
-    fun setHardwareVolumeDb(db: Int): Int {
-        val h = currentHandle
-        if (h == 0L) return ERR_NOT_INITIALIZED
-        return nativeSetHardwareVolumeDb(h, db.coerceIn(-60, 0))
-    }
-
-    fun setTransientHardwareVolumeDb(db: Int, reason: String): Int {
-        val h = currentHandle
-        if (h == 0L) return ERR_NOT_INITIALIZED
-        return nativeSetHardwareVolumeDbNoCache(h, db.coerceIn(-60, 0), reason)
-    }
-
     fun setPcmOutputMode(mode: UsbPcmOutputMode) {
         nativeSetPcmOutputMode(mode.id)
     }
@@ -742,94 +470,28 @@ object UsbAudioEngine {
      * for Xiaomi/HyperOS no-feedback streams that look alive but stop draining
      * after the first accepted completions.
      */
-    fun restartIsoTransfersSameProfile(reason: String): Boolean {
-        val h = currentHandle
-        if (h == 0L || !initialized) {
-            AppLogger.w(
-                TAG,
-                "restartIsoTransfersSameProfile skipped: reason=$reason handle=0x${h.toString(16)} initialized=$initialized"
-            )
-            return false
-        }
-        AppLogger.w(TAG, "restartIsoTransfersSameProfile: reason=$reason handle=0x${h.toString(16)}")
-        return try {
-            val ok = nativeRestartIsoTransfersSameProfile(h)
-            if (ok) {
-                nativeSessionBroken = false
-                refreshRuntimeSnapshotFromNative()
-                AppLogger.i(TAG, "restartIsoTransfersSameProfile ok: reason=$reason session=${getStreamSessionId()}")
-            } else {
-                AppLogger.w(TAG, "restartIsoTransfersSameProfile native returned false: reason=$reason")
-            }
-            ok
-        } catch (t: Throwable) {
-            AppLogger.w(TAG, "restartIsoTransfersSameProfile failed: reason=$reason", t)
-            false
-        }
-    }
+    fun restartIsoTransfersSameProfile(reason: String): Boolean =
+        streamController.restartIsoTransfersSameProfile(reason)
 
     /** 轻量 flush，切歌用，可恢复（不设 sessionBroken） */
-    fun flushForNextTrack(reason: String) {
-        val h = currentHandle
-        val now = SystemClock.elapsedRealtime()
-        // Manual next already soft-flushed the native ring.  The subsequent
-        // prepareForPlayback fast-reuse path may arrive tens of milliseconds
-        // later; a second ring clear/safe-volume edge can be audible.
-        if (reason == "prepareForPlayback_fast_reuse_same_config" &&
-            now - lastNextTrackFlushMs in 0..650 &&
-            lastNextTrackFlushReason.contains("manual", ignoreCase = true)
-        ) {
-            AppLogger.w(TAG, "flushForNextTrack skipped duplicate fast-reuse flush: reason=$reason lastReason=$lastNextTrackFlushReason age=${now - lastNextTrackFlushMs}ms")
-            Log.w(TAG, "flushForNextTrack skipped duplicate fast-reuse flush: reason=$reason lastReason=$lastNextTrackFlushReason age=${now - lastNextTrackFlushMs}ms")
-            return
-        }
-        lastNextTrackFlushMs = now
-        lastNextTrackFlushReason = reason
-        AppLogger.i(TAG, "flushForNextTrack: reason=$reason handle=0x${h.toString(16)}")
-        if (h != 0L) nativeFlushForNextTrack(h)
-    }
+    fun flushForNextTrack(reason: String) = streamController.flushForNextTrack(reason)
 
     /** 重置 session 状态，新播放开始前调用（prefill 之前） */
-    fun resetSessionForPlayback(reason: String) {
-        val h = currentHandle
-        AppLogger.i(TAG, "resetSessionForPlayback: reason=$reason handle=0x${h.toString(16)}")
-        if (h != 0L) nativeResetSessionForPlayback(h)
-    }
+    fun resetSessionForPlayback(reason: String) = streamController.resetSessionForPlayback(reason)
 
     /** 释放 AS interface 保留 fd，格式变化时调用 */
-    fun closeStreamForReconfigure(reason: String) {
-        val h = currentHandle
-        AppLogger.i(TAG, "closeStreamForReconfigure: reason=$reason handle=0x${h.toString(16)}")
-        if (h != 0L) nativeCloseStreamForReconfigure(h)
-    }
+    fun closeStreamForReconfigure(reason: String) = streamController.closeStreamForReconfigure(reason)
 
     /** 进入 standby（暂停/后台/焦点丢失），释放 AS interface */
-    fun enterStandby(reason: String) {
-        val h = currentHandle
-        AppLogger.i(TAG, "enterStandby: reason=$reason handle=0x${h.toString(16)}")
-        if (h != 0L) nativeEnterStandby(h)
-    }
+    fun enterStandby(reason: String) = streamController.enterStandby(reason)
 
     /** 从 standby 恢复，重新 claim AS interface */
-    fun resumeFromStandby(reason: String): Boolean {
-        val h = currentHandle
-        AppLogger.i(TAG, "resumeFromStandby: reason=$reason handle=0x${h.toString(16)}")
-        if (h == 0L) return false
-        return nativeResumeFromStandby(h)
-    }
+    fun resumeFromStandby(reason: String): Boolean = streamController.resumeFromStandby(reason)
 
     /** Hard stop，关闭独占/设备拔出用，设 sessionBroken */
-    fun hardStopUsb(reason: String) {
-        val h = currentHandle
-        AppLogger.w(TAG, "hardStopUsb: reason=$reason handle=0x${h.toString(16)}", Throwable("hardStopUsb call stack"))
-        if (h != 0L) nativeStopAndFlush(h)
-    }
+    fun hardStopUsb(reason: String) = streamController.hardStopUsb(reason)
 
-    fun isNativeSessionBroken(): Boolean {
-        val h = currentHandle
-        if (h == 0L) return true
-        return nativeIsSessionBroken(h)
-    }
+    fun isNativeSessionBroken(): Boolean = streamController.isNativeSessionBroken()
 
     // ==========================
     // NativeStreamState 枚举
@@ -859,49 +521,10 @@ object UsbAudioEngine {
         val h = currentHandle
         if (h == 0L) return cachedDeviceCapabilities
         val json = runCatching { nativeGetDeviceCapabilitiesJson(h) }.getOrNull()
-        if (json.isNullOrBlank()) return cachedDeviceCapabilities
-        val parsed = parseUsbCapabilitiesJson(json)
-        if (parsed != null && parsed.formats.isNotEmpty()) {
-            cachedDeviceCapabilities = mergeDeviceCapabilities(cachedDeviceCapabilities, parsed)
-        }
-        return parsed?.let { mergeDeviceCapabilities(cachedDeviceCapabilities, it) } ?: cachedDeviceCapabilities
-    }
-
-    private fun mergeDeviceCapabilities(
-        previous: UsbDeviceAudioCapabilities?,
-        latest: UsbDeviceAudioCapabilities
-    ): UsbDeviceAudioCapabilities {
-        if (previous == null) return latest
-        if (previous.vendorId != latest.vendorId || previous.productId != latest.productId) {
-            return latest
-        }
-
-        val mergedFormats = (previous.formats + latest.formats)
-            .distinctBy {
-                listOf(
-                    it.sampleRate,
-                    it.channels,
-                    it.validBits,
-                    it.subslotBytes,
-                    it.interfaceNumber,
-                    it.altSetting,
-                    it.outEndpoint,
-                    it.feedbackEndpoint,
-                    it.isPcm,
-                    it.isRawData,
-                    it.outSync,
-                    it.outUsage,
-                    it.feedbackUsage
-                ).joinToString("|")
-            }
-
-        val deviceName = if (latest.deviceName.isNotBlank()) latest.deviceName else previous.deviceName
-        return UsbDeviceAudioCapabilities(
-            deviceName = deviceName,
-            vendorId = latest.vendorId,
-            productId = latest.productId,
-            formats = mergedFormats
-        )
+        val snapshot = UsbCapabilitySnapshotBridge.resolve(cachedDeviceCapabilities, json)
+            ?: return cachedDeviceCapabilities
+        cachedDeviceCapabilities = snapshot.cached
+        return snapshot.effective
     }
 
     fun isInitialized(): Boolean = initialized
@@ -912,81 +535,15 @@ object UsbAudioEngine {
         nativeResetBuffer(h)
     }
 
-    fun getRecommendedDelayUs(): Int {
-        if (!initialized) return 5000
-        return nativeGetRecommendedDelayUs()
-    }
+    fun getRecommendedDelayUs(): Int = runtimeMetrics.recommendedDelayUs()
 
-    fun getBufferUsedBytes(): Int {
-        if (!initialized) return 0
-        return try {
-            nativeGetBufferUsedBytes()
-        } catch (_: Throwable) {
-            0
-        }
-    }
+    fun getBufferUsedBytes(): Int = runtimeMetrics.bufferUsedBytes()
 
-    private fun computeRuntimeBytesPerSecond(): Int {
-        val sr = currentSampleRate.takeIf { it > 0 } ?: return 0
-        val ch = currentChannels.takeIf { it > 0 } ?: return 0
-        val subslot = currentSubslotSize.takeIf { it > 0 } ?: return 0
-        return (sr.toLong() * ch.toLong() * subslot.toLong())
-            .coerceAtMost(Int.MAX_VALUE.toLong())
-            .toInt()
-    }
+    fun getOutputBytesPerSecond(): Int = runtimeMetrics.outputBytesPerSecond()
 
-    fun getOutputBytesPerSecond(): Int {
-        if (!initialized) return 0
-        val nativeBps = try {
-            nativeGetOutputBytesPerSecond()
-        } catch (_: Throwable) {
-            0
-        }
-        refreshRuntimeSnapshotFromNative()
-        val computedBps = computeRuntimeBytesPerSecond()
-        if (computedBps > 0) {
-            if (nativeBps > 0 && nativeBps != computedBps) {
-                AppLogger.w(
-                    TAG,
-                    "USB runtime BPS corrected: native=$nativeBps computed=$computedBps " +
-                        "sr=$currentSampleRate ch=$currentChannels subslot=$currentSubslotSize"
-                )
-            }
-            return computedBps
-        }
-        return nativeBps
-    }
+    fun getRuntimeFormat(): UsbRuntimeFormat = runtimeMetrics.runtimeFormat()
 
-    fun getRuntimeFormat(): UsbRuntimeFormat {
-        refreshRuntimeSnapshotFromNative()
-        val frameBytesFromNative = try { nativeGetCurrentFrameBytes() } catch (_: Throwable) { 0 }
-        val frameBytes = frameBytesFromNative.takeIf { it > 0 }
-            ?: (currentChannels * currentSubslotSize).takeIf { it > 0 }
-            ?: 0
-        val bps = computeRuntimeBytesPerSecond().takeIf { it > 0 }
-            ?: try { nativeGetOutputBytesPerSecond() } catch (_: Throwable) { 0 }
-        return UsbRuntimeFormat(
-            sampleRate = currentSampleRate,
-            channels = currentChannels,
-            validBits = currentBits,
-            subslotBytes = currentSubslotSize,
-            frameBytes = frameBytes,
-            bytesPerSecond = bps,
-            iface = currentInterfaceNumber,
-            alt = currentAltSetting,
-            outEndpoint = currentOutEndpoint,
-            feedbackEndpoint = currentFeedbackEndpoint
-        )
-    }
-
-    fun getOutputSampleRate(): Int {
-        if (!initialized) return 0
-        return try {
-            nativeGetOutputSampleRate()
-        } catch (_: Throwable) {
-            0
-        }
-    }
+    fun getOutputSampleRate(): Int = runtimeMetrics.outputSampleRate()
 
     fun refreshRuntimeSnapshotFromNative() {
         if (!initialized) return
@@ -1118,12 +675,22 @@ object UsbAudioEngine {
 
     /** 设置 PCM→DSD / DoP / Native DSD 参数 */
     fun setDsdConversion(enabled: Boolean, rate: Int, type: Int, dither: Boolean, dop: Boolean) {
+        // DSD mode is process-global in native. Mutating it while a USB handle is live can make
+        // the old DSD altsetting consume PCM bytes (or clear the converter under its writer),
+        // which has triggered OEM USB-stack failures on some devices. Settings are therefore
+        // session-scoped: close the old handle first, then apply the desired mode for the next init.
+        val liveHandle = currentHandle
+        if (liveHandle != 0L) {
+            AppLogger.e(
+                TAG,
+                "setDsdConversion deferred: live USB handle=0x${java.lang.Long.toUnsignedString(liveHandle, 16)} " +
+                    "requested enabled=$enabled rate=DSD$rate dop=${enabled && dop}; close USB first"
+            )
+            return
+        }
         // DoP is an active DSD transport property, not a sticky preference bit in
         // the native engine. If DSD conversion is off, the native transport must
         // report dopEnabled=0 and the PCM path must never see stale DoP state.
-        // This guard is also enforced inside nativeSetDsdConversion, but keep it
-        // here so the Kotlin side never sends an inconsistent (enabled=false,
-        // dop=true) pair across the JNI boundary.
         nativeSetDsdConversion(enabled, rate, type, dither, enabled && dop)
     }
 
@@ -1168,6 +735,7 @@ object UsbAudioEngine {
     external fun nativeRequiresReinit(): Boolean
     external fun nativeOnUsbDetached()
     external fun nativeSetUsbExclusiveActive(active: Boolean)
+    external fun nativeSetAndroidAudioSchedulerProfile(sampleRate: Int, framesPerBuffer: Int)
     external fun nativeSetBackgroundPlaybackActive(active: Boolean)
     external fun nativePumpUsbEventsFromKeepAlive(): Int
     external fun nativeSetPolicy(exclusive: Boolean, bitPerfect: Boolean, hwVol: Boolean)
@@ -1192,8 +760,15 @@ object UsbAudioEngine {
     external fun nativeGetAudibleStateString(handle: Long): String
     external fun nativeGetStreamSessionId(handle: Long): Long
     external fun isHardwareVolumeValidated(): Boolean
-    external fun nativeSetHardwareVolumeDb(handle: Long, db: Int): Int
     external fun nativeSetHardwareVolumeDbNoCache(handle: Long, db: Int, reason: String): Int
+    /** Reattach-only write that bypasses the per-handle SET_CUR dedup cache. */
+    external fun nativeSetHardwareVolumeRawNoCache(handle: Long, raw: Int, reason: String): Int
+    external fun nativeSetHardwareVolumeRaw(handle: Long, raw: Int, reason: String): Int
+    external fun nativeAdjustHardwareVolume(handle: Long, direction: Int, reason: String): Int
+    external fun nativeGetHardwareVolumeCurrentRaw(handle: Long): Int
+    external fun nativeGetHardwareVolumeMinRaw(handle: Long): Int
+    external fun nativeGetHardwareVolumeMaxRaw(handle: Long): Int
+    external fun nativeGetHardwareVolumeResRaw(handle: Long): Int
     private external fun nativeGetPlaybackMode(handle: Long): Int
     external fun nativeSetPcmOutputMode(mode: Int)
     external fun nativeArmStopFade(handle: Long, fadeMs: Int)
@@ -1215,13 +790,9 @@ object UsbAudioEngine {
         force1ms: Boolean
     )
     external fun nativeSetPcmSoftwareGain(handle: Long, gain: Float): Int
-    external fun nativeSetHardwareUserVolume(handle: Long, linear: Float): Int
 
     /** 全局软件增益，不需要 handle。用于音量路由层在 handle 就绪前预设增益。 */
     external fun nativeSetUsbSoftwareGain(linear: Float)
-
-    /** 硬件音量线性写入（带 reason 日志），走 USB Feature Unit。 */
-    external fun nativeSetUsbHardwareVolumeLinear(handle: Long, linear: Float, reason: String): Int
 
     /** seek 前软停止：停止 ISO 传输 + 清 ring + 设淡入，不标 BROKEN，不关闭 handle。 */
     external fun nativePrepareForSeek(handle: Long, rampMs: Int, reason: String)

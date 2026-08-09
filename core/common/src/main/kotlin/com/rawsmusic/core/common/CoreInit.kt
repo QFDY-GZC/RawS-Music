@@ -2,7 +2,6 @@ package com.rawsmusic.core.common
 
 import android.app.Application
 import com.tencent.mmkv.MMKV
-import com.blankj.utilcode.util.Utils
 
 object CoreInit {
 
@@ -11,7 +10,6 @@ object CoreInit {
     fun init(application: Application) {
         app = application
         MMKV.initialize(application)
-        Utils.init(application)
     }
 
     fun getApp(): Application {

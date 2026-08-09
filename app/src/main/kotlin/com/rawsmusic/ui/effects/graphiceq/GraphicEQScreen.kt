@@ -45,6 +45,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import com.rawsmusic.R
 import kotlin.math.abs
 
 data class GraphicEQBandUi(
@@ -221,47 +223,6 @@ fun GraphicEQScreen(
 }
 
 @Composable
-private fun GraphicEQTopBar(
-    title: String,
-    onBack: () -> Unit,
-    onReset: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(56.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        TextButton(onClick = onBack) {
-            Text(
-                text = "← 返回",
-                color = GraphicEQColors.Cyan,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
-        Spacer(Modifier.weight(1f))
-
-        Text(
-            text = title,
-            color = GraphicEQColors.Text,
-            fontWeight = FontWeight.Black,
-            style = MaterialTheme.typography.titleLarge
-        )
-
-        Spacer(Modifier.weight(1f))
-
-        TextButton(onClick = onReset) {
-            Text(
-                text = "重置",
-                color = GraphicEQColors.Cyan,
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
-}
-
-@Composable
 private fun GraphicEQHeaderCard(
     enabled: Boolean,
     bandCount: Int,
@@ -285,7 +246,7 @@ private fun GraphicEQHeaderCard(
                 modifier = Modifier.weight(1f)
             ) {
                 Text(
-                    text = "图形均衡器",
+                    text = stringResource(R.string.ui_geq_title),
                     color = GraphicEQColors.Text,
                     fontWeight = FontWeight.Black,
                     style = MaterialTheme.typography.titleLarge,
@@ -295,7 +256,7 @@ private fun GraphicEQHeaderCard(
                 Spacer(Modifier.height(4.dp))
 
                 Text(
-                    text = "$bandCount 段 · $presetName",
+                    text = stringResource(R.string.ui_geq_band_preset, bandCount, presetName),
                     color = GraphicEQColors.Muted,
                     style = MaterialTheme.typography.bodyMedium,
                     maxLines = 1
@@ -443,7 +404,7 @@ private fun GraphicEQBandControlRow(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "段数",
+                        text = stringResource(R.string.ui_geq_band_count),
                     color = GraphicEQColors.Muted,
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.bodySmall
@@ -473,7 +434,7 @@ private fun GraphicEQBandControlRow(
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        text = "范围",
+                        text = stringResource(R.string.ui_geq_range),
                         color = GraphicEQColors.Muted,
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.labelSmall
@@ -524,26 +485,6 @@ private fun BandCountPill(
             fontWeight = FontWeight.Black,
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-        )
-    }
-}
-
-@Composable
-private fun SmallPill(
-    text: String,
-    onClick: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        color = Color(0xFF242844),
-        shape = RoundedCornerShape(999.dp)
-    ) {
-        Text(
-            text = text,
-            color = GraphicEQColors.Cyan,
-            fontWeight = FontWeight.Bold,
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
         )
     }
 }
@@ -663,7 +604,7 @@ private fun PreampFaderColumn(
         Spacer(Modifier.height(8.dp))
 
         Text(
-            text = "增益",
+            text = stringResource(R.string.ui_geq_gain),
             color = GraphicEQColors.Text,
             fontWeight = FontWeight.Black,
             style = MaterialTheme.typography.titleSmall,
@@ -770,16 +711,6 @@ private fun BandValueBubble(
             textAlign = TextAlign.Center,
             maxLines = 1
         )
-    }
-}
-
-private fun gainToSegmentColor(gainDB: Float): Color {
-    return when {
-        gainDB > 6f -> Color(0xFFFF5C6C)
-        gainDB > 0f -> Color(0xFFFFA33A)
-        gainDB > -3f -> Color(0xFF45D66E)
-        gainDB > -8f -> Color(0xFF19D8FF)
-        else -> Color(0xFF3B7CFF)
     }
 }
 
@@ -955,19 +886,19 @@ private fun GraphicEQActionRow(
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         SurfaceButton(
-            text = "重置",
+            text = stringResource(R.string.ui_geq_reset),
             modifier = Modifier.weight(1f),
             onClick = onResetAll
         )
 
         SurfaceButton(
-            text = "保存预设",
+            text = stringResource(R.string.ui_geq_save_preset),
             modifier = Modifier.weight(1f),
             onClick = onSavePreset
         )
 
         SurfaceButton(
-            text = "应用",
+            text = stringResource(R.string.ui_geq_apply),
             primary = true,
             modifier = Modifier.weight(1f),
             onClick = onApply
@@ -1038,7 +969,7 @@ private fun GraphicEQBandEditorSheet(
                 )
 
                 Text(
-                    text = "第 ${index + 1} 段",
+                    text = stringResource(R.string.ui_geq_band_number, index + 1),
                     color = GraphicEQColors.Muted,
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -1064,7 +995,7 @@ private fun GraphicEQBandEditorSheet(
                 shape = RoundedCornerShape(999.dp)
             ) {
                 Text(
-                    text = "说明",
+                    text = stringResource(R.string.ui_geq_help),
                     color = GraphicEQColors.Cyan,
                     fontWeight = FontWeight.Black,
                     style = MaterialTheme.typography.labelMedium,
@@ -1088,13 +1019,13 @@ private fun GraphicEQBandEditorSheet(
             modifier = Modifier.fillMaxWidth()
         ) {
             DetailReadCard(
-                title = "增益",
+                title = stringResource(R.string.ui_geq_gain),
                 value = formatGain(band.gainDB),
                 modifier = Modifier.weight(1f)
             )
 
             DetailReadCard(
-                title = "频率",
+                title = stringResource(R.string.ui_geq_frequency),
                 value = formatFrequency(band.frequency),
                 modifier = Modifier.weight(1f)
             )
@@ -1103,7 +1034,7 @@ private fun GraphicEQBandEditorSheet(
         Spacer(Modifier.height(20.dp))
 
         Text(
-            text = "增益",
+            text = stringResource(R.string.ui_geq_gain),
             color = GraphicEQColors.Muted,
             fontWeight = FontWeight.Bold
         )
@@ -1131,7 +1062,7 @@ private fun GraphicEQBandEditorSheet(
             modifier = Modifier.fillMaxWidth()
         ) {
             SurfaceButton(
-                text = "旁路",
+                text = stringResource(R.string.ui_geq_bypass),
                 modifier = Modifier.weight(1f),
                 onClick = {
                     onGainChange(0f)
@@ -1139,13 +1070,13 @@ private fun GraphicEQBandEditorSheet(
             )
 
             SurfaceButton(
-                text = "归零",
+                text = stringResource(R.string.ui_geq_zero),
                 modifier = Modifier.weight(1f),
                 onClick = onReset
             )
 
             SurfaceButton(
-                text = "完成",
+                text = stringResource(R.string.ui_geq_done),
                 primary = true,
                 modifier = Modifier.weight(1f),
                 onClick = onDone
@@ -1155,7 +1086,7 @@ private fun GraphicEQBandEditorSheet(
         Spacer(Modifier.height(14.dp))
 
         Text(
-            text = "图形均衡器默认固定频率和 Q 值。这里主要用于精确调整当前频段增益。",
+            text = stringResource(R.string.ui_geq_description),
             color = GraphicEQColors.Muted,
             style = MaterialTheme.typography.bodySmall
         )
@@ -1249,15 +1180,6 @@ private fun formatGain(gainDB: Float): String {
     }
 }
 
-private fun formatGainCompact(gainDB: Float): String {
-    val rounded = (gainDB * 10f).roundToInt() / 10f
-    return when {
-        abs(rounded) < 0.05f -> "0"
-        rounded > 0f -> "+%.1f".format(rounded)
-        else -> "%.1f".format(rounded)
-    }
-}
-
 private fun formatFrequency(freq: Float): String {
     return if (freq >= 1000f) {
         val k = freq / 1000f
@@ -1309,7 +1231,7 @@ private fun GraphicEQQInfoSheet(
         Spacer(Modifier.height(20.dp))
 
         Text(
-            text = "固定 Q 值",
+            text = stringResource(R.string.ui_geq_fixed_q),
             color = GraphicEQColors.Text,
             fontWeight = FontWeight.Black,
             style = MaterialTheme.typography.headlineSmall
@@ -1318,7 +1240,7 @@ private fun GraphicEQQInfoSheet(
         Spacer(Modifier.height(8.dp))
 
         Text(
-            text = "%d 段图形均衡器当前 Q ≈ %.2f。图形均衡器默认固定频率和固定 Q，只调整每段增益。".format(bandCount, qValue),
+            text = stringResource(R.string.ui_geq_fixed_q_summary, bandCount, qValue),
             color = GraphicEQColors.Muted,
             style = MaterialTheme.typography.bodyMedium
         )
@@ -1326,7 +1248,7 @@ private fun GraphicEQQInfoSheet(
         Spacer(Modifier.height(24.dp))
 
         SurfaceButton(
-            text = "知道了",
+            text = stringResource(R.string.ui_geq_done),
             primary = true,
             modifier = Modifier.fillMaxWidth(),
             onClick = onDone
@@ -1356,7 +1278,7 @@ private fun BypassHelpCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "旁路说明",
+                    text = stringResource(R.string.ui_geq_bypass_help_title),
                     color = GraphicEQColors.Text,
                     fontWeight = FontWeight.Black,
                     style = MaterialTheme.typography.titleSmall,
@@ -1369,7 +1291,7 @@ private fun BypassHelpCard(
                     shape = RoundedCornerShape(999.dp)
                 ) {
                     Text(
-                        text = "收起",
+                        text = stringResource(R.string.ui_geq_collapse),
                         color = GraphicEQColors.Cyan,
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.labelMedium,
@@ -1381,7 +1303,7 @@ private fun BypassHelpCard(
             Spacer(Modifier.height(8.dp))
 
             Text(
-                text = "旁路表示暂时跳过当前频段，不改变已经设置好的增益值。重新启用后，原来的增益会恢复。",
+                text = stringResource(R.string.ui_geq_bypass_help),
                 color = GraphicEQColors.Muted,
                 style = MaterialTheme.typography.bodySmall
             )
@@ -1389,7 +1311,7 @@ private fun BypassHelpCard(
             Spacer(Modifier.height(8.dp))
 
             Text(
-                text = "归零表示把当前频段的增益直接改为 0 dB，原来的增益值会被清除。",
+                text = stringResource(R.string.ui_geq_zero_help),
                 color = GraphicEQColors.Muted,
                 style = MaterialTheme.typography.bodySmall
             )

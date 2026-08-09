@@ -24,12 +24,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AudioUtils
+import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.scene.pages.themeColors
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
@@ -64,7 +66,7 @@ fun AlbumDetailPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = onBack) {
-                Text("← 返回", color = colors.primary, fontSize = 14.sp)
+                Text("← ${stringResource(R.string.common_back)}", color = colors.primary, fontSize = 14.sp)
             }
             Text(
                 "专辑详情",
@@ -115,7 +117,7 @@ fun AlbumDetailPanel(
                     )
                     if (hasHiRes) {
                         Spacer(Modifier.width(6.dp))
-                        Text("Hi-Res", fontSize = 10.sp, color = colors.primary, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.common_hi_res), fontSize = 10.sp, color = colors.primary, fontWeight = FontWeight.Bold)
                     }
                 }
                 Text(

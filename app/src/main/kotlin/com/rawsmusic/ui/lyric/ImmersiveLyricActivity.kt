@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -33,6 +34,7 @@ import com.rawsmusic.core.ui.theme.ThemeManager
 import com.rawsmusic.core.ui.widget.ImmersiveBackgroundCompose
 import com.rawsmusic.core.ui.widget.player.ComposeLyricView
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.module.player.PlayerController
 import com.rawsmusic.module.player.PlayerService
 import com.rawsmusic.module.scanner.LyricReader
@@ -50,6 +52,7 @@ class ImmersiveLyricActivity : ComponentActivity() {
     private var coverPath by mutableStateOf<String?>(null)
     private var lyricSong by mutableStateOf<Song?>(null)
     private var positionMs by mutableStateOf(0L)
+    private var isPlaying by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,6 +82,7 @@ class ImmersiveLyricActivity : ComponentActivity() {
                 coverPath = coverPath,
                 lyricSong = lyricSong,
                 positionMs = positionMs,
+                isPlaying = isPlaying,
                 displayTranslation = displayTranslation,
                 displayRoma = displayRoma,
                 onBack = { finish() },
@@ -93,8 +97,8 @@ class ImmersiveLyricActivity : ComponentActivity() {
         }
 
         loadLyrics()
-        // 同步播放位置
-        observePosition()
+        // 同步播放位置和播放态；歌词逐行拉动必须知道自然播放是否正在推进。
+        observePlayback()
     }
 
     @Composable
@@ -102,6 +106,7 @@ class ImmersiveLyricActivity : ComponentActivity() {
         coverPath: String?,
         lyricSong: Song?,
         positionMs: Long,
+        isPlaying: Boolean,
         displayTranslation: Boolean,
         displayRoma: Boolean,
         onBack: () -> Unit,
@@ -121,6 +126,7 @@ class ImmersiveLyricActivity : ComponentActivity() {
             ComposeLyricView(
                 song = lyricSong,
                 positionMs = positionMs,
+                isPlaying = isPlaying,
                 displayTranslation = displayTranslation,
                 displayRoma = displayRoma,
                 topPadding = 0.dp,
@@ -128,6 +134,10 @@ class ImmersiveLyricActivity : ComponentActivity() {
                 textColor = ComposeColor.White,
                 dimColor = ComposeColor.White.copy(alpha = 0.32f),
                 secondaryColor = ComposeColor.White.copy(alpha = 0.66f),
+                blurEnabled = AppPreferences.UI.lyricBlurEnabled,
+                highlightAll = AppPreferences.UI.lyricHighlightAllEnabled,
+                karaokeGlowEnabled = AppPreferences.UI.lyricKaraokeGlowEnabled,
+                karaokeLiftEnabled = AppPreferences.UI.lyricKaraokeLiftEnabled,
                 onLineClick = { beginMs -> playerController?.seekTo(beginMs) },
                 onSwipeRight = onBack,
                 modifier = Modifier
@@ -148,7 +158,7 @@ class ImmersiveLyricActivity : ComponentActivity() {
             )
 
             Text(
-                text = "译",
+                text = stringResource(R.string.lyric_translation_short),
                 color = ComposeColor(0xB0FFFFFF),
                 fontSize = 14.sp,
                 modifier = Modifier
@@ -186,10 +196,15 @@ class ImmersiveLyricActivity : ComponentActivity() {
         }
     }
 
-    private fun observePosition() {
+    private fun observePlayback() {
         lifecycleScope.launch {
             playerController?.position?.collectLatest { pos ->
                 positionMs = pos
+            }
+        }
+        lifecycleScope.launch {
+            playerController?.playState?.collectLatest { state ->
+                isPlaying = state == PlayState.PLAYING
             }
         }
     }

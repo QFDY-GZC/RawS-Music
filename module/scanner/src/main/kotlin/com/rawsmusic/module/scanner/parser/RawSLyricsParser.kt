@@ -16,7 +16,7 @@ object RawSLyricsParser {
             isLrc(trimmed) -> parseLrc(content)
             else -> LyricData()
         }
-        return LyricParserBase.applyLineBreakProtection(data)
+        return LyricParserBase.applyLineBreakProtection(LyricTextNormalizer.normalize(data))
     }
 
     private fun isTtml(content: String): Boolean {
@@ -218,7 +218,7 @@ object RawSLyricsParser {
         val mergedSegments = mutableListOf<Pair<Long, String>>()
         for ((ts, text) in rawSegments) {
             if (text.trim().isEmpty() && mergedSegments.isNotEmpty()) {
-                val prev = mergedSegments.removeLast()
+                val prev = mergedSegments.removeAt(mergedSegments.lastIndex)
                 mergedSegments.add(Pair(prev.first, prev.second + text))
             } else {
                 mergedSegments.add(Pair(ts, text))
@@ -370,7 +370,7 @@ object RawSLyricsParser {
     private val qrcWordRegex = Regex("""\((\d+),(\d+)\)([^(]*)""")
 
     private fun parseQrc(content: String): LyricData {
-        val decoded = decodeHtmlEntities(content)
+        val decoded = LyricTextNormalizer.decodeEntities(content)
 
         val lines = decoded.lines().filter { it.isNotBlank() }
         if (lines.isEmpty()) return LyricData()
@@ -430,30 +430,15 @@ object RawSLyricsParser {
         return LyricData(lines = result, offset = offset)
     }
 
-    private fun decodeHtmlEntities(content: String): String {
-        return content
-            .replace("&#32;", " ")
-            .replace("&#40;", "(")
-            .replace("&#41;", ")")
-            .replace("&#44;", ",")
-            .replace("&#45;", "-")
-            .replace("&#46;", ".")
-            .replace("&#58;", ":")
-            .replace("&#10;", "\n")
-            .replace("&#13;", "\r")
-            .replace("&#39;", "'")
-            .replace("&#34;", "\"")
-            .replace("&#60;", "<")
-            .replace("&#62;", ">")
-            .replace("&#38;", "&")
-    }
-
     // ==================== TTML Parsing ====================
 
     private fun parseTtml(content: String): LyricData {
         return try {
             val root = SimpleXmlParser.parse(content)
             val ttElement = findElementByName(root, "tt") ?: return LyricData()
+            val transliterations = parseTtmlTransliterations(ttElement)
+            val translations = parseTtmlTranslations(ttElement)
+            val agentNames = parseTtmlAgentNames(ttElement)
 
             val ttmlLines = mutableListOf<LyricLine>()
             val allPElements = mutableListOf<SimpleXmlParser.XmlElement>()
@@ -464,6 +449,7 @@ object RawSLyricsParser {
                 val end = parseTtmlTime(pElement.getAttribute("end") ?: "00:00.000")
 
                 val agent = pElement.getAttribute("ttm:agent")
+                val lineKey = pElement.getAttribute("itunes:key") ?: pElement.getAttribute("key")
 
                 val currentWords = mutableListOf<LyricWord>()
                 var romanizationText: String? = null
@@ -471,6 +457,8 @@ object RawSLyricsParser {
                 var bgText: String? = null
                 var bgWords = mutableListOf<LyricWord>()
                 var bgTranslation: String? = null
+                var bgStart: Long? = null
+                var bgEnd: Long? = null
 
                 for (child in pElement.children) {
                     val localName = child.name.substringAfterLast(':')
@@ -483,8 +471,19 @@ object RawSLyricsParser {
                             role == "x-bg" -> {
                                 val spanBegin = child.getAttribute("begin")?.let { parseTtmlTime(it) } ?: begin
                                 val spanEnd = child.getAttribute("end")?.let { parseTtmlTime(it) } ?: end
+                                bgStart = spanBegin
+                                bgEnd = spanEnd
                                 val bgSpanWords = mutableListOf<LyricWord>()
                                 collectSpanWords(child, spanBegin, spanEnd, bgSpanWords)
+                                val nestedTranslation = child.children.firstOrNull {
+                                    val nestedRole = it.getAttribute("ttm:role")
+                                        ?: it.getAttribute("role")
+                                        ?: ""
+                                    nestedRole == "x-translation"
+                                }?.let(::collectTextContent)?.trim()
+                                if (!nestedTranslation.isNullOrBlank()) {
+                                    bgTranslation = nestedTranslation
+                                }
                                 if (bgSpanWords.isNotEmpty()) {
                                     bgWords.addAll(bgSpanWords)
                                     bgText = bgSpanWords.joinToString("") { it.text }.trim()
@@ -497,7 +496,7 @@ object RawSLyricsParser {
                                 val txt = collectTextContent(child).trim()
                                 if (txt.isNotEmpty()) bgTranslation = txt
                             }
-                            role == "x-romanization" -> {
+                            role == "x-romanization" || role == "x-roman" -> {
                                 val txt = collectTextContent(child).trim()
                                 if (txt.isNotEmpty()) romanizationText = txt
                             }
@@ -513,6 +512,39 @@ object RawSLyricsParser {
                         }
                     }
                 }
+                if (romanizationText.isNullOrBlank()) {
+                    romanizationText = lineKey
+                        ?.let(transliterations::get)
+                        ?.filter { it.isNotBlank() }
+                        ?.joinToString(" ")
+                        ?.takeIf { it.isNotBlank() }
+                }
+                if (translationText.isNullOrBlank()) {
+                    translationText = lineKey
+                        ?.let(translations::get)
+                        ?.substringBeforeLast('（', missingDelimiterValue = translations[lineKey].orEmpty())
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                }
+                if (bgTranslation.isNullOrBlank()) {
+                    bgTranslation = lineKey
+                        ?.let(translations::get)
+                        ?.substringAfterLast('（', missingDelimiterValue = "")
+                        ?.removeSuffix("）")
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                }
+                val pronunciationWords = if (
+                    currentWords.isNotEmpty() &&
+                    lineKey != null &&
+                    transliterations[lineKey]?.size == currentWords.size
+                ) {
+                    transliterations.getValue(lineKey).mapIndexed { index, text ->
+                        currentWords[index].copy(text = text)
+                    }
+                } else {
+                    emptyList()
+                }
 
                 if (currentWords.isEmpty()) {
                     val fullText = collectMainTextContent(pElement).trim()
@@ -524,9 +556,13 @@ object RawSLyricsParser {
                             romanization = romanizationText ?: "",
                             translation = translationText ?: "",
                             agent = agent,
+                            agentName = agent?.let(agentNames::get),
+                            pronunciationWords = pronunciationWords,
                             backgroundText = bgText,
                             backgroundWords = bgWords,
                             backgroundTranslation = bgTranslation,
+                            backgroundStartTime = bgStart,
+                            backgroundEndTime = bgEnd,
                             isTtml = true
                         ))
                     }
@@ -543,9 +579,13 @@ object RawSLyricsParser {
                         translation = translationText ?: "",
                         words = spacedWords,
                         agent = agent,
+                        agentName = agent?.let(agentNames::get),
+                        pronunciationWords = pronunciationWords,
                         backgroundText = bgText,
                         backgroundWords = spacedBgWords,
                         backgroundTranslation = bgTranslation,
+                        backgroundStartTime = bgStart,
+                        backgroundEndTime = bgEnd,
                         isTtml = true
                     ))
                 }
@@ -579,7 +619,7 @@ object RawSLyricsParser {
                     val role = child.getAttribute("ttm:role")
                         ?: child.getAttribute("role")
                         ?: ""
-                    if (role in listOf("x-translation", "x-romanization", "x-bg", "x-bg-translation")) {
+                    if (role in listOf("x-translation", "x-romanization", "x-roman", "x-bg", "x-bg-translation")) {
                         continue
                     }
                     collectSpanWords(child, spanBegin, spanEnd, words)
@@ -616,7 +656,7 @@ object RawSLyricsParser {
                 val role = child.getAttribute("ttm:role")
                     ?: child.getAttribute("role")
                     ?: ""
-                if (role in listOf("x-translation", "x-romanization", "x-bg", "x-bg-translation")) {
+                if (role in listOf("x-translation", "x-romanization", "x-roman", "x-bg", "x-bg-translation")) {
                     continue
                 }
             }
@@ -632,6 +672,67 @@ object RawSLyricsParser {
             if (found != null) return found
         }
         return null
+    }
+
+    private fun parseTtmlTransliterations(
+        root: SimpleXmlParser.XmlElement
+    ): Map<String, List<String>> {
+        val containers = mutableListOf<SimpleXmlParser.XmlElement>()
+        collectElementsByName(root, "transliterations", containers)
+        if (containers.isEmpty()) return emptyMap()
+
+        val result = mutableMapOf<String, List<String>>()
+        for (container in containers) {
+            val textElements = mutableListOf<SimpleXmlParser.XmlElement>()
+            collectElementsByName(container, "text", textElements)
+            for (textElement in textElements) {
+                val key = textElement.getAttribute("for")?.takeIf { it.isNotBlank() } ?: continue
+                val values = textElement.children
+                    .filter { it.name.substringAfterLast(':').equals("span", ignoreCase = true) }
+                    .map { collectTextContent(it).trim() }
+                    .filter { it.isNotBlank() }
+                if (values.isNotEmpty()) result[key] = values
+            }
+        }
+        return result
+    }
+
+    private fun parseTtmlTranslations(
+        root: SimpleXmlParser.XmlElement
+    ): Map<String, String> {
+        val containers = mutableListOf<SimpleXmlParser.XmlElement>()
+        collectElementsByName(root, "translation", containers)
+        val result = mutableMapOf<String, String>()
+        for (container in containers) {
+            val textElements = mutableListOf<SimpleXmlParser.XmlElement>()
+            collectElementsByName(container, "text", textElements)
+            for (textElement in textElements) {
+                val key = textElement.getAttribute("for")?.takeIf { it.isNotBlank() } ?: continue
+                collectTextContent(textElement).trim()
+                    .takeIf { it.isNotBlank() }
+                    ?.let { result[key] = it }
+            }
+        }
+        return result
+    }
+
+    private fun parseTtmlAgentNames(
+        root: SimpleXmlParser.XmlElement
+    ): Map<String, String> {
+        val agents = mutableListOf<SimpleXmlParser.XmlElement>()
+        collectElementsByName(root, "agent", agents)
+        return buildMap {
+            for (agent in agents) {
+                val id = (agent.getAttribute("xml:id") ?: agent.getAttribute("id"))
+                    ?.takeIf { it.isNotBlank() }
+                    ?: continue
+                val nameElement = agent.children.firstOrNull {
+                    it.name.substringAfterLast(':').equals("name", ignoreCase = true)
+                }
+                val name = nameElement?.let(::collectTextContent)?.trim().orEmpty()
+                if (name.isNotBlank()) put(id, name)
+            }
+        }
     }
 
     private fun collectElementsByName(

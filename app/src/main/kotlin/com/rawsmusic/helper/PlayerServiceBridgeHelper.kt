@@ -35,7 +35,7 @@ class PlayerServiceBridgeHelper(
         if (!PlayerService.isRunning) return
         try {
             val playerController = getPlayerController()
-            val coverUri = resolveCoverUri(song).ifBlank { song.albumArtPath }
+            val coverUri = resolveCoverUri(song).ifBlank { song.coverKey }
             // Keep system notification / MediaSession artwork on the same identity as the UI.
             // MediaStore albumArtPath is often blank in RawSMusic because covers are extracted from
             // the audio file itself, so pass the real audio path as a fallback.

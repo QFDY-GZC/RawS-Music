@@ -1,7 +1,6 @@
 package com.rawsmusic.ui.settings
 
 import android.os.Bundle
-import com.rawsmusic.module.data.prefs.FontManager
 
 class GlobalFontSettingsActivity : BaseSettingsActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -9,11 +8,7 @@ class GlobalFontSettingsActivity : BaseSettingsActivity() {
         setContent {
             GlobalFontSettingsScreen(
                 onBack = { finish() },
-                onApply = {
-                    FontManager.rebuildTypeface(this)
-                    FontManager.clearScaledCache()
-                    recreate()
-                }
+                onApply = {}
             )
         }
     }

@@ -32,11 +32,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.R
 import com.rawsmusic.module.data.repository.MusicRepository
 import com.rawsmusic.ui.settings.Divider
 import com.rawsmusic.ui.settings.SectionHeader
@@ -66,7 +68,15 @@ private fun isMaster(song: AudioFile): Boolean {
             song.sampleRate > 48000
 }
 
-private fun buildStats(songs: List<AudioFile>): List<StatsItem> {
+private fun buildStats(
+    songs: List<AudioFile>,
+    lossyLabel: String,
+    lossyDescription: String,
+    losslessLabel: String,
+    losslessDescription: String,
+    masterLabel: String,
+    masterDescription: String
+): List<StatsItem> {
     val total = songs.size
     if (total == 0) return emptyList()
 
@@ -76,25 +86,25 @@ private fun buildStats(songs: List<AudioFile>): List<StatsItem> {
 
     return listOf(
         StatsItem(
-            label = "\u6709\u635f",
+            label = lossyLabel,
             count = lossy,
             percentage = lossy.toFloat() / total * 100f,
             color = Color(0xFF7D5260),
-            description = "MP3 / AAC / OGG \u7b49\u538b\u7f29\u97f3\u9891"
+            description = lossyDescription
         ),
         StatsItem(
-            label = "\u65e0\u635f",
+            label = losslessLabel,
             count = lossless,
             percentage = lossless.toFloat() / total * 100f,
             color = Color(0xFF6750A4),
-            description = "FLAC / WAV / ALAC / APE \u7b49 CD \u89c4\u683c\u65e0\u635f"
+            description = losslessDescription
         ),
         StatsItem(
-            label = "\u6bcd\u5e26",
+            label = masterLabel,
             count = master,
             percentage = master.toFloat() / total * 100f,
             color = Color(0xFFB3261E),
-            description = "Hi-Res / DSD / 24bit \u6216\u9ad8\u91c7\u6837\u7387\u97f3\u9891"
+            description = masterDescription
         )
     )
 }
@@ -105,11 +115,25 @@ fun SongStatsScreen(onBack: () -> Unit) {
     var totalSongs by remember { mutableStateOf(0) }
     val colors = themeColors()
     val isDark = ThemeManager.isDarkMode(LocalContext.current)
+    val lossyLabel = stringResource(R.string.ui_stats_lossy)
+    val lossyDescription = stringResource(R.string.ui_stats_lossy_desc)
+    val losslessLabel = stringResource(R.string.ui_stats_lossless)
+    val losslessDescription = stringResource(R.string.ui_stats_lossless_desc)
+    val masterLabel = stringResource(R.string.ui_stats_master)
+    val masterDescription = stringResource(R.string.ui_stats_master_desc)
 
     LaunchedEffect(Unit) {
         val songs = MusicRepository.getAllSongs()
         totalSongs = songs.size
-        stats = buildStats(songs)
+        stats = buildStats(
+            songs = songs,
+            lossyLabel = lossyLabel,
+            lossyDescription = lossyDescription,
+            losslessLabel = losslessLabel,
+            losslessDescription = losslessDescription,
+            masterLabel = masterLabel,
+            masterDescription = masterDescription
+        )
     }
 
     Column(
@@ -129,10 +153,10 @@ fun SongStatsScreen(onBack: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = onBack) {
-                Text("← 返回", color = colors.primary, fontSize = 16.sp)
+                Text("← ${stringResource(R.string.ui_back)}", color = colors.primary, fontSize = 16.sp)
             }
             Text(
-                "歌曲统计",
+                stringResource(R.string.ui_stats_title),
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Medium,
                 color = colors.onSurface
@@ -143,9 +167,9 @@ fun SongStatsScreen(onBack: () -> Unit) {
         Spacer(Modifier.height(8.dp))
 
         if (stats.isNotEmpty()) {
-            SectionHeader("音质统计")
+            SectionHeader(stringResource(R.string.ui_stats_quality))
             Text(
-                "共 $totalSongs 首歌曲",
+                stringResource(R.string.ui_stats_total_songs, totalSongs),
                 fontSize = 13.sp,
                 color = colors.secondaryText,
                 modifier = Modifier.padding(top = 2.dp)
@@ -165,10 +189,10 @@ fun SongStatsScreen(onBack: () -> Unit) {
                 QualityStatsRow(item, isDark)
             }
         } else {
-            SectionHeader("音质统计")
+            SectionHeader(stringResource(R.string.ui_stats_quality))
             Spacer(Modifier.height(12.dp))
             Text(
-                "暂无可统计的歌曲",
+                stringResource(R.string.ui_stats_empty),
                 fontSize = 14.sp,
                 color = colors.secondaryText
             )
@@ -209,7 +233,7 @@ private fun QualityStatsRow(item: StatsItem, isDark: Boolean) {
                     color = colors.onSurface
                 )
                 Text(
-                    "${item.count} 首",
+                    stringResource(R.string.ui_stats_item_count, item.count),
                     fontSize = 14.sp,
                     color = colors.onSurfaceVariant
                 )
@@ -284,13 +308,13 @@ private fun DonutChart(
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                "3 类",
+                stringResource(R.string.ui_stats_categories, items.size),
                 fontSize = 28.sp,
                 fontWeight = FontWeight.Bold,
                 color = colors.onSurface
             )
             Text(
-                "音质",
+                stringResource(R.string.ui_stats_quality_short),
                 fontSize = 12.sp,
                 color = colors.secondaryText
             )

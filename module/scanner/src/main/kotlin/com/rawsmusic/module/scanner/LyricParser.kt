@@ -132,7 +132,7 @@ object LyricParser {
         val mergedSegments = mutableListOf<Pair<Long, String>>()
         for ((ts, text) in rawSegments) {
             if (text.trim().isEmpty() && mergedSegments.isNotEmpty()) {
-                val prev = mergedSegments.removeLast()
+                val prev = mergedSegments.removeAt(mergedSegments.lastIndex)
                 mergedSegments.add(Pair(prev.first, prev.second + text))
             } else {
                 mergedSegments.add(Pair(ts, text))
@@ -481,7 +481,7 @@ object LyricParser {
         if (t.isBlank()) return false
         val patterns = listOf(
             "著作权", "版权", "copyright", "©", "®",
-            "享有本翻译", "qq音乐享有", "网易云音乐享有",
+            "享有本翻译", "音乐享有",
             "提供歌词", "歌词来源", "来自.*歌词",
             "仅供参考", "请勿用于商业"
         )

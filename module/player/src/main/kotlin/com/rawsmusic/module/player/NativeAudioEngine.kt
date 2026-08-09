@@ -11,7 +11,9 @@ class NativeAudioEngine private constructor(
     val actualMode: AudioOutputMode,
     val sampleRate: Int,
     val channels: Int,
-    val encoding: Int
+    val encoding: Int,
+    val spatializationBehavior: Int,
+    val contentSpatialized: Boolean
 ) {
 
     companion object {
@@ -27,7 +29,7 @@ class NativeAudioEngine private constructor(
 
         private val nativeAvailable: Boolean by lazy {
             try {
-                System.loadLibrary("rawsmusic_native_audio")
+                System.loadLibrary("rawscoreservice")
                 true
             } catch (t: Throwable) {
                 AppLogger.e(TAG, "Failed to load rawsmusic_native_audio", t)
@@ -41,6 +43,7 @@ class NativeAudioEngine private constructor(
                 AudioOutputMode.OPENSL_ES -> true
                 AudioOutputMode.AAUDIO,
                 AudioOutputMode.DIRECT -> Build.VERSION.SDK_INT >= 27
+                AudioOutputMode.AUDIO_TRACK -> false
             }
         }
 
@@ -50,12 +53,14 @@ class NativeAudioEngine private constructor(
             channels: Int,
             encoding: Int,
             bufferFrames: Int,
-            preferredDeviceId: Int = 0
+            preferredDeviceId: Int = 0,
+            spatializationBehavior: Int = AndroidSpatialAudio.AAUDIO_SPATIALIZATION_BEHAVIOR_NEVER,
+            contentSpatialized: Boolean = false
         ): NativeAudioEngine? {
             if (!nativeAvailable) return null
             val normalizedChannels = channels.coerceIn(1, 2)
             val format = nativeFormatFor(requestedMode, encoding)
-            val modeChain = fallbackModeChain(requestedMode)
+            val modeChain = fallbackModeChain(requestedMode, spatializationBehavior)
 
             for (mode in modeChain) {
                 if (!isSupported(mode)) continue
@@ -67,14 +72,16 @@ class NativeAudioEngine private constructor(
                         normalizedChannels,
                         format,
                         bufferFrames.coerceAtLeast(256),
-                        preferredDeviceId.coerceAtLeast(0)
+                        preferredDeviceId.coerceAtLeast(0),
+                        spatializationBehavior,
+                        contentSpatialized
                     )
                 } catch (t: Throwable) {
                     AppLogger.w(TAG, "nativeCreate failed for $mode: ${t.message}")
                     0L
                 }
                 if (handle != 0L) {
-                    AppLogger.i(TAG, "Created native engine: requested=$requestedMode actual=$mode rate=$sampleRate ch=$normalizedChannels format=$format bufferFrames=$bufferFrames preferredDeviceId=$preferredDeviceId")
+                    AppLogger.i(TAG, "Created native engine: requested=$requestedMode actual=$mode rate=$sampleRate ch=$normalizedChannels format=$format bufferFrames=$bufferFrames preferredDeviceId=$preferredDeviceId spatializationBehavior=$spatializationBehavior contentSpatialized=$contentSpatialized")
                     return NativeAudioEngine(
                         handle = handle,
                         requestedMode = requestedMode,
@@ -85,7 +92,9 @@ class NativeAudioEngine private constructor(
                             FORMAT_PCM_FLOAT -> AudioFormat.ENCODING_PCM_FLOAT
                             FORMAT_PCM_I32 -> pcm32EncodingOrNull() ?: AudioFormat.ENCODING_PCM_16BIT
                             else -> AudioFormat.ENCODING_PCM_16BIT
-                        }
+                        },
+                        spatializationBehavior = spatializationBehavior,
+                        contentSpatialized = contentSpatialized
                     )
                 }
             }
@@ -93,14 +102,27 @@ class NativeAudioEngine private constructor(
             return null
         }
 
-        private fun fallbackModeChain(mode: AudioOutputMode): List<AudioOutputMode> {
+        private fun fallbackModeChain(
+            mode: AudioOutputMode,
+            spatializationBehavior: Int
+        ): List<AudioOutputMode> {
             return when (mode) {
                 // DIRECT is only a real Direct path if AAudio grants an exclusive stream.
                 // Do not silently fall back to AAudio shared/OpenSL here; FfmpegAudioPlayer
                 // will then use the AudioTrack direct/preferred-device path instead.
                 AudioOutputMode.DIRECT -> listOf(AudioOutputMode.DIRECT)
-                AudioOutputMode.AAUDIO -> listOf(AudioOutputMode.AAUDIO, AudioOutputMode.OPENSL_ES)
+                AudioOutputMode.AAUDIO -> {
+                    // OpenSL ES has no per-stream spatialization declaration. When platform
+                    // spatialization is requested, fail the native attempt after AAudio so the
+                    // existing caller falls back to AudioTrack, which can still request AUTO.
+                    if (spatializationBehavior == AndroidSpatialAudio.AAUDIO_SPATIALIZATION_BEHAVIOR_AUTO) {
+                        listOf(AudioOutputMode.AAUDIO)
+                    } else {
+                        listOf(AudioOutputMode.AAUDIO, AudioOutputMode.OPENSL_ES)
+                    }
+                }
                 AudioOutputMode.OPENSL_ES -> listOf(AudioOutputMode.OPENSL_ES)
+                AudioOutputMode.AUDIO_TRACK -> emptyList()
             }
         }
 
@@ -109,6 +131,7 @@ class NativeAudioEngine private constructor(
                 AudioOutputMode.OPENSL_ES -> MODE_OPENSL_ES
                 AudioOutputMode.AAUDIO -> MODE_AAUDIO
                 AudioOutputMode.DIRECT -> MODE_DIRECT
+                AudioOutputMode.AUDIO_TRACK -> MODE_OPENSL_ES
             }
         }
 
@@ -135,7 +158,9 @@ class NativeAudioEngine private constructor(
             channels: Int,
             format: Int,
             bufferFrames: Int,
-            preferredDeviceId: Int
+            preferredDeviceId: Int,
+            spatializationBehavior: Int,
+            contentSpatialized: Boolean
         ): Long
 
         @JvmStatic private external fun nativeStart(handle: Long): Boolean

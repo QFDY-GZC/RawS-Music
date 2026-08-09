@@ -1,6 +1,5 @@
 package com.rawsmusic.ui.settings
 
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -15,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,6 +51,7 @@ fun LiquidGlassLyricFontSettingsScreen(
     val context = LocalContext.current
     
     val coroutineScope = rememberCoroutineScope()
+    val fontRevision by LyricFontManager.revision.collectAsState()
 
     var selectedFontPath by remember { mutableStateOf(AppPreferences.LyricFont.fontPath) }
     var fontWeight by remember { mutableStateOf(AppPreferences.LyricFont.fontWeight) }
@@ -61,16 +62,16 @@ fun LiquidGlassLyricFontSettingsScreen(
     var isLoading by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
-        coroutineScope.launch {
-            val sys = withContext(Dispatchers.IO) { LyricFontManager.getSystemFonts() }
-            val imp = withContext(Dispatchers.IO) { LyricFontManager.getImportedFonts(context) }
-            systemFonts = sys
-            importedFonts = imp
-            isLoading = false
-        }
+        systemFonts = withContext(Dispatchers.IO) { LyricFontManager.getSystemFonts() }
+        isLoading = false
     }
 
-    val previewFontFamily = remember(selectedFontPath) {
+    LaunchedEffect(fontRevision) {
+        selectedFontPath = AppPreferences.LyricFont.fontPath
+        importedFonts = withContext(Dispatchers.IO) { LyricFontManager.getImportedFonts(context) }
+    }
+
+    val previewFontFamily = remember(selectedFontPath, fontWeight, fontRevision) {
         if (selectedFontPath.isBlank()) FontFamily.Default
         else try {
             FontFamily(Font(File(selectedFontPath), FontWeight(fontWeight)))
@@ -108,8 +109,7 @@ fun LiquidGlassLyricFontSettingsScreen(
                 isSelected = selectedFontPath.isBlank(),
                 onClick = {
                     selectedFontPath = ""
-                    AppPreferences.LyricFont.fontPath = ""
-                    AppPreferences.LyricFont.fontName = ""
+                    LyricFontManager.selectFont(null)
                 }
             )
         }
@@ -131,7 +131,7 @@ fun LiquidGlassLyricFontSettingsScreen(
                 value = fontWeight.toFloat(),
                 onValueChange = {
                     fontWeight = it.toInt()
-                    AppPreferences.LyricFont.fontWeight = fontWeight
+                    LyricFontManager.setFontWeight(fontWeight)
                 },
                 valueRange = 100f..900f,
                 steps = 15,
@@ -156,7 +156,7 @@ fun LiquidGlassLyricFontSettingsScreen(
                 value = fontScale.toFloat(),
                 onValueChange = {
                     fontScale = it.toInt()
-                    AppPreferences.LyricFont.fontScale = fontScale
+                    LyricFontManager.setFontScale(fontScale)
                 },
                 valueRange = 75f..130f,
                 steps = 10,
@@ -186,8 +186,7 @@ fun LiquidGlassLyricFontSettingsScreen(
                         isSelected = selectedFontPath == font.path,
                         onClick = {
                             selectedFontPath = font.path
-                            AppPreferences.LyricFont.fontPath = font.path
-                            AppPreferences.LyricFont.fontName = font.name
+                            LyricFontManager.selectFont(font)
                         }
                     )
                 }
@@ -225,8 +224,7 @@ fun LiquidGlassLyricFontSettingsScreen(
                             isSelected = selectedFontPath == font.path,
                             onClick = {
                                 selectedFontPath = font.path
-                                AppPreferences.LyricFont.fontPath = font.path
-                                AppPreferences.LyricFont.fontName = font.name
+                                LyricFontManager.selectFont(font)
                             },
                             modifier = Modifier.weight(1f)
                         )

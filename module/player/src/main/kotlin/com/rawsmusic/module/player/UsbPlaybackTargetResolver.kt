@@ -3,6 +3,7 @@ package com.rawsmusic.module.player
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.source.playback.MusicSourceResolvedStreamRegistry
 import com.rawsmusic.module.player.usb.UsbAudioEngine
 import com.rawsmusic.module.player.usb.UsbDsdModeConfig
 import com.rawsmusic.module.player.usb.UsbDsdTransport
@@ -46,9 +47,16 @@ internal class UsbPlaybackTargetResolver(
     )
 
     fun resolve(sourcePath: String, usbBitPerfectMode: Boolean): Target {
-        val srcSr = FFmpegBridge.probeSampleRate(sourcePath)
-        val srcBits = FFmpegBridge.probeBitsPerSample(sourcePath)
-        val srcCh = FFmpegBridge.probeChannelCount(sourcePath)
+        val onlineEntry = MusicSourceResolvedStreamRegistry.lookup(sourcePath)
+        val srcSr = onlineEntry?.let {
+            FFmpegBridge.probeSampleRate(sourcePath, it.source.headers, it.source.userAgent)
+        } ?: FFmpegBridge.probeSampleRate(sourcePath)
+        val srcBits = onlineEntry?.let {
+            FFmpegBridge.probeBitsPerSample(sourcePath, it.source.headers, it.source.userAgent)
+        } ?: FFmpegBridge.probeBitsPerSample(sourcePath)
+        val srcCh = onlineEntry?.let {
+            FFmpegBridge.probeChannelCount(sourcePath, it.source.headers, it.source.userAgent)
+        } ?: FFmpegBridge.probeChannelCount(sourcePath)
         val sourceIsDsd = isLikelyDsdSource(sourcePath, srcBits, srcSr)
         val sourceDsdRateHz = if (sourceIsDsd) normalizeProbedDsdSourceRateHz(srcSr) else 0
         val dsdTransport = UsbDsdTransport.fromPref(AppPreferences.Player.usbDsdTransportMode)
@@ -80,7 +88,8 @@ internal class UsbPlaybackTargetResolver(
         val rawSrcBits = if (srcBits > 0) srcBits else 16
         val sourceExceedsUsbPcm = rawSrcBits > 32
         val safeSrcBits = rawSrcBits.coerceAtMost(32)
-        val safeSrcCh = if (srcCh > 0) srcCh else 2
+        val probedSrcCh = if (srcCh > 0) srcCh else 2
+        val safeSrcCh = probedSrcCh.coerceAtMost(2)
         val dsdDecodeRate = if (sourceIsDsd) chooseDsdSourcePcmDecodeRate(sourceDsdRateHz) else 0
 
         // 64-bit PCM/float cannot be sent to typical USB DAC PCM alt-settings.
@@ -88,6 +97,7 @@ internal class UsbPlaybackTargetResolver(
         val strictBitPerfect = usbBitPerfectMode &&
             !sourceExceedsUsbPcm &&
             !sourceIsDsd &&
+            probedSrcCh <= 2 &&
             pcmToDsdMode == null
 
         if (usbBitPerfectMode && sourceExceedsUsbPcm) {
@@ -102,6 +112,13 @@ internal class UsbPlaybackTargetResolver(
                 tag,
                 "USB source looks like DSD (${srcSr}Hz/${rawSrcBits}bit); " +
                     "strict PCM bit-perfect bypass disabled for this track"
+            )
+        }
+        if (probedSrcCh > 2) {
+            AppLogger.w(
+                tag,
+                "USB multichannel source ${probedSrcCh}ch is not directly supported by the " +
+                    "stereo exclusive path; decode/downmix to 2ch and disable strict bit-perfect"
             )
         }
 

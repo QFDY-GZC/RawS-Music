@@ -28,9 +28,13 @@ object ScanScheduler {
 
     fun scheduleInitialScan(context: Context) {
         AppLogger.d(TAG, "scheduleInitialScan")
-        if (!AudioReadPermission.hasPermission(context)) {
-            AppLogger.w(TAG, "scheduleInitialScan blocked: no audio permission")
-            ScanStateBus.notifyPermissionRequired()
+        if (!LegacyFileAccess.hasRequiredScanPermission(context)) {
+            AppLogger.w(TAG, "scheduleInitialScan blocked: missing permission for selected access mode")
+            if (LegacyFileAccess.isRequested()) {
+                ScanStateBus.notifyError(LegacyFileAccess.unavailableMessage())
+            } else {
+                ScanStateBus.notifyPermissionRequired()
+            }
             return
         }
         AppLogger.d(TAG, "initial auto scan skipped; waiting for manual scan")
@@ -53,9 +57,13 @@ object ScanScheduler {
 
     fun requestDirScan(context: Context, reason: String = "manual") {
         AppLogger.d(TAG, "requestDirScan: $reason")
-        if (!AudioReadPermission.hasPermission(context)) {
-            AppLogger.w(TAG, "requestDirScan blocked: no audio permission")
-            ScanStateBus.notifyPermissionRequired()
+        if (!LegacyFileAccess.hasRequiredScanPermission(context)) {
+            AppLogger.w(TAG, "requestDirScan blocked: missing permission for selected access mode")
+            if (LegacyFileAccess.isRequested()) {
+                ScanStateBus.notifyError(LegacyFileAccess.unavailableMessage())
+            } else {
+                ScanStateBus.notifyPermissionRequired()
+            }
             return
         }
         startOrQueue(ScanRequest(context.applicationContext, reason, fastScan = false, manual = true))

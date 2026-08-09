@@ -10,8 +10,6 @@ object SongDao {
     private val kv by lazy { MMKV.defaultMMKV() }
     private val gson = Gson()
     private const val KEY_SONGS = "songs_data"
-    private const val KEY_FAVORITES = "favorites_data"
-
     private var songsCache: MutableList<AudioFile>? = null
 
     private fun loadSongs(): MutableList<AudioFile> {

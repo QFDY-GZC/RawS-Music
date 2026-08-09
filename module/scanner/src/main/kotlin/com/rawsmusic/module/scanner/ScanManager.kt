@@ -6,6 +6,7 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.repository.MusicRepository
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 
 object ScanManager {
@@ -13,7 +14,7 @@ object ScanManager {
     fun startScan(
         context: Context,
         customPaths: List<String> = emptyList(),
-        useMediaStore: Boolean = true,
+        useMediaStore: Boolean = !AppPreferences.Scanner.legacyFileAccessEnabled,
         quickScan: Boolean = false
     ): Flow<ScanProgress> = flow {
         val startTime = System.currentTimeMillis()
@@ -57,9 +58,14 @@ object ScanManager {
                 }
             }
         } else {
-            // 空路径直接返回错误，不再 fallback 到外部存储根目录
-            if (customPaths.isEmpty()) {
-                Log.w("ScanManager", "startScan: no custom paths and MediaStore disabled — refusing to scan external storage root")
+            if (!LegacyFileAccess.hasPermission(context)) {
+                emit(ScanProgress.Error(LegacyFileAccess.unavailableMessage()))
+                return@flow
+            }
+            val safUris = AppPreferences.Scanner.musicFolderUris
+            // 空路径且没有 SAF 文件夹时直接返回错误，不扫描外部存储根目录。
+            if (customPaths.isEmpty() && safUris.isEmpty()) {
+                Log.w("ScanManager", "startScan: no custom paths or SAF folders and MediaStore disabled")
                 emit(ScanProgress.Error("请先选择音乐文件夹"))
                 return@flow
             }
@@ -81,6 +87,12 @@ object ScanManager {
                         else -> {}
                     }
                 }
+            }
+
+            if (safUris.isNotEmpty()) {
+                runCatching { SafMusicScanner.scanSelectedFolders(context) }
+                    .onSuccess { allSongs.addAll(it) }
+                    .onFailure { Log.w("ScanManager", "legacy SAF scan failed", it) }
             }
 
             val deduplicated = deduplicate(allSongs)
@@ -108,6 +120,16 @@ object ScanManager {
     }
 
     fun incrementalScan(context: Context): Flow<ScanProgress> = flow {
+        if (AppPreferences.Scanner.legacyFileAccessEnabled) {
+            startScan(
+                context = context,
+                customPaths = AppPreferences.UI.scanPaths,
+                useMediaStore = false,
+                quickScan = true
+            ).collect { emit(it) }
+            return@flow
+        }
+
         val existingKeys = MusicRepository.getAllSongs().map { song ->
             if (song.cueOffsetMs > 0 || song.cueTrackIndex > 0) {
                 "${song.path}@cue${song.cueOffsetMs}_${song.cueTrackIndex}"

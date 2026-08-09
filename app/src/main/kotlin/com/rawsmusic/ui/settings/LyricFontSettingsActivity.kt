@@ -2,7 +2,6 @@ package com.rawsmusic.ui.settings
 
 import android.os.Bundle
 import androidx.activity.result.contract.ActivityResultContracts
-import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.LyricFontManager
 
 class LyricFontSettingsActivity : BaseSettingsActivity() {
@@ -14,8 +13,7 @@ class LyricFontSettingsActivity : BaseSettingsActivity() {
         Thread {
             val result = LyricFontManager.importFont(this, uri)
             if (result != null) {
-                AppPreferences.LyricFont.fontName = result.name
-                AppPreferences.LyricFont.fontPath = result.path
+                LyricFontManager.selectFont(result)
             }
         }.start()
     }

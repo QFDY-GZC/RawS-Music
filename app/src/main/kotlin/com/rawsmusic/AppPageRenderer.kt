@@ -15,13 +15,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import com.rawsmusic.core.ui.scene.ExternalPageRenderer
+import com.rawsmusic.core.ui.scene.GlobalSearchScope
 import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.scene.NavigationState
 import com.rawsmusic.module.data.prefs.PlaylistStore
 import com.rawsmusic.module.data.prefs.PlaybackStatsStore
+import com.rawsmusic.module.player.dsp.GraphicEQController
+import com.rawsmusic.module.player.dsp.DynamicEqController
+import com.rawsmusic.module.player.dsp.LoudnessBalanceController
+import com.rawsmusic.module.player.dsp.MonoBassController
+import com.rawsmusic.module.player.dsp.NativeDSPEngine
+import com.rawsmusic.module.player.dsp.MoogLadderController
 import com.rawsmusic.ui.analytics.AnalyticsScreen
 import com.rawsmusic.ui.playlist.PlaylistDetailScreen
 import com.rawsmusic.core.common.model.toAudioFile
+import com.rawsmusic.core.common.model.playlistIdentityKey
 import com.rawsmusic.ui.playlist.PlaylistScreen
 import com.rawsmusic.ui.search.GlobalSearchScreen
 import com.rawsmusic.ui.settings.LiquidGlassAudioSettingsScreen
@@ -55,6 +63,8 @@ internal val SETTINGS_ACTIVITY_MAP = mapOf<NavScene, Class<*>>(
     NavScene.ABOUT to com.rawsmusic.ui.settings.AboutActivity::class.java,
     NavScene.SCAN_SETTINGS to com.rawsmusic.ui.settings.ScanSettingsActivity::class.java,
     NavScene.TRANSITION_SETTINGS to TransitionSettingsActivity::class.java,
+    NavScene.PERSONALIZATION_SETTINGS to com.rawsmusic.ui.settings.PersonalizationSettingsActivity::class.java,
+    NavScene.AUDIO_EFFECTS to com.rawsmusic.ui.settings.AudioEffectsActivity::class.java,
 )
 
 /**
@@ -105,7 +115,6 @@ class AppPageRendererImpl(
                 PlaylistScreen(
                     playlistStore = playlistStore,
                     onBack = onBack,
-                    onImport = {},
                     onPlaylistClick = { playlistId, _ ->
                         navState?.navigateTo(NavScene.PLAYLIST_DETAIL_PAGE, playlistId)
                     }
@@ -115,77 +124,200 @@ class AppPageRendererImpl(
             NavScene.PLAYLIST_DETAIL_PAGE -> {
                 val playlistStore = PlaylistStore.getInstance(context)
                 val playlists by playlistStore.playlists.collectAsState()
+                val librarySongs by com.rawsmusic.module.data.repository.MusicRepository.songs.collectAsState()
                 val scope = rememberCoroutineScope()
                 val playlist = playlists.find { it.id == argument }
                 PlaylistDetailScreen(
-                    playlistName = playlist?.name ?: "歌单",
-                    songs = playlist?.songs.orEmpty(),
+                    playlistStore = playlistStore,
+                    playlist = playlist,
+                    librarySongs = librarySongs,
+                    playingSongId = pc?.currentSong?.collectAsState()?.value?.id ?: -1L,
                     onBack = onBack,
-                    onPlaySong = { song ->
-                        activity?.playSongFromSearch(song.toAudioFile())
+                    onPlaySong = { songs, index ->
+                        pc?.playQueue(songs, index)
                     },
                     onRemoveSong = { song ->
                         val playlistId = playlist?.id ?: return@PlaylistDetailScreen
-                        scope.launch { playlistStore.removeSongFromPlaylist(playlistId, song.key) }
+                        scope.launch { playlistStore.removeSongFromPlaylist(playlistId, song.playlistIdentityKey()) }
                     }
                 )
             }
 
             NavScene.SEARCH -> {
-                val playlistStore = PlaylistStore.getInstance(context)
                 GlobalSearchScreen(
-                    playlistStore = playlistStore,
+                    initialScope = GlobalSearchScope.fromToken(argument),
                     onBack = onBack,
                     onSongClick = { song -> activity?.playSongFromSearch(song) },
-                    onAlbumClick = { album -> activity?.openAlbumFromSearch(album) },
-                    onArtistClick = { artist -> activity?.openArtistFromSearch(artist) },
-                    onPlaylistClick = { playlist ->
-                        navState?.navigateTo(NavScene.PLAYLIST_DETAIL_PAGE, playlist.id)
+                    onCategoryClick = { scope, key ->
+                        val target = when (scope) {
+                            GlobalSearchScope.ALBUM -> NavScene.ALBUM_DETAIL
+                            GlobalSearchScope.ARTIST -> NavScene.ARTIST_DETAIL
+                            GlobalSearchScope.FOLDER -> NavScene.FOLDER_HIERARCHY
+                            GlobalSearchScope.GENRE -> NavScene.GENRE_DETAIL
+                            GlobalSearchScope.YEAR -> NavScene.YEAR_DETAIL
+                            GlobalSearchScope.COMPOSER -> NavScene.COMPOSER_DETAIL
+                            GlobalSearchScope.SONG -> null
+                        }
+                        target?.let { navState?.navigateTo(it, Uri.encode(key)) }
                     },
-                    onFolderClick = { folder -> activity?.openFolderFromSearch(folder) }
+                    onShuffle = { songs -> activity?.playShuffledSearchResults(songs) }
                 )
             }
 
             NavScene.AUDIO_EFFECTS -> {
+                val peqController = remember(pc) {
+                    try {
+                        pc?.ensurePEQConnected()
+                        pc?.peqController
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val graphicEqController = remember(pc) {
+                    try {
+                        pc?.ensureGraphicEQConnected()
+                        pc?.graphicEqController
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val experimentalGainController = remember(pc) {
+                    try {
+                        pc?.ensureExperimentalGainConnected()
+                        pc?.experimentalGainController
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val loudnessBalanceController = remember(pc) {
+                    try {
+                        pc?.ensureLoudnessBalanceConnected()
+                        pc?.loudnessBalanceController
+                            ?: LoudnessBalanceController(NativeDSPEngine())
+                    } catch (_: Exception) {
+                        LoudnessBalanceController(NativeDSPEngine())
+                    }
+                }
+                val monoBassController = remember(pc) {
+                    try {
+                        pc?.ensureMonoBassConnected()
+                        pc?.monoBassController ?: MonoBassController(NativeDSPEngine())
+                    } catch (_: Exception) {
+                        MonoBassController(NativeDSPEngine())
+                    }
+                }
+                val dynamicEqController = remember(pc) {
+                    try {
+                        pc?.ensureDynamicEqConnected()
+                        pc?.dynamicEqController ?: DynamicEqController(NativeDSPEngine())
+                    } catch (_: Exception) {
+                        DynamicEqController(NativeDSPEngine())
+                    }
+                }
+                val moogLadderController = remember(pc) {
+                    try {
+                        pc?.ensureMoogLadderConnected()
+                        pc?.moogLadderController ?: MoogLadderController(NativeDSPEngine())
+                    } catch (_: Exception) {
+                        MoogLadderController(NativeDSPEngine())
+                    }
+                }
+                var pendingPeqExportJson by remember { mutableStateOf<String?>(null) }
+                var importedPeqFileContent by remember { mutableStateOf<String?>(null) }
+                val peqExportLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.CreateDocument("application/json")
+                ) { uri: Uri? ->
+                    uri?.let { writeJsonToUri(context, it, pendingPeqExportJson.orEmpty()) }
+                    pendingPeqExportJson = null
+                }
+                val peqImportLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.OpenDocument()
+                ) { uri: Uri? ->
+                    uri?.let { importedPeqFileContent = readJsonFromUri(context, it) }
+                }
+                val fftConvolverController = remember(pc) {
+                    try {
+                        pc?.ensureFftConvolverConnected()
+                        pc?.fftConvolverController
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val compressorController = remember(pc) {
+                    try {
+                        pc?.ensureCompressorConnected()
+                        pc?.compressorController
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val bassBoostController = remember(pc) {
+                    try {
+                        pc?.ensureBassBoostConnected()
+                        pc?.bassBoostController
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val trebleBoostController = remember(pc) {
+                    try {
+                        pc?.ensureTrebleBoostConnected()
+                        pc?.trebleBoostController
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val speakerOutputElasticityController = remember(pc) {
+                    try {
+                        pc?.ensureSpeakerOutputElasticityConnected()
+                        pc?.speakerOutputElasticityController
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val surround360Controller = remember(pc) {
+                    try {
+                        pc?.ensureSurround360Connected()
+                        pc?.surround360Controller
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val panoramic360Controller = remember(pc) {
+                    try {
+                        pc?.ensurePanoramic360Connected()
+                        pc?.panoramic360Controller
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+
                 LiquidGlassAudioEffectsScreen(
                     onNavigateToPEQ = { navState?.navigateTo(NavScene.PEQ) },
-                    onNavigateToGraphicEQ = {
-                        val ctx = context ?: return@LiquidGlassAudioEffectsScreen
-                        ctx.startActivity(android.content.Intent(ctx, com.rawsmusic.ui.settings.GraphicEQActivity::class.java))
+                    onTogglePEQ = { enabled -> peqController?.setEnabled(enabled) },
+                    peqController = peqController,
+                    graphicEqController = graphicEqController,
+                    experimentalGainController = experimentalGainController,
+                    loudnessBalanceController = loudnessBalanceController,
+                    monoBassController = monoBassController,
+                    dynamicEqController = dynamicEqController,
+                    moogLadderController = moogLadderController,
+                    fftConvolverController = fftConvolverController,
+                    compressorController = compressorController,
+                    bassBoostController = bassBoostController,
+                    trebleBoostController = trebleBoostController,
+                    speakerOutputElasticityController = speakerOutputElasticityController,
+                    surround360Controller = surround360Controller,
+                    panoramic360Controller = panoramic360Controller,
+                    onExportPeqToFile = { json ->
+                        pendingPeqExportJson = json
+                        peqExportLauncher.launch("PEQ_preset_${System.currentTimeMillis()}.peq.json")
                     },
-                    onNavigateToSpatialSound = { navState?.navigateTo(NavScene.SPATIAL_SOUND) },
-                    onNavigateToCompressor = { navState?.navigateTo(NavScene.COMPRESSOR) },
-                    onNavigateToBassTreble = { navState?.navigateTo(NavScene.BASS_TREBLE_BOOST) },
-                    onNavigateToSurround360 = { navState?.navigateTo(NavScene.SURROUND_360) },
-                    onNavigateToPanoramic360 = { navState?.navigateTo(NavScene.PANORAMIC_360) },
-                    onTogglePEQ = { enabled ->
-                        try {
-                            pc?.ensurePEQConnected()
-                            pc?.peqController?.setEnabled(enabled)
-                        } catch (_: Exception) {
-                        }
+                    onImportPeqFromFile = {
+                        peqImportLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
                     },
-                    onToggleCompressor = { enabled ->
-                        try {
-                            pc?.ensureCompressorConnected()
-                            pc?.compressorController?.setEnabled(enabled)
-                        } catch (_: Exception) {
-                        }
-                    },
-                    onToggleSurround360 = { enabled ->
-                        try {
-                            pc?.ensureSurround360Connected()
-                            pc?.surround360Controller?.setEnabled(enabled)
-                        } catch (_: Exception) {
-                        }
-                    },
-                    onTogglePanoramic360 = { enabled ->
-                        try {
-                            pc?.ensurePanoramic360Connected()
-                            pc?.panoramic360Controller?.setEnabled(enabled)
-                        } catch (_: Exception) {
-                        }
-                    },
+                    importedPeqFileContent = importedPeqFileContent,
+                    onImportedPeqFileContentConsumed = { importedPeqFileContent = null },
                     onBack = onBack
                 )
             }
@@ -351,9 +483,9 @@ class AppPageRendererImpl(
     private fun writeJsonToUri(context: android.content.Context, uri: Uri, json: String) {
         try {
             context.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
-            Toast.makeText(context, "预设已保存", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(com.rawsmusic.R.string.preset_saved), Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            Toast.makeText(context, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(com.rawsmusic.R.string.preset_save_failed, e.message.orEmpty()), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -363,7 +495,7 @@ class AppPageRendererImpl(
                 BufferedReader(InputStreamReader(stream)).readText()
             }
         } catch (e: Exception) {
-            Toast.makeText(context, "读取失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(com.rawsmusic.R.string.preset_read_failed, e.message.orEmpty()), Toast.LENGTH_SHORT).show()
             null
         }
     }

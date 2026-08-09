@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_graphic_eq_band_count_dropdown_desc">选择固定频率滑杆的段数</string>
+    <string name="settings_graphic_eq_preset_dropdown_desc">当前：%1$s · 手动调整后会标记为自定义</string>
+</resources>

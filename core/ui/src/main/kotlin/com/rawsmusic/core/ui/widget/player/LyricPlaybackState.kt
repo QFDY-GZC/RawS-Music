@@ -3,8 +3,21 @@ package com.rawsmusic.core.ui.widget.player
 import io.github.proify.lyricon.lyric.model.LyricWord
 import io.github.proify.lyricon.lyric.model.interfaces.IRichLyricLine
 
+const val LYRIC_INTERLUDE_MIN_GAP_MS = 7_000L
+
+data class LyricInterlude(
+    val startMs: Long,
+    val endMs: Long,
+    val nextLineIndex: Int
+) {
+    fun isActiveAt(positionMs: Long): Boolean = positionMs in startMs until endMs
+}
+
 data class LyricPlaybackState(
     val currentLineIndex: Int = -1,
+    val activeLineIndices: Set<Int> = emptySet(),
+    val anchorLineIndex: Int = -1,
+    val activeInterlude: LyricInterlude? = null,
     val currentWordIndex: Int = -1,
     val lineProgress: Float = 0f,
     val wordProgress: Float = 0f,
@@ -14,36 +27,73 @@ data class LyricPlaybackState(
 
 fun calculateLyricPlaybackState(
     lines: List<IRichLyricLine>,
-    positionMs: Long
+    positionMs: Long,
+    interludes: List<LyricInterlude> = calculateLyricInterludes(lines)
 ): LyricPlaybackState {
     if (lines.isEmpty()) return LyricPlaybackState()
 
-    val lineIndex = findCurrentLineIndexBinary(lines, positionMs)
-    if (lineIndex < 0) {
+    val visibleIndices = visibleLyricLineIndices(lines)
+    if (visibleIndices.isEmpty()) return LyricPlaybackState()
+
+    val activeIndices = visibleIndices.filterTo(linkedSetOf()) { index ->
+        val lineStart = effectiveLineStart(lines[index])
+        positionMs >= lineStart && positionMs < effectiveLineEnd(lines, index)
+    }
+    // The newest actually-started timed event owns the focus while every overlapping voice
+    // remains highlighted. A provider line tag may legally precede its first syllable.
+    val currentIndex = activeIndices.maxByOrNull { effectiveLineStart(lines[it]) } ?: -1
+    val interlude = interludes.firstOrNull { it.isActiveAt(positionMs) }
+    val anchorIndex = when {
+        currentIndex >= 0 -> currentIndex
+        interlude != null -> interlude.nextLineIndex
+        else -> visibleIndices.firstOrNull { effectiveLineStart(lines[it]) > positionMs }
+            ?: visibleIndices.last()
+    }
+
+    if (currentIndex < 0) {
         return LyricPlaybackState(
-            currentLineIndex = 0,
-            currentWordIndex = -1,
-            lineStarted = false,
-            lineEnded = false
+            activeLineIndices = activeIndices,
+            anchorLineIndex = anchorIndex,
+            activeInterlude = interlude
         )
     }
 
-    val line = lines[lineIndex]
-    val lineEnd = effectiveLineEnd(lines, lineIndex)
-
-    val lineProgress = normalizedProgress(positionMs, line.begin, lineEnd)
-
-    val words = line.words.orEmpty()
-    val wordState = calculateCurrentWordState(words, lineEnd, positionMs)
-
+    val line = lines[currentIndex]
+    val lineStart = effectiveLineStart(line)
+    val lineEnd = effectiveLineEnd(lines, currentIndex)
+    val wordState = calculateCurrentWordState(line.words.orEmpty(), lineEnd, positionMs)
     return LyricPlaybackState(
-        currentLineIndex = lineIndex,
+        currentLineIndex = currentIndex,
+        activeLineIndices = activeIndices,
+        anchorLineIndex = anchorIndex,
+        activeInterlude = interlude,
         currentWordIndex = wordState.index,
-        lineProgress = lineProgress,
+        lineProgress = normalizedProgress(positionMs, lineStart, lineEnd),
         wordProgress = wordState.progress,
-        lineStarted = positionMs >= line.begin,
+        lineStarted = true,
         lineEnded = positionMs >= lineEnd
     )
+}
+
+fun calculateLyricInterludes(lines: List<IRichLyricLine>): List<LyricInterlude> {
+    if (lines.isEmpty()) return emptyList()
+    val visibleIndices = visibleLyricLineIndices(lines)
+    if (visibleIndices.isEmpty()) return emptyList()
+
+    return buildList {
+        val firstIndex = visibleIndices.first()
+        val firstStart = effectiveLineStart(lines[firstIndex])
+        if (firstStart >= LYRIC_INTERLUDE_MIN_GAP_MS) {
+            add(LyricInterlude(0L, firstStart, firstIndex))
+        }
+        visibleIndices.zipWithNext().forEach { (previousIndex, nextIndex) ->
+            val gapStart = effectiveLineEnd(lines, previousIndex)
+            val gapEnd = effectiveLineStart(lines[nextIndex])
+            if (gapEnd - gapStart >= LYRIC_INTERLUDE_MIN_GAP_MS) {
+                add(LyricInterlude(gapStart, gapEnd, nextIndex))
+            }
+        }
+    }
 }
 
 private data class WordState(val index: Int, val progress: Float)
@@ -54,13 +104,11 @@ private fun calculateCurrentWordState(
     positionMs: Long
 ): WordState {
     if (words.isEmpty()) return WordState(-1, 0f)
-
     for (index in words.indices) {
         val word = words[index]
         val begin = word.begin
         val end = effectiveWordEnd(words, index, lineEndMs)
-
-        if (positionMs < begin) return WordState(index, 0f)
+        if (positionMs < begin) return WordState(-1, 0f)
         if (positionMs in begin until end) {
             return WordState(index, normalizedProgress(positionMs, begin, end))
         }
@@ -68,52 +116,50 @@ private fun calculateCurrentWordState(
     return WordState(words.lastIndex, 1f)
 }
 
-private fun findCurrentLineIndexBinary(
-    lines: List<IRichLyricLine>,
-    positionMs: Long
-): Int {
-    if (lines.isEmpty()) return -1
-    if (positionMs < lines.first().begin) return -1
-
-    var low = 0
-    var high = lines.lastIndex
-    var result = 0
-
-    while (low <= high) {
-        val mid = (low + high) ushr 1
-        if (lines[mid].begin <= positionMs) {
-            result = mid
-            low = mid + 1
-        } else {
-            high = mid - 1
-        }
-    }
-    return result
+/**
+ * Visual start for a lyric row. Line and word events are scheduled independently; a line may be
+ * known/layout-ready before its first karaoke syllable actually starts. For timed-word lines, do
+ * not promote/center/highlight the row until the first real main/background word event.
+ *
+ * A begin earlier than line.begin is ignored here. That protects providers which encode word
+ * timestamps relative to the line; LyricDataConverter normalizes the unambiguous relative form.
+ */
+fun effectiveLineStart(line: IRichLyricLine): Long {
+    val sourceBegin = line.begin.coerceAtLeast(0L)
+    val firstAbsoluteTimedWord = sequenceOf(
+        line.words.orEmpty().asSequence(),
+        line.secondaryWords.orEmpty().asSequence()
+    )
+        .flatten()
+        .map { it.begin }
+        .filter { it >= sourceBegin }
+        .minOrNull()
+    return firstAbsoluteTimedWord?.coerceAtLeast(sourceBegin) ?: sourceBegin
 }
 
 fun effectiveLineEnd(lines: List<IRichLyricLine>, index: Int): Long {
     val line = lines[index]
-    val begin = line.begin
+    val begin = effectiveLineStart(line)
+    val nextLine = ((index + 1)..lines.lastIndex)
+        .firstOrNull { lines[it].hasVisibleLyricText() }
+        ?.let(lines::get)
+    val nextBegin = nextLine?.let(::effectiveLineStart)?.takeIf { it > begin }
+    val explicitEnd = line.end.takeIf { it > begin }
+    val mainWordEnd = line.words.orEmpty().maxOfOrNull { it.end }?.takeIf { it > begin }
+    val backgroundWordEnd = line.secondaryWords.orEmpty().maxOfOrNull { it.end }?.takeIf { it > begin }
+    val timedEnd = listOfNotNull(explicitEnd, mainWordEnd, backgroundWordEnd).maxOrNull()
+    val candidate = timedEnd ?: nextBegin ?: (begin + 3_000L)
 
-    val explicitEnd = when {
-        line.end > begin -> line.end
-        line.duration > 0L -> begin + line.duration
-        else -> -1L
-    }
-
-    val nextBegin = lines.getOrNull(index + 1)?.begin
-
-    val fallbackEnd = when {
-        explicitEnd > begin -> explicitEnd
-        nextBegin != null && nextBegin > begin -> nextBegin
-        else -> begin + 3000L
-    }
-
-    return if (nextBegin != null && nextBegin > begin) {
-        minOf(fallbackEnd, nextBegin).coerceAtLeast(begin + 1L)
-    } else {
-        fallbackEnd.coerceAtLeast(begin + 1L)
-    }
+    // TTML duet voices can overlap. The converter maps distinct agents to opposite alignment,
+    // which lets us preserve their explicit timing without allowing ordinary lines to overlap.
+    val preserveDuetOverlap = nextLine != null &&
+        nextBegin != null &&
+        candidate > nextBegin &&
+        line.isAlignedRight != nextLine.isAlignedRight
+    return when {
+        nextBegin != null && candidate > nextBegin && !preserveDuetOverlap -> nextBegin
+        else -> candidate
+    }.coerceAtLeast(begin + 1L)
 }
 
 private fun effectiveWordEnd(
@@ -123,38 +169,42 @@ private fun effectiveWordEnd(
 ): Long {
     val word = words[index]
     val begin = word.begin
-    val explicitEnd = word.end
-    val nextBegin = words.getOrNull(index + 1)?.begin
-
-    val fallbackEnd = when {
-        nextBegin != null && nextBegin > begin -> nextBegin
-        lineEndMs > begin -> lineEndMs
-        else -> begin + 240L
-    }
-
-    val candidateEnd = if (explicitEnd > begin) explicitEnd else fallbackEnd
-
-    return if (nextBegin != null && nextBegin > begin) {
-        minOf(candidateEnd, nextBegin).coerceAtLeast(begin + 1L)
-    } else {
-        minOf(candidateEnd, lineEndMs).coerceAtLeast(begin + 1L)
-    }
+    val nextBegin = words.getOrNull(index + 1)?.begin?.takeIf { it > begin }
+    val candidate = word.end.takeIf { it > begin }
+        ?: nextBegin
+        ?: lineEndMs.takeIf { it > begin }
+        ?: (begin + 240L)
+    return (if (nextBegin != null) minOf(candidate, nextBegin) else minOf(candidate, lineEndMs))
+        .coerceAtLeast(begin + 1L)
 }
 
 private fun normalizedProgress(positionMs: Long, beginMs: Long, endMs: Long): Float {
     val duration = (endMs - beginMs).coerceAtLeast(1L)
-    return ((positionMs - beginMs).toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+    return ((positionMs - beginMs).toFloat() / duration).coerceIn(0f, 1f)
 }
 
 fun effectiveSingleLineEnd(line: IRichLyricLine, words: List<LyricWord>): Long {
     val begin = line.begin
-    val explicitLineEnd = when {
-        line.end > begin -> line.end
-        line.duration > 0L -> begin + line.duration
-        else -> -1L
-    }
-    val lastWordEnd = words.lastOrNull()?.let { w ->
-        if (w.end > w.begin) w.end else -1L
-    } ?: -1L
+    val explicitLineEnd = line.end.takeIf { it > begin } ?: -1L
+    val lastWordEnd = words.maxOfOrNull { it.end }?.takeIf { it > begin } ?: -1L
     return maxOf(explicitLineEnd, lastWordEnd, begin + 1L)
 }
+
+private fun IRichLyricLine.hasVisibleLyricText(): Boolean {
+    val fields = listOf(text, secondary, translation, roma, backgroundTranslation)
+    if (fields.any { it.hasDisplayableLyricText() }) return true
+    return words.orEmpty().any { it.text.hasDisplayableLyricText() } ||
+        secondaryWords.orEmpty().any { it.text.hasDisplayableLyricText() }
+}
+
+fun visibleLyricLineIndices(lines: List<IRichLyricLine>): List<Int> =
+    lines.indices.filter { lines[it].hasVisibleLyricText() }
+
+private fun String?.hasDisplayableLyricText(): Boolean {
+    if (isNullOrBlank()) return false
+    return !timestampOnlyLyricTextRegex.matches(trim().replace(',', '.'))
+}
+
+private val timestampOnlyLyricTextRegex = Regex(
+    """^(?:(?:\[|<)\d{1,2}:\d{2}(?:[.:]\d{1,3})?(?:]|>))+${'$'}"""
+)

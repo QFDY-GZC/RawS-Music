@@ -49,7 +49,6 @@ object TickerBridge {
     private const val CHANNEL_ID_HEADS_UP = "rawsmusic_heads_up_lyrics_v1"
     private const val TICKER_NOTIFICATION_ID_BASE = 0x52697000
     private const val HEADS_UP_NOTIFICATION_BASE_ID = 0x52697100
-    private const val LEGACY_HIDDEN_NOTIFICATION_ID = 1001
     private const val HEADS_UP_MIN_INTERVAL_MS = 800L
     private const val HEADS_UP_TIMEOUT_MS = 1800L
     private const val FLAG_ALWAYS_SHOW_TICKER_FALLBACK = 0x1000000
@@ -230,7 +229,10 @@ object TickerBridge {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(TICKER_NOTIFICATION_ID_BASE)
         nm.cancel(TICKER_NOTIFICATION_ID_BASE + 1)
-        nm.cancel(LEGACY_HIDDEN_NOTIFICATION_ID)
+        // Never cancel notification id 1001 here.  That id belongs to PlayerService's
+        // foreground media notification.  Cancelling it during pause or a song change makes
+        // some vendor ROMs treat the following foreground update as a brand-new notification
+        // and play the system notification sound.
         lastTickerNotificationId = null
         if (hardCancelStandalonePending) {
             hardCancelStandalonePending = false
@@ -251,6 +253,9 @@ object TickerBridge {
                     .setOngoing(false)
                     .setAutoCancel(true)
                     .setPriority(Notification.PRIORITY_MIN)
+                    .setDefaults(0)
+                    .setSound(null)
+                    .setVibrate(null)
                     .build()
                 nm.notify(TICKER_NOTIFICATION_ID_BASE, disposable)
                 nm.cancel(TICKER_NOTIFICATION_ID_BASE)
@@ -375,6 +380,9 @@ object TickerBridge {
                 .setAutoCancel(true)
                 .setShowWhen(false)
                 .setOnlyAlertOnce(false)
+                .setDefaults(0)
+                .setSound(null)
+                .setVibrate(null)
                 .apply {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         setTimeoutAfter(2500L)

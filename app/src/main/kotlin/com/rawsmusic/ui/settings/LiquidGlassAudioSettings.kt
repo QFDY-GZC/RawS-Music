@@ -1,9 +1,13 @@
 package com.rawsmusic.ui.settings
 
+import android.content.Intent
+import top.yukonga.miuix.kmp.basic.DropdownEntry
+import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.preference.SliderPreference
+import top.yukonga.miuix.kmp.preference.SwitchPreference
 import android.widget.Toast
 import androidx.compose.ui.res.stringResource
 import androidx.compose.animation.AnimatedVisibility
@@ -24,6 +28,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Surface
@@ -42,19 +47,19 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioOutputMode
+import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.AudioOutputManager
+import com.rawsmusic.module.player.PcmDitherMode
 
 @Composable
 fun LiquidGlassAudioSettingsScreen(
-    onBack: () -> Unit,
-    onNavigateToTransitionSettings: () -> Unit = {}
+    onBack: () -> Unit
 ) {
     val context = LocalContext.current
 
@@ -71,8 +76,28 @@ fun LiquidGlassAudioSettingsScreen(
     }
     var normalization by remember { mutableStateOf(AppPreferences.Player.volumeNormalizationEnabled) }
     var gapless by remember { mutableStateOf(AppPreferences.Player.gaplessPlaybackEnabled) }
-    var crossfadeSec by remember { mutableStateOf(AppPreferences.Player.crossfadeDuration) }
+    var trackProgressMemoryEnabled by remember { mutableStateOf(AppPreferences.Player.trackProgressMemoryEnabled) }
+    var playCountEnabled by remember { mutableStateOf(AppPreferences.Player.playCountEnabled) }
+    var playCountThresholdPercent by remember {
+        mutableStateOf(AppPreferences.Player.playCountThresholdPercent.coerceIn(1, 100))
+    }
     var infoDialogId by remember { mutableStateOf(0) }
+    var ditherMode by remember { mutableStateOf(AppPreferences.Player.pcmDitherMode) }
+
+    val ditherOptions = listOf(
+        PcmDitherMode.OFF.id to (stringResource(R.string.settings_audio_dither_none) to stringResource(R.string.settings_audio_dither_none_desc)),
+        PcmDitherMode.RPDF.id to (stringResource(R.string.settings_audio_dither_rpdf) to stringResource(R.string.settings_audio_dither_rpdf_desc)),
+        PcmDitherMode.TPDF.id to (stringResource(R.string.settings_audio_dither_tpdf) to stringResource(R.string.settings_audio_dither_tpdf_desc)),
+        PcmDitherMode.TPDF_HIGH_PASS.id to (stringResource(R.string.settings_audio_dither_tpdf_hp) to stringResource(R.string.settings_audio_dither_tpdf_hp_desc)),
+        PcmDitherMode.GAUSSIAN.id to (stringResource(R.string.settings_audio_dither_gaussian) to stringResource(R.string.settings_audio_dither_gaussian_desc)),
+        PcmDitherMode.F_WEIGHTED.id to (stringResource(R.string.settings_audio_dither_f_weighted) to stringResource(R.string.settings_audio_dither_f_weighted_desc)),
+        PcmDitherMode.MODIFIED_E_WEIGHTED.id to (stringResource(R.string.settings_audio_dither_modified_e) to stringResource(R.string.settings_audio_dither_modified_e_desc)),
+        PcmDitherMode.SHIBATA.id to (stringResource(R.string.settings_audio_dither_shibata) to stringResource(R.string.settings_audio_dither_shibata_desc)),
+        PcmDitherMode.LOW_SHIBATA.id to (stringResource(R.string.settings_audio_dither_low_shibata) to stringResource(R.string.settings_audio_dither_low_shibata_desc)),
+        PcmDitherMode.HIGH_SHIBATA.id to (stringResource(R.string.settings_audio_dither_high_shibata) to stringResource(R.string.settings_audio_dither_high_shibata_desc))
+    )
+    val selectedDitherName = ditherOptions.firstOrNull { it.first == ditherMode }?.second?.first
+        ?: stringResource(R.string.settings_audio_dither_modified_e)
 
     fun applyAudioOutputSettings() {
         com.rawsmusic.ui.songs.PlayerHolder.controller?.applyAudioOutputSettingsChanged()
@@ -100,6 +125,7 @@ fun LiquidGlassAudioSettingsScreen(
         applyAudioOutputSettings()
     }
 
+    Box(Modifier.fillMaxSize()) {
     SettingsPage(title = stringResource(R.string.settings_audio_quality_title), onBack = onBack) {
         // ==========================
         // v6f: 每个输出引擎一张卡片，图标在左，点击展开输出品质
@@ -107,6 +133,7 @@ fun LiquidGlassAudioSettingsScreen(
         val engines = listOf(
             Triple(AudioOutputMode.OPENSL_ES, R.drawable.ic_audio_opensl_png, stringResource(R.string.settings_audio_engine_opensl_hint)),
             Triple(AudioOutputMode.AAUDIO, R.drawable.ic_audio_aaudio_png, stringResource(R.string.settings_audio_engine_aaudio_hint)),
+            Triple(AudioOutputMode.AUDIO_TRACK, R.drawable.ic_audio_track_png, stringResource(R.string.settings_audio_engine_audiotrack_hint)),
             Triple(AudioOutputMode.DIRECT, R.drawable.ic_audio_hires_png, stringResource(R.string.settings_audio_engine_direct_hint))
         )
 
@@ -173,51 +200,128 @@ fun LiquidGlassAudioSettingsScreen(
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
+            SectionHeader(stringResource(R.string.settings_audio_internal_precision_section))
+            Spacer(Modifier.height(4.dp))
+            var internalDoublePrecision by remember {
+                mutableStateOf(AppPreferences.Player.internalDoublePrecisionProcessingEnabled)
+            }
+            SwitchPreference(
+                title = stringResource(R.string.settings_audio_internal_precision_title),
+                summary = stringResource(R.string.settings_audio_internal_precision_summary),
+                checked = internalDoublePrecision,
+                onCheckedChange = { checked ->
+                    internalDoublePrecision = checked
+                    AppPreferences.Player.internalDoublePrecisionProcessingEnabled = checked
+                    com.rawsmusic.ui.songs.PlayerHolder.controller
+                        ?.setInternalDoublePrecisionProcessing(checked)
+                }
+            )
+            var monoOutputEnabled by remember {
+                mutableStateOf(AppPreferences.MonoOutput.isEnabled)
+            }
+            SwitchPreference(
+                title = stringResource(R.string.settings_audio_mono_output_title),
+                summary = stringResource(R.string.settings_audio_mono_output_summary),
+                checked = monoOutputEnabled,
+                onCheckedChange = { checked ->
+                    monoOutputEnabled = checked
+                    AppPreferences.MonoOutput.isEnabled = checked
+                    com.rawsmusic.ui.songs.PlayerHolder.controller
+                        ?.monoOutputController
+                        ?.setEnabled(checked)
+                }
+            )
+            DitherSettingsPreference(
+                title = stringResource(R.string.settings_audio_dither_title),
+                description = stringResource(R.string.settings_audio_dither_summary, selectedDitherName),
+                options = ditherOptions,
+                selectedId = ditherMode,
+                onSelected = { id ->
+                    ditherMode = id
+                    AppPreferences.Player.pcmDitherMode = id
+                    com.rawsmusic.ui.songs.PlayerHolder.controller?.setPcmDitherMode(id)
+                }
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        SettingsCard {
+            SettingsActionRow(
+                title = stringResource(R.string.settings_audio_focus_title),
+                description = stringResource(R.string.settings_audio_focus_summary),
+                onClick = {
+                    (context as? BaseSettingsActivity)
+                        ?.navigateToSettings(AudioFocusSettingsActivity::class.java)
+                        ?: context.startActivity(Intent(context, AudioFocusSettingsActivity::class.java))
+                }
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        SettingsCard {
             SectionHeader(stringResource(R.string.settings_audio_playback_options))
             Spacer(Modifier.height(4.dp))
             InfoSwitchRow(stringResource(R.string.settings_audio_volume_normalization), stringResource(R.string.settings_audio_volume_normalization_desc), normalization, { infoDialogId = 1 }) { checked ->
                 normalization = checked
                 AppPreferences.Player.volumeNormalizationEnabled = checked
             }
+            SettingsActionRow(
+                title = stringResource(R.string.settings_audio_dvc),
+                description = stringResource(R.string.settings_audio_dvc_desc),
+                onClick = {
+                    (context as? BaseSettingsActivity)
+                        ?.navigateToSettings(DvcSettingsActivity::class.java)
+                        ?: context.startActivity(Intent(context, DvcSettingsActivity::class.java))
+                }
+            )
             InfoSwitchRow(stringResource(R.string.settings_audio_gapless), stringResource(R.string.settings_audio_gapless_desc), gapless, { infoDialogId = 2 }) { checked ->
                 gapless = checked
                 AppPreferences.Player.gaplessPlaybackEnabled = checked
             }
-            Spacer(Modifier.height(8.dp))
-            Row(
-                Modifier.fillMaxWidth().clickable { infoDialogId = 3 },
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    stringResource(
-                        R.string.settings_audio_crossfade_value,
-                        if (crossfadeSec == 0) stringResource(R.string.settings_audio_crossfade_off) else stringResource(R.string.settings_audio_crossfade_seconds, crossfadeSec)
-                    ),
-                    fontSize = 14.sp,
-                    color = MiuixTheme.colorScheme.primary,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(stringResource(R.string.settings_info_icon), fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, modifier = Modifier.padding(top = 4.dp))
-            }
-            SliderPreference(
-                title = stringResource(R.string.settings_audio_info_crossfade_title),
-                summary = null,
-                valueText = if (crossfadeSec == 0) stringResource(R.string.settings_audio_crossfade_off) else stringResource(R.string.settings_audio_crossfade_seconds, crossfadeSec),
-                value = crossfadeSec.toFloat(),
-                onValueChange = { sec ->
-                    crossfadeSec = sec.toInt()
-                    AppPreferences.Player.crossfadeDuration = sec.toInt()
-                },
-                valueRange = 0f..12f,
-                steps = 11,
-                hapticEffect = SliderDefaults.SliderHapticEffect.Step
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        SettingsCard {
+            SectionHeader(stringResource(R.string.settings_playback_history_section))
+            Spacer(Modifier.height(4.dp))
+
+            SwitchPreference(
+                title = stringResource(R.string.settings_track_progress_memory_title),
+                summary = stringResource(R.string.settings_track_progress_memory_summary),
+                checked = trackProgressMemoryEnabled,
+                onCheckedChange = { checked ->
+                    trackProgressMemoryEnabled = checked
+                    AppPreferences.Player.trackProgressMemoryEnabled = checked
+                    if (!checked) AppPreferences.Player.lastPosition = 0L
+                }
             )
-            Spacer(Modifier.height(8.dp))
-            SettingsActionRow(
-                title = "淡入淡出",
-                description = "播放淡入淡出与交叉淡入淡出设置",
-                onClick = onNavigateToTransitionSettings
+
+            SwitchPreference(
+                title = stringResource(R.string.settings_play_count_title),
+                summary = stringResource(R.string.settings_play_count_summary),
+                checked = playCountEnabled,
+                onCheckedChange = { checked ->
+                    playCountEnabled = checked
+                    AppPreferences.Player.playCountEnabled = checked
+                }
+            )
+
+            SliderPreference(
+                title = stringResource(R.string.settings_play_count_threshold_title),
+                summary = stringResource(R.string.settings_play_count_threshold_summary),
+                valueText = stringResource(R.string.settings_percent_value, playCountThresholdPercent),
+                value = playCountThresholdPercent.toFloat(),
+                onValueChange = { value ->
+                    playCountThresholdPercent = value.toInt().coerceIn(1, 100)
+                    AppPreferences.Player.playCountThresholdPercent = playCountThresholdPercent
+                },
+                valueRange = 1f..100f,
+                steps = 98,
+                enabled = playCountEnabled,
+                hapticEffect = SliderDefaults.SliderHapticEffect.Step
             )
         }
 
@@ -279,26 +383,59 @@ fun LiquidGlassAudioSettingsScreen(
             }
         }
 
-        if (infoDialogId > 0) {
-            val pair: Pair<String, String> = when (infoDialogId) {
-                1 -> stringResource(R.string.settings_audio_info_volume_title) to stringResource(R.string.settings_audio_info_volume_body)
-                2 -> stringResource(R.string.settings_audio_info_gapless_title) to stringResource(R.string.settings_audio_info_gapless_body)
-                3 -> stringResource(R.string.settings_audio_info_crossfade_title) to stringResource(R.string.settings_audio_info_crossfade_body)
-                4 -> stringResource(R.string.settings_audio_info_sco_title) to stringResource(R.string.settings_audio_info_sco_body)
-                else -> "" to ""
-            }
-            val title = pair.first
-            val body = pair.second
-            AlertDialog(
-                onDismissRequest = { infoDialogId = 0 },
-                title = { Text(title, fontWeight = FontWeight.Bold) },
-                text = { Text(body, fontSize = 14.sp, lineHeight = 22.sp) },
-                confirmButton = {
-                    TextButton(onClick = { infoDialogId = 0 }) { Text(stringResource(R.string.settings_dialog_ok)) }
-                }
-            )
-        }
     }
+
+    if (infoDialogId > 0) {
+        val pair: Pair<String, String> = when (infoDialogId) {
+            1 -> stringResource(R.string.settings_audio_info_volume_title) to stringResource(R.string.settings_audio_info_volume_body)
+            2 -> stringResource(R.string.settings_audio_info_gapless_title) to stringResource(R.string.settings_audio_info_gapless_body)
+            4 -> stringResource(R.string.settings_audio_info_sco_title) to stringResource(R.string.settings_audio_info_sco_body)
+            else -> "" to ""
+        }
+        val title = pair.first
+        val body = pair.second
+        AlertDialog(
+            onDismissRequest = { infoDialogId = 0 },
+            title = { Text(title, fontWeight = FontWeight.Bold) },
+            text = { Text(body, fontSize = 14.sp, lineHeight = 22.sp) },
+            confirmButton = {
+                TextButton(onClick = { infoDialogId = 0 }) { Text(stringResource(R.string.settings_dialog_ok)) }
+            }
+        )
+    }
+    }
+}
+
+@Composable
+private fun DitherSettingsPreference(
+    title: String,
+    description: String,
+    options: List<Pair<Int, Pair<String, String>>>,
+    selectedId: Int,
+    onSelected: (Int) -> Unit
+) {
+    val dropdownEntry = remember(options, selectedId) {
+        DropdownEntry(
+            items = options.map { (id, option) ->
+                DropdownItem(
+                    text = option.first,
+                    summary = option.second,
+                    selected = selectedId == id,
+                    onClick = { onSelected(id) }
+                )
+            }
+        )
+    }
+
+    RawWindowDropdownPreference(
+        entry = dropdownEntry,
+        title = title,
+        summary = description,
+        enabled = options.isNotEmpty(),
+        showValue = options.any { it.first == selectedId },
+        maxHeight = 560.dp,
+        collapseOnSelection = true,
+    )
 }
 
 // ==========================

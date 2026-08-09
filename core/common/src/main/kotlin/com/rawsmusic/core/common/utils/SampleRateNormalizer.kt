@@ -1,7 +1,6 @@
 package com.rawsmusic.core.common.utils
 
 import java.util.Locale
-import kotlin.math.roundToInt
 
 /**
  * Source sample-rate normalization for UI and scanner metadata.
@@ -13,12 +12,6 @@ import kotlin.math.roundToInt
  * the common SBR half-rate case.
  */
 object SampleRateNormalizer {
-    private val commonRates = intArrayOf(
-        8_000, 11_025, 12_000, 16_000, 22_050, 24_000, 32_000,
-        44_100, 48_000, 64_000, 88_200, 96_000, 176_400, 192_000,
-        352_800, 384_000, 705_600, 768_000
-    )
-
     fun normalize(
         rawSampleRate: Int,
         codecName: String = "",
@@ -83,18 +76,4 @@ object SampleRateNormalizer {
         return text.contains("aac") || text.contains("mp4") || text.contains("m4a") || text.contains("m4b")
     }
 
-    @Suppress("unused")
-    private fun nearestCommonRate(value: Int): Int {
-        if (value <= 0) return 0
-        var best = value
-        var bestDistance = Int.MAX_VALUE
-        for (rate in commonRates) {
-            val distance = kotlin.math.abs(rate - value)
-            if (distance < bestDistance) {
-                best = rate
-                bestDistance = distance
-            }
-        }
-        return if (bestDistance <= (best * 0.006f).roundToInt().coerceAtLeast(1)) best else value
-    }
 }

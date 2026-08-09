@@ -103,12 +103,14 @@ enum class PlayState {
  * 音频输出模式
  * OPENSL_ES — OpenSL ES（传统，兼容性好，Android 4.1+）
  * AAUDIO — AAudio（低延迟，Android 8.1+，自动回退到 OpenSL ES）
+ * AUDIO_TRACK — AudioTrack（系统混音，高兼容，PCM ≤ 48kHz / 24bit / Stereo）
  * DIRECT — Direct HiRes 输出（绕过系统混音，支持高采样率，Android 8+，需有线/USB设备）
  */
 enum class AudioOutputMode {
     OPENSL_ES,
     AAUDIO,
-    DIRECT
+    DIRECT,
+    AUDIO_TRACK
 }
 
 data class PlayQueue(

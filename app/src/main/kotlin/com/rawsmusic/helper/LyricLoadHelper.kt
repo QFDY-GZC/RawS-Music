@@ -20,7 +20,7 @@ class LyricLoadHelper(
     private val scope: CoroutineScope,
     private val setLyricEnabled: (Boolean) -> Unit,
     private val getCurrentSong: () -> AudioFile?,
-    private val setComposeLyricData: (LyricData) -> Unit,
+    private val setComposeLyricData: (AudioFile, LyricData) -> Unit,
     private val setMiniLyricData: (LyricData) -> Unit,
     private val clearCurrentLyricText: () -> Unit,
     private val updateLyricAnchor: () -> Unit,
@@ -36,7 +36,7 @@ class LyricLoadHelper(
     fun load(song: AudioFile) {
         if (song.path.isBlank()) {
             val generation = loadGeneration.incrementAndGet()
-            clearLyricsIfLatest(generation)
+            clearLyricsIfLatest(generation, song)
             return
         }
 
@@ -53,7 +53,7 @@ class LyricLoadHelper(
 
                 val styledLyricData = lyricData.withAnimationFlags()
 
-                setComposeLyricData(styledLyricData)
+                setComposeLyricData(song, styledLyricData)
                 setMiniLyricData(styledLyricData)
                 setLyricEnabled(!styledLyricData.isEmpty)
 
@@ -68,10 +68,10 @@ class LyricLoadHelper(
         }
     }
 
-    private fun clearLyricsIfLatest(generation: Int) {
+    private fun clearLyricsIfLatest(generation: Int, requestSong: AudioFile) {
         if (loadGeneration.get() != generation) return
         val emptyData = LyricData()
-        setComposeLyricData(emptyData)
+        setComposeLyricData(requestSong, emptyData)
         setMiniLyricData(emptyData)
         clearCurrentLyricText()
         setLyricEnabled(false)

@@ -7,7 +7,6 @@ class LyricManagementActivity : BaseSettingsActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             LiquidGlassLyricManagementScreen(
-                onNavigateToLyricFontSettings = { navigateToSettings(LyricFontSettingsActivity::class.java) },
                 onBack = { finish() }
             )
         }

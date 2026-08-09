@@ -7,10 +7,7 @@ class AudioSettingsActivity : BaseSettingsActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             LiquidGlassAudioSettingsScreen(
-                onBack = { finish() },
-                onNavigateToTransitionSettings = {
-                    navigateToSettings(TransitionSettingsActivity::class.java)
-                }
+                onBack = { finish() }
             )
         }
     }

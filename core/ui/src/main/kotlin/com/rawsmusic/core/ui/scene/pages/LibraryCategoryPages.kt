@@ -10,11 +10,16 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.dp
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.SortOrder
+import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.scene.LocalSharedCoverRegistry
 import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.widget.index.RawAlphabetIndex
@@ -30,6 +35,7 @@ import com.rawsmusic.core.ui.widget.powerlist.YearPowerListItem
 import com.rawsmusic.core.ui.widget.powerlist.formatPowerListDuration
 import com.rawsmusic.core.ui.widget.powerlist.rememberComposePowerListState
 import com.rawsmusic.core.ui.widget.powerlist.stablePowerListHash64
+import com.rawsmusic.module.data.prefs.CollectionSortPreferences
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
@@ -39,20 +45,31 @@ fun GenresPage(
     onBack: () -> Unit,
     onGenreClick: (String) -> Unit = {},
     onPlayQueue: (List<AudioFile>, Int) -> Unit = { _, _ -> },
+    onShuffle: (List<AudioFile>) -> Unit = {},
+    onOpenFolder: () -> Unit = {},
+    onSearch: () -> Unit = {},
     powerListState: ComposePowerListState = rememberComposePowerListState("genres"),
     modifier: Modifier = Modifier
 ) {
+    val genreTitle = stringResource(R.string.library_title_genres)
     val detailState = rememberComposePowerListState("genre_detail_songs")
-    val groups by remember(songs) {
-        derivedStateOf { songs.toGenreGroups() }
+    val groups by remember(songs, genreTitle) {
+        derivedStateOf { songs.toGenreGroups(genreTitle) }
     }
+    var sortOrder by remember {
+        mutableStateOf(
+            CollectionSortPreferences.read("library_root", "genres", SortOrder.TITLE_ASC)
+        )
+    }
+    val sortedGroups = remember(groups, sortOrder) { groups.sortedFor(sortOrder) }
 
     if (selectedGenreKey.isNullOrBlank()) {
         CategoryListPage(
-            groups = groups,
+            groups = sortedGroups,
             listScene = NavScene.GENRE,
             indexMode = RawIndexMode.AUTO,
             state = powerListState,
+            onBack = onBack,
             toItem = { group ->
                 GenrePowerListItem(
                     key = group.key,
@@ -63,6 +80,12 @@ fun GenresPage(
                 )
             },
             onGroupClick = onGenreClick,
+            onShuffle = { onShuffle(sortedGroups.flatMap { it.songs }) },
+            sortOrder = sortOrder,
+            onSortOrderChange = {
+                sortOrder = it
+                CollectionSortPreferences.write("library_root", "genres", it)
+            },
             modifier = modifier
         )
     } else {
@@ -71,7 +94,7 @@ fun GenresPage(
             groups.firstOrNull { it.key == decodedKey } ?: CategoryGroupUi.empty(
                 key = decodedKey,
                 title = decodedKey.ifBlank { "未知流派" },
-                subtitle = "流派"
+                subtitle = genreTitle
             )
         }
 
@@ -82,6 +105,9 @@ fun GenresPage(
             songListState = detailState,
             onBack = onBack,
             onPlayQueue = onPlayQueue,
+            onOpenFolder = onOpenFolder,
+            onShuffle = onShuffle,
+            onSearch = onSearch,
             modifier = modifier
         )
     }
@@ -94,21 +120,32 @@ fun YearsPage(
     onBack: () -> Unit,
     onYearClick: (String) -> Unit = {},
     onPlayQueue: (List<AudioFile>, Int) -> Unit = { _, _ -> },
+    onShuffle: (List<AudioFile>) -> Unit = {},
+    onOpenFolder: () -> Unit = {},
+    onSearch: () -> Unit = {},
     powerListState: ComposePowerListState = rememberComposePowerListState("years"),
     modifier: Modifier = Modifier
 ) {
+    val yearTitle = stringResource(R.string.library_title_years)
     val detailState = rememberComposePowerListState("year_detail_songs")
-    val groups by remember(songs) {
-        derivedStateOf { songs.toYearGroups() }
+    val groups by remember(songs, yearTitle) {
+        derivedStateOf { songs.toYearGroups(yearTitle) }
     }
+    var sortOrder by remember {
+        mutableStateOf(
+            CollectionSortPreferences.read("library_root", "years", SortOrder.YEAR_DESC)
+        )
+    }
+    val sortedGroups = remember(groups, sortOrder) { groups.sortedFor(sortOrder) }
 
     if (selectedYearKey.isNullOrBlank()) {
         CategoryListPage(
-            groups = groups,
+            groups = sortedGroups,
             listScene = NavScene.YEAR,
             indexMode = RawIndexMode.LATIN,
             yearIndex = true,
             state = powerListState,
+            onBack = onBack,
             toItem = { group ->
                 YearPowerListItem(
                     key = group.key,
@@ -119,6 +156,12 @@ fun YearsPage(
                 )
             },
             onGroupClick = onYearClick,
+            onShuffle = { onShuffle(sortedGroups.flatMap { it.songs }) },
+            sortOrder = sortOrder,
+            onSortOrderChange = {
+                sortOrder = it
+                CollectionSortPreferences.write("library_root", "years", it)
+            },
             modifier = modifier
         )
     } else {
@@ -127,7 +170,7 @@ fun YearsPage(
             groups.firstOrNull { it.key == decodedKey } ?: CategoryGroupUi.empty(
                 key = decodedKey,
                 title = decodedKey.ifBlank { "未知年份" },
-                subtitle = "年份"
+                subtitle = yearTitle
             )
         }
 
@@ -138,6 +181,9 @@ fun YearsPage(
             songListState = detailState,
             onBack = onBack,
             onPlayQueue = onPlayQueue,
+            onOpenFolder = onOpenFolder,
+            onShuffle = onShuffle,
+            onSearch = onSearch,
             modifier = modifier
         )
     }
@@ -150,20 +196,31 @@ fun ComposersPage(
     onBack: () -> Unit,
     onComposerClick: (String) -> Unit = {},
     onPlayQueue: (List<AudioFile>, Int) -> Unit = { _, _ -> },
+    onShuffle: (List<AudioFile>) -> Unit = {},
+    onOpenFolder: () -> Unit = {},
+    onSearch: () -> Unit = {},
     powerListState: ComposePowerListState = rememberComposePowerListState("composers"),
     modifier: Modifier = Modifier
 ) {
+    val composerTitle = stringResource(R.string.library_title_composers)
     val detailState = rememberComposePowerListState("composer_detail_songs")
-    val groups by remember(songs) {
-        derivedStateOf { songs.toComposerGroups() }
+    val groups by remember(songs, composerTitle) {
+        derivedStateOf { songs.toComposerGroups(composerTitle) }
     }
+    var sortOrder by remember {
+        mutableStateOf(
+            CollectionSortPreferences.read("library_root", "composers", SortOrder.TITLE_ASC)
+        )
+    }
+    val sortedGroups = remember(groups, sortOrder) { groups.sortedFor(sortOrder) }
 
     if (selectedComposerKey.isNullOrBlank()) {
         CategoryListPage(
-            groups = groups,
+            groups = sortedGroups,
             listScene = NavScene.COMPOSER,
             indexMode = RawIndexMode.AUTO,
             state = powerListState,
+            onBack = onBack,
             toItem = { group ->
                 ComposerPowerListItem(
                     key = group.key,
@@ -174,6 +231,12 @@ fun ComposersPage(
                 )
             },
             onGroupClick = onComposerClick,
+            onShuffle = { onShuffle(sortedGroups.flatMap { it.songs }) },
+            sortOrder = sortOrder,
+            onSortOrderChange = {
+                sortOrder = it
+                CollectionSortPreferences.write("library_root", "composers", it)
+            },
             modifier = modifier
         )
     } else {
@@ -182,7 +245,7 @@ fun ComposersPage(
             groups.firstOrNull { it.key == decodedKey } ?: CategoryGroupUi.empty(
                 key = decodedKey,
                 title = decodedKey.ifBlank { "未知作曲家" },
-                subtitle = "作曲家"
+                subtitle = composerTitle
             )
         }
 
@@ -193,6 +256,9 @@ fun ComposersPage(
             songListState = detailState,
             onBack = onBack,
             onPlayQueue = onPlayQueue,
+            onOpenFolder = onOpenFolder,
+            onShuffle = onShuffle,
+            onSearch = onSearch,
             modifier = modifier
         )
     }
@@ -205,8 +271,12 @@ private fun <T : PowerListVisualItem> CategoryListPage(
     indexMode: RawIndexMode,
     yearIndex: Boolean = false,
     state: ComposePowerListState,
+    onBack: () -> Unit,
     toItem: (CategoryGroupUi) -> T,
     onGroupClick: (String) -> Unit,
+    onShuffle: () -> Unit,
+    sortOrder: SortOrder,
+    onSortOrderChange: (SortOrder) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val coverRegistry = LocalSharedCoverRegistry.current
@@ -220,15 +290,37 @@ private fun <T : PowerListVisualItem> CategoryListPage(
         ) { item -> item.title }
     }
 
-    Box(
+    val title = when (listScene) {
+        NavScene.GENRE -> stringResource(com.rawsmusic.core.ui.R.string.library_title_genres)
+        NavScene.YEAR -> stringResource(com.rawsmusic.core.ui.R.string.library_title_years)
+        NavScene.COMPOSER -> stringResource(com.rawsmusic.core.ui.R.string.library_title_composers)
+        else -> stringResource(com.rawsmusic.core.ui.R.string.library_title_fallback)
+    }
+    LibraryListScaffold(
+        title = title,
+        sceneId = listScene.name,
+        onBack = onBack,
+        powerListState = state,
+        onShuffle = onShuffle,
+        currentSortOrder = sortOrder,
+        onSortSelected = onSortOrderChange,
+        sortOptions = buildList {
+            add(stringResource(com.rawsmusic.core.ui.R.string.sort_by_name) to SortOrder.TITLE_ASC)
+            if (listScene == NavScene.YEAR) {
+                add(stringResource(com.rawsmusic.core.ui.R.string.sort_by_year) to SortOrder.YEAR_ASC)
+            }
+            add(stringResource(com.rawsmusic.core.ui.R.string.sort_by_modified) to SortOrder.DATE_ADDED_ASC)
+            add(stringResource(com.rawsmusic.core.ui.R.string.sort_by_duration) to SortOrder.DURATION_ASC)
+            add(stringResource(com.rawsmusic.core.ui.R.string.sort_by_song_count) to SortOrder.PLAYBACK_INFO)
+        },
         modifier = modifier
-            .fillMaxSize()
-    ) {
+    ) { topPadding, backdropSource ->
         ComposeGenericPowerList(
             items = items,
             state = state,
+            contentTopPadding = topPadding,
             sharedCoverSceneId = listScene.name,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().then(backdropSource),
             onItemClick = { item, _, _ ->
                 coverRegistry.freeze(
                     sceneId = listScene.name,
@@ -243,7 +335,11 @@ private fun <T : PowerListVisualItem> CategoryListPage(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .padding(top = 92.dp, bottom = 118.dp, end = 0.dp)
+                .then(backdropSource)
                 .zIndex(30f),
+            onTopSelect = {
+                state.requestScrollToIndex(0)
+            },
             onSelect = { _, index ->
                 state.requestScrollToIndex(index)
             }
@@ -273,10 +369,6 @@ private fun rememberYearIndexData(
             }
         }
 
-        if (labels.isEmpty()) {
-            labels.add("#")
-        }
-
         RawAlphabetIndexData(
             labels = labels,
             targets = targets,
@@ -303,7 +395,7 @@ private data class CategoryGroupUi(
             coverKey = coverKey,
             title = name,
             subtitle = subtitle,
-            meta = "♫ $songCount | ${formatPowerListDuration(totalDurationMs)}",
+            meta = "$songCount | ${formatPowerListDuration(totalDurationMs)}",
             songs = songs
         )
     }
@@ -326,26 +418,26 @@ private data class CategoryGroupUi(
     }
 }
 
-private fun List<AudioFile>.toGenreGroups(): List<CategoryGroupUi> {
+private fun List<AudioFile>.toGenreGroups(subtitle: String): List<CategoryGroupUi> {
     return groupByCategory(
         unknownName = "未知流派",
-        subtitle = "流派",
+        subtitle = subtitle,
         keySelector = { it.genre }
     ).sortedWith(compareBy<CategoryGroupUi> { it.name.lowercase() })
 }
 
-private fun List<AudioFile>.toComposerGroups(): List<CategoryGroupUi> {
+private fun List<AudioFile>.toComposerGroups(subtitle: String): List<CategoryGroupUi> {
     return groupByCategory(
         unknownName = "未知作曲家",
-        subtitle = "作曲家",
+        subtitle = subtitle,
         keySelector = { it.composer }
     ).sortedWith(compareBy<CategoryGroupUi> { it.name.lowercase() })
 }
 
-private fun List<AudioFile>.toYearGroups(): List<CategoryGroupUi> {
+private fun List<AudioFile>.toYearGroups(subtitle: String): List<CategoryGroupUi> {
     return groupByCategory(
         unknownName = "未知年份",
-        subtitle = "年份",
+        subtitle = subtitle,
         keySelector = { song ->
             song.year
                 .takeIf { it > 0 }
@@ -385,4 +477,20 @@ private fun List<AudioFile>.groupByCategory(
                 totalDurationMs = categorySongs.sumOf { it.duration.coerceAtLeast(0L) }
             )
         }
+}
+
+private fun List<CategoryGroupUi>.sortedFor(order: SortOrder): List<CategoryGroupUi> {
+    val descending = order in setOf(
+        SortOrder.TITLE_DESC, SortOrder.ARTIST_DESC, SortOrder.ALBUM_DESC,
+        SortOrder.DATE_ADDED_DESC, SortOrder.DURATION_DESC, SortOrder.YEAR_DESC,
+        SortOrder.FILE_NAME_DESC, SortOrder.PATH_DESC, SortOrder.PLAYBACK_INFO_DESC
+    )
+    val comparator = when (order) {
+        SortOrder.YEAR_ASC, SortOrder.YEAR_DESC -> compareBy<CategoryGroupUi> { it.key.toIntOrNull() ?: Int.MIN_VALUE }
+        SortOrder.DURATION_ASC, SortOrder.DURATION_DESC -> compareBy { it.totalDurationMs }
+        SortOrder.DATE_ADDED_ASC, SortOrder.DATE_ADDED_DESC -> compareBy { group -> group.songs.maxOfOrNull { it.dateModified } ?: 0L }
+        SortOrder.PLAYBACK_INFO, SortOrder.PLAYBACK_INFO_DESC -> compareBy { it.songCount }
+        else -> compareBy<CategoryGroupUi> { it.name.lowercase() }
+    }
+    return sortedWith(if (descending) comparator.reversed() else comparator)
 }

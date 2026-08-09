@@ -1,6 +1,5 @@
 package com.rawsmusic.core.ui.widget
 
-import android.graphics.Bitmap
 import android.graphics.RectF
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.withFrameMillis
@@ -19,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -30,8 +30,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
@@ -44,16 +42,13 @@ import androidx.compose.ui.zIndex
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
 import com.rawsmusic.core.ui.widget.bitmaps.DefaultAlbumArtwork
 import com.rawsmusic.core.ui.widget.bitmaps.shouldShowDefaultAlbumArtwork
 import com.rawsmusic.core.ui.widget.bitmaps.RawArtworkPolicy
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val MINI_PLAYER_PREFS = "mini_player_prefs"
 private const val KEY_ARTWORK_MODE = "artwork_mode"
-private const val KEY_LAST_COVER_PATH = "last_cover_path"
 
 @Composable
 fun rememberMiniPlayerArtworkMode(): MutableState<MiniPlayerArtworkMode> {
@@ -74,27 +69,10 @@ fun rememberMiniPlayerArtworkMode(): MutableState<MiniPlayerArtworkMode> {
 }
 
 @Composable
-fun rememberMiniPlayerCoverPath(coverPath: String?): String? {
-    val context = LocalContext.current.applicationContext
-    val current = coverPath?.takeIf { it.isNotBlank() }
-    LaunchedEffect(current) {
-        if (current != null) {
-            context.getSharedPreferences(MINI_PLAYER_PREFS, android.content.Context.MODE_PRIVATE)
-                .edit()
-                .putString(KEY_LAST_COVER_PATH, current)
-                .apply()
-        }
-    }
-    return current
-}
-
-@Composable
 fun MiniPlayerArtwork(
     mode: MiniPlayerArtworkMode,
     coverPath: String?,
-    coverBitmap: Bitmap?,
     isPlaying: Boolean,
-    progress: Float,
     contentDescription: String?,
     onCoverBoundsChanged: (RectF?) -> Unit,
     onDoubleTapToggleMode: () -> Unit,
@@ -102,54 +80,21 @@ fun MiniPlayerArtwork(
     modifier: Modifier = Modifier,
     animateArtwork: Boolean = false
 ) {
-    val rememberedCoverPath = rememberMiniPlayerCoverPath(coverPath)
-    val progressColor = MiuixTheme.colorScheme.primary
-    val context = LocalContext.current.applicationContext
-    var rememberedBitmap by remember { mutableStateOf<Bitmap?>(null) }
-
-    // P0 省电：迷你播放栏不再用最高优先级主动抽 256 封面。
-    // 先复用 BitmapProvider 里已有的缩略图；缺失时交给 CoverVisual/列表管线按低优先级补齐。
-    LaunchedEffect(context, rememberedCoverPath) {
-        BitmapProvider.init(context)
-        val key = rememberedCoverPath?.takeIf { it.isNotBlank() }
-        if (key == null) {
-            rememberedBitmap = null
-            return@LaunchedEffect
-        }
-        val cached = BitmapProvider.peekThumbnail(key, 256, 256)
-            ?: BitmapProvider.peekThumbnail(key, 128, 128)
-            ?: BitmapProvider.peekAny(key)
-        if (cached != null && !cached.isRecycled) {
-            rememberedBitmap = cached
-        }
-    }
-
-    LaunchedEffect(coverBitmap, rememberedCoverPath) {
-        if (coverBitmap != null && !coverBitmap.isRecycled) {
-            rememberedBitmap = coverBitmap
-        } else if (rememberedCoverPath.isNullOrBlank()) {
-            rememberedBitmap = null
-        }
-    }
-    val visualBitmap = if (rememberedCoverPath.isNullOrBlank()) {
-        null
-    } else {
-        coverBitmap?.takeIf { !it.isRecycled }
-            ?: rememberedBitmap?.takeIf { !it.isRecycled }
-    }
+    val currentCoverKey = coverPath?.takeIf { it.isNotBlank() }
 
     val appliedRotation = rememberMiniArtworkRotation(
         enabled = animateArtwork && isPlaying && mode == MiniPlayerArtworkMode.Vinyl
     )
 
+    // Keep the physical holder mounted while the source key changes. Updating the
+    // bitmap owned by a stable artwork view, rather than disposing the view and exposing an
+    // empty frame between two songs. BitmapImage keeps the previous frame until the provider
+    // confirms a replacement or a terminal no-art result.
     when (mode) {
         MiniPlayerArtworkMode.Normal -> {
             NormalMiniArtwork(
-                coverPath = rememberedCoverPath,
-                coverBitmap = visualBitmap,
+                coverPath = currentCoverKey,
                 rotation = appliedRotation,
-                progress = progress,
-                progressColor = progressColor,
                 contentDescription = contentDescription,
                 onCoverBoundsChanged = onCoverBoundsChanged,
                 onDoubleTapToggleMode = onDoubleTapToggleMode,
@@ -159,8 +104,7 @@ fun MiniPlayerArtwork(
         }
         MiniPlayerArtworkMode.Vinyl -> {
             VinylMiniArtwork(
-                coverPath = rememberedCoverPath,
-                coverBitmap = visualBitmap,
+                coverPath = currentCoverKey,
                 rotation = appliedRotation,
                 contentDescription = contentDescription,
                 onCoverBoundsChanged = onCoverBoundsChanged,
@@ -196,10 +140,7 @@ private fun rememberMiniArtworkRotation(enabled: Boolean): Float {
 @Composable
 private fun NormalMiniArtwork(
     coverPath: String?,
-    coverBitmap: Bitmap?,
     rotation: Float,
-    progress: Float,
-    progressColor: Color,
     contentDescription: String?,
     onCoverBoundsChanged: (RectF?) -> Unit,
     onDoubleTapToggleMode: () -> Unit,
@@ -211,30 +152,16 @@ private fun NormalMiniArtwork(
         modifier = modifier.pointerInput(Unit) {
             detectTapGestures(
                 onTap = { onSingleTap() },
-                onDoubleTap = { onDoubleTapToggleMode() }
+                // Supplying onDoubleTap makes Compose defer onTap until the platform double-tap
+                // timeout expires. Keep opening the player immediate and retain the artwork-mode
+                // shortcut on long press instead.
+                onLongPress = { onDoubleTapToggleMode() }
             )
         },
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(52.dp)) {
-            val strokeWidth = 2.dp.toPx()
-            val radius = (size.minDimension - strokeWidth) / 2f
-            drawCircle(
-                color = Color.White.copy(alpha = 0.15f),
-                radius = radius,
-                style = Stroke(width = strokeWidth)
-            )
-            drawArc(
-                color = progressColor,
-                startAngle = -90f,
-                sweepAngle = (1f - progress.coerceIn(0f, 1f)) * 360f,
-                useCenter = false,
-                style = Stroke(width = strokeWidth)
-            )
-        }
         CoverVisual(
             coverPath = coverPath,
-            coverBitmap = coverBitmap,
             contentDescription = contentDescription,
             modifier = Modifier
                 .size(artworkSize)
@@ -253,7 +180,6 @@ private fun NormalMiniArtwork(
 @Composable
 private fun VinylMiniArtwork(
     coverPath: String?,
-    coverBitmap: Bitmap?,
     rotation: Float,
     contentDescription: String?,
     onCoverBoundsChanged: (RectF?) -> Unit,
@@ -265,7 +191,7 @@ private fun VinylMiniArtwork(
         modifier = modifier.pointerInput(Unit) {
             detectTapGestures(
                 onTap = { onSingleTap() },
-                onDoubleTap = { onDoubleTapToggleMode() }
+                onLongPress = { onDoubleTapToggleMode() }
             )
         },
         contentAlignment = Alignment.CenterStart
@@ -294,7 +220,6 @@ private fun VinylMiniArtwork(
             ) {
                 CoverVisual(
                     coverPath = coverPath,
-                    coverBitmap = coverBitmap,
                     contentDescription = contentDescription,
                     modifier = Modifier
                         .size(24.dp)
@@ -321,7 +246,6 @@ private fun VinylMiniArtwork(
         ) {
             CoverVisual(
                 coverPath = coverPath,
-                coverBitmap = coverBitmap,
                 contentDescription = contentDescription,
                 modifier = Modifier
                     .size(40.dp)
@@ -336,21 +260,12 @@ private fun VinylMiniArtwork(
 @Composable
 private fun CoverVisual(
     coverPath: String?,
-    coverBitmap: Bitmap?,
     contentDescription: String?,
     modifier: Modifier,
     contentScale: ContentScale,
     targetSize: Int
 ) {
     when {
-        coverBitmap != null && !coverBitmap.isRecycled -> {
-            Image(
-                bitmap = coverBitmap.asImageBitmap(),
-                contentDescription = contentDescription,
-                modifier = modifier,
-                contentScale = contentScale
-            )
-        }
         !coverPath.isNullOrBlank() -> {
             BitmapImage(
                 key = coverPath,
@@ -361,7 +276,8 @@ private fun CoverVisual(
                 targetHeight = targetSize,
                 priority = BitmapRequest.Priority.LOADING_LIST,
                 surface = ArtworkSurface.MiniPlayer,
-                fadeInMillis = RawArtworkPolicy.SMALL_SURFACE_FADE_MS
+                fadeInMillis = RawArtworkPolicy.SMALL_SURFACE_FADE_MS,
+                holdPreviousOnKeyChange = true
             )
         }
         else -> {

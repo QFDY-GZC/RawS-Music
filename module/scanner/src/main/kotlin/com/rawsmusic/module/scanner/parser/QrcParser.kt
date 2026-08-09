@@ -24,7 +24,7 @@ object QrcParser {
     }
 
     fun parse(content: String): LyricData {
-        val decoded = decodeHtmlEntities(content)
+        val decoded = LyricTextNormalizer.decodeEntities(content)
 
         val lines = decoded.lines().filter { it.isNotBlank() }
         if (lines.isEmpty()) return LyricData()
@@ -82,24 +82,6 @@ object QrcParser {
         }
 
         Log.d(TAG, "QRC: ${result.size} lines, offset=$offset")
-        return LyricData(lines = result, offset = offset)
-    }
-
-    private fun decodeHtmlEntities(content: String): String {
-        return content
-            .replace("&#32;", " ")
-            .replace("&#40;", "(")
-            .replace("&#41;", ")")
-            .replace("&#44;", ",")
-            .replace("&#45;", "-")
-            .replace("&#46;", ".")
-            .replace("&#58;", ":")
-            .replace("&#10;", "\n")
-            .replace("&#13;", "\r")
-            .replace("&#39;", "'")
-            .replace("&#34;", "\"")
-            .replace("&#60;", "<")
-            .replace("&#62;", ">")
-            .replace("&#38;", "&")
+        return LyricTextNormalizer.normalize(LyricData(lines = result, offset = offset))
     }
 }

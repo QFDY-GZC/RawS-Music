@@ -24,7 +24,7 @@ class CoverCoordinator(
      * 解析歌曲封面 URI。
      */
     fun resolve(song: AudioFile): String {
-        return resolver.resolveCoverUri(song).ifBlank { song.albumArtPath ?: "" }
+        return resolver.resolveCoverUri(song).ifBlank { song.coverKey }
     }
 
     /**
@@ -39,7 +39,7 @@ class CoverCoordinator(
             if (current != null && current.path == songPath) {
                 resolver.updateCache(current, coverUri)
                 onMiniPlayerCoverNeedRefresh()
-                onMirrorCoverChanged(coverUri)
+                onMirrorCoverChanged(resolve(current).takeIf { it.isNotBlank() })
             }
         }
     }

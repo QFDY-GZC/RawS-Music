@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_peq_tools_dropdown_summary">AutoEq 搜索、预设导入导出、重置与已下载预设</string>
+    <string name="settings_peq_tools_dropdown_value">选择</string>
+    <string name="settings_peq_type_inline_hint">点击后在当前频段卡片内选择</string>
+</resources>

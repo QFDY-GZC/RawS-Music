@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
@@ -29,6 +30,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -37,6 +40,7 @@ import androidx.compose.ui.zIndex
 import com.rawsmusic.core.common.model.Album
 import com.rawsmusic.core.common.model.Artist
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.SortOrder
 import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.ui.scene.LocalSharedCoverRegistry
 import com.rawsmusic.core.ui.scene.NavScene
@@ -49,6 +53,7 @@ import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListState
 import com.rawsmusic.core.ui.widget.powerlist.formatPowerListDuration
 import com.rawsmusic.core.ui.widget.powerlist.rememberComposePowerListState
 import com.rawsmusic.core.ui.widget.powerlist.stablePowerListHash64
+import com.rawsmusic.module.data.prefs.CollectionSortPreferences
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -129,13 +134,16 @@ fun ArtistsPage(
     onArtistClick: (String) -> Unit = {},
     onBack: () -> Unit,
     onPlayQueue: (List<AudioFile>, Int) -> Unit = { _, _ -> },
+    onShuffle: (List<AudioFile>) -> Unit = {},
+    onOpenFolder: () -> Unit = {},
+    onSearch: () -> Unit = {},
     powerListState: ComposePowerListState = rememberComposePowerListState("artists"),
     modifier: Modifier = Modifier
 ) {
     val detailState = rememberComposePowerListState("artist_detail_songs")
     val artists by remember(songs, dataSource?.artists) {
         derivedStateOf {
-            val grouped = songs.toArtistGroups()
+            val grouped = LibrarySceneGroupingWarmup.artists(songs)
             if (grouped.isNotEmpty()) {
                 grouped
             } else {
@@ -152,12 +160,25 @@ fun ArtistsPage(
             }
         }
     }
+    var sortOrder by remember {
+        mutableStateOf(
+            CollectionSortPreferences.read("library_root", "artists", SortOrder.TITLE_ASC)
+        )
+    }
+    val sortedArtists = remember(artists, sortOrder) { artists.sortedFor(sortOrder) }
 
     if (selectedArtistKey.isNullOrBlank()) {
         ArtistListPage(
-            artists = artists,
+            artists = sortedArtists,
             state = powerListState,
+            onBack = onBack,
             onArtistClick = onArtistClick,
+            onShuffle = { onShuffle(sortedArtists.flatMap { it.songs }) },
+            sortOrder = sortOrder,
+            onSortOrderChange = {
+                sortOrder = it
+                CollectionSortPreferences.write("library_root", "artists", it)
+            },
             modifier = modifier
         )
     } else {
@@ -167,12 +188,15 @@ fun ArtistsPage(
         }
 
         CollectionHeroDetailPage(
-            hero = artist.toHeroData(),
+            hero = artist.toHeroData(stringResource(com.rawsmusic.core.ui.R.string.library_album_count, artist.albumCount)),
             listScene = NavScene.ARTISTS,
             detailScene = NavScene.ARTIST_DETAIL,
             songListState = detailState,
             onBack = onBack,
             onPlayQueue = onPlayQueue,
+            onOpenFolder = onOpenFolder,
+            onShuffle = onShuffle,
+            onSearch = onSearch,
             modifier = modifier
         )
     }
@@ -182,7 +206,11 @@ fun ArtistsPage(
 private fun ArtistListPage(
     artists: List<ArtistGroupUi>,
     state: ComposePowerListState,
+    onBack: () -> Unit,
     onArtistClick: (String) -> Unit,
+    onShuffle: () -> Unit,
+    sortOrder: SortOrder,
+    onSortOrderChange: (SortOrder) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val coverRegistry = LocalSharedCoverRegistry.current
@@ -200,15 +228,29 @@ private fun ArtistListPage(
     }
     val alphabetIndexData = rememberAdaptiveAlphabetIndexData(items) { it.title }
 
-    Box(
+    LibraryListScaffold(
+        title = stringResource(com.rawsmusic.core.ui.R.string.library_title_artists),
+        sceneId = NavScene.ARTISTS.name,
+        onBack = onBack,
+        powerListState = state,
+        onShuffle = onShuffle,
+        currentSortOrder = sortOrder,
+        onSortSelected = onSortOrderChange,
+        sortOptions = listOf(
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_name) to SortOrder.TITLE_ASC,
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_album_count) to SortOrder.ALBUM_ASC,
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_modified) to SortOrder.DATE_ADDED_ASC,
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_duration) to SortOrder.DURATION_ASC,
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_song_count) to SortOrder.PLAYBACK_INFO
+        ),
         modifier = modifier
-            .fillMaxSize()
-    ) {
+    ) { topPadding, backdropSource ->
         ComposeGenericPowerList(
             items = items,
             state = state,
+            contentTopPadding = topPadding,
             sharedCoverSceneId = NavScene.ARTISTS.name,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().then(backdropSource),
             onItemClick = { item, _, _ ->
                 val artist = item as? ArtistPowerListItem ?: return@ComposeGenericPowerList
 
@@ -226,7 +268,11 @@ private fun ArtistListPage(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .padding(top = 92.dp, bottom = 118.dp, end = 0.dp)
+                .then(backdropSource)
                 .zIndex(30f),
+            onTopSelect = {
+                state.requestScrollToIndex(0)
+            },
             onSelect = { _, index ->
                 state.requestScrollToIndex(index)
             }
@@ -235,7 +281,7 @@ private fun ArtistListPage(
 }
 
 @Stable
-private data class ArtistGroupUi(
+internal data class ArtistGroupUi(
     val key: String,
     val name: String,
     val songs: List<AudioFile>,
@@ -246,14 +292,14 @@ private data class ArtistGroupUi(
     val songCount: Int get() = songs.size
     val sharedElementId: String get() = "cover:artist:${stablePowerListHash64(key)}"
 
-    fun toHeroData(): CollectionHeroData {
+    fun toHeroData(albumCountText: String): CollectionHeroData {
         return CollectionHeroData(
             stableKey = key,
             sharedElementId = sharedElementId,
             coverKey = coverKey,
             title = name,
-            subtitle = "$albumCount 张专辑",
-            meta = "♫ $songCount | ${formatPowerListDuration(totalDurationMs)}",
+            subtitle = albumCountText,
+            meta = "$songCount | ${formatPowerListDuration(totalDurationMs)}",
             songs = songs
         )
     }
@@ -272,7 +318,7 @@ private data class ArtistGroupUi(
     }
 }
 
-private fun List<AudioFile>.toArtistGroups(): List<ArtistGroupUi> {
+internal fun List<AudioFile>.toArtistGroups(): List<ArtistGroupUi> {
     return asSequence()
         .filter { it.artist.isNotBlank() || it.albumArtist.isNotBlank() || it.displayName.isNotBlank() }
         .groupBy { song ->
@@ -294,6 +340,22 @@ private fun List<AudioFile>.toArtistGroups(): List<ArtistGroupUi> {
             )
         }
         .sortedBy { it.name.lowercase() }
+}
+
+private fun List<ArtistGroupUi>.sortedFor(order: SortOrder): List<ArtistGroupUi> {
+    val descending = order in setOf(
+        SortOrder.TITLE_DESC, SortOrder.ARTIST_DESC, SortOrder.ALBUM_DESC,
+        SortOrder.DATE_ADDED_DESC, SortOrder.DURATION_DESC, SortOrder.YEAR_DESC,
+        SortOrder.FILE_NAME_DESC, SortOrder.PATH_DESC, SortOrder.PLAYBACK_INFO_DESC
+    )
+    val comparator = when (order) {
+        SortOrder.ALBUM_ASC, SortOrder.ALBUM_DESC -> compareBy<ArtistGroupUi> { it.albumCount }.thenBy { it.name.lowercase() }
+        SortOrder.DURATION_ASC, SortOrder.DURATION_DESC -> compareBy { it.totalDurationMs }
+        SortOrder.DATE_ADDED_ASC, SortOrder.DATE_ADDED_DESC -> compareBy { group -> group.songs.maxOfOrNull { it.dateModified } ?: 0L }
+        SortOrder.PLAYBACK_INFO, SortOrder.PLAYBACK_INFO_DESC -> compareBy { it.songCount }
+        else -> compareBy<ArtistGroupUi> { it.name.lowercase() }
+    }
+    return sortedWith(if (descending) comparator.reversed() else comparator)
 }
 
 // ============================================================================
@@ -321,7 +383,11 @@ fun ArtistDetailScreenEmbedded(
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
-                Text("←", fontSize = 20.sp, color = colors.secondaryText)
+                Icon(
+                    painter = painterResource(com.rawsmusic.core.ui.R.drawable.ic_back),
+                    contentDescription = stringResource(com.rawsmusic.core.ui.R.string.library_action_back),
+                    tint = colors.secondaryText
+                )
             }
             Text(
                 name,
@@ -332,16 +398,29 @@ fun ArtistDetailScreenEmbedded(
             )
         }
         Spacer(Modifier.height(8.dp))
-        Box(
+        Row(
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
                 .background(colors.primary)
                 .clickable { onPlayAll(songs) }
                 .padding(horizontal = 16.dp, vertical = 12.dp),
-            contentAlignment = Alignment.Center
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("▶ 播放全部 (${songs.size})", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Icon(
+                painter = painterResource(com.rawsmusic.core.ui.R.drawable.ic_playlist_play),
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                stringResource(com.rawsmusic.core.ui.R.string.library_play_all_count, songs.size),
+                color = Color.White,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold
+            )
         }
         Spacer(Modifier.height(12.dp))
         LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {

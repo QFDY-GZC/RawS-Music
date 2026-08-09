@@ -22,8 +22,6 @@ class AutoEqRepository {
         private const val REPO_OWNER = "jaakkopasanen"
         private const val REPO_NAME = "AutoEq"
         private const val BRANCH = "master"
-        private const val RESULTS_PATH = "results"
-        
         // 缓存文件树，避免重复请求
         private var cachedFileTree: List<String>? = null
         private var cacheTimestamp: Long = 0

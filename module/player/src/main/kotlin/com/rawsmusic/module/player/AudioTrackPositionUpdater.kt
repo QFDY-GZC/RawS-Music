@@ -9,6 +9,8 @@ internal class AudioTrackPositionUpdater(
     private val useHardwareTimestamp: () -> Boolean,
     private val isFlushPending: () -> Boolean
 ) {
+    private val fallbackAccumulator = FractionalPlaybackPositionAccumulator()
+
     data class Result(
         val previousPositionMs: Long,
         val positionMs: Long,
@@ -16,6 +18,10 @@ internal class AudioTrackPositionUpdater(
         val usedHardware: Boolean,
         val flushPending: Boolean
     )
+
+    fun reset() {
+        fallbackAccumulator.reset()
+    }
 
     fun updateStreaming(
         currentPositionMs: Long,
@@ -29,10 +35,20 @@ internal class AudioTrackPositionUpdater(
         val useHw = useHardwareTimestamp()
         val hwPos = if (useHw && !flushPending) hardwarePositionMs(sampleRate) else -1L
         val next = when {
-            hwPos >= 0L -> hwPos.coerceToDuration(durationMs)
-            !flushPending && bytesAdvanced > 0 && bytesPerMs > 0.0 ->
-                (currentPositionMs + bytesAdvanced.toDouble() / bytesPerMs).toLong().coerceToDuration(durationMs)
-            else -> currentPositionMs.coerceToDuration(durationMs)
+            hwPos >= 0L -> {
+                fallbackAccumulator.reset()
+                hwPos.coerceToDuration(durationMs)
+            }
+            !flushPending -> fallbackAccumulator.advance(
+                currentPositionMs = currentPositionMs,
+                bytesAdvanced = bytesAdvanced,
+                bytesPerMs = bytesPerMs,
+                durationMs = durationMs
+            )
+            else -> {
+                fallbackAccumulator.reset()
+                currentPositionMs.coerceToDuration(durationMs)
+            }
         }
         return Result(previous, next, hwPos, useHw, flushPending)
     }
@@ -44,6 +60,7 @@ internal class AudioTrackPositionUpdater(
         sampleRate: Int,
         durationMs: Long
     ): Result {
+        fallbackAccumulator.reset()
         val previous = currentPositionMs
         val hwPos = if (useHardwareTimestamp()) hardwarePositionMs(sampleRate) else -1L
         val next = if (hwPos >= 0L) {

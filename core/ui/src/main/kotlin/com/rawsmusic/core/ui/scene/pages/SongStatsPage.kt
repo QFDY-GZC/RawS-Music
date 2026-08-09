@@ -32,11 +32,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.theme.ThemeManager
 import com.rawsmusic.module.data.repository.MusicRepository
 import com.rawsmusic.core.ui.scene.pages.Divider
@@ -76,10 +78,10 @@ fun SongStatsPage(onBack: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = onBack) {
-                Text("← 返回", color = colors.primary, fontSize = 16.sp)
+                Text("← ${stringResource(R.string.common_back)}", color = colors.primary, fontSize = 16.sp)
             }
             Text(
-                "歌曲统计",
+                stringResource(R.string.song_stats_title),
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Medium,
                 color = colors.onSurface
@@ -90,9 +92,9 @@ fun SongStatsPage(onBack: () -> Unit) {
         Spacer(Modifier.height(8.dp))
 
         if (stats.isNotEmpty()) {
-            SectionHeader("音质统计")
+            SectionHeader(stringResource(R.string.song_stats_quality))
             Text(
-                "共 $totalSongs 首歌曲",
+                stringResource(R.string.song_stats_song_count, totalSongs),
                 fontSize = 13.sp,
                 color = colors.secondaryText,
                 modifier = Modifier.padding(top = 2.dp)
@@ -112,10 +114,10 @@ fun SongStatsPage(onBack: () -> Unit) {
                 QualityStatsRow(item, isDark)
             }
         } else {
-            SectionHeader("音质统计")
+            SectionHeader(stringResource(R.string.song_stats_quality))
             Spacer(Modifier.height(12.dp))
             Text(
-                "暂无可统计的歌曲",
+                stringResource(R.string.song_stats_empty),
                 fontSize = 14.sp,
                 color = colors.secondaryText
             )
@@ -126,11 +128,11 @@ fun SongStatsPage(onBack: () -> Unit) {
 }
 
 private data class StatsItem(
-    val label: String,
+    val labelRes: Int,
     val count: Int,
     val percentage: Float,
     val color: Color,
-    val description: String
+    val descriptionRes: Int
 )
 
 private fun isLossless(song: AudioFile): Boolean {
@@ -155,9 +157,9 @@ private fun buildStats(songs: List<AudioFile>): List<StatsItem> {
     val lossless = songs.count { isLossless(it) && !isMaster(it) }
     val master = songs.count { isMaster(it) }
     return listOf(
-        StatsItem("有损", lossy, lossy.toFloat() / total * 100f, Color(0xFF7D5260), "MP3 / AAC / OGG 等压缩音频"),
-        StatsItem("无损", lossless, lossless.toFloat() / total * 100f, Color(0xFF6750A4), "FLAC / WAV / ALAC / APE 等 CD 规格无损"),
-        StatsItem("母带", master, master.toFloat() / total * 100f, Color(0xFFB3261E), "Hi-Res / DSD / 24bit 或高采样率音频")
+        StatsItem(R.string.song_stats_lossy, lossy, lossy.toFloat() / total * 100f, Color(0xFF7D5260), R.string.song_stats_lossy_desc),
+        StatsItem(R.string.song_stats_lossless, lossless, lossless.toFloat() / total * 100f, Color(0xFF6750A4), R.string.song_stats_lossless_desc),
+        StatsItem(R.string.song_stats_master, master, master.toFloat() / total * 100f, Color(0xFFB3261E), R.string.song_stats_master_desc)
     )
 }
 
@@ -177,11 +179,11 @@ private fun QualityStatsRow(item: StatsItem, isDark: Boolean) {
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(item.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = colors.onSurface)
-                Text("${item.count} 首", fontSize = 14.sp, color = colors.onSurfaceVariant)
+                Text(stringResource(item.labelRes), fontSize = 16.sp, fontWeight = FontWeight.Medium, color = colors.onSurface)
+                Text(stringResource(R.string.song_stats_count, item.count), fontSize = 14.sp, color = colors.onSurfaceVariant)
             }
             Spacer(Modifier.height(4.dp))
-            Text(item.description, fontSize = 12.sp, color = colors.secondaryText)
+            Text(stringResource(item.descriptionRes), fontSize = 12.sp, color = colors.secondaryText)
             Spacer(Modifier.height(8.dp))
             Box(
                 Modifier.fillMaxWidth().height(6.dp).drawBehind {
@@ -224,8 +226,8 @@ private fun DonutChart(items: List<StatsItem>, isDark: Boolean, modifier: Modifi
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("3 类", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = colors.onSurface)
-            Text("音质", fontSize = 12.sp, color = colors.secondaryText)
+            Text(stringResource(R.string.song_stats_categories), fontSize = 28.sp, fontWeight = FontWeight.Bold, color = colors.onSurface)
+            Text(stringResource(R.string.song_stats_quality_label), fontSize = 12.sp, color = colors.secondaryText)
         }
     }
 }

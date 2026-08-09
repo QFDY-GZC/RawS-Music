@@ -7,6 +7,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import com.rawsmusic.core.ui.scene.LocalSceneBackgroundFrozen
+import com.rawsmusic.core.ui.R
+import androidx.compose.ui.res.stringResource
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
@@ -83,7 +85,7 @@ fun SimplePageScaffold(
                 IconButton(onClick = onBack) {
                     Icon(
                         imageVector = MiuixIcons.Regular.Back,
-                        contentDescription = "返回",
+                        contentDescription = stringResource(R.string.common_back),
                         tint = MiuixTheme.colorScheme.onSurface
                     )
                 }

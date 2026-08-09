@@ -28,6 +28,9 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         private const val CURVE_POINTS = 200 // 频率响应曲线采样点数
         private const val DEFAULT_SAMPLE_RATE = 48000
         private const val PERSIST_DEBOUNCE_MS = 350L
+        private const val AUTO_HEADROOM_MARGIN_DB = 1.0f
+        private const val AUTO_HEADROOM_TRIGGER_DB = 0.05f
+        private const val MIN_NATIVE_PREAMP_DB = -96f
         private val gson = Gson()
     }
 
@@ -49,9 +52,18 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
     private val _isEnabled = MutableStateFlow(false)
     val isEnabled: StateFlow<Boolean> = _isEnabled.asStateFlow()
 
+    /** Called before PEQ is enabled so the owner can disable GEQ state. */
+    var onExclusiveEnable: (() -> Unit)? = null
+
     // 前置放大器增益 (dB)
     private val _preamp = MutableStateFlow(0f)
     val preamp: StateFlow<Float> = _preamp.asStateFlow()
+
+    private val _effectivePreamp = MutableStateFlow(0f)
+    val effectivePreamp: StateFlow<Float> = _effectivePreamp.asStateFlow()
+
+    private val _autoHeadroomReduction = MutableStateFlow(0f)
+    val autoHeadroomReduction: StateFlow<Float> = _autoHeadroomReduction.asStateFlow()
 
     // 频率响应曲线数据
     private val _frequencyResponse = MutableStateFlow(FloatArray(0))
@@ -98,12 +110,20 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
      * 启用/禁用PEQ
      */
     fun setEnabled(enabled: Boolean) {
+        if (enabled) onExclusiveEnable?.invoke()
         _isEnabled.value = enabled
         if (nativeEngine.isInitialized()) {
             nativeEngine.setPEQEnabled(enabled)
         }
         persistImmediately()
         Log.d(TAG, "PEQ ${if (enabled) "enabled" else "disabled"}")
+    }
+
+    internal fun disableForMutualExclusion() {
+        if (!_isEnabled.value) return
+        _isEnabled.value = false
+        AppPreferences.PEQ.isEnabled = false
+        if (nativeEngine.isInitialized()) nativeEngine.setPEQEnabled(false)
     }
 
     /**
@@ -113,9 +133,6 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
     fun setPreamp(gainDB: Float) {
         val clamped = gainDB.coerceIn(-12f, 12f)
         _preamp.value = clamped
-        if (nativeEngine.isInitialized()) {
-            nativeEngine.setPreamp(clamped)
-        }
         updateFrequencyResponse()
         persistDebounced()
         Log.d(TAG, "Preamp set to ${clamped}dB")
@@ -201,10 +218,7 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         _filters.value = PEQFilter.createDefaultBands(count)
         _preamp.value = 0f
 
-        if (nativeEngine.isInitialized()) {
-            nativeEngine.clearPEQFilters()
-            nativeEngine.setPreamp(0f)
-        }
+        if (nativeEngine.isInitialized()) nativeEngine.clearPEQFilters()
 
         syncAllToNative()
         updateFrequencyResponse()
@@ -252,8 +266,6 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         if (!nativeEngine.isInitialized()) return
 
         nativeEngine.clearPEQFilters()
-        nativeEngine.setPreamp(_preamp.value.coerceIn(-12f, 12f))
-
         val target = _bandCount.value.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
         val current = normalizeToBandCount(_filters.value, target)
 
@@ -283,23 +295,52 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
      * 更新频率响应曲线（使用 Kotlin 端 RBJ biquad 计算，不依赖 native 引擎）
      */
     private fun updateFrequencyResponse() {
-        val magnitudes = calcFrequencyResponseKotlin()
-        _frequencyResponse.value = magnitudes
+        val activeFilters = _filters.value
+            .take(_bandCount.value.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS))
+            .filter { it.enabled }
+            .map { it.sanitized() }
+        val filterMagnitudes = calcFrequencyResponseKotlin(activeFilters, preampGainDB = 0f)
+        val sampledPeak = filterMagnitudes.maxOrNull() ?: 0f
+        val centerPeak = activeFilters.maxOfOrNull { center ->
+            activeFilters.sumOf { filter ->
+                calcFilterMagnitude(filter, center.frequency, sampleRate.toFloat()).toDouble()
+            }.toFloat()
+        } ?: 0f
+        val filterPeak = maxOf(0f, sampledPeak, centerPeak)
+        val requestedPreamp = _preamp.value.coerceIn(-12f, 12f)
+        val reduction = if (filterPeak > AUTO_HEADROOM_TRIGGER_DB) {
+            filterPeak + AUTO_HEADROOM_MARGIN_DB
+        } else {
+            0f
+        }
+        val effective = (requestedPreamp - reduction).coerceIn(MIN_NATIVE_PREAMP_DB, 12f)
+
+        _effectivePreamp.value = effective
+        _autoHeadroomReduction.value = (requestedPreamp - effective).coerceAtLeast(0f)
+        if (nativeEngine.isInitialized()) nativeEngine.setPreamp(effective)
+        _frequencyResponse.value = FloatArray(filterMagnitudes.size) { index ->
+            filterMagnitudes[index] + effective
+        }
+
+        Log.d(
+            TAG,
+            "PEQ headroom: requested=${requestedPreamp}dB filterPeak=${filterPeak}dB " +
+                "effective=${effective}dB reduction=${_autoHeadroomReduction.value}dB"
+        )
     }
 
     /**
      * 纯 Kotlin 计算所有滤波器的总频率响应
      */
-    private fun calcFrequencyResponseKotlin(): FloatArray {
+    private fun calcFrequencyResponseKotlin(
+        activeFilters: List<PEQFilter>,
+        preampGainDB: Float
+    ): FloatArray {
         val magnitudes = FloatArray(CURVE_POINTS)
         val sr = sampleRate.toFloat()
-        val preampGain = _preamp.value.coerceIn(-12f, 12f)
-        val activeFilters = _filters.value.take(
-            _bandCount.value.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
-        )
 
         for (i in 0 until CURVE_POINTS) {
-            var totalMag = preampGain
+            var totalMag = preampGainDB
 
             for (filter in activeFilters) {
                 if (filter.enabled) {
@@ -398,20 +439,19 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
                 doubleArrayOf(b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)
             }
             FilterType.BAND_PASS -> {
-                val A_bp = 10.0.pow(filter.gainDB / 40.0)
-                val b0 = alpha * A_bp
+                val linearGain = 10.0.pow(filter.gainDB / 20.0)
+                val b0 = alpha * linearGain
                 val b1 = 0.0
-                val b2 = -alpha * A_bp
+                val b2 = -alpha * linearGain
                 val a0 = 1.0 + alpha
                 val a1 = -2.0 * cosW0
                 val a2 = 1.0 - alpha
                 doubleArrayOf(b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)
             }
             FilterType.NOTCH -> {
-                val A_notch = 10.0.pow(filter.gainDB / 40.0)
-                val b0 = A_notch
-                val b1 = -2.0 * cosW0 * A_notch
-                val b2 = A_notch
+                val b0 = 1.0
+                val b1 = -2.0 * cosW0
+                val b2 = 1.0
                 val a0 = 1.0 + alpha
                 val a1 = -2.0 * cosW0
                 val a2 = 1.0 - alpha
@@ -546,7 +586,6 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
 
             if (nativeEngine.isInitialized()) {
                 nativeEngine.setPEQEnabled(_isEnabled.value)
-                nativeEngine.setPreamp(_preamp.value)
             }
 
             updateFrequencyResponse()

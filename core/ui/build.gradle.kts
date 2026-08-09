@@ -10,7 +10,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        minSdk = 23
+        minSdk = 24
         consumerProguardFiles("consumer-rules.pro")
     }
 
@@ -38,20 +38,13 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.lifecycle.livedata.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.paging.runtime.ktx)
-    implementation(libs.androidx.dynamicanimation)
-    implementation(libs.glide)
-    kapt(libs.glide.compiler)
     // Experimental PowerList A/B branch: Coil handles list/grid Compose request state while
     // BitmapProvider keeps RawSMusic-specific audio/folder/embedded artwork decoding.
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation(libs.lottie)
-
-    implementation(libs.mpandroidchart)
+    implementation(libs.lottie.compose)
 
     implementation(libs.androidx.palette.ktx)
-
-    implementation(libs.renderscript.toolkit)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
@@ -59,6 +52,8 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons.core)
     implementation(project(":backdrop"))
+    implementation("dev.chrisbanes.haze:haze:2.0.0-alpha03")
+    implementation("dev.chrisbanes.haze:haze-blur:2.0.0-alpha03")
 
     // Miuix UI 库
     implementation(libs.miuix.ui)
@@ -66,4 +61,7 @@ dependencies {
     implementation(libs.miuix.blur)
     implementation(libs.miuix.preference)
     implementation(libs.miuix.squircle)
+    implementation("androidx.navigationevent:navigationevent-compose:1.1.1")
+
+    testImplementation("junit:junit:4.13.2")
 }

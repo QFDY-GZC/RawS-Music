@@ -30,7 +30,6 @@ dependencies {
     implementation(libs.androidx.lifecycle.livedata.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
 
-    implementation(libs.androidutilcode)
     implementation(libs.dexter)
 
     implementation(libs.kotlinx.coroutines.core)

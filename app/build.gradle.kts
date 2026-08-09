@@ -12,10 +12,10 @@ android {
 
     defaultConfig {
         applicationId = "com.rawsmusic"
-        minSdk = 23
-        targetSdk = 34
-        versionCode = 16
-        versionName = "0.9.01-beta1"
+        minSdk = 24
+        targetSdk = 37
+        versionCode = 80
+        versionName = "0.9.80 beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -59,6 +59,32 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    androidResources {
+        noCompress += listOf("ttf")
+    }
+
+    packaging {
+        jniLibs {
+            // Compress native libraries in the distributable APK. Android extracts
+            // them at install time on our minSdk 24 devices; this keeps runtime
+            // loading unchanged while avoiding several megabytes of APK padding.
+            useLegacyPackaging = true
+            // No packaged ELF currently declares this dependency; the checked-in
+            // copy only inflated every arm64 APK.
+            excludes += "**/libc++_shared.so"
+            excludes += listOf(
+                "**/libavcodec.so",
+                "**/libavformat.so",
+                "**/libavutil.so",
+                "**/libswresample.so",
+                "**/libswscale.so",
+                // The 27 MB core is installed on demand from the signed AI repository.
+                // Keep libonnxruntime4j_jni.so: it is the small Java/JNI loader bridge.
+                "**/libonnxruntime.so"
+            )
+        }
     }
 
     lint {
@@ -107,6 +133,8 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.okhttp)
 
     implementation(project(":lyric:model"))
     implementation(project(":lyric:bridge:provider"))
@@ -123,11 +151,15 @@ dependencies {
 
     implementation(project(":backdrop"))
     implementation(libs.gson)
+    implementation("io.coil-kt:coil-compose:2.7.0")
 
     // Miuix UI 库
     implementation(libs.miuix.ui)
     implementation(libs.miuix.icons)
     implementation(libs.miuix.preference)
+    implementation(libs.focus.api)
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
     // navigationevent-compose (miuix SearchBar 内部需要 LocalNavigationEventDispatcherOwner)
     implementation("androidx.navigationevent:navigationevent-compose:1.1.1")
 }

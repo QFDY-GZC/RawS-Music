@@ -11,12 +11,15 @@ import android.util.LruCache
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,25 +28,29 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.withFrameMillis
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -56,6 +63,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.palette.graphics.Palette
@@ -63,7 +71,8 @@ import com.rawsmusic.core.common.utils.PowerTraceLogger
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.theme.RawThemeRuntimeState
 import com.rawsmusic.core.ui.theme.ThemeManager
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
+import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
 import android.os.SystemClock
 import kotlin.math.PI
 import kotlin.math.abs
@@ -75,24 +84,41 @@ import kotlin.math.sin
 import top.yukonga.miuix.kmp.basic.RadioButton
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.Slider
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
+import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
+
+enum class RawBackgroundSurface {
+    SCENE,
+    PLAYER
+}
 
 private const val FLOW_PREFS = "raw_flow_background"
 private const val FLOW_MODE_KEY = "mode"
-private const val FLOW_COLOR_COUNT = 4
-private const val FLOW_MAIN_PERIOD_SECONDS = 6.6f
-private const val FLOW_SECONDARY_PERIOD_SECONDS = 9.8f
-private const val FLOW_BREATH_PERIOD_SECONDS = 5.4f
-private const val FLOW_FRAME_INTERVAL_MS = 66L
+private const val FLOW_STYLE_KEY = "background_style"
+private const val FLOW_SPEED_KEY = "motion_speed"
+private const val FLOW_SATURATION_KEY = "color_saturation"
+private const val FLOW_BRIGHTNESS_KEY = "color_brightness"
+private const val STATIC_GRADIENT_KEY = "static_gradient"
+private const val STATIC_BLUR_KEY = "static_blur"
+private const val STATIC_DETAIL_KEY = "static_detail"
+private const val STATIC_BRIGHTNESS_KEY = "static_brightness"
+private const val STATIC_SATURATION_KEY = "static_saturation"
+private const val FLOW_MAX_COLOR_COUNT = 5
+private const val FLOW_FRAME_INTERVAL_MS = 16L
 private const val FLOW_DISABLED_FRAME_INTERVAL_MS = 0L
-private const val FLOW_TEXTURE_WIDTH = 360
-private const val FLOW_TEXTURE_HEIGHT = 640
 private const val FLOW_EXTRACT_SIZE = 96
-private const val FLOW_SAMPLE_GRID = 12
+private val FLOW_GLOBAL_EPOCH_NS = System.nanoTime()
 private val FLOW_PALETTE_RETRY_DELAYS_MS = longArrayOf(0L, 420L, 1400L)
-private val FLOW_TWO_PI = (PI * 2.0).toFloat()
 private val flowPaletteCache = LruCache<String, List<Color>>(48)
+
+fun clearRawFlowMemoryCache() {
+    flowPaletteCache.evictAll()
+}
 
 /**
  * 主界面/列表页使用的流光背景模式。
@@ -109,6 +135,134 @@ enum class RawFlowMode(val prefValue: String) {
         fun fromPref(value: String?, fallback: RawFlowMode): RawFlowMode {
             return values().firstOrNull { it.prefValue == value } ?: fallback
         }
+    }
+}
+
+enum class RawBackgroundStyle(val prefValue: String) {
+    FLOW("flow"),
+    STATIC("static"),
+    SIMPLE("simple")
+}
+
+object RawFlowTuningState {
+    var style by mutableStateOf(RawBackgroundStyle.FLOW)
+        private set
+    var speed by mutableFloatStateOf(2f)
+        private set
+    var saturation by mutableFloatStateOf(1f)
+        private set
+    var brightness by mutableFloatStateOf(1f)
+        private set
+    var staticGradient by mutableFloatStateOf(4f)
+        private set
+    var staticBlur by mutableFloatStateOf(5f)
+        private set
+    var staticDetail by mutableFloatStateOf(5f)
+        private set
+    var staticBrightness by mutableFloatStateOf(1f)
+        private set
+    var staticSaturation by mutableFloatStateOf(1.5f)
+        private set
+    var revision by mutableIntStateOf(0)
+        private set
+
+    private var initialized = false
+
+    fun ensureInitialized(context: Context) {
+        if (initialized) return
+        val prefs = context.applicationContext.getSharedPreferences(FLOW_PREFS, Context.MODE_PRIVATE)
+        style = RawBackgroundStyle.values().firstOrNull {
+            it.prefValue == prefs.getString(FLOW_STYLE_KEY, RawBackgroundStyle.FLOW.prefValue)
+        } ?: RawBackgroundStyle.FLOW
+        speed = prefs.getFloat(FLOW_SPEED_KEY, 2f).coerceIn(0.5f, 4f)
+        saturation = prefs.getFloat(FLOW_SATURATION_KEY, 1f).coerceIn(0.5f, 1.6f)
+        brightness = prefs.getFloat(FLOW_BRIGHTNESS_KEY, 1f).coerceIn(0.65f, 1.35f)
+        staticGradient = prefs.getFloat(STATIC_GRADIENT_KEY, 4f).coerceIn(0f, 10f)
+        staticBlur = prefs.getFloat(STATIC_BLUR_KEY, 5f).coerceIn(0f, 15f)
+        staticDetail = prefs.getFloat(STATIC_DETAIL_KEY, 5f).coerceIn(0f, 10f)
+        staticBrightness = prefs.getFloat(STATIC_BRIGHTNESS_KEY, 1f).coerceIn(0f, 2.5f)
+        staticSaturation = prefs.getFloat(STATIC_SATURATION_KEY, 1.5f).coerceIn(0f, 3f)
+        initialized = true
+    }
+
+    fun setStyle(context: Context, value: RawBackgroundStyle) {
+        ensureInitialized(context)
+        style = value
+        persist(context)
+    }
+
+    fun setSpeed(context: Context, value: Float) {
+        ensureInitialized(context)
+        speed = value.coerceIn(0.5f, 4f)
+        persist(context)
+    }
+
+    fun setSaturation(context: Context, value: Float) {
+        ensureInitialized(context)
+        saturation = value.coerceIn(0.5f, 1.6f)
+        persist(context)
+    }
+
+    fun setBrightness(context: Context, value: Float) {
+        ensureInitialized(context)
+        brightness = value.coerceIn(0.65f, 1.35f)
+        persist(context)
+    }
+
+    fun setStaticGradient(context: Context, value: Float) {
+        ensureInitialized(context)
+        staticGradient = value.coerceIn(0f, 10f)
+        persist(context)
+    }
+
+    fun setStaticBlur(context: Context, value: Float) {
+        ensureInitialized(context)
+        staticBlur = value.coerceIn(0f, 15f)
+        persist(context)
+    }
+
+    fun setStaticDetail(context: Context, value: Float) {
+        ensureInitialized(context)
+        staticDetail = value.coerceIn(0f, 10f)
+        persist(context)
+    }
+
+    fun setStaticBrightness(context: Context, value: Float) {
+        ensureInitialized(context)
+        staticBrightness = value.coerceIn(0f, 2.5f)
+        persist(context)
+    }
+
+    fun setStaticSaturation(context: Context, value: Float) {
+        ensureInitialized(context)
+        staticSaturation = value.coerceIn(0f, 3f)
+        persist(context)
+    }
+
+    fun resetStatic(context: Context) {
+        ensureInitialized(context)
+        staticGradient = 4f
+        staticBlur = 5f
+        staticDetail = 5f
+        staticBrightness = 1f
+        staticSaturation = 1.5f
+        persist(context)
+    }
+
+    private fun persist(context: Context) {
+        context.applicationContext.getSharedPreferences(FLOW_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(FLOW_STYLE_KEY, style.prefValue)
+            .putFloat(FLOW_SPEED_KEY, speed)
+            .putFloat(FLOW_SATURATION_KEY, saturation)
+            .putFloat(FLOW_BRIGHTNESS_KEY, brightness)
+            .putFloat(STATIC_GRADIENT_KEY, staticGradient)
+            .putFloat(STATIC_BLUR_KEY, staticBlur)
+            .putFloat(STATIC_DETAIL_KEY, staticDetail)
+            .putFloat(STATIC_BRIGHTNESS_KEY, staticBrightness)
+            .putFloat(STATIC_SATURATION_KEY, staticSaturation)
+            .apply()
+        revision++
     }
 }
 
@@ -242,15 +396,90 @@ private fun rememberRawFlowIsDarkTheme(): Boolean {
     }
 }
 
+private fun flowPaletteCacheKey(
+    mode: RawFlowMode,
+    isSystemDark: Boolean,
+    sourceCoverKey: String?,
+    backgroundStyle: RawBackgroundStyle = RawBackgroundStyle.FLOW,
+): String = "${backgroundStyle.prefValue}:${mode.prefValue}:$isSystemDark:${sourceCoverKey.orEmpty()}"
+
+private fun resolveFlowColorsFromMemory(
+    context: Context,
+    sourceCoverKey: String?,
+    mode: RawFlowMode,
+    isSystemDark: Boolean,
+    fallbackColors: List<Color>,
+    backgroundStyle: RawBackgroundStyle = RawBackgroundStyle.FLOW,
+): List<Color>? {
+    if (
+        sourceCoverKey.isNullOrBlank() ||
+        mode == RawFlowMode.OFF ||
+        (backgroundStyle != RawBackgroundStyle.STATIC && mode == RawFlowMode.UNIVERSAL)
+    ) {
+        return null
+    }
+    val cacheKey = flowPaletteCacheKey(mode, isSystemDark, sourceCoverKey, backgroundStyle)
+    flowPaletteCache.get(cacheKey)?.let { return it }
+    val bitmap = CoilArtworkRuntime.peekBitmap(
+        context = context,
+        key = sourceCoverKey,
+        width = FLOW_EXTRACT_SIZE,
+        height = FLOW_EXTRACT_SIZE,
+        surface = ArtworkSurface.Playback
+    )
+    if (bitmap == null || bitmap.isRecycled) return null
+    val extracted = extractRawBackgroundColors(
+        bitmap = bitmap,
+        backgroundStyle = backgroundStyle,
+        mode = mode,
+        isSystemDark = isSystemDark,
+    )
+    if (extracted.isEmpty()) return null
+    return finalizeExtractedBackgroundColors(extracted, fallbackColors, backgroundStyle).also {
+        flowPaletteCache.put(cacheKey, it)
+    }
+}
+
 @Composable
 fun RawFlowBackground(
     mode: RawFlowMode,
     sourceCoverKey: String?,
+    fallbackSourceCoverKey: String? = null,
+    sourceArtwork: AndroidBitmap? = null,
     modifier: Modifier = Modifier,
     active: Boolean = true,
     motionEnabled: Boolean = true,
-    frameIntervalMs: Long = FLOW_FRAME_INTERVAL_MS
+    frameIntervalMs: Long = FLOW_FRAME_INTERVAL_MS,
+    surface: RawBackgroundSurface = RawBackgroundSurface.SCENE
 ) {
+    val context = LocalContext.current.applicationContext
+    val coilArtwork by produceState<AndroidBitmap?>(
+        initialValue = sourceArtwork?.takeUnless { it.isRecycled },
+        key1 = sourceCoverKey,
+        key2 = sourceArtwork,
+    ) {
+        value = sourceArtwork?.takeUnless { it.isRecycled }
+            ?: sourceCoverKey?.takeIf { it.isNotBlank() }?.let { key ->
+                CoilArtworkRuntime.executeBitmap(
+                    context = context,
+                    key = key,
+                    width = FLOW_EXTRACT_SIZE,
+                    height = FLOW_EXTRACT_SIZE,
+                    surface = ArtworkSurface.Playback
+                )
+            }
+    }
+    RawFlowTuningState.ensureInitialized(context)
+    val tuningRevision = RawFlowTuningState.revision
+    val backgroundStyle = RawFlowTuningState.style
+    val motionSpeed = RawFlowTuningState.speed
+    val saturationScale = RawFlowTuningState.saturation
+    val brightnessScale = RawFlowTuningState.brightness
+    val staticGradient = RawFlowTuningState.staticGradient
+    val staticBlur = RawFlowTuningState.staticBlur
+    val staticDetail = RawFlowTuningState.staticDetail
+    val staticBrightness = RawFlowTuningState.staticBrightness
+    val staticSaturation = RawFlowTuningState.staticSaturation
     val isSystemDark = rememberRawFlowIsDarkTheme()
     val scheme = MiuixTheme.colorScheme
     val runtimeRevision = RawFlowRuntimeState.revision
@@ -275,13 +504,93 @@ fun RawFlowBackground(
         Box(modifier = modifier.fillMaxSize().background(scheme.background))
         return
     }
+    if (backgroundStyle == RawBackgroundStyle.SIMPLE) {
+        Box(modifier = modifier.fillMaxSize().background(scheme.background))
+        return
+    }
 
-    val fallbackColors = remember(flowMode, isSystemDark) { defaultFlowColors(flowMode, isSystemDark) }
-    var targetColors by remember(flowMode, isSystemDark) { mutableStateOf(fallbackColors) }
+    val fallbackColors = remember(flowMode, isSystemDark, backgroundStyle) {
+        if (backgroundStyle == RawBackgroundStyle.STATIC) {
+            darkAlbumGradient(STATIC_ALBUM_FALLBACK_ACCENT)
+        } else {
+            defaultFlowColors(flowMode, isSystemDark)
+        }
+    }
+    val paletteCacheKey = remember(flowMode, isSystemDark, sourceCoverKey, backgroundStyle) {
+        flowPaletteCacheKey(flowMode, isSystemDark, sourceCoverKey, backgroundStyle)
+    }
+    val inheritedColors = remember(
+        flowMode,
+        isSystemDark,
+        fallbackSourceCoverKey,
+        fallbackColors,
+        backgroundStyle,
+    ) {
+        resolveFlowColorsFromMemory(
+            context = context,
+            sourceCoverKey = fallbackSourceCoverKey,
+            mode = flowMode,
+            isSystemDark = isSystemDark,
+            fallbackColors = fallbackColors,
+            backgroundStyle = backgroundStyle,
+        ) ?: fallbackColors
+    }
+    val initialColors = remember(
+        flowMode,
+        isSystemDark,
+        sourceCoverKey,
+        coilArtwork,
+        inheritedColors,
+        fallbackColors,
+        backgroundStyle,
+    ) {
+        if (
+            sourceCoverKey.isNullOrBlank() ||
+            (backgroundStyle != RawBackgroundStyle.STATIC && flowMode == RawFlowMode.UNIVERSAL)
+        ) {
+            fallbackColors
+        } else {
+            coilArtwork
+                ?.takeUnless { it.isRecycled }
+                ?.let {
+                    extractRawBackgroundColors(
+                        bitmap = it,
+                        backgroundStyle = backgroundStyle,
+                        mode = flowMode,
+                        isSystemDark = isSystemDark,
+                    )
+                }
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { finalizeExtractedBackgroundColors(it, fallbackColors, backgroundStyle) }
+                ?: resolveFlowColorsFromMemory(
+                    context = context,
+                    sourceCoverKey = sourceCoverKey,
+                    mode = flowMode,
+                    isSystemDark = isSystemDark,
+                    fallbackColors = fallbackColors,
+                    backgroundStyle = backgroundStyle,
+                )
+                ?: inheritedColors
+        }
+    }
+    var targetColors by remember(flowMode, isSystemDark, sourceCoverKey, backgroundStyle) {
+        mutableStateOf(initialColors)
+    }
 
-    LaunchedEffect(flowMode, runtimeRevision, sourceCoverKey, fallbackColors, isSystemDark) {
+    LaunchedEffect(
+        flowMode,
+        runtimeRevision,
+        sourceCoverKey,
+        coilArtwork,
+        fallbackColors,
+        isSystemDark,
+        backgroundStyle,
+    ) {
         val paletteStartMs = SystemClock.elapsedRealtime()
-        if (flowMode == RawFlowMode.UNIVERSAL || sourceCoverKey.isNullOrBlank()) {
+        if (
+            sourceCoverKey.isNullOrBlank() ||
+            (backgroundStyle != RawBackgroundStyle.STATIC && flowMode == RawFlowMode.UNIVERSAL)
+        ) {
             targetColors = fallbackColors
             PowerTraceLogger.flowPalette(
                 stage = "fallback_static",
@@ -294,8 +603,37 @@ fun RawFlowBackground(
             return@LaunchedEffect
         }
 
-        val cacheKey = "${flowMode.prefValue}:$isSystemDark:$sourceCoverKey"
-        flowPaletteCache.get(cacheKey)?.let { cached ->
+        coilArtwork
+            ?.takeUnless { it.isRecycled }
+            ?.let {
+                extractRawBackgroundColors(
+                    bitmap = it,
+                    backgroundStyle = backgroundStyle,
+                    mode = flowMode,
+                    isSystemDark = isSystemDark,
+                )
+            }
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { extracted ->
+                val completed = finalizeExtractedBackgroundColors(
+                    extracted,
+                    fallbackColors,
+                    backgroundStyle,
+                )
+                flowPaletteCache.put(paletteCacheKey, completed)
+                targetColors = completed
+                PowerTraceLogger.flowPalette(
+                    stage = "transition_artwork",
+                    mode = flowMode.prefValue,
+                    source = "Coil",
+                    colorCount = completed.size,
+                    elapsedMs = SystemClock.elapsedRealtime() - paletteStartMs,
+                    coverKey = sourceCoverKey
+                )
+                return@LaunchedEffect
+            }
+
+        flowPaletteCache.get(paletteCacheKey)?.let { cached ->
             targetColors = cached
             PowerTraceLogger.flowPalette(
                 stage = "cache_hit",
@@ -308,40 +646,47 @@ fun RawFlowBackground(
             return@LaunchedEffect
         }
 
-        // Project-style：流光只复用已经在内存里的当前封面，不主动排队解码整首歌。
-        // 这样主界面/列表页不会因为后台动态取色而把大量音频文件重新读一遍。
         var appliedAlbumPalette = false
-        for (waitMs in FLOW_PALETTE_RETRY_DELAYS_MS) {
-            if (waitMs > 0L) delay(waitMs)
-            val bitmap = BitmapProvider.peekThumbnail(sourceCoverKey, FLOW_EXTRACT_SIZE, FLOW_EXTRACT_SIZE)
-                ?: BitmapProvider.peekAny(sourceCoverKey)
-                ?: continue
-            if (bitmap.isRecycled) continue
-
-            val extracted = RawFlowPaletteExtractor.extract(bitmap, flowMode, isSystemDark)
-            if (extracted.isEmpty()) continue
-
-            val completed = completeExtractedFlowColors(extracted, fallbackColors)
-            flowPaletteCache.put(cacheKey, completed)
-            targetColors = completed
-            appliedAlbumPalette = true
-            PowerTraceLogger.flowPalette(
-                stage = "memory_hit",
-                mode = flowMode.prefValue,
-                source = "BitmapProvider.peek",
-                colorCount = completed.size,
-                elapsedMs = SystemClock.elapsedRealtime() - paletteStartMs,
-                coverKey = sourceCoverKey
+        val bitmap = coilArtwork?.takeUnless { it.isRecycled }
+            ?: CoilArtworkRuntime.executeBitmap(
+                context = context,
+                key = sourceCoverKey,
+                width = FLOW_EXTRACT_SIZE,
+                height = FLOW_EXTRACT_SIZE,
+                surface = ArtworkSurface.Playback
             )
-            break
+        if (bitmap != null && !bitmap.isRecycled) {
+            val extracted = extractRawBackgroundColors(
+                bitmap = bitmap,
+                backgroundStyle = backgroundStyle,
+                mode = flowMode,
+                isSystemDark = isSystemDark,
+            )
+            if (extracted.isNotEmpty()) {
+                val completed = finalizeExtractedBackgroundColors(
+                    extracted,
+                    fallbackColors,
+                    backgroundStyle,
+                )
+                flowPaletteCache.put(paletteCacheKey, completed)
+                targetColors = completed
+                appliedAlbumPalette = true
+                PowerTraceLogger.flowPalette(
+                    stage = "memory_hit",
+                    mode = flowMode.prefValue,
+                    source = "Coil",
+                    colorCount = completed.size,
+                    elapsedMs = SystemClock.elapsedRealtime() - paletteStartMs,
+                    coverKey = sourceCoverKey
+                )
+            }
         }
 
         if (!appliedAlbumPalette) {
-            targetColors = fallbackColors
             PowerTraceLogger.flowPalette(
-                stage = "load_miss",
+                stage = "load_miss_inherited",
                 mode = flowMode.prefValue,
-                source = "none",
+                source = fallbackSourceCoverKey ?: "default",
                 colorCount = targetColors.size,
                 elapsedMs = SystemClock.elapsedRealtime() - paletteStartMs,
                 coverKey = sourceCoverKey
@@ -349,62 +694,175 @@ fun RawFlowBackground(
         }
     }
 
-    val colors = remember(targetColors, fallbackColors) {
-        List(FLOW_COLOR_COUNT) { index ->
-            targetColors.getOrElse(index) { fallbackColors[index % fallbackColors.size] }
+    val resolvedColors = remember(
+        targetColors,
+        fallbackColors,
+        saturationScale,
+        brightnessScale,
+        tuningRevision,
+        backgroundStyle,
+    ) {
+        val raw = targetColors.ifEmpty { fallbackColors }.take(FLOW_MAX_COLOR_COUNT)
+        if (backgroundStyle == RawBackgroundStyle.STATIC) {
+            // Static endpoints already include their HSV saturation/value transform.
+            // Applying RawFlow's second saturation/brightness normalization here is what made
+            // the non-bottom background drift away from the MiniPlayer for the same cover.
+            raw
+        } else {
+            raw.map { tuneFlowColor(it, saturationScale, brightnessScale) }
         }
     }
-
-    val baseColor = remember(flowMode, isSystemDark) { baseFlowColor(flowMode, isSystemDark) }
-    val motionScale = if (!motionEnabled || flowMode == RawFlowMode.UNIVERSAL) 0f else 1f
-    val timeSeconds = rememberRawFlowTimeSeconds(
-        enabled = motionScale > 0f,
-        modeName = flowMode.prefValue,
-        frameIntervalMs = frameIntervalMs.coerceAtLeast(66L)
-    )
-    val textureBitmap = remember(colors, baseColor, flowMode, isSystemDark) {
-        createFlowTextureBitmap(
-            colors = colors,
-            baseColor = baseColor,
-            mode = flowMode,
-            isDarkTheme = isSystemDark
-        )
+    val animatedColorSlots = List(FLOW_MAX_COLOR_COUNT) { index ->
+        val slotTarget = resolvedColors.getOrElse(index) { resolvedColors.last() }
+        animateColorAsState(
+            targetValue = slotTarget,
+            animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
+            label = "raw-flow-palette-$index"
+        ).value
     }
-    val texture = remember(textureBitmap) { textureBitmap.asImageBitmap() }
-    val layerA = rememberFlowLayerTransform(timeSeconds, phase = 0.0f, motionScale = motionScale)
-    val layerB = rememberFlowLayerTransform(timeSeconds, phase = 2.17f, motionScale = motionScale * 0.72f)
+    val colors = animatedColorSlots.take(resolvedColors.size)
 
-    Box(modifier = modifier.fillMaxSize().background(baseColor)) {
-        Image(
-            bitmap = texture,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = layerA.scale
-                    scaleY = layerA.scale
-                    translationX = layerA.translationX
-                    translationY = layerA.translationY
-                    rotationZ = layerA.rotation
-                    alpha = 1f
-                }
-        )
-        if (motionScale > 0f) {
+    val targetBaseColor = remember(flowMode, isSystemDark, resolvedColors) {
+        baseFlowColor(flowMode, isSystemDark, resolvedColors.firstOrNull())
+    }
+    val baseColor by animateColorAsState(
+        targetValue = targetBaseColor,
+        animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
+        label = "raw-flow-base"
+    )
+    if (backgroundStyle == RawBackgroundStyle.STATIC) {
+        val staticArtwork = remember(
+            sourceCoverKey,
+            fallbackSourceCoverKey,
+            coilArtwork,
+            surface
+        ) {
+            if (surface != RawBackgroundSurface.PLAYER) {
+                null
+            } else {
+                coilArtwork?.takeUnless { it.isRecycled }
+                    ?: listOfNotNull(sourceCoverKey, fallbackSourceCoverKey)
+                        .firstNotNullOfOrNull { key ->
+                            CoilArtworkRuntime.peekBitmap(
+                                context = context,
+                                key = key,
+                                width = FLOW_EXTRACT_SIZE,
+                                height = FLOW_EXTRACT_SIZE,
+                                surface = ArtworkSurface.Playback
+                            )
+                        }
+                        ?.takeUnless { it.isRecycled }
+            }
+        }
+        val nativeColors = remember(targetColors, fallbackColors) {
+            targetColors.ifEmpty { fallbackColors }
+                .take(FLOW_MAX_COLOR_COUNT)
+                .map { it.toAndroidArgb(alphaOverride = 1f) }
+                .toIntArray()
+        }
+        val staticBitmap = remember(
+            nativeColors.contentHashCode(),
+            staticArtwork,
+            surface,
+            staticGradient,
+            staticBlur,
+            staticDetail,
+            staticBrightness,
+            staticSaturation,
+            tuningRevision
+        ) {
+            if (surface == RawBackgroundSurface.PLAYER && staticArtwork != null) {
+                NativeStaticBackground.createPlayer(
+                    artwork = staticArtwork,
+                    colors = nativeColors,
+                    // Static endpoints already contain the brightness/saturation policy. The native
+                    // player renderer contributes only texture/blur/detail; do not recolor twice.
+                    saturation = 1f,
+                    brightness = 1f,
+                    gradient = staticGradient,
+                    blur = staticBlur,
+                    detail = staticDetail
+                )
+            } else {
+                NativeStaticBackground.create(
+                    colors = nativeColors,
+                    saturation = if (backgroundStyle == RawBackgroundStyle.STATIC) 1f else saturationScale,
+                    brightness = if (backgroundStyle == RawBackgroundStyle.STATIC) 1f else brightnessScale,
+                )
+            }
+        }
+        if (staticBitmap != null) {
             Image(
-                bitmap = texture,
+                bitmap = staticBitmap.asImageBitmap(),
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = layerB.scale
-                        scaleY = layerB.scale
-                        translationX = layerB.translationX
-                        translationY = layerB.translationY
-                        rotationZ = layerB.rotation
-                        alpha = 0.38f
-                    }
+                contentScale = ContentScale.FillBounds,
+                modifier = modifier.fillMaxSize().background(baseColor)
+            )
+            return
+        }
+    }
+    val canMove = true
+    val timeSeconds = rememberRawFlowTimeSeconds(
+        enabled = motionEnabled && canMove && backgroundStyle == RawBackgroundStyle.FLOW,
+        modeName = flowMode.prefValue,
+        frameIntervalMs = frameIntervalMs.coerceAtLeast(FLOW_FRAME_INTERVAL_MS)
+    )
+    Canvas(modifier = modifier.fillMaxSize().clipToBounds().background(baseColor)) {
+        if (backgroundStyle == RawBackgroundStyle.STATIC) {
+            val matrixColors = colors.ifEmpty { listOf(baseColor) }
+            drawRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        matrixColors[0].copy(alpha = 0.90f),
+                        matrixColors.getOrElse(1) { matrixColors[0] }.copy(alpha = 0.72f),
+                        matrixColors.getOrElse(2) { matrixColors.last() }.copy(alpha = 0.82f)
+                    ),
+                    start = Offset.Zero,
+                    end = Offset(size.width, size.height)
+                )
+            )
+            drawRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color.Transparent,
+                        matrixColors.getOrElse(3) { matrixColors.last() }.copy(alpha = 0.48f),
+                        Color.Transparent
+                    ),
+                    start = Offset(size.width, 0f),
+                    end = Offset(0f, size.height)
+                )
+            )
+            return@Canvas
+        }
+        val maxDimension = max(size.width, size.height)
+        val countScale = when (colors.size) {
+            1 -> 1.18f
+            2 -> 1.05f
+            else -> 0.92f
+        }
+        colors.forEachIndexed { index, color ->
+            val seed = flowBlobSeeds()[index % flowBlobSeeds().size]
+            val phase = seed.phase + index * 0.83f
+            val motion = if (canMove) 1f else 0f
+            val animatedTime = timeSeconds * motionSpeed
+            val x = size.width * seed.baseX +
+                size.width * seed.amplitudeX * sin(animatedTime * seed.speedX + phase) * motion
+            val y = size.height * seed.baseY +
+                size.height * seed.amplitudeY * cos(animatedTime * seed.speedY + phase * 1.21f) * motion
+            val radiusPulse = 1f + 0.11f * sin(animatedTime * seed.radiusSpeed + phase)
+            val radius = maxDimension * seed.radius * countScale * radiusPulse
+            val coreAlpha = if (isSystemDark) 0.88f else 0.82f
+            drawCircle(
+                brush = Brush.radialGradient(
+                    0f to color.copy(alpha = coreAlpha),
+                    0.38f to color.copy(alpha = coreAlpha * 0.72f),
+                    0.72f to color.copy(alpha = coreAlpha * 0.28f),
+                    1f to Color.Transparent,
+                    center = Offset(x, y),
+                    radius = radius
+                ),
+                radius = radius,
+                center = Offset(x, y)
             )
         }
     }
@@ -419,7 +877,9 @@ private fun rememberRawFlowTimeSeconds(
     var timeSeconds by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(enabled, modeName, frameIntervalMs) {
         if (!enabled) {
-            timeSeconds = 0f
+            // Pause on the current visual phase instead of snapping back to the canonical texture.
+            // Non-flow pages can therefore stop the animation, and flow pages resume without a
+            // one-frame non-flow/static-background flash.
             PowerTraceLogger.flowFrame(
                 mode = modeName,
                 enabled = false,
@@ -427,89 +887,33 @@ private fun rememberRawFlowTimeSeconds(
             )
             return@LaunchedEffect
         }
-        val startMs = SystemClock.uptimeMillis() - (timeSeconds * 1000f).roundToInt()
+        var lastUpdateNs = 0L
+        val requestedIntervalNs = frameIntervalMs.coerceAtLeast(1L) * 1_000_000L
         while (true) {
-            timeSeconds = ((SystemClock.uptimeMillis() - startMs).coerceAtLeast(0L) / 1000f)
+            val frameNs = withFrameNanos { it }
+            // A 16 ms preference means "every display frame", not a fixed 60 Hz timer. This lets
+            // 90/120 Hz devices animate on their own vsync while retaining throttling for slower
+            // background modes that explicitly request a larger interval.
+            if (
+                frameIntervalMs <= FLOW_FRAME_INTERVAL_MS ||
+                lastUpdateNs == 0L ||
+                frameNs - lastUpdateNs >= requestedIntervalNs
+            ) {
+                // Every scene/player instance samples one process-wide clock. Opening the player
+                // therefore reveals the same flow phase instead of restarting its blobs at t=0.
+                timeSeconds =
+                    ((frameNs - FLOW_GLOBAL_EPOCH_NS).coerceAtLeast(0L) / 1_000_000_000f)
+                lastUpdateNs = frameNs
+            }
             PowerTraceLogger.flowFrame(
                 mode = modeName,
                 enabled = true,
                 frameIntervalMs = frameIntervalMs
             )
-            delay(frameIntervalMs)
         }
     }
     return timeSeconds
 }
-
-private data class FlowLayerTransform(
-    val translationX: Float,
-    val translationY: Float,
-    val scale: Float,
-    val rotation: Float
-)
-
-private fun rememberFlowLayerTransform(
-    timeSeconds: Float,
-    phase: Float,
-    motionScale: Float
-): FlowLayerTransform {
-    if (motionScale <= 0f) {
-        return FlowLayerTransform(0f, 0f, 1f, 0f)
-    }
-    val a = timeSeconds / 18.0f * FLOW_TWO_PI + phase
-    val b = timeSeconds / 27.0f * FLOW_TWO_PI + phase * 1.37f
-    val x = (sin(a) * 18f + cos(b * 0.73f) * 11f) * motionScale
-    val y = (cos(a * 0.67f) * 22f + sin(b) * 9f) * motionScale
-    val scale = 1.075f + 0.018f * sin(b * 0.61f) * motionScale
-    val rotation = (sin(a * 0.41f) * 1.35f + cos(b * 0.31f) * 0.85f) * motionScale
-    return FlowLayerTransform(x, y, scale, rotation)
-}
-
-private fun createFlowTextureBitmap(
-    colors: List<Color>,
-    baseColor: Color,
-    mode: RawFlowMode,
-    isDarkTheme: Boolean
-): AndroidBitmap {
-    val bitmap = AndroidBitmap.createBitmap(
-        FLOW_TEXTURE_WIDTH,
-        FLOW_TEXTURE_HEIGHT,
-        AndroidBitmap.Config.ARGB_8888
-    )
-    val canvas = AndroidCanvas(bitmap)
-    canvas.drawColor(baseColor.toAndroidArgb())
-
-    val paint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG or AndroidPaint.FILTER_BITMAP_FLAG).apply {
-        isDither = true
-    }
-    val seeds = flowBlobSeeds()
-    val maxDimension = max(FLOW_TEXTURE_WIDTH, FLOW_TEXTURE_HEIGHT).toFloat()
-    seeds.forEachIndexed { index, blob ->
-        val color = colors.getOrElse(index % colors.size) { baseColor }
-        val centerX = FLOW_TEXTURE_WIDTH * blob.baseX
-        val centerY = FLOW_TEXTURE_HEIGHT * blob.baseY
-        val radius = maxDimension * (blob.radius * 0.92f).coerceAtLeast(0.34f)
-        val baseAlpha = (blob.alpha * if (mode == RawFlowMode.LIGHT && !isDarkTheme) 0.78f else 0.92f)
-            .coerceIn(0.16f, 0.70f)
-        paint.shader = RadialGradient(
-            centerX,
-            centerY,
-            radius,
-            intArrayOf(
-                color.toAndroidArgb(baseAlpha),
-                color.toAndroidArgb(baseAlpha * 0.54f),
-                color.toAndroidArgb(baseAlpha * 0.16f),
-                color.toAndroidArgb(0f)
-            ),
-            floatArrayOf(0f, 0.42f, 0.76f, 1f),
-            Shader.TileMode.CLAMP
-        )
-        canvas.drawCircle(centerX, centerY, radius, paint)
-    }
-    paint.shader = null
-    return bitmap
-}
-
 
 @Composable
 fun RawFlowModeDialog(
@@ -519,100 +923,309 @@ fun RawFlowModeDialog(
     onDismissRequest: () -> Unit
 ) {
     val context = LocalContext.current.applicationContext
+    var showBackgroundStyleDialog by remember { mutableStateOf(false) }
+    var adjustingParameters by remember { mutableStateOf(false) }
+    RawFlowTuningState.ensureInitialized(context)
     val isSystemDark = rememberRawFlowIsDarkTheme()
-    val fallbackMode = if (isSystemDark) RawFlowMode.DARK else RawFlowMode.LIGHT
     val displayMode = RawFlowRuntimeState.mode ?: selectedMode
-    val flowEnabled = displayMode != RawFlowMode.OFF
-
+    val backgroundStyle = RawFlowTuningState.style
+    val dialogTitle = when (backgroundStyle) {
+        RawBackgroundStyle.FLOW -> stringResource(R.string.flow_background_dialog_title)
+        RawBackgroundStyle.STATIC -> stringResource(R.string.static_background_dialog_title)
+        RawBackgroundStyle.SIMPLE -> stringResource(R.string.simple_background_dialog_title)
+    }
+    val dialogSummary = when (backgroundStyle) {
+        RawBackgroundStyle.FLOW -> stringResource(R.string.flow_background_dialog_summary)
+        RawBackgroundStyle.STATIC -> stringResource(R.string.static_background_dialog_summary)
+        RawBackgroundStyle.SIMPLE -> stringResource(R.string.simple_background_dialog_summary)
+    }
     fun selectMode(mode: RawFlowMode) {
         RawFlowRuntimeState.persistAndUpdate(context, mode)
         onSelectMode(mode)
     }
 
-    WindowDialog(
-        show = show,
-        title = stringResource(R.string.flow_background_dialog_title),
-        summary = stringResource(R.string.flow_background_dialog_summary),
-        onDismissRequest = onDismissRequest
+    RawMiuixOverlayDialog(
+        show = show && !showBackgroundStyleDialog,
+        title = dialogTitle,
+        summary = dialogSummary,
+        onDismissRequest = {
+            if (adjustingParameters) adjustingParameters = false else onDismissRequest()
+        },
+        renderInRootScaffold = true
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            RawFlowEnableRow(
-                checked = flowEnabled,
-                onCheckedChange = { enabled ->
-                    selectMode(if (enabled) fallbackMode else RawFlowMode.OFF)
+        Column(
+            modifier = Modifier
+                .heightIn(max = 480.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (backgroundStyle != RawBackgroundStyle.SIMPLE) {
+                    Text(
+                        text = if (adjustingParameters) {
+                            stringResource(R.string.flow_background_cancel_adjustment)
+                        } else {
+                            stringResource(R.string.flow_background_adjust_parameters)
+                        },
+                        color = MiuixTheme.colorScheme.primary,
+                        fontSize = 14.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { adjustingParameters = !adjustingParameters }
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                    )
+                } else {
+                    Spacer(modifier = Modifier)
                 }
-            )
-            RawFlowModeRow(
-                title = stringResource(R.string.flow_background_mode_dark_title),
-                summary = stringResource(R.string.flow_background_mode_dark_summary),
-                colors = defaultFlowColors(RawFlowMode.DARK, isSystemDark = true),
-                selected = displayMode == RawFlowMode.DARK,
-                onClick = {
-                    selectMode(RawFlowMode.DARK)
-                    onDismissRequest()
+                IconButton(onClick = { showBackgroundStyleDialog = true }) {
+                    Icon(
+                        imageVector = MiuixIcons.Regular.Settings,
+                        contentDescription = stringResource(R.string.flow_background_style_settings)
+                    )
                 }
-            )
-            RawFlowModeRow(
-                title = stringResource(R.string.flow_background_mode_light_title),
-                summary = stringResource(R.string.flow_background_mode_light_summary),
-                colors = defaultFlowColors(RawFlowMode.LIGHT, isSystemDark = false),
-                selected = displayMode == RawFlowMode.LIGHT,
-                onClick = {
-                    selectMode(RawFlowMode.LIGHT)
-                    onDismissRequest()
+            }
+            if (adjustingParameters && backgroundStyle != RawBackgroundStyle.SIMPLE) {
+                RawFlowParameterControls(context = context, backgroundStyle = backgroundStyle)
+            } else when (backgroundStyle) {
+                RawBackgroundStyle.FLOW -> {
+                    RawFlowModeRow(
+                        title = stringResource(R.string.flow_background_mode_dark_title),
+                        summary = stringResource(R.string.flow_background_mode_dark_summary),
+                        colors = defaultFlowColors(RawFlowMode.DARK, isSystemDark = true),
+                        selected = displayMode == RawFlowMode.DARK,
+                        onClick = { selectMode(RawFlowMode.DARK) }
+                    )
+                    RawFlowModeRow(
+                        title = stringResource(R.string.flow_background_mode_light_title),
+                        summary = stringResource(R.string.flow_background_mode_light_summary),
+                        colors = defaultFlowColors(RawFlowMode.LIGHT, isSystemDark = false),
+                        selected = displayMode == RawFlowMode.LIGHT,
+                        onClick = { selectMode(RawFlowMode.LIGHT) }
+                    )
+                    RawFlowModeRow(
+                        title = stringResource(R.string.flow_background_mode_universal_title),
+                        summary = stringResource(R.string.flow_background_mode_universal_summary),
+                        colors = defaultFlowColors(RawFlowMode.UNIVERSAL, isSystemDark = false),
+                        selected = displayMode == RawFlowMode.UNIVERSAL,
+                        onClick = { selectMode(RawFlowMode.UNIVERSAL) }
+                    )
                 }
-            )
-            RawFlowModeRow(
-                title = stringResource(R.string.flow_background_mode_universal_title),
-                summary = stringResource(R.string.flow_background_mode_universal_summary),
-                colors = defaultFlowColors(RawFlowMode.UNIVERSAL, isSystemDark = false),
-                selected = displayMode == RawFlowMode.UNIVERSAL,
-                onClick = {
-                    selectMode(RawFlowMode.UNIVERSAL)
-                    onDismissRequest()
-                }
-            )
+                RawBackgroundStyle.STATIC -> RawBackgroundStyleSummary(
+                    title = stringResource(R.string.static_background_follow_cover_title),
+                    summary = stringResource(R.string.static_background_follow_cover_summary)
+                )
+                RawBackgroundStyle.SIMPLE -> RawBackgroundStyleSummary(
+                    title = stringResource(R.string.simple_background_active_title),
+                    summary = stringResource(R.string.simple_background_active_summary)
+                )
+            }
+        }
+    }
+    RawBackgroundStyleDialog(
+        show = show && showBackgroundStyleDialog,
+        onDismissRequest = { showBackgroundStyleDialog = false }
+    )
+}
+
+@Composable
+private fun RawBackgroundStyleDialog(
+    show: Boolean,
+    onDismissRequest: () -> Unit
+) {
+    val context = LocalContext.current.applicationContext
+    RawFlowTuningState.ensureInitialized(context)
+    val selectedStyle = RawFlowTuningState.style
+    RawMiuixOverlayDialog(
+        show = show,
+        title = stringResource(R.string.flow_background_style_title),
+        summary = stringResource(R.string.flow_background_style_summary),
+        onDismissRequest = onDismissRequest,
+        renderInRootScaffold = true
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(
+                Triple(
+                    RawBackgroundStyle.FLOW,
+                    stringResource(R.string.flow_background_style_flow),
+                    stringResource(R.string.flow_background_style_flow_summary)
+                ),
+                Triple(
+                    RawBackgroundStyle.STATIC,
+                    stringResource(R.string.flow_background_style_static),
+                    stringResource(R.string.flow_background_style_static_summary)
+                ),
+                Triple(
+                    RawBackgroundStyle.SIMPLE,
+                    stringResource(R.string.flow_background_style_simple),
+                    stringResource(R.string.flow_background_style_simple_summary)
+                )
+            ).forEach { (style, title, summary) ->
+                RawFlowModeRow(
+                    title = title,
+                    summary = summary,
+                    colors = defaultFlowColors(RawFlowMode.UNIVERSAL, isSystemDark = false),
+                    selected = selectedStyle == style,
+                    onClick = {
+                        RawFlowTuningState.setStyle(context, style)
+                    }
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun RawFlowEnableRow(
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+private fun RawFlowParameterControls(
+    context: Context,
+    backgroundStyle: RawBackgroundStyle
 ) {
-    val scheme = MiuixTheme.colorScheme
-    Row(
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (backgroundStyle == RawBackgroundStyle.STATIC) {
+            RawFlowParameterSlider(
+                title = stringResource(R.string.static_background_gradient_parameter),
+                value = RawFlowTuningState.staticGradient,
+                valueRange = 0f..10f,
+                valueText = RawFlowTuningState.staticGradient.roundToInt().toString(),
+                onValueChange = {
+                    RawFlowTuningState.setStaticGradient(context, it.roundToInt().toFloat())
+                }
+            )
+            RawFlowParameterSlider(
+                title = stringResource(R.string.static_background_blur_parameter),
+                value = RawFlowTuningState.staticBlur,
+                valueRange = 0f..15f,
+                valueText = RawFlowTuningState.staticBlur.roundToInt().toString(),
+                onValueChange = {
+                    RawFlowTuningState.setStaticBlur(context, it.roundToInt().toFloat())
+                }
+            )
+            RawFlowParameterSlider(
+                title = stringResource(R.string.static_background_detail_parameter),
+                value = RawFlowTuningState.staticDetail,
+                valueRange = 0f..10f,
+                valueText = RawFlowTuningState.staticDetail.roundToInt().toString(),
+                onValueChange = {
+                    RawFlowTuningState.setStaticDetail(context, it.roundToInt().toFloat())
+                }
+            )
+            RawFlowParameterSlider(
+                title = stringResource(R.string.static_background_brightness_parameter),
+                value = RawFlowTuningState.staticBrightness,
+                valueRange = 0f..2.5f,
+                valueText = "${(RawFlowTuningState.staticBrightness * 100).roundToInt()}%",
+                onValueChange = { RawFlowTuningState.setStaticBrightness(context, it) }
+            )
+            RawFlowParameterSlider(
+                title = stringResource(R.string.static_background_saturation_parameter),
+                value = RawFlowTuningState.staticSaturation,
+                valueRange = 0f..3f,
+                valueText = "${(RawFlowTuningState.staticSaturation * 100).roundToInt()}%",
+                onValueChange = { RawFlowTuningState.setStaticSaturation(context, it) }
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.45f))
+                    .clickable { RawFlowTuningState.resetStatic(context) }
+                    .padding(vertical = 12.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = stringResource(R.string.static_background_restore_defaults),
+                    color = MiuixTheme.colorScheme.primary,
+                    fontSize = 14.sp
+                )
+            }
+            return@Column
+        }
+        if (backgroundStyle == RawBackgroundStyle.FLOW) {
+            RawFlowParameterSlider(
+                title = stringResource(R.string.flow_background_speed_parameter),
+                value = RawFlowTuningState.speed,
+                valueRange = 0.5f..4f,
+                valueText = "${"%.1f".format(RawFlowTuningState.speed)}×",
+                onValueChange = { RawFlowTuningState.setSpeed(context, it) }
+            )
+        }
+        RawFlowParameterSlider(
+            title = stringResource(R.string.flow_background_saturation_parameter),
+            value = RawFlowTuningState.saturation,
+            valueRange = 0.5f..1.6f,
+            valueText = "${(RawFlowTuningState.saturation * 100).roundToInt()}%",
+            onValueChange = { RawFlowTuningState.setSaturation(context, it) }
+        )
+        RawFlowParameterSlider(
+            title = stringResource(R.string.flow_background_brightness_parameter),
+            value = RawFlowTuningState.brightness,
+            valueRange = 0.65f..1.35f,
+            valueText = "${(RawFlowTuningState.brightness * 100).roundToInt()}%",
+            onValueChange = { RawFlowTuningState.setBrightness(context, it) }
+        )
+    }
+}
+
+@Composable
+private fun RawBackgroundStyleSummary(
+    title: String,
+    summary: String
+) {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
-            .background(scheme.surfaceContainerHigh.copy(alpha = 0.45f))
-            .clickable { onCheckedChange(!checked) }
-            .padding(horizontal = 12.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .background(MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.45f))
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .padding(end = 12.dp)
+        Text(text = title, color = MiuixTheme.colorScheme.onSurface, fontSize = 16.sp)
+        Text(
+            text = summary,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            fontSize = 13.sp
+        )
+    }
+}
+
+@Composable
+private fun RawFlowParameterSlider(
+    title: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    valueText: String,
+    enabled: Boolean = true,
+    onValueChange: (Float) -> Unit
+) {
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = stringResource(R.string.flow_background_enable_title),
-                color = scheme.onSurface,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold
+                text = title,
+                color = MiuixTheme.colorScheme.onSurface,
+                fontSize = 14.sp,
+                modifier = Modifier.weight(1f)
             )
-            Spacer(Modifier.height(3.dp))
             Text(
-                text = stringResource(R.string.flow_background_enable_summary),
-                color = scheme.onSurfaceVariantSummary,
-                fontSize = 13.sp
+                text = valueText,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                fontSize = 13.sp,
+                textAlign = TextAlign.End,
+                modifier = Modifier.width(64.dp)
             )
         }
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = valueRange,
+            enabled = enabled,
+            modifier = Modifier.fillMaxWidth()
         )
     }
 }
@@ -670,7 +1283,7 @@ private fun FlowColorPreview(colors: List<Color>) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             drawRect(
                 Brush.linearGradient(
-                    colors = colors.take(FLOW_COLOR_COUNT),
+                    colors = colors.take(FLOW_MAX_COLOR_COUNT),
                     start = Offset.Zero,
                     end = Offset(size.width, size.height)
                 )
@@ -682,7 +1295,7 @@ private fun FlowColorPreview(colors: List<Color>) {
                 .padding(bottom = 5.dp),
             horizontalArrangement = Arrangement.spacedBy(3.dp)
         ) {
-            colors.take(FLOW_COLOR_COUNT).forEach { color ->
+            colors.take(FLOW_MAX_COLOR_COUNT).forEach { color ->
                 Box(
                     modifier = Modifier
                         .size(6.dp)
@@ -715,74 +1328,79 @@ private fun flowBlobSeeds(): List<FlowBlobSeed> {
         FlowBlobSeed(0.08f, 0.17f, 0.38f, 0.30f, 0.45f, 0.54f, 0.20f, 0.91f, 0.63f, 0.37f, 0.49f, 0.43f, 0.61f),
         FlowBlobSeed(0.86f, 0.14f, 0.31f, 0.33f, 0.40f, 0.48f, 1.70f, 0.57f, 0.83f, 0.41f, 0.31f, 0.55f, 0.47f),
         FlowBlobSeed(0.28f, 0.63f, 0.34f, 0.35f, 0.50f, 0.50f, 3.10f, 0.77f, 0.45f, 0.29f, 0.58f, 0.38f, 0.53f),
-        FlowBlobSeed(0.88f, 0.78f, 0.30f, 0.29f, 0.43f, 0.46f, 4.40f, 0.43f, 0.73f, 0.54f, 0.36f, 0.49f, 0.67f)
+        FlowBlobSeed(0.88f, 0.78f, 0.30f, 0.29f, 0.43f, 0.46f, 4.40f, 0.43f, 0.73f, 0.54f, 0.36f, 0.49f, 0.67f),
+        FlowBlobSeed(0.48f, 0.42f, 0.29f, 0.38f, 0.39f, 0.44f, 5.35f, 0.69f, 0.57f, 0.47f, 0.39f, 0.52f, 0.59f)
     )
+}
+
+private fun extractRawBackgroundColors(
+    bitmap: android.graphics.Bitmap,
+    backgroundStyle: RawBackgroundStyle,
+    mode: RawFlowMode,
+    isSystemDark: Boolean,
+): List<Color> {
+    if (backgroundStyle == RawBackgroundStyle.STATIC) {
+        val accent = staticAlbumAccent(bitmap) ?: return emptyList()
+        return darkAlbumGradient(accent)
+    }
+    return RawFlowPaletteExtractor.extract(bitmap, mode, isSystemDark)
+}
+
+private fun finalizeExtractedBackgroundColors(
+    extracted: List<Color>,
+    fallbackColors: List<Color>,
+    backgroundStyle: RawBackgroundStyle,
+): List<Color> = if (backgroundStyle == RawBackgroundStyle.STATIC) {
+    extracted.ifEmpty { fallbackColors }.take(2)
+} else {
+    completeExtractedFlowColors(extracted, fallbackColors)
 }
 
 private object RawFlowPaletteExtractor {
     fun extract(bitmap: android.graphics.Bitmap, mode: RawFlowMode, isSystemDark: Boolean): List<Color> {
         if (bitmap.isRecycled) return emptyList()
 
-        val paletteCandidates = Palette.from(bitmap)
+        // Use the classic palette pipeline: filtered median-cut
+        // quantization capped at 16 colors, followed by the six standard saturation/lightness
+        // targets. Keep that selection behavior while retaining up to five distinct colors for
+        // RawS Music's multi-blob renderer.
+        val palette = Palette.from(bitmap)
             .maximumColorCount(16)
-            .clearFilters()
             .generate()
-            .swatches
-            .mapNotNull { swatch ->
+        val targetSwatches = if (mode == RawFlowMode.DARK || isSystemDark) {
+            listOf(
+                palette.darkVibrantSwatch,
+                palette.vibrantSwatch,
+                palette.darkMutedSwatch,
+                palette.mutedSwatch,
+                palette.lightVibrantSwatch,
+                palette.lightMutedSwatch
+            )
+        } else {
+            listOf(
+                palette.lightVibrantSwatch,
+                palette.vibrantSwatch,
+                palette.lightMutedSwatch,
+                palette.mutedSwatch,
+                palette.darkVibrantSwatch,
+                palette.darkMutedSwatch
+            )
+        }
+        val orderedSwatches = (targetSwatches + palette.swatches)
+            .filterNotNull()
+            .distinctBy { it.rgb }
+        val paletteCandidates = orderedSwatches
+            .mapIndexedNotNull { index, swatch ->
                 normalizeColor(swatch.rgb, mode, isSystemDark)?.let { color ->
                     ScoredFlowColor(
                         color = color,
-                        score = swatch.population * colorVisualWeight(color, mode, isSystemDark)
+                        score = swatch.population *
+                            colorVisualWeight(color) *
+                            (1.35f - index.coerceAtMost(6) * 0.05f)
                     )
                 }
             }
-
-        val sampledCandidates = sampleBitmapColors(bitmap, mode, isSystemDark)
-        val candidates = (paletteCandidates + sampledCandidates)
-            .sortedByDescending { it.score }
-            .map { it.color }
-
-        return selectSeparatedColors(candidates, emptyList(), FLOW_COLOR_COUNT)
-    }
-
-    private fun sampleBitmapColors(
-        bitmap: android.graphics.Bitmap,
-        mode: RawFlowMode,
-        isSystemDark: Boolean
-    ): List<ScoredFlowColor> {
-        val width = bitmap.width.coerceAtLeast(1)
-        val height = bitmap.height.coerceAtLeast(1)
-        val stepX = (width / FLOW_SAMPLE_GRID).coerceAtLeast(1)
-        val stepY = (height / FLOW_SAMPLE_GRID).coerceAtLeast(1)
-        val buckets = LinkedHashMap<Int, MutableColorBucket>()
-        var y = 0
-        while (y < height) {
-            var x = 0
-            while (x < width) {
-                val pixel = bitmap.getPixel(x, y)
-                val alpha = AndroidColor.alpha(pixel)
-                if (alpha >= 180) {
-                    val hsv = FloatArray(3)
-                    AndroidColor.colorToHSV(pixel, hsv)
-                    val hueBucket = (hsv[0] / 18f).roundToInt()
-                    val satBucket = (hsv[1] * 4f).roundToInt()
-                    val valueBucket = (hsv[2] * 4f).roundToInt()
-                    val key = hueBucket * 100 + satBucket * 10 + valueBucket
-                    val bucket = buckets.getOrPut(key) { MutableColorBucket() }
-                    bucket.add(pixel)
-                }
-                x += stepX
-            }
-            y += stepY
-        }
-        return buckets.values.mapNotNull { bucket ->
-            normalizeColor(bucket.rgb(), mode, isSystemDark)?.let { color ->
-                ScoredFlowColor(
-                    color = color,
-                    score = bucket.count * colorVisualWeight(color, mode, isSystemDark)
-                )
-            }
-        }
+        return selectAdaptiveColors(paletteCandidates.sortedByDescending { it.score })
     }
 
     private fun normalizeColor(rgb: Int, mode: RawFlowMode, isSystemDark: Boolean): Color? {
@@ -792,43 +1410,36 @@ private object RawFlowPaletteExtractor {
         val luminance = rawColor.luminance()
         if (luminance < 0.015f || luminance > 0.985f) return null
 
-        val targetValue = when (mode) {
-            RawFlowMode.LIGHT -> if (isSystemDark) 0.62f else 0.88f
-            RawFlowMode.DARK -> if (isSystemDark) 0.38f else 0.58f
+        val valueRange = when (mode) {
+            RawFlowMode.LIGHT -> if (isSystemDark) 0.34f..0.88f else 0.38f..0.94f
+            RawFlowMode.DARK -> if (isSystemDark) 0.20f..0.76f else 0.30f..0.82f
             RawFlowMode.UNIVERSAL,
             RawFlowMode.OFF -> return null
         }
-        val valueRange = when (mode) {
-            RawFlowMode.LIGHT -> if (isSystemDark) 0.48f..0.72f else 0.78f..0.97f
-            RawFlowMode.DARK -> if (isSystemDark) 0.24f..0.52f else 0.46f..0.70f
-            RawFlowMode.UNIVERSAL,
-            RawFlowMode.OFF -> 0f..1f
+        if (hsv[1] >= 0.10f) {
+            hsv[1] = (hsv[1] * 1.06f + 0.02f).coerceIn(0.14f, 0.96f)
         }
-        val saturationRange = when {
-            hsv[1] < 0.08f -> 0.08f..0.18f
-            mode == RawFlowMode.LIGHT && !isSystemDark -> 0.22f..0.56f
-            mode == RawFlowMode.LIGHT -> 0.24f..0.62f
-            mode == RawFlowMode.DARK && isSystemDark -> 0.28f..0.72f
-            else -> 0.24f..0.64f
-        }
-
-        hsv[1] = (hsv[1] * 0.68f + 0.10f).coerceIn(saturationRange.start, saturationRange.endInclusive)
-        hsv[2] = (hsv[2] * 0.32f + targetValue * 0.68f).coerceIn(valueRange.start, valueRange.endInclusive)
+        hsv[2] = hsv[2].coerceIn(valueRange.start, valueRange.endInclusive)
         return colorFromArgb(AndroidColor.HSVToColor(0xFF, hsv))
     }
 
-    private fun colorVisualWeight(color: Color, mode: RawFlowMode, isSystemDark: Boolean): Float {
+    private fun colorVisualWeight(color: Color): Float {
         val hsv = FloatArray(3)
         AndroidColor.colorToHSV(color.toArgbNoAlpha(), hsv)
-        val saturationBonus = 0.76f + hsv[1] * 0.66f
-        val valueTarget = when (mode) {
-            RawFlowMode.LIGHT -> if (isSystemDark) 0.62f else 0.88f
-            RawFlowMode.DARK -> if (isSystemDark) 0.38f else 0.58f
-            RawFlowMode.UNIVERSAL,
-            RawFlowMode.OFF -> 0.5f
+        return 0.82f + hsv[1] * 0.48f
+    }
+
+    private fun selectAdaptiveColors(candidates: List<ScoredFlowColor>): List<Color> {
+        val strongest = candidates.firstOrNull()?.score ?: return emptyList()
+        val selected = mutableListOf<Color>()
+        candidates.forEach { candidate ->
+            if (selected.size >= FLOW_MAX_COLOR_COUNT) return@forEach
+            if (candidate.score < strongest * 0.045f) return@forEach
+            if (selected.none { existing -> perceptualColorDistance(existing, candidate.color) >= 0.17f }) {
+                selected += candidate.color
+            }
         }
-        val valueBalance = 1f - abs(hsv[2] - valueTarget).coerceAtMost(0.55f)
-        return saturationBonus * valueBalance.coerceAtLeast(0.45f)
+        return selected.ifEmpty { listOf(candidates.first().color) }
     }
 }
 
@@ -837,87 +1448,31 @@ private data class ScoredFlowColor(
     val score: Float
 )
 
-private class MutableColorBucket {
-    var r: Long = 0L
-    var g: Long = 0L
-    var b: Long = 0L
-    var count: Int = 0
-        private set
-
-    fun add(argb: Int) {
-        r += AndroidColor.red(argb).toLong()
-        g += AndroidColor.green(argb).toLong()
-        b += AndroidColor.blue(argb).toLong()
-        count++
-    }
-
-    fun rgb(): Int {
-        if (count <= 0) return AndroidColor.rgb(0, 0, 0)
-        return AndroidColor.rgb((r / count).toInt(), (g / count).toInt(), (b / count).toInt())
-    }
-}
-
 private fun completeExtractedFlowColors(extracted: List<Color>, fallback: List<Color>): List<Color> {
     if (extracted.isEmpty()) return fallback
-    val separated = selectSeparatedColors(extracted, emptyList(), FLOW_COLOR_COUNT)
-    if (separated.isEmpty()) return fallback
-    val completed = separated.toMutableList()
-    var index = 0
-    while (completed.size < FLOW_COLOR_COUNT) {
-        completed += toneVariant(completed[index % completed.size], completed.size)
-        index++
-    }
-    return completed.take(FLOW_COLOR_COUNT)
+    return extracted.take(FLOW_MAX_COLOR_COUNT)
 }
 
-private fun selectSeparatedColors(
-    primary: List<Color>,
-    fallback: List<Color>,
-    count: Int
-): List<Color> {
-    val selected = mutableListOf<Color>()
-    val relaxed = mutableListOf<Color>()
-
-    (primary + fallback).forEach { color ->
-        when {
-            selected.size < count && selected.none { hueDistance(it, color) < 24f } -> selected += color
-            relaxed.size < count && selected.none { hueDistance(it, color) < 10f } -> relaxed += color
-        }
-    }
-
-    val merged = (selected + relaxed + fallback).distinctBy { color ->
-        val hsv = FloatArray(3)
-        AndroidColor.colorToHSV(color.toArgbNoAlpha(), hsv)
-        Pair((hsv[0] / 8f).toInt(), (hsv[2] * 8f).toInt())
-    }
-    if (fallback.isEmpty()) return merged.take(count)
-    return List(count) { index -> merged.getOrElse(index) { fallback[index % fallback.size] } }
-}
-
-private fun toneVariant(color: Color, index: Int): Color {
-    val hsv = FloatArray(3)
-    AndroidColor.colorToHSV(color.toArgbNoAlpha(), hsv)
-    val valueOffset = when (index % 3) {
-        0 -> 0.10f
-        1 -> -0.08f
-        else -> 0.05f
-    }
-    val saturationOffset = when (index % 2) {
-        0 -> -0.06f
-        else -> 0.04f
-    }
-    hsv[1] = (hsv[1] + saturationOffset).coerceIn(0.08f, 0.76f)
-    hsv[2] = (hsv[2] + valueOffset).coerceIn(0.22f, 0.98f)
-    return colorFromArgb(AndroidColor.HSVToColor(0xFF, hsv))
-}
-
-private fun hueDistance(a: Color, b: Color): Float {
+private fun perceptualColorDistance(a: Color, b: Color): Float {
     val hsvA = FloatArray(3)
     val hsvB = FloatArray(3)
     AndroidColor.colorToHSV(a.toArgbNoAlpha(), hsvA)
     AndroidColor.colorToHSV(b.toArgbNoAlpha(), hsvB)
-    val distance = abs(hsvA[0] - hsvB[0])
-    return minOf(distance, 360f - distance)
+    val rawHueDistance = abs(hsvA[0] - hsvB[0])
+    val hueDistance = minOf(rawHueDistance, 360f - rawHueDistance) / 180f
+    val chromaWeight = ((hsvA[1] + hsvB[1]) * 0.75f).coerceIn(0f, 1f)
+    val hue = hueDistance * 0.68f * chromaWeight
+    val saturation = abs(hsvA[1] - hsvB[1]) * 0.46f
+    val value = abs(hsvA[2] - hsvB[2]) * 0.58f
+    return kotlin.math.sqrt(hue * hue + saturation * saturation + value * value)
+}
+
+private fun tuneFlowColor(color: Color, saturationScale: Float, brightnessScale: Float): Color {
+    val hsv = FloatArray(3)
+    AndroidColor.colorToHSV(color.toArgbNoAlpha(), hsv)
+    hsv[1] = (hsv[1] * saturationScale).coerceIn(0f, 1f)
+    hsv[2] = (hsv[2] * brightnessScale).coerceIn(0.08f, 1f)
+    return colorFromArgb(AndroidColor.HSVToColor(0xFF, hsv))
 }
 
 private fun defaultFlowColors(mode: RawFlowMode, isSystemDark: Boolean): List<Color> {
@@ -958,22 +1513,20 @@ private fun defaultFlowColors(mode: RawFlowMode, isSystemDark: Boolean): List<Co
     }
 }
 
-private fun baseFlowColor(mode: RawFlowMode, isSystemDark: Boolean): Color {
-    return when (mode) {
-        RawFlowMode.DARK, RawFlowMode.LIGHT ->
-            if (isSystemDark) Color(0xFF09080F) else Color(0xFFFFFAF5)
-        RawFlowMode.UNIVERSAL, RawFlowMode.OFF ->
-            if (isSystemDark) Color(0xFF0B0911) else Color(0xFFFFFAF4)
+private fun baseFlowColor(mode: RawFlowMode, isSystemDark: Boolean, dominant: Color?): Color {
+    if (dominant == null || mode == RawFlowMode.UNIVERSAL || mode == RawFlowMode.OFF) {
+        return if (isSystemDark) Color(0xFF0B0911) else Color(0xFFFFFAF4)
     }
-}
-
-private fun androidColorIntToComposeColor(colorInt: Int): Color {
-    return Color(
-        red = AndroidColor.red(colorInt) / 255f,
-        green = AndroidColor.green(colorInt) / 255f,
-        blue = AndroidColor.blue(colorInt) / 255f,
-        alpha = AndroidColor.alpha(colorInt) / 255f
-    )
+    val hsv = FloatArray(3)
+    AndroidColor.colorToHSV(dominant.toArgbNoAlpha(), hsv)
+    if (isSystemDark) {
+        hsv[1] = (hsv[1] * 0.58f).coerceIn(0.10f, 0.48f)
+        hsv[2] = 0.13f
+    } else {
+        hsv[1] = (hsv[1] * 0.42f).coerceIn(0.08f, 0.34f)
+        hsv[2] = 0.92f
+    }
+    return colorFromArgb(AndroidColor.HSVToColor(0xFF, hsv))
 }
 
 private fun Color.toAndroidArgb(alphaOverride: Float = alpha): Int {

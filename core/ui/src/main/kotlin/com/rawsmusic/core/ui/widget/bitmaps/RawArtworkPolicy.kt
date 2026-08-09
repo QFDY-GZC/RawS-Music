@@ -114,27 +114,12 @@ object RawArtworkPolicy {
         }
     }
 
+    @Suppress("UNUSED_PARAMETER")
     fun decodeOrderForAudio(embeddedPreferred: Boolean): List<DecodeStage> {
-        // Project-style order: choose a stable artwork source before the expensive Android MMR
-        // byte[] fallback.  File types that commonly carry authoritative embedded art keep embedded
-        // first; normal album folders can resolve folder.jpg/cover.jpg before opening each track.
-        return if (embeddedPreferred) {
-            listOf(
-                DecodeStage.RegionHandle,
-                DecodeStage.NativeSource,
-                DecodeStage.FolderCover,
-                DecodeStage.Ffmpeg,
-                DecodeStage.MediaMetadataRetriever
-            )
-        } else {
-            listOf(
-                DecodeStage.FolderCover,
-                DecodeStage.RegionHandle,
-                DecodeStage.NativeSource,
-                DecodeStage.Ffmpeg,
-                DecodeStage.MediaMetadataRetriever
-            )
-        }
+        // Embedded artwork is authoritative for a versioned audio file. Keep the historical
+        // parameter for source/binary call-site compatibility, but no longer let it move a folder
+        // image ahead of an embedded source probe.
+        return ArtworkSourceSelectionPolicy.audioDecodeOrder
     }
 
     fun shouldCallbackUpdateCache(surface: ArtworkSurface): Boolean {

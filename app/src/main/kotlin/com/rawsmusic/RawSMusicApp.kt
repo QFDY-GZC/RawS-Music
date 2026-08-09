@@ -2,24 +2,38 @@ package com.rawsmusic
 
 import android.app.Activity
 import android.app.Application
+import android.content.Context
 import android.os.Bundle
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import coil.ImageLoader
+import coil.ImageLoaderFactory
 import com.rawsmusic.core.common.CoreInit
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.theme.ThemeManager
+import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
 import com.rawsmusic.module.data.DataModule
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.PlayerService
 import com.rawsmusic.module.scanner.LibraryScannerDependencies
 import com.rawsmusic.module.scanner.MusicRepositoryAudioLibraryRepository
+import com.rawsmusic.memory.FairRuntimeMemoryManager
+import com.rawsmusic.locale.AppLocaleManager
+import com.rawsmusic.lyric.DesktopLyricService
 import com.rawsmusic.ui.songs.PlayerHolder
 
-class RawSMusicApp : Application() {
+class RawSMusicApp : Application(), ImageLoaderFactory {
+
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(AppLocaleManager.wrap(base))
+    }
+
+    override fun newImageLoader(): ImageLoader = CoilArtworkRuntime.newImageLoader(this)
 
     override fun onCreate() {
         super.onCreate()
+        AppLocaleManager.apply(this)
 
         // 进程启动追踪：检测是否被系统杀死后重建
         val pid = android.os.Process.myPid()
@@ -34,16 +48,23 @@ class RawSMusicApp : Application() {
         CoreInit.init(this)
         DataModule.init(this)
         LibraryScannerDependencies.install { MusicRepositoryAudioLibraryRepository() }
+        com.rawsmusic.module.scanner.LyricOverrideStore.install(
+            java.io.File(filesDir, "lyric_overrides")
+        )
         AppLogger.init()
         ThemeManager.applyStoredTheme()
+        // Apply the one-time Flyme default-off migration before any lyric bridge is initialized.
+        AppPreferences.Lyrics.tickerEnabled
+        if (AppPreferences.Lyrics.desktopLyricEnabled && DesktopLyricService.canDraw(this)) {
+            DesktopLyricService.sync(this)
+        }
 
         PlayerService.ensureRuntimeService(
             this,
             "app_process_create_bootstrap"
         )
 
-        // 只启动后台封面线程，保持首屏封面请求可用；重型解码仍在 BitmapProvider worker 中执行。
-        com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider.init(this)
+        FairRuntimeMemoryManager.initialize(this)
 
         // 版本号只用于记录覆盖安装，不再按 appVersion 清空曲库。
         // 数据结构变化交给 Room Migration，避免升级后丢失曲库、收藏和播放统计。
@@ -99,6 +120,11 @@ class RawSMusicApp : Application() {
         })
 
         scheduleDeferredProcessInit()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        FairRuntimeMemoryManager.onAndroidTrimMemory(level)
     }
 
     private fun scheduleDeferredProcessInit() {

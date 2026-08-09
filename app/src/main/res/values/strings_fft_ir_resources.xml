@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_fft_convolver_resources_title">Impulse response resources</string>
+    <string name="settings_fft_convolver_resources_desc">Third-party websites. Check the license, WAV format, channel routing, and IR length before importing.</string>
+    <string name="settings_fft_convolver_resource_openair">OpenAIR</string>
+    <string name="settings_fft_convolver_resource_openair_desc">Download acoustic impulse responses captured in real buildings and spaces</string>
+    <string name="settings_fft_convolver_resource_echothief">EchoThief</string>
+    <string name="settings_fft_convolver_resource_echothief_desc">Real-world spaces including caves, stairwells, tunnels, and fortresses</string>
+    <string name="settings_fft_convolver_resource_waves">Waves IR Library</string>
+    <string name="settings_fft_convolver_resource_waves_desc">Large convolution-reverb library; an account may be required</string>
+    <string name="settings_fft_convolver_resource_autoeq">AutoEq</string>
+    <string name="settings_fft_convolver_resource_autoeq_desc">Generate convolution equalization files for supported headphone models</string>
+    <string name="settings_fft_convolver_resource_open_failed">No browser is available to open this link</string>
+</resources>

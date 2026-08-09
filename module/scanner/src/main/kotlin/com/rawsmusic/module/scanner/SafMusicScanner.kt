@@ -24,7 +24,7 @@ object SafMusicScanner {
                 return@forEach
             }
 
-            scanFolderRecursive(context, root, result)
+            scanFolderRecursive(context, root, result, HashSet())
         }
 
         return result.distinctBy { it.path }
@@ -33,16 +33,22 @@ object SafMusicScanner {
     private fun scanFolderRecursive(
         context: Context,
         folder: DocumentFile,
-        out: MutableList<AudioFile>
+        out: MutableList<AudioFile>,
+        visitedFolders: MutableSet<String>
     ) {
+        val folderKey = folder.uri.toString()
+        if (!visitedFolders.add(folderKey)) return
+
         val children = runCatching { folder.listFiles() }.getOrElse { error ->
             Log.w(TAG, "listFiles failed: ${folder.uri}", error)
             return
         }
 
         children.forEach { file ->
+            val name = file.name.orEmpty()
+            if (name.startsWith(".") || name.startsWith("_")) return@forEach
             when {
-                file.isDirectory -> scanFolderRecursive(context, file, out)
+                file.isDirectory -> scanFolderRecursive(context, file, out, visitedFolders)
                 file.isFile && isSupportedAudio(file) -> {
                     readAudioFile(context, file)?.let(out::add)
                 }
@@ -125,6 +131,7 @@ object SafMusicScanner {
                 duration = durationMs,
                 fileSize = file.length(),
                 dateAdded = System.currentTimeMillis() / 1000,
+                dateModified = (file.lastModified() / 1000L).coerceAtLeast(0L),
                 albumArtPath = uri.toString()
             )
         } catch (e: Throwable) {
@@ -143,7 +150,8 @@ object SafMusicScanner {
     private val AUDIO_EXTENSIONS = setOf(
         "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus",
         "ape", "wv", "tta", "tak", "alac", "aiff", "aif",
-        "dsf", "dff", "mka", "mpc", "cue"
+        "dsf", "dff", "mka", "mpc", "cue", "ac3", "eac3", "ec3",
+        "truehd", "thd", "mlp"
     )
 
     private val VIDEO_EXTENSIONS = setOf(

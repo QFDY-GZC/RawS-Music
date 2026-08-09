@@ -7,16 +7,17 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.PlayQueue
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.core.common.model.RepeatMode
+import com.rawsmusic.module.player.control.PlayerControl
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 class PlayerViewModel : ViewModel() {
 
-    private var playerController: PlayerController? = null
+    private var playerControl: PlayerControl? = null
+    private var controlBindingJob: Job? = null
 
     private val _playState = MutableStateFlow(PlayState.IDLE)
     val playState: StateFlow<PlayState> = _playState.asStateFlow()
@@ -50,86 +51,78 @@ class PlayerViewModel : ViewModel() {
     }
 
     fun setPlayerController(controller: PlayerController) {
-        playerController = controller
+        setPlayerControl(controller.controls)
+    }
 
-        playerController?.let { controller ->
-            viewModelScope.launch {
-                controller.playState.collect { _playState.value = it }
-            }
-            viewModelScope.launch {
-                controller.currentSong.collect { _currentSong.value = it }
-            }
-            viewModelScope.launch {
-                controller.queue.collect { _queue.value = it }
-            }
-            viewModelScope.launch {
-                controller.position.collect { _position.value = it }
-            }
-            viewModelScope.launch {
-                controller.duration.collect { _duration.value = it }
-            }
-            viewModelScope.launch {
-                controller.repeatMode.collect { _repeatMode.value = it }
-            }
-            viewModelScope.launch {
-                controller.isShuffle.collect { _isShuffle.value = it }
-            }
+    fun setPlayerControl(control: PlayerControl) {
+        playerControl = control
+        controlBindingJob?.cancel()
+        controlBindingJob = viewModelScope.launch {
+            launch { control.playState.collect { _playState.value = it } }
+            launch { control.currentSong.collect { _currentSong.value = it } }
+            launch { control.queue.collect { _queue.value = it } }
+            launch { control.position.collect { _position.value = it } }
+            launch { control.duration.collect { _duration.value = it } }
+            launch { control.repeatMode.collect { _repeatMode.value = it } }
+            launch { control.isShuffle.collect { _isShuffle.value = it } }
         }
     }
 
     fun play(song: AudioFile, queue: List<AudioFile> = emptyList(), index: Int = 0) {
-        playerController?.play(song, queue, index)
+        playerControl?.play(song, queue, index)
     }
 
     fun playQueue(songs: List<AudioFile>, startIndex: Int = 0) {
-        playerController?.playQueue(songs, startIndex)
+        playerControl?.playQueue(songs, startIndex)
     }
 
     fun playPause() {
-        playerController?.playPause()
+        playerControl?.playPause()
     }
 
     fun pause() {
-        playerController?.pause()
+        playerControl?.pause()
     }
 
     fun resume() {
-        playerController?.resume()
+        playerControl?.resume()
     }
 
     fun next() {
-        playerController?.next()
+        playerControl?.next()
     }
 
     fun previous() {
-        playerController?.previous()
+        playerControl?.previous()
     }
 
     fun seekTo(positionMs: Long) {
-        playerController?.seekTo(positionMs)
+        playerControl?.seekTo(positionMs)
     }
 
     fun toggleRepeatMode() {
-        playerController?.toggleRepeatMode()
+        playerControl?.toggleRepeatMode()
     }
 
     fun toggleShuffle() {
-        playerController?.toggleShuffle()
+        playerControl?.toggleShuffle()
     }
 
     fun setVolume(volume: Float) {
-        playerController?.setVolume(volume)
+        playerControl?.setVolume(volume)
     }
 
     fun addToQueue(song: AudioFile) {
-        playerController?.addToQueue(song)
+        playerControl?.addToQueue(song)
     }
 
     fun removeFromQueue(index: Int) {
-        playerController?.removeFromQueue(index)
+        playerControl?.removeFromQueue(index)
     }
 
     override fun onCleared() {
+        controlBindingJob?.cancel()
+        playerControl = null
         super.onCleared()
     }
 }

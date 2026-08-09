@@ -4,6 +4,8 @@ import android.graphics.RectF
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.scene.CoverTransitionTarget
 
@@ -23,6 +25,12 @@ fun ComposeGenericPowerList(
     selectedPositions: Set<Int> = emptySet(),
     revealIndexRequest: Int = -1,
     hidePlayingCover: Boolean = false,
+    contentTopPadding: Dp = 0.dp,
+    contentBottomPadding: Dp = 200.dp,
+    sectionHeaders: List<PowerListSectionHeader> = emptyList(),
+    sectionHeaderHeight: Dp = 54.dp,
+    sectionHeaderContent: @Composable (PowerListSectionHeader) -> Unit = {},
+    pinchEnabled: Boolean = true,
     onPlayingCoverBoundsChanged: (RectF?) -> Unit = {},
     onPlayingCoverTargetChanged: (CoverTransitionTarget?) -> Unit = {},
     onRevealCoverTargetResolved: (CoverTransitionTarget?) -> Unit = {},
@@ -30,7 +38,7 @@ fun ComposeGenericPowerList(
     onItemLongClick: (PowerListVisualItem, Int) -> Unit = { _, _ -> }
 ) {
     val audioFiles = remember(items) {
-        items.map { it.toAudioFile() }
+        items.map { it.toPowerListAudioFile() }
     }
 
     val currentPlayingIndex = if (playingItemId > 0L) {
@@ -48,6 +56,12 @@ fun ComposeGenericPowerList(
         selectedPositions = selectedPositions,
         revealIndexRequest = revealIndexRequest,
         hidePlayingCover = hidePlayingCover,
+        contentTopPadding = contentTopPadding,
+        contentBottomPadding = contentBottomPadding,
+        sectionHeaders = sectionHeaders,
+        sectionHeaderHeight = sectionHeaderHeight,
+        sectionHeaderContent = sectionHeaderContent,
+        pinchEnabled = pinchEnabled,
         sharedCoverSceneId = sharedCoverSceneId,
         sharedCoverElementIdProvider = { _, index ->
             if (sharedCoverSceneId.isBlank()) "" else items.getOrNull(index)?.sharedCoverElementId.orEmpty()
@@ -66,10 +80,19 @@ fun ComposeGenericPowerList(
     )
 }
 
-private fun PowerListVisualItem.toAudioFile(): AudioFile {
+/**
+ * Converts a collection/search row into the lightweight AudioFile shape consumed by ComposePowerList.
+ *
+ * Collection rows are not audio files.  Their stableKey may be an album name, artist, folder group,
+ * search key, or another virtual identity.  Putting that value in AudioFile.path makes AudioFile.coverKey
+ * reinterpret it as a local audio source and replace the already-resolved artwork key with an invalid
+ * `audio://<virtual-key>|0|0` identity.  Keep path empty so albumArtPath remains the authoritative,
+ * already-versioned artwork identity supplied by the collection item.
+ */
+internal fun PowerListVisualItem.toPowerListAudioFile(): AudioFile {
     return AudioFile(
         id = stableId,
-        path = stableKey,
+        path = "",
         title = title,
         artist = subtitle,
         album = "",
@@ -89,7 +112,7 @@ private fun PowerListVisualItem.toAudioFile(): AudioFile {
         channelCount = 0,
         bpm = 0,
         albumArtist = "",
-        encodingFormat = "",
+        encodingFormat = POWER_LIST_COLLECTION_ENCODING,
         isFavorite = false,
         trackGain = 0f,
         trackPeak = 1.0f,

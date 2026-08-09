@@ -8,6 +8,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.rawsmusic.module.player.dsp.ParametricEQController
+import com.rawsmusic.R
 import java.io.BufferedReader
 import java.io.InputStreamReader
 
@@ -63,10 +64,10 @@ class PEQActivity : BaseSettingsActivity() {
     private fun writeJsonToUri(uri: Uri, json: String) {
         try {
             contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
-            android.widget.Toast.makeText(this, "预设已保存", android.widget.Toast.LENGTH_SHORT).show()
+            android.widget.Toast.makeText(this, getString(R.string.ui_preset_saved), android.widget.Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Log.e("PEQActivity", "Failed to export", e)
-            android.widget.Toast.makeText(this, "保存失败: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+            android.widget.Toast.makeText(this, getString(R.string.ui_preset_save_failed, e.message.orEmpty()), android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -77,7 +78,7 @@ class PEQActivity : BaseSettingsActivity() {
             }
         } catch (e: Exception) {
             Log.e("PEQActivity", "Failed to import", e)
-            android.widget.Toast.makeText(this, "读取失败: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+            android.widget.Toast.makeText(this, getString(R.string.ui_preset_read_failed, e.message.orEmpty()), android.widget.Toast.LENGTH_SHORT).show()
             null
         }
     }

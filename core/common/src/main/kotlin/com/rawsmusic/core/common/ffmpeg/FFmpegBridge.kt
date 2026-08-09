@@ -1,6 +1,10 @@
 package com.rawsmusic.core.common.ffmpeg
 
 import android.util.Log
+import android.view.Surface
+import android.os.SystemClock
+import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.core.common.utils.OnlinePlaybackDiagnostics
 import java.text.SimpleDateFormat
 import java.util.ArrayDeque
 import java.util.Date
@@ -120,6 +124,20 @@ object FFmpegBridge {
         return nativeProbeDuration(path)
     }
 
+    fun probeDuration(path: String, headers: Map<String, String>, userAgent: String?): Long {
+        if (!loaded) return 0L
+        val startedAt = SystemClock.elapsedRealtime()
+        val options = serializeHttpOptions(headers, userAgent)
+        val result = nativeProbeDurationWithOptions(path, options.first, options.second)
+        AppLogger.i(
+            TAG,
+            "${OnlinePlaybackDiagnostics.PREFIX} PROBE kind=duration result=$result " +
+                "headers=${OnlinePlaybackDiagnostics.headerNames(headers)} " +
+                "url=${OnlinePlaybackDiagnostics.safeUrl(path)} elapsedMs=${SystemClock.elapsedRealtime() - startedAt}"
+        )
+        return result
+    }
+
     fun probeSampleRate(path: String): Int {
         if (!loaded) {
             appendDebug("probeSampleRate skipped: bridge not loaded")
@@ -127,6 +145,21 @@ object FFmpegBridge {
         }
         val result = nativeProbeSampleRate(path)
         appendDebug("probeSampleRate ${shortPath(path)} -> $result")
+        return result
+    }
+
+    fun probeSampleRate(path: String, headers: Map<String, String>, userAgent: String?): Int {
+        if (!loaded) return 0
+        val startedAt = SystemClock.elapsedRealtime()
+        val options = serializeHttpOptions(headers, userAgent)
+        val result = nativeProbeSampleRateWithOptions(path, options.first, options.second)
+        appendDebug("probeSampleRate http ${shortPath(path)} headers=${headers.size} -> $result")
+        AppLogger.i(
+            TAG,
+            "${OnlinePlaybackDiagnostics.PREFIX} PROBE kind=sample_rate result=$result " +
+                "headers=${OnlinePlaybackDiagnostics.headerNames(headers)} " +
+                "url=${OnlinePlaybackDiagnostics.safeUrl(path)} elapsedMs=${SystemClock.elapsedRealtime() - startedAt}"
+        )
         return result
     }
 
@@ -140,6 +173,21 @@ object FFmpegBridge {
         return result
     }
 
+    fun probeBitsPerSample(path: String, headers: Map<String, String>, userAgent: String?): Int {
+        if (!loaded) return 0
+        val startedAt = SystemClock.elapsedRealtime()
+        val options = serializeHttpOptions(headers, userAgent)
+        val result = nativeProbeBitsPerSampleWithOptions(path, options.first, options.second)
+        appendDebug("probeBitsPerSample http ${shortPath(path)} headers=${headers.size} -> $result")
+        AppLogger.i(
+            TAG,
+            "${OnlinePlaybackDiagnostics.PREFIX} PROBE kind=bits result=$result " +
+                "headers=${OnlinePlaybackDiagnostics.headerNames(headers)} " +
+                "url=${OnlinePlaybackDiagnostics.safeUrl(path)} elapsedMs=${SystemClock.elapsedRealtime() - startedAt}"
+        )
+        return result
+    }
+
     fun probeChannelCount(path: String): Int {
         if (!loaded) {
             appendDebug("probeChannelCount skipped: bridge not loaded")
@@ -147,6 +195,21 @@ object FFmpegBridge {
         }
         val result = nativeProbeChannelCount(path)
         appendDebug("probeChannelCount ${shortPath(path)} -> $result")
+        return result
+    }
+
+    fun probeChannelCount(path: String, headers: Map<String, String>, userAgent: String?): Int {
+        if (!loaded) return 0
+        val startedAt = SystemClock.elapsedRealtime()
+        val options = serializeHttpOptions(headers, userAgent)
+        val result = nativeProbeChannelCountWithOptions(path, options.first, options.second)
+        appendDebug("probeChannelCount http ${shortPath(path)} headers=${headers.size} -> $result")
+        AppLogger.i(
+            TAG,
+            "${OnlinePlaybackDiagnostics.PREFIX} PROBE kind=channels result=$result " +
+                "headers=${OnlinePlaybackDiagnostics.headerNames(headers)} " +
+                "url=${OnlinePlaybackDiagnostics.safeUrl(path)} elapsedMs=${SystemClock.elapsedRealtime() - startedAt}"
+        )
         return result
     }
 
@@ -176,15 +239,15 @@ object FFmpegBridge {
 
     /**
      * Offline waveform scan.
-     * Returns normalized RMS waveform bars in 0..1, or an empty array on failure.
-     * startMs/endMs are used for CUE tracks and segment previews; native side samples by seek-decoding 500ms windows.
+     * Returns normalized PCM waveform bars in 0..1, or an empty array on failure.
+     * startMs/endMs are used for CUE tracks; native scans the segment sequentially into time buckets.
      */
     fun scanWaveform(path: String, startMs: Long, endMs: Long, sampleCount: Int): FloatArray {
         if (!loaded || path.isBlank() || sampleCount <= 0) {
             appendDebug("scanWaveform skipped: loaded=$loaded pathBlank=${path.isBlank()} samples=$sampleCount")
             return FloatArray(0)
         }
-        val boundedSamples = sampleCount.coerceIn(32, 100)
+        val boundedSamples = sampleCount.coerceIn(32, 21_600)
         val result = nativeScanWaveform(path, startMs.coerceAtLeast(0L), endMs.coerceAtLeast(0L), boundedSamples)
             ?: FloatArray(0)
         appendDebug(
@@ -201,16 +264,55 @@ object FFmpegBridge {
      * @param bitsPerSample    输出比特深度：16 / 24 / 32
      * @param channels         输出声道数
      */
-    fun openDecoder(path: String, targetSampleRate: Int, bitsPerSample: Int, channels: Int): Long {
+    fun openDecoder(path: String, targetSampleRate: Int, bitsPerSample: Int, channels: Int): Long =
+        openDecoder(
+            path = path,
+            targetSampleRate = targetSampleRate,
+            bitsPerSample = bitsPerSample,
+            channels = channels,
+            headers = emptyMap(),
+            userAgent = null,
+        )
+
+    /** Opens a streaming decoder with HTTP headers/options for resolved online sources. */
+    fun openDecoder(
+        path: String,
+        targetSampleRate: Int,
+        bitsPerSample: Int,
+        channels: Int,
+        headers: Map<String, String>,
+        userAgent: String?,
+    ): Long {
         if (!loaded) {
             appendDebug("openDecoder skipped: bridge not loaded")
             return 0L
         }
+        val startedAt = SystemClock.elapsedRealtime()
+        val (headerBlock, safeUserAgent) = serializeHttpOptions(headers, userAgent)
         appendDebug(
-            "openDecoder path=${shortPath(path)} targetSr=$targetSampleRate bits=$bitsPerSample ch=$channels"
+            "openDecoder path=${shortPath(path)} targetSr=$targetSampleRate bits=$bitsPerSample " +
+                "ch=$channels httpHeaders=${headers.size} userAgent=${safeUserAgent.isNotBlank()}"
         )
-        val handle = nativeOpenDecoder(path, targetSampleRate, bitsPerSample, channels)
+        AppLogger.i(
+            TAG,
+            "${OnlinePlaybackDiagnostics.PREFIX} BRIDGE_OPEN_START target=${targetSampleRate}Hz/${bitsPerSample}bit/${channels}ch " +
+                "headers=${OnlinePlaybackDiagnostics.headerNames(headers)} ua=${safeUserAgent.isNotBlank()} " +
+                "${OnlinePlaybackDiagnostics.urlShape(path)} url=${OnlinePlaybackDiagnostics.safeUrl(path)}"
+        )
+        val handle = nativeOpenDecoder(
+            path,
+            targetSampleRate,
+            bitsPerSample,
+            channels,
+            headerBlock,
+            safeUserAgent,
+        )
         appendDebug("openDecoder result=0x${handle.toString(16)}")
+        AppLogger.i(
+            TAG,
+            "${OnlinePlaybackDiagnostics.PREFIX} BRIDGE_OPEN_END handle=0x${handle.toString(16)} " +
+                "success=${handle != 0L} elapsedMs=${SystemClock.elapsedRealtime() - startedAt}"
+        )
         return handle
     }
 
@@ -262,6 +364,26 @@ object FFmpegBridge {
         nativeCloseDecoder(handle)
     }
 
+    fun createVideoCoverSession(fileDescriptor: Int, surface: Surface): Long {
+        if (!loaded || fileDescriptor < 0 || !surface.isValid) return 0L
+        return nativeCreateVideoCoverSession(fileDescriptor, surface)
+    }
+
+    fun createVideoCoverUrlSession(source: String, surface: Surface): Long {
+        if (!loaded || source.isBlank() || !surface.isValid) return 0L
+        return nativeCreateVideoCoverUrlSession(source, surface)
+    }
+
+    fun setVideoCoverSessionActive(handle: Long, active: Boolean) {
+        if (!loaded || handle == 0L) return
+        nativeSetVideoCoverSessionActive(handle, active)
+    }
+
+    fun releaseVideoCoverSession(handle: Long) {
+        if (!loaded || handle == 0L) return
+        nativeReleaseVideoCoverSession(handle)
+    }
+
     private fun appendDebug(message: String) {
         val line = "[${debugDateFormat.format(Date())}] $message"
         synchronized(debugLock) {
@@ -277,6 +399,23 @@ object FFmpegBridge {
         val normalized = path.replace('\\', '/')
         val name = normalized.substringAfterLast('/', normalized)
         return if (name.isNotBlank()) name else normalized
+    }
+
+    private fun serializeHttpOptions(
+        headers: Map<String, String>,
+        userAgent: String?,
+    ): Pair<String, String> {
+        val headerBlock = headers.entries.joinToString(separator = "") { (name, value) ->
+            val safeName = name.replace("\r", "").replace("\n", "").trim()
+            val safeValue = value.replace("\r", "").replace("\n", "").trim()
+            if (safeName.isBlank()) "" else "$safeName: $safeValue\r\n"
+        }
+        val safeUserAgent = userAgent
+            ?.replace("\r", "")
+            ?.replace("\n", "")
+            ?.trim()
+            .orEmpty()
+        return headerBlock to safeUserAgent
     }
 
     private external fun nativeConvertToWav(
@@ -299,13 +438,24 @@ object FFmpegBridge {
     private external fun nativeProbeSampleRate(path: String): Int
     private external fun nativeProbeBitsPerSample(path: String): Int
     private external fun nativeProbeChannelCount(path: String): Int
+    private external fun nativeProbeDurationWithOptions(path: String, headersBlock: String, userAgent: String): Long
+    private external fun nativeProbeSampleRateWithOptions(path: String, headersBlock: String, userAgent: String): Int
+    private external fun nativeProbeBitsPerSampleWithOptions(path: String, headersBlock: String, userAgent: String): Int
+    private external fun nativeProbeChannelCountWithOptions(path: String, headersBlock: String, userAgent: String): Int
     private external fun nativeExtractCover(inputPath: String, outputPath: String): Int
     private external fun nativeGetMediaInfo(filePath: String): Map<String, String>?
     private external fun nativeWriteMetadata(filePath: String, metadata: Map<String, String>, cacheDir: String): Int
     private external fun nativeScanWaveform(path: String, startMs: Long, endMs: Long, sampleCount: Int): FloatArray?
 
     // Streaming decoder native methods
-    private external fun nativeOpenDecoder(path: String, targetRate: Int, targetBits: Int, channels: Int): Long
+    private external fun nativeOpenDecoder(
+        path: String,
+        targetRate: Int,
+        targetBits: Int,
+        channels: Int,
+        headersBlock: String,
+        userAgent: String,
+    ): Long
     private external fun nativeDecodeChunk(handle: Long, buffer: ByteArray, offset: Int, maxBytes: Int): Int
     private external fun nativeSeekDecoder(handle: Long, positionMs: Long): Boolean
     private external fun nativeGetDecoderSampleRate(handle: Long): Int
@@ -313,4 +463,8 @@ object FFmpegBridge {
     private external fun nativeGetDecoderBitsPerSample(handle: Long): Int
     private external fun nativeGetDecoderDuration(handle: Long): Long
     private external fun nativeCloseDecoder(handle: Long)
+    private external fun nativeCreateVideoCoverSession(fileDescriptor: Int, surface: Surface): Long
+    private external fun nativeCreateVideoCoverUrlSession(source: String, surface: Surface): Long
+    private external fun nativeSetVideoCoverSessionActive(handle: Long, active: Boolean)
+    private external fun nativeReleaseVideoCoverSession(handle: Long)
 }

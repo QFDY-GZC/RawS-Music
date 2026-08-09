@@ -2,14 +2,23 @@ package com.rawsmusic.module.data.prefs
 
 import android.content.Context
 import com.rawsmusic.core.common.model.AudioFile
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import org.json.JSONArray
-import org.json.JSONObject
+import com.rawsmusic.module.data.db.MusicDatabase
+import com.rawsmusic.module.data.db.entity.DailyListenEntity
+import com.rawsmusic.module.data.db.entity.PlaybackHistoryEntity
+import com.rawsmusic.module.data.db.entity.PlaybackStatEntity
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 
 data class SongPlaybackStats(
     val songId: Long,
@@ -30,12 +39,10 @@ data class PlaybackHistoryEntry(
 )
 
 class PlaybackStatsStore private constructor(private val context: Context) {
-
     companion object {
         @Volatile
         private var instance: PlaybackStatsStore? = null
         private const val MAX_HISTORY_ITEMS = 200
-        private const val MIN_LISTEN_MS_FOR_COUNT = 20_000L
 
         fun getInstance(ctx: Context): PlaybackStatsStore {
             return instance ?: synchronized(this) {
@@ -45,9 +52,16 @@ class PlaybackStatsStore private constructor(private val context: Context) {
     }
 
     private val lock = Any()
-    private val statsFile = "playback_stats.json"
-    private val historyFile = "playback_history.json"
-    private val dailyFile = "playback_daily_stats.json"
+    private val statsFile = context.filesDir.resolve("playback_stats.json")
+    private val historyFile = context.filesDir.resolve("playback_history.json")
+    private val dailyFile = context.filesDir.resolve("playback_daily_stats.json")
+    private val dao = MusicDatabase.getInstance(context).playbackStatsDao()
+    private val databaseDispatcher = Executors
+        .newSingleThreadExecutor { runnable ->
+            Thread(runnable, "RawS-PlaybackStatsRoom").apply { isDaemon = true }
+        }
+        .asCoroutineDispatcher()
+    private val databaseScope = CoroutineScope(SupervisorJob() + databaseDispatcher)
 
     private val _stats = MutableStateFlow<List<SongPlaybackStats>>(emptyList())
     val stats: StateFlow<List<SongPlaybackStats>> = _stats.asStateFlow()
@@ -59,63 +73,92 @@ class PlaybackStatsStore private constructor(private val context: Context) {
     val dailyListenMs: StateFlow<Map<String, Long>> = _dailyListenMs.asStateFlow()
 
     init {
-        _stats.value = loadStats()
-        _history.value = loadHistory()
-        _dailyListenMs.value = loadDaily()
+        val legacyStats = loadLegacyStats()
+        val legacyHistory = loadLegacyHistory()
+        val legacyDaily = loadLegacyDaily()
+        if (legacyStats.isNotEmpty() || legacyHistory.isNotEmpty() || legacyDaily.isNotEmpty()) {
+            _stats.value = legacyStats
+            _history.value = legacyHistory.take(MAX_HISTORY_ITEMS)
+            _dailyListenMs.value = legacyDaily
+        }
+        databaseScope.launch {
+            if (statsFile.exists() || historyFile.exists() || dailyFile.exists()) {
+                dao.replaceAll(
+                    stats = _stats.value.map(SongPlaybackStats::toEntity),
+                    history = _history.value.map(PlaybackHistoryEntry::toEntity),
+                    daily = _dailyListenMs.value.map { (date, listenedMs) ->
+                        DailyListenEntity(date, listenedMs)
+                    }
+                )
+                deleteLegacyFiles()
+            } else {
+                loadRoomSnapshot()
+            }
+        }
     }
 
     fun recordPlay(song: AudioFile) {
+        val now = System.currentTimeMillis()
+        val updatedStat: SongPlaybackStats
+        val historyEntry = PlaybackHistoryEntry(
+            songId = song.id,
+            title = song.title,
+            artist = song.artist,
+            album = song.album,
+            playedAt = now
+        )
         synchronized(lock) {
             val list = _stats.value.toMutableList()
-            val idx = list.indexOfFirst { it.songId == song.id }
-            if (idx >= 0) {
-                val old = list[idx]
-                list[idx] = old.copy(
-                    playCount = old.playCount + 1,
-                    lastPlayedAt = System.currentTimeMillis()
-                )
+            val index = list.indexOfFirst { it.songId == song.id }
+            updatedStat = if (index >= 0) {
+                list[index].copy(
+                    title = song.title,
+                    artist = song.artist,
+                    album = song.album,
+                    playCount = list[index].playCount + 1,
+                    lastPlayedAt = now
+                ).also { list[index] = it }
             } else {
-                list.add(SongPlaybackStats(
+                SongPlaybackStats(
                     songId = song.id,
                     title = song.title,
                     artist = song.artist,
                     album = song.album,
                     playCount = 1,
                     listenedMs = 0L,
-                    lastPlayedAt = System.currentTimeMillis()
-                ))
+                    lastPlayedAt = now
+                ).also(list::add)
             }
-            saveStats(list)
             _stats.value = list
-
-            val hist = _history.value.toMutableList()
-            hist.add(0, PlaybackHistoryEntry(
-                songId = song.id,
-                title = song.title,
-                artist = song.artist,
-                album = song.album,
-                playedAt = System.currentTimeMillis()
-            ))
-            if (hist.size > MAX_HISTORY_ITEMS) {
-                val trimmed = hist.subList(0, MAX_HISTORY_ITEMS)
-                saveHistory(trimmed)
-                _history.value = trimmed.toList()
-            } else {
-                saveHistory(hist)
-                _history.value = hist
-            }
+            _history.value = buildList {
+                add(historyEntry)
+                addAll(_history.value)
+            }.take(MAX_HISTORY_ITEMS)
+        }
+        databaseScope.launch {
+            dao.upsertStat(updatedStat.toEntity())
+            dao.insertHistory(historyEntry.toEntity())
+            dao.trimHistory(MAX_HISTORY_ITEMS)
         }
     }
 
     fun addListenTime(song: AudioFile, listenedMs: Long) {
+        if (listenedMs <= 0L) return
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        val updatedStat: SongPlaybackStats
+        val updatedDailyMs: Long
         synchronized(lock) {
             val list = _stats.value.toMutableList()
-            val idx = list.indexOfFirst { it.songId == song.id }
-            if (idx >= 0) {
-                val old = list[idx]
-                list[idx] = old.copy(listenedMs = old.listenedMs + listenedMs)
+            val index = list.indexOfFirst { it.songId == song.id }
+            updatedStat = if (index >= 0) {
+                list[index].copy(
+                    title = song.title,
+                    artist = song.artist,
+                    album = song.album,
+                    listenedMs = list[index].listenedMs + listenedMs
+                ).also { list[index] = it }
             } else {
-                list.add(SongPlaybackStats(
+                SongPlaybackStats(
                     songId = song.id,
                     title = song.title,
                     artist = song.artist,
@@ -123,152 +166,170 @@ class PlaybackStatsStore private constructor(private val context: Context) {
                     playCount = 0,
                     listenedMs = listenedMs,
                     lastPlayedAt = 0L
-                ))
+                ).also(list::add)
             }
-            saveStats(list)
             _stats.value = list
-
-            val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
             val daily = _dailyListenMs.value.toMutableMap()
-            daily[today] = (daily[today] ?: 0L) + listenedMs
-            saveDaily(daily)
+            updatedDailyMs = (daily[today] ?: 0L) + listenedMs
+            daily[today] = updatedDailyMs
             _dailyListenMs.value = daily
+        }
+        databaseScope.launch {
+            dao.upsertStat(updatedStat.toEntity())
+            dao.upsertDaily(DailyListenEntity(today, updatedDailyMs))
         }
     }
 
-    fun exportJson(): JSONObject {
-        val json = JSONObject()
-        json.put("stats", JSONArray().apply {
-            _stats.value.forEach { s ->
+    fun exportJson(): JSONObject = JSONObject().apply {
+        put("stats", JSONArray().apply {
+            _stats.value.forEach { stat ->
                 put(JSONObject()
-                    .put("songId", s.songId).put("title", s.title)
-                    .put("artist", s.artist).put("album", s.album)
-                    .put("playCount", s.playCount).put("listenedMs", s.listenedMs)
-                    .put("lastPlayedAt", s.lastPlayedAt))
+                    .put("songId", stat.songId)
+                    .put("title", stat.title)
+                    .put("artist", stat.artist)
+                    .put("album", stat.album)
+                    .put("playCount", stat.playCount)
+                    .put("listenedMs", stat.listenedMs)
+                    .put("lastPlayedAt", stat.lastPlayedAt))
             }
         })
-        json.put("history", JSONArray().apply {
-            _history.value.forEach { h ->
+        put("history", JSONArray().apply {
+            _history.value.forEach { entry ->
                 put(JSONObject()
-                    .put("songId", h.songId).put("title", h.title)
-                    .put("artist", h.artist).put("album", h.album)
-                    .put("playedAt", h.playedAt))
+                    .put("songId", entry.songId)
+                    .put("title", entry.title)
+                    .put("artist", entry.artist)
+                    .put("album", entry.album)
+                    .put("playedAt", entry.playedAt))
             }
         })
-        json.put("daily", JSONObject().apply {
-            _dailyListenMs.value.forEach { (k, v) -> put(k, v) }
+        put("daily", JSONObject().apply {
+            _dailyListenMs.value.forEach { (date, listenedMs) -> put(date, listenedMs) }
         })
-        return json
     }
 
     fun restoreJson(json: JSONObject) {
+        val restoredStats = parseStats(json.optJSONArray("stats") ?: JSONArray())
+        val restoredHistory = parseHistory(json.optJSONArray("history") ?: JSONArray())
+            .take(MAX_HISTORY_ITEMS)
+        val restoredDaily = buildMap {
+            val daily = json.optJSONObject("daily") ?: JSONObject()
+            daily.keys().forEach { date -> put(date, daily.optLong(date, 0L)) }
+        }
         synchronized(lock) {
-            val statsList = mutableListOf<SongPlaybackStats>()
-            val statsArr = json.optJSONArray("stats") ?: JSONArray()
-            for (i in 0 until statsArr.length()) {
-                val o = statsArr.optJSONObject(i) ?: continue
-                statsList.add(SongPlaybackStats(
-                    songId = o.optLong("songId", 0), title = o.optString("title", ""),
-                    artist = o.optString("artist", ""), album = o.optString("album", ""),
-                    playCount = o.optInt("playCount", 0), listenedMs = o.optLong("listenedMs", 0),
-                    lastPlayedAt = o.optLong("lastPlayedAt", 0)
-                ))
-            }
-            saveStats(statsList)
-            _stats.value = statsList
-
-            val histList = mutableListOf<PlaybackHistoryEntry>()
-            val histArr = json.optJSONArray("history") ?: JSONArray()
-            for (i in 0 until histArr.length()) {
-                val o = histArr.optJSONObject(i) ?: continue
-                histList.add(PlaybackHistoryEntry(
-                    songId = o.optLong("songId", 0), title = o.optString("title", ""),
-                    artist = o.optString("artist", ""), album = o.optString("album", ""),
-                    playedAt = o.optLong("playedAt", 0)
-                ))
-            }
-            saveHistory(histList)
-            _history.value = histList
-
-            val dailyMap = mutableMapOf<String, Long>()
-            val dailyObj = json.optJSONObject("daily") ?: JSONObject()
-            dailyObj.keys().forEach { k -> dailyMap[k] = dailyObj.optLong(k, 0) }
-            saveDaily(dailyMap)
-            _dailyListenMs.value = dailyMap
+            _stats.value = restoredStats
+            _history.value = restoredHistory
+            _dailyListenMs.value = restoredDaily
         }
-    }
-
-    private fun loadStats(): List<SongPlaybackStats> {
-        return loadJsonList(statsFile) { o ->
-            SongPlaybackStats(
-                songId = o.optLong("songId", 0), title = o.optString("title", ""),
-                artist = o.optString("artist", ""), album = o.optString("album", ""),
-                playCount = o.optInt("playCount", 0), listenedMs = o.optLong("listenedMs", 0),
-                lastPlayedAt = o.optLong("lastPlayedAt", 0)
+        databaseScope.launch {
+            dao.replaceAll(
+                stats = restoredStats.map(SongPlaybackStats::toEntity),
+                history = restoredHistory.map(PlaybackHistoryEntry::toEntity),
+                daily = restoredDaily.map { (date, listenedMs) -> DailyListenEntity(date, listenedMs) }
             )
+            deleteLegacyFiles()
         }
     }
 
-    private fun loadHistory(): List<PlaybackHistoryEntry> {
-        return loadJsonList(historyFile) { o ->
-            PlaybackHistoryEntry(
-                songId = o.optLong("songId", 0), title = o.optString("title", ""),
-                artist = o.optString("artist", ""), album = o.optString("album", ""),
-                playedAt = o.optLong("playedAt", 0)
-            )
+    private suspend fun loadRoomSnapshot() {
+        val roomStats = dao.getStats().map(PlaybackStatEntity::toModel)
+        val roomHistory = dao.getHistory(MAX_HISTORY_ITEMS).map(PlaybackHistoryEntity::toModel)
+        val roomDaily = dao.getDaily().associate { it.date to it.listenedMs }
+        synchronized(lock) {
+            _stats.value = roomStats
+            _history.value = roomHistory
+            _dailyListenMs.value = roomDaily
         }
     }
 
-    private fun loadDaily(): Map<String, Long> {
-        val file = context.filesDir.resolve(dailyFile)
-        if (!file.exists()) return emptyMap()
-        return try {
-            val obj = JSONObject(file.readText(Charsets.UTF_8))
-            val map = mutableMapOf<String, Long>()
-            obj.keys().forEach { k -> map[k] = obj.optLong(k, 0) }
-            map
-        } catch (_: Exception) { emptyMap() }
-    }
+    private fun loadLegacyStats(): List<SongPlaybackStats> =
+        loadJsonArray(statsFile)?.let(::parseStats).orEmpty()
 
-    private fun <T> loadJsonList(fileName: String, transform: (JSONObject) -> T): List<T> {
-        val file = context.filesDir.resolve(fileName)
-        if (!file.exists()) return emptyList()
-        return try {
-            val arr = JSONArray(file.readText(Charsets.UTF_8))
-            val list = mutableListOf<T>()
-            for (i in 0 until arr.length()) {
-                arr.optJSONObject(i)?.let { list.add(transform(it)) }
+    private fun loadLegacyHistory(): List<PlaybackHistoryEntry> =
+        loadJsonArray(historyFile)?.let(::parseHistory).orEmpty()
+
+    private fun loadLegacyDaily(): Map<String, Long> {
+        if (!dailyFile.exists()) return emptyMap()
+        return runCatching {
+            buildMap {
+                val json = JSONObject(dailyFile.readText(Charsets.UTF_8))
+                json.keys().forEach { date -> put(date, json.optLong(date, 0L)) }
             }
-            list
-        } catch (_: Exception) { emptyList() }
+        }.getOrDefault(emptyMap())
     }
 
-    private fun saveStats(list: List<SongPlaybackStats>) {
-        val arr = JSONArray()
-        list.forEach { s ->
-            arr.put(JSONObject()
-                .put("songId", s.songId).put("title", s.title)
-                .put("artist", s.artist).put("album", s.album)
-                .put("playCount", s.playCount).put("listenedMs", s.listenedMs)
-                .put("lastPlayedAt", s.lastPlayedAt))
+    private fun loadJsonArray(file: java.io.File): JSONArray? {
+        if (!file.exists()) return null
+        return runCatching { JSONArray(file.readText(Charsets.UTF_8)) }.getOrNull()
+    }
+
+    private fun parseStats(array: JSONArray): List<SongPlaybackStats> = buildList {
+        repeat(array.length()) { index ->
+            val item = array.optJSONObject(index) ?: return@repeat
+            add(SongPlaybackStats(
+                songId = item.optLong("songId", 0L),
+                title = item.optString("title", ""),
+                artist = item.optString("artist", ""),
+                album = item.optString("album", ""),
+                playCount = item.optInt("playCount", 0),
+                listenedMs = item.optLong("listenedMs", 0L),
+                lastPlayedAt = item.optLong("lastPlayedAt", 0L)
+            ))
         }
-        context.filesDir.resolve(statsFile).writeText(arr.toString(), Charsets.UTF_8)
     }
 
-    private fun saveHistory(list: List<PlaybackHistoryEntry>) {
-        val arr = JSONArray()
-        list.forEach { h ->
-            arr.put(JSONObject()
-                .put("songId", h.songId).put("title", h.title)
-                .put("artist", h.artist).put("album", h.album)
-                .put("playedAt", h.playedAt))
+    private fun parseHistory(array: JSONArray): List<PlaybackHistoryEntry> = buildList {
+        repeat(array.length()) { index ->
+            val item = array.optJSONObject(index) ?: return@repeat
+            add(PlaybackHistoryEntry(
+                songId = item.optLong("songId", 0L),
+                title = item.optString("title", ""),
+                artist = item.optString("artist", ""),
+                album = item.optString("album", ""),
+                playedAt = item.optLong("playedAt", 0L)
+            ))
         }
-        context.filesDir.resolve(historyFile).writeText(arr.toString(), Charsets.UTF_8)
     }
 
-    private fun saveDaily(map: Map<String, Long>) {
-        val obj = JSONObject()
-        map.forEach { (k, v) -> obj.put(k, v) }
-        context.filesDir.resolve(dailyFile).writeText(obj.toString(), Charsets.UTF_8)
+    private fun deleteLegacyFiles() {
+        statsFile.delete()
+        historyFile.delete()
+        dailyFile.delete()
     }
 }
+
+private fun SongPlaybackStats.toEntity() = PlaybackStatEntity(
+    songId = songId,
+    title = title,
+    artist = artist,
+    album = album,
+    playCount = playCount,
+    listenedMs = listenedMs,
+    lastPlayedAt = lastPlayedAt
+)
+
+private fun PlaybackStatEntity.toModel() = SongPlaybackStats(
+    songId = songId,
+    title = title,
+    artist = artist,
+    album = album,
+    playCount = playCount,
+    listenedMs = listenedMs,
+    lastPlayedAt = lastPlayedAt
+)
+
+private fun PlaybackHistoryEntry.toEntity() = PlaybackHistoryEntity(
+    songId = songId,
+    title = title,
+    artist = artist,
+    album = album,
+    playedAt = playedAt
+)
+
+private fun PlaybackHistoryEntity.toModel() = PlaybackHistoryEntry(
+    songId = songId,
+    title = title,
+    artist = artist,
+    album = album,
+    playedAt = playedAt
+)

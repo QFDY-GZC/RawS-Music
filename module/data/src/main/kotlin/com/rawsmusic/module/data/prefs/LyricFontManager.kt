@@ -6,10 +6,16 @@ import android.net.Uri
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 object LyricFontManager {
 
     private const val LYRIC_FONTS_DIR = "lyric_fonts"
+
+    private val _revision = MutableStateFlow(0L)
+    val revision: StateFlow<Long> = _revision.asStateFlow()
 
     private val SYSTEM_FONT_DIRS = listOf(
         "/system/fonts",
@@ -62,26 +68,54 @@ object LyricFontManager {
 
     fun importFont(context: Context, uri: Uri): FontInfo? {
         return try {
-            val inputStream = context.contentResolver.openInputStream(uri) ?: return null
-            val displayName = getFileNameFromUri(context, uri) ?: "imported_${System.currentTimeMillis()}.ttf"
-            val sanitizedName = displayName.replace(Regex("[^a-zA-Z0-9_.\\-]"), "_")
+            val displayName = getFileNameFromUri(context, uri)
+                ?: "imported_${System.currentTimeMillis()}.ttf"
+            val sourceExtension = displayName.substringAfterLast('.', missingDelimiterValue = "")
+                .lowercase(Locale.ROOT)
+                .takeIf { it in FONT_EXTENSIONS }
+                ?: "ttf"
+            val sourceBaseName = displayName.substringBeforeLast('.', missingDelimiterValue = displayName)
+                .replace(Regex("[\\/:*?\"<>|\u0000-\u001F]"), "_")
+                .trim('_', '.', '-')
+                .ifBlank { "imported" }
             val dir = getImportedFontsDir(context)
-            if (!dir.exists()) dir.mkdirs()
+            if (!dir.exists() && !dir.mkdirs()) return null
 
-            val destFile = File(dir, sanitizedName)
-            if (destFile.exists()) destFile.delete()
-
-            FileOutputStream(destFile).use { out ->
-                inputStream.copyTo(out)
+            // Keep a unique destination. Replacing a file at the same path can leave Android or
+            // Compose holding a stale Typeface cache entry after importing a different font.
+            val preferredFile = File(dir, "$sourceBaseName.$sourceExtension")
+            val destFile = if (preferredFile.exists()) {
+                File(dir, "${sourceBaseName}_${System.currentTimeMillis()}.$sourceExtension")
+            } else {
+                preferredFile
             }
-            inputStream.close()
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(destFile).use { output -> input.copyTo(output) }
+            } ?: return null
 
             Typeface.createFromFile(destFile)
-
-            FontInfo(destFile.nameWithoutExtension, destFile.absolutePath, false)
-        } catch (e: Exception) {
+            FontInfo(destFile.nameWithoutExtension, destFile.absolutePath, false).also {
+                bumpRevision()
+            }
+        } catch (_: Exception) {
             null
         }
+    }
+
+    fun selectFont(font: FontInfo?) {
+        AppPreferences.LyricFont.fontPath = font?.path.orEmpty()
+        AppPreferences.LyricFont.fontName = font?.name.orEmpty()
+        bumpRevision()
+    }
+
+    fun setFontWeight(weight: Int) {
+        AppPreferences.LyricFont.fontWeight = weight
+        bumpRevision()
+    }
+
+    fun setFontScale(scale: Int) {
+        AppPreferences.LyricFont.fontScale = scale
+        bumpRevision()
     }
 
     fun deleteImportedFont(context: Context, path: String): Boolean {
@@ -89,9 +123,12 @@ object LyricFontManager {
         val dir = getImportedFontsDir(context)
         if (file.absolutePath.startsWith(dir.absolutePath) && file.exists()) {
             val deleted = file.delete()
-            if (deleted && AppPreferences.LyricFont.fontPath == path) {
-                AppPreferences.LyricFont.fontPath = ""
-                AppPreferences.LyricFont.fontName = ""
+            if (deleted) {
+                if (AppPreferences.LyricFont.fontPath == path) {
+                    AppPreferences.LyricFont.fontPath = ""
+                    AppPreferences.LyricFont.fontName = ""
+                }
+                bumpRevision()
             }
             return deleted
         }
@@ -117,6 +154,11 @@ object LyricFontManager {
         val name = AppPreferences.LyricFont.fontName
         if (path.isBlank()) return null
         return FontInfo(name, path, !path.contains(LYRIC_FONTS_DIR))
+    }
+
+    @Synchronized
+    private fun bumpRevision() {
+        _revision.value = _revision.value + 1L
     }
 
     private fun getImportedFontsDir(context: Context): File {

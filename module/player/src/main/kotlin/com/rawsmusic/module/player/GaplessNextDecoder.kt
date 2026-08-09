@@ -2,6 +2,7 @@ package com.rawsmusic.module.player
 
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.module.data.source.playback.MusicSourceResolvedStreamRegistry
 
 /**
  * Manages the pre-opened "next song" FFmpeg decoder used by gapless / crossfade transitions.
@@ -27,32 +28,44 @@ internal class GaplessNextDecoder(
     @Volatile
     private var prepared: Prepared? = null
 
+    @get:Synchronized
     val handle: Long get() = prepared?.handle ?: 0L
+    @get:Synchronized
     val sampleRate: Int get() = prepared?.sampleRate ?: 0
+    @get:Synchronized
     val channels: Int get() = prepared?.channels ?: 0
+    @get:Synchronized
     val bitsPerSample: Int get() = prepared?.bitsPerSample ?: 0
+    @get:Synchronized
     val path: String? get() = prepared?.path
+    @get:Synchronized
     val isPrepared: Boolean get() = prepared != null
 
     /** Returns the current prepared state without consuming it, or null if none. */
+    @get:Synchronized
     val snapshot: Prepared? get() = prepared
 
+    @Synchronized
     fun snapshotFor(ownerGeneration: Int): Prepared? =
         prepared?.takeIf { it.ownerGeneration == ownerGeneration }
 
+    @Synchronized
     fun pathFor(ownerGeneration: Int): String? =
         snapshotFor(ownerGeneration)?.path
 
+    @Synchronized
     fun isPreparedFor(ownerGeneration: Int): Boolean =
         snapshotFor(ownerGeneration) != null
 
     /** Atomically consumes and returns the prepared state, or null if none. */
+    @Synchronized
     fun takePrepared(): Prepared? {
         val p = prepared
         prepared = null
         return p
     }
 
+    @Synchronized
     fun prepare(
         path: String,
         wavSampleRate: Int,
@@ -72,7 +85,20 @@ internal class GaplessNextDecoder(
             val openStart = System.nanoTime()
             var handle = 0L
             try {
-                handle = FFmpegBridge.openDecoder(resolvedPath, wavSampleRate, wavBitsPerSample, wavChannels)
+                val onlineEntry = MusicSourceResolvedStreamRegistry.lookup(path)
+                    ?: MusicSourceResolvedStreamRegistry.lookup(resolvedPath)
+                handle = if (onlineEntry != null) {
+                    FFmpegBridge.openDecoder(
+                        resolvedPath,
+                        wavSampleRate,
+                        wavBitsPerSample,
+                        wavChannels,
+                        onlineEntry.source.headers,
+                        onlineEntry.source.userAgent,
+                    )
+                } else {
+                    FFmpegBridge.openDecoder(resolvedPath, wavSampleRate, wavBitsPerSample, wavChannels)
+                }
             } catch (t: Throwable) {
                 if (handle != 0L) {
                     try { FFmpegBridge.closeDecoder(handle) } catch (_: Throwable) {}
@@ -118,6 +144,7 @@ internal class GaplessNextDecoder(
      * Old streaming loops can race with a new play() request; generation ownership
      * prevents an obsolete loop from consuming or closing the new session decoder.
      */
+    @Synchronized
     fun consumeIfPathMatches(expectedPath: String, ownerGeneration: Int): Prepared? {
         val existing = prepared ?: return null
         if (existing.ownerGeneration != ownerGeneration) {
@@ -141,6 +168,7 @@ internal class GaplessNextDecoder(
     }
 
     /** Clears the prepared state, closing the decoder handle if one is held. */
+    @Synchronized
     fun clear(reason: String) {
         val existing = prepared
         prepared = null

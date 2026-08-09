@@ -1,15 +1,8 @@
 package com.rawsmusic.core.ui.scene.pages
 
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.SizeTransform
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,10 +10,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -29,9 +22,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.PageSize
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -47,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
@@ -66,10 +57,12 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.scene.LocalSceneBackgroundFrozen
 import com.rawsmusic.core.ui.scene.NavScene
+import com.rawsmusic.core.ui.scene.HomeFullCoverSourceAnchor
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.flow.LocalRawFlowMode
 import com.rawsmusic.core.ui.widget.flow.LocalRawFlowModeSetter
 import com.rawsmusic.core.ui.widget.flow.RawFlowModeDialog
+import io.github.proify.lyricon.lyric.model.Song
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -84,68 +77,97 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InputField
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Settings
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HomePage(
     songs: List<AudioFile>,
     currentSong: AudioFile?,
+    queueSongs: List<AudioFile>,
+    queueCurrentIndex: Int,
+    currentLyric: String,
+    currentLyricTranslation: String,
+    lyricSong: Song?,
+    playbackPositionMs: Long,
+    isPlaying: Boolean,
     playCounts: Map<Long, Int>,
     listState: LazyListState = rememberLazyListState(),
+    carouselState: HomeArtworkCarouselState,
+    renderBackdrop: Boolean = true,
     onNavigate: (NavScene) -> Unit,
     onSearchClick: () -> Unit,
+    showSettingsShortcut: Boolean = false,
+    onSettingsClick: () -> Unit = {},
+    onHeaderMenuActionOverride: (() -> Unit)? = null,
+    headerOptions: HomeHeaderOptionsState = rememberHomeHeaderOptionsState(),
+    onCurrentPlayPause: () -> Unit,
     onSongClick: (AudioFile, Int) -> Unit,
-    onPlayQueue: (List<AudioFile>, Int) -> Unit
+    onQueueSongClick: (List<AudioFile>, AudioFile, Int) -> Unit,
+    onCurrentArtworkLongPress: (HomeFullCoverSourceAnchor) -> Unit = {},
+    onCurrentArtworkBoundsChanged: (AudioFile, Rect) -> Unit = { _, _ -> },
+    hideCenterForFullscreenTransition: Boolean = false,
+    centerReflectionAlpha: Float = 1f,
+    centerReflectionArtworkKey: String = "",
 ) {
-    var searchExpanded by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
     var showFlowModeDialog by remember { mutableStateOf(false) }
+    var showHeaderMenuDialog by remember { mutableStateOf(false) }
     val rawFlowMode = LocalRawFlowMode.current
     val setRawFlowMode = LocalRawFlowModeSetter.current
-
-    val filteredSongs = remember(searchQuery, songs) {
-        if (searchQuery.isBlank()) emptyList()
-        else {
-            val q = searchQuery.lowercase()
-            songs.filter {
-                it.title.lowercase().contains(q) ||
-                    it.artist.lowercase().contains(q) ||
-                    it.album.lowercase().contains(q)
-            }
-        }
+    val carouselSongs = remember(queueSongs, currentSong) {
+        queueSongs.ifEmpty { listOfNotNull(currentSong) }
     }
-
     Box(modifier = Modifier.fillMaxSize()) {
+        if (renderBackdrop) {
+            HomeArtworkCarouselBackdrop(
+                songs = carouselSongs,
+                currentSong = currentSong,
+                state = carouselState,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
         HomePageContent(
             songs = songs,
             currentSong = currentSong,
+            queueSongs = carouselSongs,
+            carouselState = carouselState,
+            carouselStyle = headerOptions.carouselStyle,
+            carouselLyricVisible = headerOptions.carouselLyricVisible,
+            currentLyric = currentLyric,
+            currentLyricTranslation = currentLyricTranslation,
+            lyricSong = lyricSong,
+            playbackPositionMs = playbackPositionMs,
+            isPlaying = isPlaying,
             playCounts = playCounts,
             listState = listState,
             onNavigate = onNavigate,
-            onSearchClick = { searchExpanded = true },
+            onSearchClick = onSearchClick,
+            weatherVisible = headerOptions.weatherVisible,
+            onHeaderMenuClick = onHeaderMenuActionOverride ?: { showHeaderMenuDialog = true },
             onFlowBackgroundClick = { showFlowModeDialog = true },
+            showSettingsShortcut = showSettingsShortcut,
+            onSettingsClick = onSettingsClick,
+            onCurrentPlayPause = onCurrentPlayPause,
             onSongClick = onSongClick,
-            onPlayQueue = onPlayQueue
+            onQueueSongClick = onQueueSongClick,
+            onCurrentArtworkLongPress = onCurrentArtworkLongPress,
+            onCurrentArtworkBoundsChanged = onCurrentArtworkBoundsChanged,
+            hideCenterForFullscreenTransition = hideCenterForFullscreenTransition,
+            centerReflectionAlpha = centerReflectionAlpha,
+            centerReflectionArtworkKey = centerReflectionArtworkKey,
         )
 
-        if (searchExpanded) {
-            SearchOverlay(
-                query = searchQuery,
-                onQueryChange = { searchQuery = it },
-                onDismiss = {
-                    searchExpanded = false
-                    searchQuery = ""
-                },
-                filteredSongs = filteredSongs,
-                allSongs = songs,
-                onSongClick = { song ->
-                    val idx = songs.indexOf(song).coerceAtLeast(0)
-                    onSongClick(song, idx)
-                    searchExpanded = false
-                    searchQuery = ""
-                }
-            )
-        }
+        HomeHeaderMenuDialog(
+            show = showHeaderMenuDialog,
+            weatherVisible = headerOptions.weatherVisible,
+            onWeatherVisibleChange = headerOptions::updateWeatherVisible,
+            carouselLyricVisible = headerOptions.carouselLyricVisible,
+            onCarouselLyricVisibleChange = headerOptions::updateCarouselLyricVisible,
+            carouselStyle = headerOptions.carouselStyle,
+            onCarouselStyleChange = headerOptions::updateCarouselStyle,
+            onDismissRequest = { showHeaderMenuDialog = false }
+        )
 
         RawFlowModeDialog(
             show = showFlowModeDialog,
@@ -156,196 +178,38 @@ fun HomePage(
     }
 }
 
-@Composable
-private fun SearchOverlay(
-    query: String,
-    onQueryChange: (String) -> Unit,
-    onDismiss: () -> Unit,
-    filteredSongs: List<AudioFile>,
-    allSongs: List<AudioFile>,
-    onSongClick: (AudioFile) -> Unit
-) {
-    val backgroundColor = MiuixTheme.colorScheme.background
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-    ) {
-        SearchBar(
-            inputField = {
-                InputField(
-                    query = query,
-                    onQueryChange = onQueryChange,
-                    onSearch = {},
-                    expanded = true,
-                    onExpandedChange = { expanded -> if (!expanded) onDismiss() },
-                    label = stringResource(R.string.search_hint)
-                )
-            },
-            onExpandedChange = { expanded -> if (!expanded) onDismiss() },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            expanded = true,
-            content = {}
-        )
-
-        if (query.isBlank()) {
-            Box(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    VectorIcon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = null,
-                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        modifier = Modifier.size(56.dp)
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        "输入关键词开始搜索",
-                        fontSize = 16.sp,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary
-                    )
-                }
-            }
-        } else if (filteredSongs.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        "未找到相关结果",
-                        fontSize = 16.sp,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary
-                    )
-                }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(horizontal = 16.dp)
-            ) {
-                item {
-                    Text(
-                        "${filteredSongs.size} 首歌曲",
-                        fontSize = 14.sp,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        modifier = Modifier.padding(vertical = 8.dp)
-                    )
-                }
-                items(filteredSongs) { song ->
-                    val index = allSongs.indexOf(song).coerceAtLeast(0)
-                    SearchResultSongRow(
-                        song = song,
-                        onClick = { onSongClick(song) }
-                    )
-                }
-                item {
-                    Spacer(Modifier.height(100.dp))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SearchResultSongRow(
-    song: AudioFile,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(64.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(pastelColorFor(song.title))
-        ) {
-            if (song.coverKey.isNotBlank()) {
-                BitmapImage(
-                    key = song.coverKey,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                    targetWidth = 128,
-                    targetHeight = 128
-                )
-            }
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                song.displayName,
-                fontSize = 16.sp,
-                color = MiuixTheme.colorScheme.onBackground,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                "${song.artist.ifBlank { "未知艺术家" }} · ${song.album.ifBlank { "未知专辑" }}",
-                fontSize = 13.sp,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HomePageContent(
     songs: List<AudioFile>,
     currentSong: AudioFile?,
+    queueSongs: List<AudioFile>,
+    carouselState: HomeArtworkCarouselState,
+    carouselStyle: HomeArtworkCarouselStyle,
+    carouselLyricVisible: Boolean,
+    currentLyric: String,
+    currentLyricTranslation: String,
+    lyricSong: Song?,
+    playbackPositionMs: Long,
+    isPlaying: Boolean,
     playCounts: Map<Long, Int>,
     listState: LazyListState = rememberLazyListState(),
     onNavigate: (NavScene) -> Unit,
     onSearchClick: () -> Unit,
+    weatherVisible: Boolean,
+    onHeaderMenuClick: () -> Unit,
     onFlowBackgroundClick: () -> Unit,
+    showSettingsShortcut: Boolean,
+    onSettingsClick: () -> Unit,
+    onCurrentPlayPause: () -> Unit,
     onSongClick: (AudioFile, Int) -> Unit,
-    onPlayQueue: (List<AudioFile>, Int) -> Unit
+    onQueueSongClick: (List<AudioFile>, AudioFile, Int) -> Unit,
+    onCurrentArtworkLongPress: (HomeFullCoverSourceAnchor) -> Unit,
+    onCurrentArtworkBoundsChanged: (AudioFile, Rect) -> Unit,
+    hideCenterForFullscreenTransition: Boolean,
+    centerReflectionAlpha: Float,
+    centerReflectionArtworkKey: String,
 ) {
-    var todayKey by remember { mutableStateOf(todayKey()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(millisUntilNextDay())
-            todayKey = todayKey()
-        }
-    }
-
-    val backgroundColor = MiuixTheme.colorScheme.background
-    val featurePagerState = rememberPagerState(initialPage = 1, pageCount = { 3 })
-    val startupRecommendSeed = remember { "for-you-start-${System.currentTimeMillis()}" }
-    val randomSong = remember(songs, startupRecommendSeed) { songs.stableShuffled(startupRecommendSeed).firstOrNull() }
-    val forYouQueue = remember(songs, startupRecommendSeed, randomSong?.id) {
-        if (randomSong == null) {
-            emptyList()
-        } else {
-            listOf(randomSong) + songs.stableShuffled("$startupRecommendSeed-queue").filter { it.id != randomSong.id }
-        }
-    }
-    val forYouDisplaySong = currentSong ?: randomSong
-    val dailySongs = remember(songs, todayKey) { daily20Songs(songs, todayKey) }
-    val artistSong = remember(songs, todayKey) {
-        songs.groupBy { it.artist.ifBlank { "未知艺术家" } }
-            .maxByOrNull { it.value.size }
-            ?.value
-            ?.stableShuffled("artist-$todayKey")
-            ?.firstOrNull()
-    }
     val libraryCards = remember(songs) { homeLibraryCards(songs) }
     val toolCards = remember(songs) { homeToolCards(songs) }
     val mostPlayed = remember(songs, playCounts) {
@@ -369,27 +233,13 @@ private fun HomePageContent(
                     .fillMaxWidth()
                     .padding(top = 16.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(stringResource(R.string.home_recommend_title), fontSize = 28.sp, fontWeight = FontWeight.Bold, color = MiuixTheme.colorScheme.onBackground)
-                        Text(
-                            stringResource(R.string.home_recommend_subtitle),
-                            fontSize = 14.sp,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary
-                        )
-                    }
-                    IconButton(onClick = onFlowBackgroundClick) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_palette),
-                            contentDescription = stringResource(R.string.flow_background_action),
-                            tint = MiuixTheme.colorScheme.onSurface
-                        )
-                    }
-                }
+                HomeTopHeader(
+                    weatherVisible = weatherVisible,
+                    showSettingsShortcut = showSettingsShortcut,
+                    onMenuClick = onHeaderMenuClick,
+                    onFlowBackgroundClick = onFlowBackgroundClick,
+                    onSettingsClick = onSettingsClick
+                )
                 Spacer(Modifier.height(14.dp))
                 SearchBar(
                     inputField = {
@@ -414,43 +264,24 @@ private fun HomePageContent(
         }
 
         item {
-            HorizontalPager(
-                state = featurePagerState,
-                pageSize = PageSize.Fixed(250.dp),
-                pageSpacing = 14.dp,
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(end = 82.dp)
-            ) { page ->
-                when (page) {
-                    0 -> FeatureCard(
-                        title = stringResource(R.string.home_feature_artist),
-                        subtitle = artistSong?.artist?.takeIf { it.isNotBlank() } ?: "从播放最多的歌手开始",
-                        hint = artistSong?.displayName ?: stringResource(R.string.home_feature_artist_hint),
-                        song = artistSong,
-                        color = pastelColorFor("artist-${artistSong?.artist ?: todayKey}"),
-                        onClick = { onNavigate(NavScene.ARTISTS) }
-                    )
-                    1 -> FeatureCard(
-                            title = stringResource(R.string.home_feature_for_you),
-                            subtitle = forYouDisplaySong?.displayName ?: stringResource(R.string.home_feature_for_you_hint),
-                            hint = stringResource(R.string.home_feature_for_you_hint),
-                            song = forYouDisplaySong,
-                            color = pastelColorFor(startupRecommendSeed),
-                            onClick = {
-                                if (forYouQueue.isNotEmpty()) {
-                                    onPlayQueue(forYouQueue, 0)
-                                }
-                            }
-                    )
-                    else -> FeatureCard(
-                        title = "每日20首",
-                        subtitle = dailySongs.firstOrNull()?.displayName ?: stringResource(R.string.home_feature_daily20_hint),
-                        hint = stringResource(R.string.home_feature_daily20_hint),
-                        song = dailySongs.firstOrNull(),
-                        color = pastelColorFor("daily-$todayKey"),
-                        onClick = { onNavigate(NavScene.DAILY_20) }
-                    )
-                }
-            }
+            HomeArtworkCarousel(
+                songs = queueSongs,
+                currentSong = currentSong,
+                state = carouselState,
+                style = carouselStyle,
+                showLyrics = carouselLyricVisible,
+                currentLyric = currentLyric,
+                currentLyricTranslation = currentLyricTranslation,
+                lyricSong = lyricSong,
+                playbackPositionMs = playbackPositionMs,
+                isPlaying = isPlaying,
+                onSelectSong = onQueueSongClick,
+                onCurrentArtworkLongPress = onCurrentArtworkLongPress,
+                onCurrentArtworkBoundsChanged = onCurrentArtworkBoundsChanged,
+                hideCenterForFullscreenTransition = hideCenterForFullscreenTransition,
+                centerReflectionAlpha = centerReflectionAlpha,
+                centerReflectionArtworkKey = centerReflectionArtworkKey,
+            )
         }
 
         item {
@@ -482,10 +313,20 @@ private fun HomePageContent(
 
         items(mostPlayed) { song ->
             val index = songs.indexOfFirst { it.id == song.id }.coerceAtLeast(0)
+            val isCurrentSong = currentSong?.let { current ->
+                current.path == song.path &&
+                    current.cueOffsetMs == song.cueOffsetMs &&
+                    current.cueTrackIndex == song.cueTrackIndex
+            } == true
             MostPlayedRow(
                 song = song,
                 playCount = playCounts[song.id] ?: 0,
-                onClick = { onSongClick(song, index) }
+                isCurrentSong = isCurrentSong,
+                isPlaying = isCurrentSong && isPlaying,
+                onClick = { onSongClick(song, index) },
+                onPlayPauseClick = {
+                    if (isCurrentSong) onCurrentPlayPause() else onSongClick(song, index)
+                }
             )
         }
 
@@ -535,13 +376,8 @@ fun Daily20Page(
 
     val dailySongs = remember(songs, todayKey) { daily20Songs(songs, todayKey) }
     val coverSong = dailySongs.firstOrNull()
-    // Daily20 不参与 PowerList 背景冻结，始终使用不透明背景
-    val backgroundColor = MiuixTheme.colorScheme.background
-
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(backgroundColor)
+        modifier = Modifier.fillMaxSize()
     ) {
         item {
             Box(
@@ -556,8 +392,8 @@ fun Daily20Page(
                         modifier = Modifier
                             .fillMaxSize(),
                         contentScale = ContentScale.Crop,
-                        targetWidth = 720,
-                        targetHeight = 720
+                        targetWidth = 1600,
+                        targetHeight = 1600
                     )
                 } else {
                     Box(
@@ -574,8 +410,8 @@ fun Daily20Page(
                                 listOf(
                                     Color.Black.copy(alpha = 0.04f),
                                     Color.Black.copy(alpha = 0.08f),
-                                    MiuixTheme.colorScheme.background.copy(alpha = 0.94f),
-                                    MiuixTheme.colorScheme.background
+                                    MiuixTheme.colorScheme.background.copy(alpha = 0.72f),
+                                    MiuixTheme.colorScheme.background.copy(alpha = 0.38f)
                                 ),
                                 startY = 0f,
                                 endY = 1200f
@@ -591,10 +427,19 @@ fun Daily20Page(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     CircleIconButton(onClick = onBack) {
-                        VectorIcon(Icons.Default.ArrowBack, contentDescription = "返回", tint = Color.White)
+                        VectorIcon(
+                            Icons.Default.ArrowBack,
+                            contentDescription = stringResource(R.string.library_action_back),
+                            tint = Color.White
+                        )
                     }
                     CircleIconButton(onClick = {}) {
-                        Text("↗", fontSize = 28.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                        Image(
+                            painter = painterResource(R.drawable.ic_share),
+                            contentDescription = stringResource(R.string.home_action_share),
+                            colorFilter = ColorFilter.tint(Color.White),
+                            modifier = Modifier.size(25.dp)
+                        )
                     }
                 }
                 Column(
@@ -603,10 +448,10 @@ fun Daily20Page(
                         .fillMaxWidth()
                         .padding(horizontal = 22.dp, vertical = 24.dp)
                 ) {
-                    Text("每日20首", fontSize = 34.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                    Text(stringResource(R.string.home_daily_songs_title), fontSize = 34.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                     Spacer(Modifier.height(14.dp))
                     Text(
-                        "每日更新，按照今天的日期从本地曲库精选20首。滑下去就是完整歌曲列表。",
+                        stringResource(R.string.home_daily_songs_summary),
                         fontSize = 16.sp,
                         lineHeight = 25.sp,
                         color = Color(0xFF2F3440),
@@ -616,12 +461,12 @@ fun Daily20Page(
                     Spacer(Modifier.height(28.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         PillAction(
-                            text = "收藏歌单",
+                            text = stringResource(R.string.home_favorite_playlist),
                             icon = { VectorIcon(Icons.Default.Favorite, contentDescription = null, tint = Color.Black) },
                             modifier = Modifier.weight(1f)
                         )
                         PillAction(
-                            text = "全部播放",
+                            text = stringResource(R.string.home_play_all),
                             icon = { VectorIcon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.Black) },
                             modifier = Modifier.weight(1f),
                             onClick = { if (dailySongs.isNotEmpty()) onPlayQueue(dailySongs, 0) }
@@ -639,7 +484,7 @@ fun Daily20Page(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("${dailySongs.size}首歌曲", fontSize = 23.sp, fontWeight = FontWeight.Medium, color = MiuixTheme.colorScheme.onBackground)
+                Text(stringResource(R.string.home_song_count, dailySongs.size), fontSize = 23.sp, fontWeight = FontWeight.Medium, color = MiuixTheme.colorScheme.onBackground)
                 Text(todayKey, fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
             }
         }
@@ -659,99 +504,6 @@ fun Daily20Page(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun FeatureCard(
-    title: String,
-    subtitle: String,
-    hint: String,
-    song: AudioFile?,
-    color: Color,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .width(250.dp)
-            .height(188.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .background(color)
-            .clickable { onClick() }
-            .padding(18.dp)
-    ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Text(title, fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White)
-            Spacer(Modifier.height(6.dp))
-            Text(hint, fontSize = 13.sp, color = Color.White.copy(alpha = 0.82f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.weight(1f))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                FeatureCover(song = song)
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        subtitle,
-                        fontSize = 16.sp,
-                        color = Color.White,
-                        maxLines = 1,
-                        modifier = Modifier.basicMarquee()
-                    )
-                    Text(
-                        song?.artist?.takeIf { it.isNotBlank() } ?: "RawSMusic",
-                        fontSize = 12.sp,
-                        color = Color.White.copy(alpha = 0.78f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Spacer(Modifier.width(10.dp))
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(Color.White),
-                    contentAlignment = Alignment.Center
-                ) {
-                    VectorIcon(Icons.Default.PlayArrow, contentDescription = null, tint = color, modifier = Modifier.size(32.dp))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun FeatureCover(song: AudioFile?) {
-    Box(
-        modifier = Modifier
-            .size(74.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(Color.White.copy(alpha = 0.28f))
-    ) {
-        AnimatedContent(
-            targetState = song?.id,
-            transitionSpec = {
-                slideInHorizontally(
-                    animationSpec = tween(260),
-                    initialOffsetX = { it }
-                ) togetherWith slideOutHorizontally(
-                    animationSpec = tween(260),
-                    targetOffsetX = { -it }
-                ) using SizeTransform(clip = true)
-            },
-            label = "feature-cover"
-        ) { _ ->
-            if (song?.coverKey?.isNotBlank() == true) {
-                BitmapImage(
-                    key = song.coverKey,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                    targetWidth = 256,
-                    targetHeight = 256
-                )
-            }
-        }
-    }
-}
-
 @Composable
 private fun LibraryTile(
     scene: NavScene,
@@ -767,7 +519,28 @@ private fun LibraryTile(
                 .clip(RoundedCornerShape(13.dp))
                 .background(pastelColorFor(scene.tag))
         ) {
-            if (song?.coverKey?.isNotBlank() == true) {
+            if (scene == NavScene.SOURCE_IMPORT) {
+                Image(
+                    painter = painterResource(R.drawable.ic_cloud),
+                    contentDescription = null,
+                    colorFilter = ColorFilter.tint(Color.White.copy(alpha = 0.94f)),
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(58.dp)
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    Color.White.copy(alpha = 0.05f),
+                                    Color.Black.copy(alpha = 0.18f)
+                                )
+                            )
+                        )
+                )
+            } else if (song?.coverKey?.isNotBlank() == true) {
                 BitmapImage(
                     key = song.coverKey,
                     contentDescription = null,
@@ -781,17 +554,6 @@ private fun LibraryTile(
                         .fillMaxSize()
                         .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.36f))))
                 )
-            }
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(12.dp)
-                    .size(42.dp)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.92f)),
-                contentAlignment = Alignment.Center
-            ) {
-                VectorIcon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.Black, modifier = Modifier.size(28.dp))
             }
         }
         Spacer(Modifier.height(9.dp))
@@ -810,7 +572,10 @@ private fun LibraryTile(
 private fun MostPlayedRow(
     song: AudioFile,
     playCount: Int,
-    onClick: () -> Unit
+    isCurrentSong: Boolean,
+    isPlaying: Boolean,
+    onClick: () -> Unit,
+    onPlayPauseClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -841,12 +606,28 @@ private fun MostPlayedRow(
         Spacer(Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(song.displayName, fontSize = 18.sp, color = MiuixTheme.colorScheme.onBackground, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(song.artist.ifBlank { "未知艺术家" }, fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(song.artist.ifBlank { stringResource(R.string.common_unknown_artist) }, fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.width(10.dp))
-        Text("${playCount}次", fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-        Spacer(Modifier.width(10.dp))
-        VectorIcon(Icons.Default.PlayArrow, contentDescription = null, tint = MiuixTheme.colorScheme.onBackground, modifier = Modifier.size(30.dp))
+        Text(stringResource(R.string.home_play_count, playCount), fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+        Spacer(Modifier.width(8.dp))
+        Box(
+            modifier = Modifier
+                .size(42.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onPlayPauseClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                painter = painterResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play),
+                contentDescription = stringResource(if (isPlaying) R.string.common_pause else R.string.common_play),
+                colorFilter = ColorFilter.tint(
+                    if (isCurrentSong) MiuixTheme.colorScheme.primary
+                    else MiuixTheme.colorScheme.onBackground
+                ),
+                modifier = Modifier.size(28.dp)
+            )
+        }
     }
 }
 
@@ -885,7 +666,7 @@ private fun DailySongRow(
         Spacer(Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(song.displayName, fontSize = 19.sp, color = MiuixTheme.colorScheme.onBackground, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(song.artist.ifBlank { "未知艺术家" }, fontSize = 14.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(song.artist.ifBlank { stringResource(R.string.common_unknown_artist) }, fontSize = 14.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         VectorIcon(Icons.Default.PlayArrow, contentDescription = null, tint = MiuixTheme.colorScheme.onSurfaceVariantSummary, modifier = Modifier.size(28.dp))
     }
@@ -938,6 +719,71 @@ private fun PillAction(
     }
 }
 
+@Composable
+private fun HomeTopHeader(
+    weatherVisible: Boolean,
+    showSettingsShortcut: Boolean,
+    onMenuClick: () -> Unit,
+    onFlowBackgroundClick: () -> Unit,
+    onSettingsClick: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            IconButton(
+                onClick = onMenuClick,
+                modifier = Modifier.align(Alignment.CenterStart)
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_home_hamburger),
+                    contentDescription = stringResource(R.string.home_header_menu_action),
+                    tint = MiuixTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+
+            Text(
+                text = stringResource(R.string.bottom_nav_home),
+                fontSize = 22.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MiuixTheme.colorScheme.onBackground,
+                modifier = Modifier.align(Alignment.Center)
+            )
+
+            Row(
+                modifier = Modifier.align(Alignment.CenterEnd),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onFlowBackgroundClick) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_palette),
+                        contentDescription = stringResource(R.string.flow_background_action),
+                        tint = MiuixTheme.colorScheme.onSurface
+                    )
+                }
+                if (showSettingsShortcut) {
+                    IconButton(onClick = onSettingsClick) {
+                        Icon(
+                            imageVector = MiuixIcons.Regular.Settings,
+                            contentDescription = stringResource(R.string.bottom_nav_settings),
+                            tint = MiuixTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+        }
+
+        if (weatherVisible) {
+            Spacer(Modifier.height(4.dp))
+            HomeWeatherHeader(modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
 private data class LibraryHomeCard(
     val scene: NavScene,
     val song: AudioFile?
@@ -954,7 +800,8 @@ private fun homeLibraryCards(songs: List<AudioFile>): List<LibraryHomeCard> {
         NavScene.RECENTLY_ADDED,
         NavScene.GENRE,
         NavScene.YEAR,
-        NavScene.COMPOSER
+        NavScene.COMPOSER,
+        NavScene.SOURCE_IMPORT
     )
     val covers = songs.filter { it.coverKey.isNotBlank() }.ifEmpty { songs }
     return scenes.mapIndexed { index, scene ->

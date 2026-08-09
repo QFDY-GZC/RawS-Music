@@ -21,7 +21,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -32,6 +34,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.graphicsLayer
+import com.rawsmusic.core.ui.scene.LocalSceneChromeAlpha
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -161,16 +165,8 @@ fun <T> buildAdaptiveAlphabetIndexData(
         }
     }
 
-    val finalLabels = buildList {
-        labels.forEach { label ->
-            if (label == "#" || targets.containsKey(label)) {
-                add(label)
-            }
-        }
-
-        if (!contains("#")) {
-            add("#")
-        }
+    val finalLabels = labels.filter { targets.containsKey(it) }.toMutableList().apply {
+        if (targets.containsKey("#") && !contains("#")) add("#")
     }
 
     return RawAlphabetIndexData(
@@ -209,8 +205,36 @@ fun RawAlphabetIndex(
     enabled: Boolean = data.targets.isNotEmpty(),
     minCellHeightDp: Float = 11.5f,
     onTopSelect: (() -> Unit)? = null,
-    onSelect: (letter: String, index: Int) -> Unit
+    onSelect: (letter: String, index: Int) -> Unit,
+    allowSceneOverlay: Boolean = true,
 ) {
+    val sceneChrome = LocalSceneChromeAlpha.current
+    val overlayRegistry = LocalAlphabetIndexOverlayRegistry.current
+    val overlayOwner = remember { Any() }
+    val detached = allowSceneOverlay &&
+        sceneChrome.detachAlphabetIndex &&
+        overlayRegistry != null
+    if (allowSceneOverlay && overlayRegistry != null) {
+        SideEffect {
+            overlayRegistry.publish(
+                AlphabetIndexOverlayEntry(
+                    owner = overlayOwner,
+                    data = data,
+                    modifier = modifier,
+                    enabled = enabled,
+                    minCellHeightDp = minCellHeightDp,
+                    onTopSelect = onTopSelect,
+                    onSelect = onSelect,
+                )
+            )
+        }
+        DisposableEffect(overlayRegistry, overlayOwner) {
+            onDispose { overlayRegistry.remove(overlayOwner) }
+        }
+    }
+    if (detached) {
+        return
+    }
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
     val colorScheme = MiuixTheme.colorScheme
@@ -294,6 +318,9 @@ fun RawAlphabetIndex(
 
     BoxWithConstraints(
         modifier = modifier
+            .graphicsLayer {
+                alpha = sceneChrome.alphabetIndex
+            }
             .width(22.dp)
             .fillMaxHeight(),
         contentAlignment = Alignment.CenterEnd
@@ -766,38 +793,24 @@ private fun compressIndexLabels(
     targets: Map<String, Int>,
     maxCount: Int
 ): List<String> {
-    // 只保留命中的索引
-    val hitLabels = labels.filter {
-        targets.containsKey(it)
-    }.toMutableList()
+    val hitLabels = labels.filter { targets.containsKey(it) }.toMutableList()
+    if (targets.containsKey("#") && !hitLabels.contains("#")) hitLabels.add("#")
+    if (hitLabels.isEmpty()) return emptyList()
+    if (hitLabels.size <= maxCount) return hitLabels
 
-    if (targets.containsKey("#") && !hitLabels.contains("#")) {
-        hitLabels.add("#")
-    }
-
-    if (hitLabels.isEmpty()) {
-        return listOf("#")
-    }
-
-    if (hitLabels.size <= maxCount) {
-        return hitLabels
-    }
-
-    val step = hitLabels.size.toFloat() / maxCount.toFloat()
-
-    return buildList {
+    val reserveHash = hitLabels.contains("#")
+    val ordinaryLabels = hitLabels.filterNot { it == "#" }
+    val ordinarySlots = (maxCount - if (reserveHash) 1 else 0).coerceAtLeast(1)
+    val step = ordinaryLabels.size.toFloat() / ordinarySlots.toFloat()
+    val compressed = buildList {
         var cursor = 0f
-
-        while (size < maxCount && cursor < hitLabels.size) {
-            val item = hitLabels[cursor.toInt().coerceIn(0, hitLabels.lastIndex)]
-            if (!contains(item)) add(item)
+        while (size < ordinarySlots && cursor < ordinaryLabels.size) {
+            val label = ordinaryLabels[cursor.toInt().coerceIn(0, ordinaryLabels.lastIndex)]
+            if (!contains(label)) add(label)
             cursor += step
         }
-
-        if (targets.containsKey("#") && !contains("#") && size < maxCount) {
-            add("#")
-        }
     }
+    return if (reserveHash) compressed + "#" else compressed
 }
 
 private fun resolveAlphabetTargetIndex(

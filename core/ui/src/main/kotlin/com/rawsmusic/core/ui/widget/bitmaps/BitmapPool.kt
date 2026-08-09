@@ -8,7 +8,7 @@ import java.util.LinkedList
  *
  * 核心机制：
  * - 双向链表存储可复用的 Bitmap
- * - 按尺寸匹配：只返回 width/height 一致的 Bitmap
+ * - 按可用内存匹配：优先返回尺寸一致的 Bitmap，否则复用兼容的 allocation
  * - HARDWARE Bitmap 永远不进池（isMutable=false，不能 reconfigure）
  * - 淘汰时 recycle 释放显存/内存
  */
@@ -24,7 +24,10 @@ object BitmapPool {
      * @return 匹配的 Bitmap，或 null
      */
     fun obtain(width: Int, height: Int, config: Bitmap.Config): Bitmap? {
+        if (width <= 0 || height <= 0) return null
         synchronized(lock) {
+            var compatible: Bitmap? = null
+            var compatibleBytes = Int.MAX_VALUE
             val iterator = pool.iterator()
             while (iterator.hasNext()) {
                 val bitmap = iterator.next()
@@ -32,16 +35,68 @@ object BitmapPool {
                     iterator.remove()
                     continue
                 }
-                if (bitmap.width == width && bitmap.height == height && bitmap.config == config) {
+                if (!bitmap.isMutable || bitmap.config != config) continue
+                if (bitmap.width == width && bitmap.height == height) {
                     iterator.remove()
-                    if (bitmap.hasAlpha()) {
-                        bitmap.eraseColor(0)
-                    }
-                    return bitmap
+                    return prepareForReuse(bitmap, width, height, config)
+                }
+
+                // Bitmap.reconfigure() can reuse the native allocation when the requested pixel
+                // storage fits. Prefer the smallest compatible allocation for scrolling cells.
+                val requiredBytes = requiredByteCount(width, height, config)
+                val allocationBytes = try {
+                    bitmap.allocationByteCount
+                } catch (_: Throwable) {
+                    bitmap.byteCount
+                }
+                if (allocationBytes >= requiredBytes && allocationBytes < compatibleBytes) {
+                    compatible = bitmap
+                    compatibleBytes = allocationBytes
                 }
             }
-            return null
+
+            val bitmap = compatible ?: return null
+            pool.remove(bitmap)
+            return try {
+                bitmap.reconfigure(width, height, config)
+                prepareForReuse(bitmap, width, height, config)
+            } catch (_: Throwable) {
+                if (!bitmap.isRecycled) bitmap.recycle()
+                null
+            }
         }
+    }
+
+    private fun prepareForReuse(
+        bitmap: Bitmap,
+        width: Int,
+        height: Int,
+        config: Bitmap.Config
+    ): Bitmap? {
+        return try {
+            if (bitmap.width != width || bitmap.height != height || bitmap.config != config) {
+                bitmap.reconfigure(width, height, config)
+            }
+            bitmap.eraseColor(0)
+            bitmap
+        } catch (_: Throwable) {
+            if (!bitmap.isRecycled) bitmap.recycle()
+            null
+        }
+    }
+
+    private fun requiredByteCount(width: Int, height: Int, config: Bitmap.Config): Int {
+        val bytesPerPixel = when (config) {
+            Bitmap.Config.ALPHA_8 -> 1
+            Bitmap.Config.RGB_565 -> 2
+            Bitmap.Config.ARGB_4444 -> 2
+            Bitmap.Config.RGBA_F16 -> 8
+            Bitmap.Config.HARDWARE -> 4
+            else -> 4
+        }
+        return (width.toLong() * height.toLong() * bytesPerPixel)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
     }
 
     /**

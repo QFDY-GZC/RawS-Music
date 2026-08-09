@@ -1,6 +1,7 @@
 package com.rawsmusic.core.ui.widget.bitmaps
 
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.isFileBackedArtworkSource
 
 /**
  * Single playback/lyrics/overlay artwork identity.
@@ -19,7 +20,7 @@ fun AudioFile?.resolvePlaybackArtworkKey(fallback: String? = null): String? {
 }
 
 fun AudioFile.fileArtworkKeyOrNull(): String? {
-    val sourcePath = path.takeIf { it.isLocalArtworkSource() } ?: return null
+    val sourcePath = path.takeIf { it.isFileBackedArtworkSource() } ?: return null
     val stamp = buildString {
         append(fileSize)
         append('|')
@@ -32,8 +33,4 @@ fun AudioFile.fileArtworkKeyOrNull(): String? {
     return "audio://$sourcePath|$stamp"
 }
 
-fun String.isLocalArtworkSource(): Boolean {
-    return isNotBlank() &&
-        !startsWith("http://", ignoreCase = true) &&
-        !startsWith("https://", ignoreCase = true)
-}
+fun String.isLocalArtworkSource(): Boolean = isFileBackedArtworkSource()

@@ -115,6 +115,7 @@ object ScanDispatcher {
         val options = TwoStageMediaScanner.Options(
             scannerOptions = MediaStoreScanner.ScanOptions.fromPreferences(),
             customPaths = customPaths,
+            sourceMode = TwoStageMediaScanner.SourceMode.fromPreferences(),
             expandCueTracks = true,
             emitEachSong = false,
             usePersistentCache = !fastScan,

@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -39,12 +40,15 @@ import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.ui.scene.pages.themeColors
+import com.rawsmusic.core.ui.widget.predictiveDialogMotion
+import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.scanner.webdav.AuthMode
 import com.rawsmusic.module.scanner.webdav.WebDavClient
 import com.rawsmusic.module.scanner.webdav.WebDavConfig
 import com.rawsmusic.module.scanner.webdav.WebDavItem
 import com.rawsmusic.ui.songs.PlayerHolder
+import com.rawsmusic.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -92,12 +96,15 @@ fun WebDavPageCompose(onBack: () -> Unit) {
                     AppPreferences.WebDav.lastUrl = url
                     items.clear()
                     items.addAll(result.sortedWith(compareByDescending<WebDavItem> { it.isDirectory }.thenBy { it.fileName }))
-                    if (items.isEmpty()) emptyMessage = "此目录为空"
+                    if (items.isEmpty()) emptyMessage = context.getString(R.string.webdav_empty_directory)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     isLoading = false
-                    emptyMessage = "加载失败: ${e.message}"
+                    emptyMessage = context.getString(
+                        R.string.webdav_load_failed,
+                        e.message.orEmpty()
+                    )
                 }
             }
         }
@@ -110,7 +117,7 @@ fun WebDavPageCompose(onBack: () -> Unit) {
             path = fileUrl,
             title = item.fileName.substringBeforeLast("."),
             artist = "WebDAV",
-            album = "WebDAV 远程音乐",
+            album = context.getString(R.string.webdav_remote_album),
             duration = 0,
             format = item.fileName.substringAfterLast(".", "").uppercase(),
             fileSize = item.size
@@ -125,13 +132,13 @@ fun WebDavPageCompose(onBack: () -> Unit) {
             path = fileUrl,
             title = item.fileName.substringBeforeLast("."),
             artist = "WebDAV",
-            album = "WebDAV 远程音乐",
+            album = context.getString(R.string.webdav_remote_album),
             duration = 0,
             format = item.fileName.substringAfterLast(".", "").uppercase(),
             fileSize = item.size
         )
         PlayerHolder.controller?.addToQueue(audioFile)
-        Toast.makeText(context, "已添加到播放队列", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.webdav_added_to_queue), Toast.LENGTH_SHORT).show()
     }
 
     LaunchedEffect(Unit) {
@@ -140,7 +147,7 @@ fun WebDavPageCompose(onBack: () -> Unit) {
             val startUrl = AppPreferences.WebDav.lastUrl.ifBlank { savedUrl }
             loadDirectory(startUrl)
         } else {
-            emptyMessage = "请配置 WebDAV 连接"
+            emptyMessage = context.getString(R.string.webdav_configure_hint)
         }
     }
 
@@ -163,11 +170,11 @@ fun WebDavPageCompose(onBack: () -> Unit) {
                 if (parentUrl != null) loadDirectory(parentUrl)
                 else onBack()
             }) {
-                Text("← 返回", color = colors.primary, fontSize = 14.sp)
+                Text(stringResource(R.string.webdav_back), color = colors.primary, fontSize = 14.sp)
             }
-            Text("WebDAV", fontSize = 18.sp, fontWeight = FontWeight.Medium, color = colors.onSurface)
+            Text(stringResource(R.string.webdav_title), fontSize = 18.sp, fontWeight = FontWeight.Medium, color = colors.onSurface)
             TextButton(onClick = { showSettings = true }) {
-                Text("设置", color = colors.primary, fontSize = 14.sp)
+                Text(stringResource(R.string.settings), color = colors.primary, fontSize = 14.sp)
             }
         }
 
@@ -268,7 +275,7 @@ private fun WebDavItemRow(item: WebDavItem, onClick: () -> Unit, onMore: () -> U
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            val info = if (item.isDirectory) "文件夹"
+            val info = if (item.isDirectory) stringResource(R.string.webdav_folder)
             else {
                 val ext = item.fileName.substringAfterLast(".", "").uppercase()
                 "$ext · ${AudioUtils.formatFileSize(item.size)}"
@@ -277,7 +284,7 @@ private fun WebDavItemRow(item: WebDavItem, onClick: () -> Unit, onMore: () -> U
         }
         if (!item.isDirectory && AudioUtils.isAudioFile(item.fileName)) {
             TextButton(onClick = onMore) {
-                Text("添加", color = colors.primary, fontSize = 12.sp)
+                Text(stringResource(R.string.webdav_add), color = colors.primary, fontSize = 12.sp)
             }
         }
     }
@@ -294,23 +301,32 @@ private fun WebDavSettingsDialog(
     var username by remember { mutableStateOf(AppPreferences.WebDav.username) }
     var password by remember { mutableStateOf(AppPreferences.WebDav.password) }
     var authMode by remember { mutableStateOf(AppPreferences.WebDav.authMode) }
-    val authModes = arrayOf("自动选择", "Basic 认证", "Digest 认证")
+    val authModes = arrayOf(
+        stringResource(R.string.webdav_auth_auto),
+        stringResource(R.string.webdav_auth_basic),
+        stringResource(R.string.webdav_auth_digest),
+    )
+    val dismissProgress = rememberPredictiveDialogProgress(enabled = true, onDismissRequest = onDismiss)
 
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(dismissOnBackPress = false)
+    ) {
         Column(
             Modifier
                 .fillMaxWidth()
+                .predictiveDialogMotion(dismissProgress)
                 .clip(RoundedCornerShape(16.dp))
                 .background(colors.surface)
                 .padding(20.dp)
         ) {
-            Text("WebDAV 设置", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = colors.onSurface)
+            Text(stringResource(R.string.webdav_settings), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = colors.onSurface)
             Spacer(Modifier.height(16.dp))
 
             androidx.compose.material3.OutlinedTextField(
                 value = url,
                 onValueChange = { url = it },
-                label = { Text("WebDAV 地址") },
+                label = { Text(stringResource(R.string.webdav_url_hint)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -318,7 +334,7 @@ private fun WebDavSettingsDialog(
             androidx.compose.material3.OutlinedTextField(
                 value = username,
                 onValueChange = { username = it },
-                label = { Text("用户名") },
+                label = { Text(stringResource(R.string.webdav_username_hint)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -326,13 +342,13 @@ private fun WebDavSettingsDialog(
             androidx.compose.material3.OutlinedTextField(
                 value = password,
                 onValueChange = { password = it },
-                label = { Text("密码") },
+                label = { Text(stringResource(R.string.webdav_password_hint)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
             Spacer(Modifier.height(12.dp))
 
-            Text("认证方式", fontSize = 13.sp, color = colors.secondaryText)
+            Text(stringResource(R.string.webdav_authentication_method), fontSize = 13.sp, color = colors.secondaryText)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 authModes.forEachIndexed { index, mode ->
                     TextButton(onClick = { authMode = index }) {
@@ -347,16 +363,16 @@ private fun WebDavSettingsDialog(
 
             Spacer(Modifier.height(16.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onDismiss) { Text("取消", color = colors.secondaryText) }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.settings_cancel), color = colors.secondaryText) }
                 Spacer(Modifier.width(8.dp))
                 TextButton(onClick = {
                     if (url.isBlank()) {
-                        Toast.makeText(context, "请输入地址", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, context.getString(R.string.webdav_enter_address), Toast.LENGTH_SHORT).show()
                         return@TextButton
                     }
                     onSave(url.trim(), username.trim(), password.trim(), authMode)
                 }) {
-                    Text("保存", color = colors.primary)
+                    Text(stringResource(R.string.webdav_save), color = colors.primary)
                 }
             }
         }

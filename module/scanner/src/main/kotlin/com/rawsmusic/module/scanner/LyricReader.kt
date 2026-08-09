@@ -7,10 +7,13 @@ import com.rawsmusic.core.common.model.LyricLine
 import com.rawsmusic.core.common.model.LyricWord
 import com.rawsmusic.module.scanner.parser.KrcParser
 import com.rawsmusic.module.scanner.parser.RawSLyricsParser
-import java.io.BufferedReader
+import com.rawsmusic.module.scanner.parser.LyricTextNormalizer
 import java.io.File
 import java.io.FileInputStream
-import java.io.InputStreamReader
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
 import java.text.Normalizer
 
 object LyricReader {
@@ -19,6 +22,8 @@ object LyricReader {
     private const val CUE_BOUNDARY_TOLERANCE_MS = 600L
 
     fun readLyrics(song: AudioFile): LyricData {
+        val rawSOverride = readRawSOverride(song)
+        if (!rawSOverride.isEmpty) return rawSOverride
         if (!song.isCueTrack()) return readLyrics(song.path)
 
         val trackSpecific = readCueTrackSpecificLyrics(song)
@@ -43,10 +48,65 @@ object LyricReader {
     fun readLyrics(songPath: String): LyricData {
         val songName = File(songPath).name
         Log.d(TAG, "readLyrics: $songName")
+        val rawSOverride = readRawSOverride(songPath)
+        if (!rawSOverride.isEmpty) return rawSOverride
         return readAlbumLevelLyrics(songPath)
     }
 
+    private fun readRawSOverride(song: AudioFile): LyricData {
+        val audio = File(song.path)
+        val privateFiles = LyricOverrideStore.filesFor(song)
+        val groups = buildList<List<File>> {
+            var privateIndex = 0
+            if (song.isCueTrack()) {
+                add(
+                    listOfNotNull(
+                        audio.parentFile?.let { File(it, audio.nameWithoutExtension + ".track${song.cueTrackIndex}.raws.ttml") },
+                        privateFiles.getOrNull(privateIndex++)
+                    )
+                )
+            }
+            add(
+                listOfNotNull(
+                    audio.parentFile?.let { File(it, audio.nameWithoutExtension + ".raws.ttml") },
+                    privateFiles.getOrNull(privateIndex)
+                )
+            )
+        }
+        return readRawSOverrideGroups(groups)
+    }
+
+    private fun readRawSOverride(songPath: String): LyricData {
+        val audio = File(songPath)
+        return readRawSOverrideGroups(
+            listOf(
+                listOfNotNull(
+                    audio.parentFile?.let { File(it, audio.nameWithoutExtension + ".raws.ttml") },
+                    LyricOverrideStore.filesFor(songPath).firstOrNull()
+                )
+            )
+        )
+    }
+
+    private fun readRawSOverrideGroups(groups: List<List<File>>): LyricData {
+        groups.forEach { candidates ->
+            candidates.asSequence()
+                .filter { it.isFile }
+                .sortedByDescending { it.lastModified() }
+                .forEach { file ->
+                    val parsed = readTextAndParse(file) { RawSLyricsParser.parse(it) }
+                    if (!parsed.isEmpty) {
+                        Log.i(TAG, "LYRIC_TRACE raws_override file=${file.name} lines=${parsed.lines.size}")
+                        return parsed
+                    }
+                }
+        }
+        return LyricData()
+    }
+
     private fun readAlbumLevelLyrics(songPath: String): LyricData {
+        val songFile = File(songPath)
+        Log.i(TAG, "LYRIC_TRACE start path=${songFile.name} readable=${songFile.canRead()} parent=${songFile.parentFile?.canRead()}")
         val embedded = readEmbeddedLyrics(songPath)
         if (!embedded.isEmpty) {
             Log.d(TAG, "  embedded: ${embedded.lines.size} lines")
@@ -56,7 +116,7 @@ object LyricReader {
         for (finder in fileFinders) {
             val file = findLyricFile(songPath, finder.extensions)
             if (file != null) {
-                val parsed = finder.parse(file)
+                val parsed = LyricTextNormalizer.normalize(finder.parse(file))
                 if (!parsed.isEmpty) {
                     Log.d(TAG, "  ${finder.name}: ${parsed.lines.size} lines from ${file.name}")
                     return parsed
@@ -65,6 +125,7 @@ object LyricReader {
         }
 
         Log.d(TAG, "  no lyrics found")
+        Log.i(TAG, "LYRIC_TRACE no_match path=${songFile.name}")
         return LyricData()
     }
 
@@ -76,7 +137,7 @@ object LyricReader {
         for (finder in fileFinders) {
             val file = findLyricFileByBaseNames(dir, candidates, finder.extensions)
             if (file != null) {
-                val parsed = finder.parse(file)
+                val parsed = LyricTextNormalizer.normalize(finder.parse(file))
                 if (!parsed.isEmpty) {
                     Log.d(TAG, "  cue ${finder.name}: ${parsed.lines.size} lines from ${file.name}")
                     return parsed
@@ -107,33 +168,101 @@ object LyricReader {
 
     private fun readTextAndParse(file: File, parser: (String) -> LyricData): LyricData {
         return try {
-            val content = BufferedReader(InputStreamReader(FileInputStream(file), "UTF-8")).readText()
-            parser(content)
-        } catch (_: Exception) {
+            val bytes = FileInputStream(file).use { it.readBytes() }
+            val decoded = decodeLyricText(bytes)
+            val result = parser(decoded.text)
+            Log.i(
+                TAG,
+                "LYRIC_TRACE parsed file=${file.name} encoding=${decoded.charset} bytes=${bytes.size} lines=${result.lines.size}"
+            )
+            result
+        } catch (e: Exception) {
+            Log.w(TAG, "LYRIC_TRACE parse_failed file=${file.name} readable=${file.canRead()}", e)
             LyricData()
         }
     }
 
+    private data class DecodedLyricText(val text: String, val charset: String)
+
+    /** Handles common lyric encodings rather than treating every sidecar as UTF-8. */
+    private fun decodeLyricText(bytes: ByteArray): DecodedLyricText {
+        if (bytes.startsWith(UTF8_BOM)) return DecodedLyricText(String(bytes, 3, bytes.size - 3, Charsets.UTF_8), "UTF-8 BOM")
+        if (bytes.startsWith(UTF16_LE_BOM)) return DecodedLyricText(String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE), "UTF-16LE BOM")
+        if (bytes.startsWith(UTF16_BE_BOM)) return DecodedLyricText(String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE), "UTF-16BE BOM")
+
+        detectUtf16WithoutBom(bytes)?.let { charset ->
+            return DecodedLyricText(String(bytes, charset), charset.name())
+        }
+        strictDecode(bytes, Charsets.UTF_8)?.let { return DecodedLyricText(it, "UTF-8") }
+        strictDecode(bytes, Charset.forName("GB18030"))?.let { return DecodedLyricText(it, "GB18030") }
+        return DecodedLyricText(String(bytes, Charsets.UTF_8), "UTF-8 replacement")
+    }
+
+    private fun strictDecode(bytes: ByteArray, charset: Charset): String? = try {
+        charset.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(bytes))
+            .toString()
+    } catch (_: CharacterCodingException) {
+        null
+    }
+
+    private fun detectUtf16WithoutBom(bytes: ByteArray): Charset? {
+        val sample = bytes.take(128).toByteArray()
+        if (sample.size < 8) return null
+        val evenNulls = sample.indices.count { it % 2 == 0 && sample[it] == 0.toByte() }
+        val oddNulls = sample.indices.count { it % 2 != 0 && sample[it] == 0.toByte() }
+        val pairs = sample.size / 2
+        return when {
+            oddNulls >= pairs / 3 -> Charsets.UTF_16LE
+            evenNulls >= pairs / 3 -> Charsets.UTF_16BE
+            else -> null
+        }
+    }
+
     private fun readEmbeddedLyrics(songPath: String): LyricData {
-        return try {
-            val info = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.getMediaInfo(songPath) ?: return LyricData()
-            var lyricsString: String? = null
-            val candidateKeys = setOf("LYRICS", "LYRICS-ENG", "UNSYNCEDLYRICS", "TXXX:LYRICS")
-            for ((key, value) in info) {
-                val upperKey = key.uppercase()
-                if (candidateKeys.contains(upperKey) || upperKey.contains("LYRIC")) {
-                    if (value.isNotBlank()) {
-                        lyricsString = value
-                        break
+        try {
+            val info = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.getMediaInfo(songPath)
+            if (info != null) {
+                val candidateKeys = setOf("LYRICS", "LYRICS-ENG", "UNSYNCEDLYRICS", "TXXX:LYRICS")
+                for ((key, value) in info) {
+                    val upperKey = key.uppercase()
+                    if ((candidateKeys.contains(upperKey) || upperKey.contains("LYRIC")) && value.isNotBlank()) {
+                        val parsed = detectAndParse(value.trimBomAndNul())
+                        if (!parsed.isEmpty) {
+                            Log.i(TAG, "LYRIC_TRACE embedded_ffmpeg key=$key lines=${parsed.lines.size}")
+                            return parsed
+                        }
                     }
                 }
             }
-            if (lyricsString == null) return LyricData()
-            detectAndParse(lyricsString)
         } catch (e: Exception) {
-            Log.e(TAG, "readEmbeddedLyrics error", e)
-            LyricData()
+            Log.w(TAG, "LYRIC_TRACE embedded_ffmpeg_failed file=${File(songPath).name}", e)
         }
+
+        val fallback = Id3EmbeddedLyricReader.read(songPath) ?: return LyricData()
+        val parsed = detectAndParse(fallback.text)
+        if (!parsed.isEmpty) {
+            Log.i(
+                TAG,
+                "LYRIC_TRACE embedded_id3_fallback frame=${fallback.frameId} " +
+                    "encoding=${fallback.encoding} recovered=${fallback.recoveredMalformedEncoding} " +
+                    "chars=${fallback.text.length} lines=${parsed.lines.size} file=${File(songPath).name}"
+            )
+        } else {
+            Log.w(
+                TAG,
+                "LYRIC_TRACE embedded_id3_unparsed frame=${fallback.frameId} " +
+                    "encoding=${fallback.encoding} chars=${fallback.text.length} file=${File(songPath).name}"
+            )
+        }
+        return parsed
+    }
+
+    private fun String.trimBomAndNul(): String {
+        return trimStart('\u0000', '\uFEFF', '\uFFFE')
+            .replace("\u0000", "")
     }
 
     private fun detectAndParse(content: String): LyricData {
@@ -247,8 +376,10 @@ object LyricReader {
             val nextLine = lines.getOrNull(index + 1)
             val rawBegin = line.timeStamp
             val rawEnd = line.effectiveRawEnd(nextLine)
-            val effectiveBegin = rawBegin + offset
-            val effectiveEnd = rawEnd + offset
+            // LRC [offset] is metadata, not a second playback clock. Cue slicing
+            // must use the same timestamps that the player will later consume.
+            val effectiveBegin = rawBegin
+            val effectiveEnd = rawEnd
 
             val overlapsCue = effectiveEnd > cueStart - CUE_BOUNDARY_TOLERANCE_MS &&
                 effectiveBegin < cueEnd + CUE_BOUNDARY_TOLERANCE_MS
@@ -319,4 +450,11 @@ object LyricReader {
             .replace(Regex("\\s+"), " ")
             .trim()
     }
+
+    private fun ByteArray.startsWith(prefix: ByteArray): Boolean =
+        size >= prefix.size && prefix.indices.all { this[it] == prefix[it] }
+
+    private val UTF8_BOM = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
+    private val UTF16_LE_BOM = byteArrayOf(0xFF.toByte(), 0xFE.toByte())
+    private val UTF16_BE_BOM = byteArrayOf(0xFE.toByte(), 0xFF.toByte())
 }

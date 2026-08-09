@@ -18,16 +18,25 @@ class UsbHardwareVolumeProvider(
 ) {
 
     override fun onAdjustVolume(direction: Int) {
-        AppLogger.i(TAG, "onAdjustVolume direction=$direction current=${currentVolume}")
-        onAdjustStep(direction, "media_session_onAdjustVolume")
-        setCurrentVolume(getCurrentStep())
+        val boundedDirection = direction.coerceIn(-1, 1)
+        val optimistic = (currentVolume + boundedDirection)
+            .coerceIn(0, UsbHardwareVolumeModel.MAX_STEPS)
+        AppLogger.i(
+            TAG,
+            "onAdjustVolume direction=$direction bounded=$boundedDirection " +
+                "current=$currentVolume optimistic=$optimistic",
+        )
+        // The native write is serialized asynchronously. Do not immediately read the old
+        // preference back or Android will reset its background volume slider after every key.
+        setCurrentVolume(optimistic)
+        onAdjustStep(boundedDirection, "media_session_onAdjustVolume")
     }
 
     override fun onSetVolumeTo(volume: Int) {
         val bounded = volume.coerceIn(0, UsbHardwareVolumeModel.MAX_STEPS)
         AppLogger.i(TAG, "onSetVolumeTo volume=$volume bounded=$bounded")
+        setCurrentVolume(bounded)
         onSetStep(bounded, "media_session_onSetVolumeTo")
-        setCurrentVolume(getCurrentStep())
     }
 
     fun syncFromController() {

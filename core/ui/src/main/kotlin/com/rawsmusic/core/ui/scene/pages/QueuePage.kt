@@ -1,26 +1,36 @@
 package com.rawsmusic.core.ui.scene.pages
 
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.sp
-import top.yukonga.miuix.kmp.theme.MiuixTheme
+import androidx.compose.ui.res.stringResource
+import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.ui.scene.NavScene
+import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
+import com.rawsmusic.core.ui.widget.powerlist.rememberComposePowerListState
 
 @Composable
-fun QueuePage(onBack: () -> Unit) {
-    SimplePageScaffold(title = "播放队列", onBack = onBack) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "当前播放队列\n(待集成)",
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                fontSize = 16.sp
-            )
-        }
+fun QueuePage(
+    songs: List<AudioFile>,
+    currentIndex: Int,
+    onBack: () -> Unit,
+    onSongClick: (AudioFile, Int) -> Unit,
+    onShuffle: (List<AudioFile>) -> Unit
+) {
+    val state = rememberComposePowerListState("queue")
+    LibraryListScaffold(
+        title = stringResource(com.rawsmusic.core.ui.R.string.library_title_queue),
+        sceneId = NavScene.QUEUE.name,
+        onBack = onBack,
+        powerListState = state,
+        onShuffle = { if (songs.isNotEmpty()) onShuffle(songs) }
+    ) { topPadding, backdropSource ->
+        ComposePowerListFull(
+            songs = songs,
+            currentPlayingIndex = currentIndex,
+            state = state,
+            contentTopPadding = topPadding,
+            modifier = Modifier.then(backdropSource),
+            onSongClick = onSongClick
+        )
     }
 }

@@ -17,6 +17,7 @@ object PowerTraceLogger {
     private const val FLOW_INTERVAL_MS = 15_000L
 
     private val lastLogAt = ConcurrentHashMap<String, AtomicLong>()
+    private val lastFlowLogAt = AtomicLong(0L)
 
     private val flowFrames = AtomicLong(0L)
     private val flowActiveFrames = AtomicLong(0L)
@@ -47,7 +48,13 @@ object PowerTraceLogger {
     ) {
         val frames = flowFrames.incrementAndGet()
         if (enabled) flowActiveFrames.incrementAndGet()
-        if (!shouldLog("flow.frame", FLOW_INTERVAL_MS)) return
+        // This path is called once per rendered frame. Avoid a ConcurrentHashMap lookup and
+        // Avoid getOrPut on every vsync; frame scheduling stays separate from diagnostics.
+        val now = SystemClock.elapsedRealtime()
+        val previous = lastFlowLogAt.get()
+        if (now - previous < FLOW_INTERVAL_MS ||
+            !lastFlowLogAt.compareAndSet(previous, now)
+        ) return
 
         log(
             "FLOW_FRAME mode=$mode enabled=$enabled frames=$frames activeFrames=${flowActiveFrames.get()} " +

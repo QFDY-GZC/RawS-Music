@@ -10,7 +10,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        minSdk = 23
+        minSdk = 24
         consumerProguardFiles("consumer-rules.pro")
     }
 
@@ -28,10 +28,14 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.lifecycle.livedata.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    // AudioFile is consumed by Compose PowerList. Keep its immutable contract visible to the
+    // Compose compiler so pixel-only scroll frames can skip unchanged holders.
+    implementation(platform(libs.compose.bom))
+    implementation("androidx.compose.runtime:runtime")
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.gson)
     implementation(libs.mmkv)
-    implementation(libs.androidutilcode)
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.26.0")
     api(libs.dexter)
 }

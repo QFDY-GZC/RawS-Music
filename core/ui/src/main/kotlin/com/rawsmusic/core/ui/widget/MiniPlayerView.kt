@@ -1,10 +1,15 @@
 package com.rawsmusic.core.ui.widget
 
-import android.graphics.Bitmap
 import android.graphics.Paint
 import android.graphics.PathMeasure
 import android.graphics.RectF
+import android.os.SystemClock
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.MarqueeAnimationMode
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -23,32 +28,61 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
+import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.R
+import com.rawsmusic.core.ui.scene.CoverTransitionTarget
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.rawsmusic.core.ui.theme.ThemeManager
+import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
+import com.rawsmusic.core.ui.widget.bitmaps.NativePlayerArtworkSwitchEasing
+import com.rawsmusic.core.ui.widget.text.LongTextMotionState
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlin.math.abs
+
+private const val MINI_PLAYER_SWITCH_THRESHOLD = 0.20f
+private const val MINI_PLAYER_SWITCH_DURATION_MS = 260
+private const val MINI_PLAYER_POST_DRAG_CLICK_BLOCK_MS = 320L
+private val MiniPlayerSwitchEasing = NativePlayerArtworkSwitchEasing
+
+private data class MiniPlayerContentSnapshot(
+    val identity: String,
+    val title: String,
+    val artist: String,
+    val lyricText: String,
+    val lyricTranslation: String,
+    val coverPath: String?,
+    val isPlaying: Boolean
+)
 
 /**
  * 纯 Compose 版本的迷你播放栏
@@ -61,152 +95,623 @@ import kotlin.math.abs
  * - 点击打开播放器
  * - 双击切换普通/黑胶模式
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ComposeMiniPlayer(
     title: String,
     artist: String,
+    lyricText: String = "",
+    lyricTranslation: String = "",
     isPlaying: Boolean,
     progress: Float = 0f,
     coverPath: String? = null,
-    coverBitmap: Bitmap? = null,
+    contentIdentity: String? = null,
+    currentSong: AudioFile? = null,
+    previousSong: AudioFile? = null,
+    nextSong: AudioFile? = null,
+    previousTitle: String? = null,
+    previousArtist: String = "",
+    previousCoverPath: String? = null,
+    previousIdentity: String? = null,
+    nextTitle: String? = null,
+    nextArtist: String = "",
+    nextCoverPath: String? = null,
+    nextIdentity: String? = null,
+    queueCurrentIndex: Int = -1,
+    queueSize: Int = 0,
     backdrop: Backdrop? = null,
     animateArtwork: Boolean = false,
+    drawBackground: Boolean = true,
+    drawOuterProgress: Boolean = true,
+    containerHeight: androidx.compose.ui.unit.Dp = 62.dp,
+    containerShape: Shape = RoundedCornerShape(50),
+    clipContent: Boolean = true,
+    contentPaddingHorizontal: androidx.compose.ui.unit.Dp = 8.dp,
+    contentPaddingVertical: androidx.compose.ui.unit.Dp = 6.dp,
+    primaryContentColor: Color? = null,
+    secondaryContentColor: Color? = null,
     onClick: () -> Unit = {},
     onPlayPause: () -> Unit = {},
     onSkipPrevious: () -> Unit = {},
     onSkipNext: () -> Unit = {},
+    onSwitchProgress: (progress: Float, active: Boolean) -> Unit = { _, _ -> },
     onCoverBoundsChanged: (RectF?) -> Unit = {},
+    onCoverTargetChanged: (CoverTransitionTarget?) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val cs = MiuixTheme.colorScheme
     val isLight = cs.background.luminance() > 0.5f
-    val shape = RoundedCornerShape(50)
+    val shape = containerShape
 
-    val textColor = cs.onBackground
-    val secondaryColor = cs.onSurfaceVariantSummary
+    val textColor = primaryContentColor ?: cs.onBackground
+    val secondaryColor = secondaryContentColor ?: cs.onSurfaceVariantSummary
 
     val artworkModeState = rememberMiniPlayerArtworkMode()
     val artworkMode = artworkModeState.value
+    val authoritativeSnapshot = remember(
+        currentSong,
+        contentIdentity,
+        title,
+        artist,
+        lyricText,
+        lyricTranslation,
+        coverPath,
+        isPlaying
+    ) {
+        MiniPlayerContentSnapshot(
+            identity = contentIdentity?.takeIf { it.isNotBlank() }
+                ?: currentSong.miniPlayerIdentity(title, artist),
+            title = title,
+            artist = artist,
+            lyricText = lyricText,
+            lyricTranslation = lyricTranslation,
+            coverPath = coverPath,
+            isPlaying = isPlaying
+        )
+    }
+    val previousSnapshot = remember(
+        previousSong, previousTitle, previousArtist, previousCoverPath, previousIdentity, isPlaying
+    ) {
+        previousSong?.toMiniPlayerPreviewSnapshot(isPlaying)
+            ?: previousTitle?.takeIf(String::isNotBlank)?.let { previewTitle ->
+                MiniPlayerContentSnapshot(
+                    identity = previousIdentity?.takeIf(String::isNotBlank) ?: "$previewTitle|$previousArtist",
+                    title = previewTitle,
+                    artist = previousArtist,
+                    lyricText = "",
+                    lyricTranslation = "",
+                    coverPath = previousCoverPath,
+                    isPlaying = isPlaying,
+                )
+            }
+    }
+    val nextSnapshot = remember(
+        nextSong, nextTitle, nextArtist, nextCoverPath, nextIdentity, isPlaying
+    ) {
+        nextSong?.toMiniPlayerPreviewSnapshot(isPlaying)
+            ?: nextTitle?.takeIf(String::isNotBlank)?.let { previewTitle ->
+                MiniPlayerContentSnapshot(
+                    identity = nextIdentity?.takeIf(String::isNotBlank) ?: "$previewTitle|$nextArtist",
+                    title = previewTitle,
+                    artist = nextArtist,
+                    lyricText = "",
+                    lyricTranslation = "",
+                    coverPath = nextCoverPath,
+                    isPlaying = isPlaying,
+                )
+            }
+    }
+    val latestAuthoritativeSnapshot by rememberUpdatedState(authoritativeSnapshot)
+    val latestQueueIndex by rememberUpdatedState(queueCurrentIndex)
+    val latestPreviousSnapshot by rememberUpdatedState(previousSnapshot)
+    val latestNextSnapshot by rememberUpdatedState(nextSnapshot)
+    val latestSkipPrevious by rememberUpdatedState(onSkipPrevious)
+    val latestSkipNext by rememberUpdatedState(onSkipNext)
+    val latestSwitchProgress by rememberUpdatedState(onSwitchProgress)
+
+    var visibleSnapshot by remember { mutableStateOf(authoritativeSnapshot) }
+    var outgoingSnapshot by remember { mutableStateOf<MiniPlayerContentSnapshot?>(null) }
+    var incomingSnapshot by remember { mutableStateOf<MiniPlayerContentSnapshot?>(null) }
+    var transitionDirection by remember { mutableIntStateOf(0) }
+    var contentWidthPx by remember { mutableFloatStateOf(1f) }
+    var dragOffsetPx by remember { mutableFloatStateOf(0f) }
+    var transitionRunning by remember { mutableStateOf(false) }
+    var pendingIdentity by remember { mutableStateOf<String?>(null) }
+    var settledQueueIndex by remember { mutableIntStateOf(queueCurrentIndex) }
+    var transitionJob by remember { mutableStateOf<Job?>(null) }
+    // The mini-player owns both horizontal track switching and tap-to-open. Keep a short
+    // post-drag suppression window so the UP that commits a track switch can never leak through
+    // the sibling clickable/tap detector and force-open the full player. Treat dragging the
+    // mini player and tapping it as mutually exclusive gesture outcomes.
+    var suppressOpenUntilUptimeMs by remember { mutableStateOf(0L) }
+    fun blockOpenFromCurrentHorizontalGesture() {
+        suppressOpenUntilUptimeMs = SystemClock.uptimeMillis() + MINI_PLAYER_POST_DRAG_CLICK_BLOCK_MS
+    }
+    val guardedOpenPlayer = {
+        if (SystemClock.uptimeMillis() >= suppressOpenUntilUptimeMs) {
+            onClick()
+        }
+    }
+    val scope = rememberCoroutineScope()
+
+    fun previewForDirection(direction: Int): MiniPlayerContentSnapshot? {
+        return if (direction > 0) latestNextSnapshot else latestPreviousSnapshot
+    }
+
+    fun clearTransition(target: MiniPlayerContentSnapshot? = null) {
+        val completedDirection = transitionDirection
+        if (target != null) {
+            val latest = latestAuthoritativeSnapshot
+            visibleSnapshot = if (latest.identity == target.identity) latest else target
+        }
+        outgoingSnapshot = null
+        incomingSnapshot = null
+        transitionDirection = 0
+        dragOffsetPx = 0f
+        transitionRunning = false
+        pendingIdentity = null
+        settledQueueIndex = latestQueueIndex
+        latestSwitchProgress(
+            if (target != null) completedDirection.toFloat() else 0f,
+            false
+        )
+    }
+
+    fun animateSwitch(
+        direction: Int,
+        target: MiniPlayerContentSnapshot,
+        dispatchTransport: Boolean,
+        startOffset: Float = dragOffsetPx
+    ) {
+        transitionJob?.cancel()
+        transitionJob = scope.launch {
+            transitionRunning = true
+            outgoingSnapshot = visibleSnapshot
+            incomingSnapshot = target
+            transitionDirection = direction
+            pendingIdentity = target.identity
+
+            if (dispatchTransport) {
+                if (direction > 0) latestSkipNext() else latestSkipPrevious()
+            }
+
+            val animation = Animatable(startOffset)
+            animation.animateTo(
+                targetValue = -direction * contentWidthPx.coerceAtLeast(1f),
+                animationSpec = tween(
+                    durationMillis = MINI_PLAYER_SWITCH_DURATION_MS,
+                    easing = MiniPlayerSwitchEasing
+                )
+            ) {
+                dragOffsetPx = value
+                latestSwitchProgress(
+                    -value / contentWidthPx.coerceAtLeast(1f),
+                    true
+                )
+            }
+            clearTransition(target)
+            transitionJob = null
+        }
+    }
+
+    fun cancelDrag() {
+        transitionJob?.cancel()
+        transitionJob = scope.launch {
+            transitionRunning = true
+            val animation = Animatable(dragOffsetPx)
+            animation.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(
+                    durationMillis = 210,
+                    easing = MiniPlayerSwitchEasing
+                )
+            ) {
+                dragOffsetPx = value
+                latestSwitchProgress(
+                    -value / contentWidthPx.coerceAtLeast(1f),
+                    true
+                )
+            }
+            clearTransition()
+            transitionJob = null
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(authoritativeSnapshot) {
+        if (
+            !transitionRunning &&
+            visibleSnapshot.identity == authoritativeSnapshot.identity
+        ) {
+            visibleSnapshot = authoritativeSnapshot
+            settledQueueIndex = queueCurrentIndex
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(
+        authoritativeSnapshot.identity,
+        transitionRunning
+    ) {
+        if (
+            visibleSnapshot.identity == authoritativeSnapshot.identity ||
+            pendingIdentity == authoritativeSnapshot.identity ||
+            transitionRunning
+        ) {
+            return@LaunchedEffect
+        }
+        if (contentWidthPx <= 1f) {
+            visibleSnapshot = authoritativeSnapshot
+            settledQueueIndex = queueCurrentIndex
+            return@LaunchedEffect
+        }
+        val direction = resolveMiniPlayerQueueDirection(
+            oldIndex = settledQueueIndex,
+            newIndex = queueCurrentIndex,
+            queueSize = queueSize
+        )
+        animateSwitch(
+            direction = direction,
+            target = authoritativeSnapshot,
+            dispatchTransport = false,
+            startOffset = 0f
+        )
+    }
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .height(62.dp)
-            .shadow(
-                elevation = 18.dp,
-                shape = shape,
-                ambientColor = Color.Black.copy(alpha = if (isLight) 0.18f else 0.36f),
-                spotColor = Color.Black.copy(alpha = if (isLight) 0.20f else 0.50f)
+            .height(containerHeight)
+            .then(if (clipContent) Modifier.clip(shape) else Modifier)
+            .then(
+                if (drawOuterProgress) {
+                    Modifier.miniPlayerOuterRemainingProgress(
+                        progress = progress,
+                        radiusDp = containerHeight.value / 2f,
+                        color = cs.primary
+                    )
+                } else {
+                    Modifier
+                }
             )
-            .clip(shape)
-            .miniPlayerOuterRemainingProgress(
-                progress = progress,
-                radiusDp = 31f,
-                color = cs.primary
-            )
+            .onSizeChanged { contentWidthPx = it.width.toFloat().coerceAtLeast(1f) }
             .pointerInput(Unit) {
-                var dragAmount = 0f
                 detectHorizontalDragGestures(
-                    onDragStart = { dragAmount = 0f },
+                    onDragStart = {
+                        blockOpenFromCurrentHorizontalGesture()
+                        val interruptedTarget = incomingSnapshot
+                        transitionJob?.cancel()
+                        transitionJob = null
+                        if (transitionRunning && interruptedTarget != null) {
+                            val latest = latestAuthoritativeSnapshot
+                            visibleSnapshot = if (latest.identity == interruptedTarget.identity) {
+                                latest
+                            } else {
+                                interruptedTarget
+                            }
+                            settledQueueIndex = latestQueueIndex
+                        }
+                        transitionRunning = false
+                        pendingIdentity = null
+                        outgoingSnapshot = visibleSnapshot
+                        incomingSnapshot = null
+                        transitionDirection = 0
+                        dragOffsetPx = 0f
+                    },
                     onHorizontalDrag = { change, amount ->
-                        dragAmount += amount
+                        val proposed = (dragOffsetPx + amount)
+                            .coerceIn(-contentWidthPx, contentWidthPx)
+                        val direction = when {
+                            proposed < 0f -> 1
+                            proposed > 0f -> -1
+                            else -> 0
+                        }
+                        val target = if (direction == 0) null else previewForDirection(direction)
+                        transitionDirection = direction
+                        incomingSnapshot = target
+                        dragOffsetPx = if (target == null) proposed * 0.16f else proposed
+                        latestSwitchProgress(
+                            -dragOffsetPx / contentWidthPx.coerceAtLeast(1f),
+                            true
+                        )
                         change.consume()
                     },
                     onDragEnd = {
-                        if (abs(dragAmount) > 96f) {
-                            if (dragAmount < 0f) onSkipNext()
-                            else onSkipPrevious()
+                        blockOpenFromCurrentHorizontalGesture()
+                        val direction = when {
+                            dragOffsetPx < 0f -> 1
+                            dragOffsetPx > 0f -> -1
+                            else -> 0
                         }
-                        dragAmount = 0f
+                        val target = if (direction == 0) null else previewForDirection(direction)
+                        val shouldCommit = target != null &&
+                            abs(dragOffsetPx) >= contentWidthPx * MINI_PLAYER_SWITCH_THRESHOLD
+                        if (shouldCommit) {
+                            animateSwitch(
+                                direction = direction,
+                                target = target,
+                                dispatchTransport = true
+                            )
+                        } else {
+                            cancelDrag()
+                        }
                     },
-                    onDragCancel = { dragAmount = 0f }
+                    onDragCancel = {
+                        blockOpenFromCurrentHorizontalGesture()
+                        cancelDrag()
+                    }
                 )
             }
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = onClick
+                onClick = guardedOpenPlayer
             )
     ) {
-        LiquidGlassMiniPlayerBg(
-            backdrop = backdrop,
-            isLight = isLight
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            MiniPlayerArtwork(
-                mode = artworkMode,
-                coverPath = coverPath,
-                coverBitmap = coverBitmap,
-                isPlaying = isPlaying,
-                progress = progress,
-                contentDescription = title,
-                onCoverBoundsChanged = onCoverBoundsChanged,
-                onDoubleTapToggleMode = {
+        if (drawBackground) {
+            LiquidGlassMiniPlayerBg(
+                backdrop = backdrop,
+                isLight = isLight
+            )
+        }
+        val outgoing = outgoingSnapshot
+        val incoming = incomingSnapshot
+        if (transitionDirection != 0 && outgoing != null && incoming != null) {
+            val progress = (abs(dragOffsetPx) / contentWidthPx).coerceIn(0f, 1f)
+            MiniPlayerSlidingContent(
+                snapshot = outgoing,
+                artworkMode = artworkMode,
+                textColor = textColor,
+                secondaryColor = secondaryColor,
+                animateArtwork = animateArtwork,
+                onClick = guardedOpenPlayer,
+                onPlayPause = onPlayPause,
+                onCoverBoundsChanged = {},
+                onToggleArtworkMode = {
                     artworkModeState.value = artworkModeState.value.toggle()
                 },
-                onSingleTap = onClick,
-                animateArtwork = animateArtwork
-            )
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            // 歌曲信息
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(44.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                androidx.compose.foundation.layout.Column {
-                    Text(
-                        text = title.ifBlank { "暂无音乐播放" },
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = textColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (artist.isNotBlank()) {
-                        Text(
-                            text = artist,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = secondaryColor,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                controlsEnabled = false,
+                contentPaddingHorizontal = contentPaddingHorizontal,
+                contentPaddingVertical = contentPaddingVertical,
+                modifier = Modifier.graphicsLayer {
+                    translationX = dragOffsetPx
+                    alpha = 1f - progress * 0.10f
+                    scaleX = 1f - progress * 0.018f
+                    scaleY = scaleX
                 }
-            }
-
-            // 播放/暂停按钮
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = onPlayPause
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    painter = painterResource(
-                        id = if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play
-                    ),
-                    contentDescription = if (isPlaying) "暂停" else "播放",
-                    tint = textColor,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
+            )
+            MiniPlayerSlidingContent(
+                snapshot = incoming,
+                artworkMode = artworkMode,
+                textColor = textColor,
+                secondaryColor = secondaryColor,
+                animateArtwork = false,
+                onClick = guardedOpenPlayer,
+                onPlayPause = onPlayPause,
+                onCoverBoundsChanged = {},
+                onToggleArtworkMode = {
+                    artworkModeState.value = artworkModeState.value.toggle()
+                },
+                controlsEnabled = false,
+                contentPaddingHorizontal = contentPaddingHorizontal,
+                contentPaddingVertical = contentPaddingVertical,
+                modifier = Modifier.graphicsLayer {
+                    translationX = dragOffsetPx + transitionDirection * contentWidthPx
+                    alpha = 0.90f + progress * 0.10f
+                    scaleX = 0.982f + progress * 0.018f
+                    scaleY = scaleX
+                }
+            )
+        } else {
+            MiniPlayerSlidingContent(
+                snapshot = visibleSnapshot,
+                artworkMode = artworkMode,
+                textColor = textColor,
+                secondaryColor = secondaryColor,
+                animateArtwork = animateArtwork,
+                onClick = guardedOpenPlayer,
+                onPlayPause = onPlayPause,
+                onCoverBoundsChanged = { rect ->
+                    onCoverBoundsChanged(rect)
+                    val sourceRadiusDp = when (artworkMode) {
+                        // NormalMiniArtwork is a 44dp circle.
+                        MiniPlayerArtworkMode.Normal -> 22f
+                        // VinylMiniArtwork reports the 40dp front sleeve, which is a square
+                        // with a 10dp corner radius. Do not collapse this to the old hard-coded
+                        // 22dp circle when the player sheet takes ownership.
+                        MiniPlayerArtworkMode.Vinyl -> 10f
+                    }
+                    onCoverTargetChanged(
+                        rect?.let { bounds ->
+                            CoverTransitionTarget(
+                                bounds = RectF(bounds),
+                                radiusDp = sourceRadiusDp,
+                                source = CoverTransitionTarget.Source.MiniPlayer,
+                                songId = currentSong?.id ?: -1L,
+                                coverKey = coverPath.orEmpty(),
+                            )
+                        }
+                    )
+                },
+                onToggleArtworkMode = {
+                    artworkModeState.value = artworkModeState.value.toggle()
+                },
+                controlsEnabled = true,
+                contentPaddingHorizontal = contentPaddingHorizontal,
+                contentPaddingVertical = contentPaddingVertical
+            )
         }
     }
+}
+
+@Composable
+private fun MiniPlayerSlidingContent(
+    snapshot: MiniPlayerContentSnapshot,
+    artworkMode: MiniPlayerArtworkMode,
+    textColor: Color,
+    secondaryColor: Color,
+    animateArtwork: Boolean,
+    onClick: () -> Unit,
+    onPlayPause: () -> Unit,
+    onCoverBoundsChanged: (RectF?) -> Unit,
+    onToggleArtworkMode: () -> Unit,
+    controlsEnabled: Boolean,
+    contentPaddingHorizontal: androidx.compose.ui.unit.Dp = 8.dp,
+    contentPaddingVertical: androidx.compose.ui.unit.Dp = 6.dp,
+    modifier: Modifier = Modifier
+) {
+    val hasLyric = snapshot.lyricText.isNotBlank()
+    val primaryText = if (hasLyric) {
+        snapshot.lyricText.trim()
+    } else {
+        snapshot.title.ifBlank { stringResource(R.string.player_no_music) }
+    }
+    val secondaryText = if (hasLyric) snapshot.lyricTranslation.trim() else snapshot.artist
+    val centerLyrics = hasLyric && isLikelyChineseLyric(primaryText)
+
+    Row(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(
+                horizontal = contentPaddingHorizontal,
+                vertical = contentPaddingVertical,
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        MiniPlayerArtwork(
+            mode = artworkMode,
+            coverPath = snapshot.coverPath,
+            isPlaying = snapshot.isPlaying,
+            contentDescription = snapshot.title,
+            onCoverBoundsChanged = onCoverBoundsChanged,
+            onDoubleTapToggleMode = if (controlsEnabled) onToggleArtworkMode else ({}),
+            onSingleTap = if (controlsEnabled) onClick else ({}),
+            animateArtwork = animateArtwork
+        )
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(44.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            androidx.compose.foundation.layout.Column {
+                Text(
+                    text = primaryText,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = textColor,
+                    maxLines = 1,
+                    softWrap = false,
+                    textAlign = if (centerLyrics) TextAlign.Center else TextAlign.Start,
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (LongTextMotionState.enabled) {
+                                Modifier.basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    animationMode = MarqueeAnimationMode.Immediately,
+                                    repeatDelayMillis = 3_000,
+                                    initialDelayMillis = 1_500,
+                                    velocity = 42.5.dp
+                                )
+                            } else Modifier
+                        )
+                )
+                if (secondaryText.isNotBlank()) {
+                    Text(
+                        text = secondaryText,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = secondaryColor,
+                        maxLines = 1,
+                        softWrap = false,
+                        textAlign = if (centerLyrics) TextAlign.Center else TextAlign.Start,
+                        overflow = TextOverflow.Clip,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(
+                                if (LongTextMotionState.enabled) {
+                                    Modifier.basicMarquee(
+                                        iterations = Int.MAX_VALUE,
+                                        animationMode = MarqueeAnimationMode.Immediately,
+                                        repeatDelayMillis = 3_000,
+                                        initialDelayMillis = 1_500,
+                                        velocity = 42.5.dp
+                                    )
+                                } else Modifier
+                            )
+                    )
+                }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .then(
+                    if (controlsEnabled) {
+                        Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = onPlayPause
+                        )
+                    } else {
+                        Modifier
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                painter = painterResource(
+                    id = if (snapshot.isPlaying) R.drawable.ic_pause else R.drawable.ic_play
+                ),
+                contentDescription = stringResource(
+                    if (snapshot.isPlaying) R.string.common_pause else R.string.common_play
+                ),
+                tint = textColor,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+    }
+}
+
+private fun AudioFile?.miniPlayerIdentity(title: String, artist: String): String {
+    val song = this
+    if (song != null) {
+        return "${song.path}|${song.cueTrackIndex}|${song.cueOffsetMs}"
+    }
+    return "$title|$artist"
+}
+
+private fun AudioFile.toMiniPlayerPreviewSnapshot(isPlaying: Boolean): MiniPlayerContentSnapshot {
+    return MiniPlayerContentSnapshot(
+        identity = miniPlayerIdentity(displayName, artist),
+        title = displayName,
+        artist = artist,
+        lyricText = "",
+        lyricTranslation = "",
+        coverPath = resolvePlaybackArtworkKey(albumArtPath),
+        isPlaying = isPlaying
+    )
+}
+
+private fun resolveMiniPlayerQueueDirection(
+    oldIndex: Int,
+    newIndex: Int,
+    queueSize: Int
+): Int {
+    if (queueSize <= 1 || oldIndex < 0 || newIndex < 0 || oldIndex == newIndex) return 1
+    if ((oldIndex + 1) % queueSize == newIndex) return 1
+    if ((oldIndex - 1 + queueSize) % queueSize == newIndex) return -1
+    return if (newIndex > oldIndex) 1 else -1
+}
+
+private fun isLikelyChineseLyric(text: String): Boolean {
+    val hasHan = text.any { it in '\u3400'..'\u9FFF' }
+    val hasKana = text.any { it in '\u3040'..'\u30FF' }
+    return hasHan && !hasKana
 }
 
 /**

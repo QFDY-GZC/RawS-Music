@@ -16,9 +16,13 @@ data class LyricLine(
     val endTime: Long = 0L,
     val skipAnimation: Boolean = false,
     val agent: String? = null,
+    val agentName: String? = null,
+    val pronunciationWords: List<LyricWord> = emptyList(),
     val backgroundText: String? = null,
     val backgroundWords: List<LyricWord> = emptyList(),
     val backgroundTranslation: String? = null,
+    val backgroundStartTime: Long? = null,
+    val backgroundEndTime: Long? = null,
     val isTtml: Boolean = false
 ) : Comparable<LyricLine> {
 
@@ -143,15 +147,16 @@ data class LyricData(
         return 0L  // 无法确定持续时间，不参与判断
     }
 
-    fun findCurrentLine(positionMs: Long, advanceMs: Long = 0L): Int {
+    /** Find the line active at the exact player position. No manual advance is applied. */
+    fun findCurrentLine(positionMs: Long): Int {
         if (lines.isEmpty()) return -1
-        val adjusted = positionMs + advanceMs
+        val exactPosition = positionMs.coerceAtLeast(0L)
         var low = 0
         var high = lines.size - 1
         var result = -1
         while (low <= high) {
             val mid = (low + high) ushr 1
-            if (lines[mid].timeStamp + offset <= adjusted) {
+            if (lines[mid].timeStamp <= exactPosition) {
                 result = mid
                 low = mid + 1
             } else {

@@ -41,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -57,6 +58,7 @@ import com.rawsmusic.core.ui.scene.pages.SettingsCard
 import com.rawsmusic.core.ui.scene.pages.SettingsPage
 import com.rawsmusic.core.ui.scene.pages.appFontFamily
 import com.rawsmusic.core.ui.scene.pages.themeColors
+import com.rawsmusic.core.ui.R
 import kotlinx.coroutines.launch
 
 /**
@@ -90,7 +92,7 @@ fun LogViewerPage(onBack: () -> Unit) {
 
     val availableTags = remember(allEntries) { AppLogStore.getTags() }
 
-    SettingsPage(title = "日志分析", onBack = onBack) {
+    SettingsPage(title = stringResource(R.string.log_viewer_title), onBack = onBack) {
         if (isLoading) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = colors.primary)
@@ -106,13 +108,13 @@ fun LogViewerPage(onBack: () -> Unit) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    SectionHeader("过滤")
+                    SectionHeader(stringResource(R.string.log_filter))
                     Row {
                         TextButton(onClick = { scope.launch { AppLogStore.refresh() } }) {
-                            Text("刷新", color = colors.primary, fontSize = 13.sp, fontFamily = appFontFamily())
+                            Text(stringResource(R.string.log_refresh), color = colors.primary, fontSize = 13.sp, fontFamily = appFontFamily())
                         }
                         TextButton(onClick = { showClearConfirm = true }) {
-                            Text("清空", color = Color(0xFFC62828), fontSize = 13.sp, fontFamily = appFontFamily())
+                            Text(stringResource(R.string.log_clear), color = Color(0xFFC62828), fontSize = 13.sp, fontFamily = appFontFamily())
                         }
                         TextButton(onClick = {
                             val file = AppLogger.getLogFile()
@@ -124,11 +126,11 @@ fun LogViewerPage(onBack: () -> Unit) {
                                         putExtra(Intent.EXTRA_STREAM, uri)
                                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                     }
-                                    context.startActivity(Intent.createChooser(shareIntent, "分享日志"))
+                                    context.startActivity(Intent.createChooser(shareIntent, context.getString(R.string.log_share_title)))
                                 } catch (_: Exception) {}
                             }
                         }) {
-                            Text("分享", color = colors.primary, fontSize = 13.sp, fontFamily = appFontFamily())
+                            Text(stringResource(R.string.log_share), color = colors.primary, fontSize = 13.sp, fontFamily = appFontFamily())
                         }
                     }
                 }
@@ -144,7 +146,7 @@ fun LogViewerPage(onBack: () -> Unit) {
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    label = { Text("搜索日志", fontFamily = appFontFamily()) },
+                    label = { Text(stringResource(R.string.log_search_hint), fontFamily = appFontFamily()) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -160,7 +162,7 @@ fun LogViewerPage(onBack: () -> Unit) {
 
                 if (availableTags.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
-                    Text("标签过滤:", fontSize = 13.sp, color = colors.secondaryText, fontFamily = appFontFamily())
+                    Text(stringResource(R.string.log_tag_filter), fontSize = 13.sp, color = colors.secondaryText, fontFamily = appFontFamily())
                     Spacer(Modifier.height(4.dp))
                     TagFilterFlowRow(tags = availableTags, selectedTag = tagFilter, onSelect = { tag ->
                         tagFilter = if (tagFilter == tag) null else tag
@@ -171,7 +173,7 @@ fun LogViewerPage(onBack: () -> Unit) {
             Spacer(Modifier.height(12.dp))
 
             Text(
-                "共 ${filteredEntries.size} 条日志",
+                stringResource(R.string.log_count, filteredEntries.size),
                 fontSize = 13.sp, color = colors.secondaryText, fontFamily = appFontFamily(),
                 modifier = Modifier.padding(start = 4.dp)
             )
@@ -198,21 +200,21 @@ fun LogViewerPage(onBack: () -> Unit) {
                     Text(entry.message, fontSize = 13.sp, color = colors.onSurface, fontFamily = FontFamily.Monospace)
                 }
             },
-            confirmButton = { TextButton(onClick = { showDetail = null }) { Text("关闭", fontFamily = appFontFamily()) } }
+            confirmButton = { TextButton(onClick = { showDetail = null }) { Text(stringResource(R.string.log_close), fontFamily = appFontFamily()) } }
         )
     }
 
     if (showClearConfirm) {
         AlertDialog(
             onDismissRequest = { showClearConfirm = false },
-            title = { Text("清空日志", fontFamily = appFontFamily()) },
-            text = { Text("确定要清空所有日志吗？此操作不可恢复。", fontFamily = appFontFamily()) },
+            title = { Text(stringResource(R.string.log_clear_title), fontFamily = appFontFamily()) },
+            text = { Text(stringResource(R.string.log_clear_confirm), fontFamily = appFontFamily()) },
             confirmButton = {
                 TextButton(onClick = { AppLogStore.clearLog(); showClearConfirm = false }) {
-                    Text("清空", color = Color(0xFFC62828), fontFamily = appFontFamily())
+                    Text(stringResource(R.string.log_clear), color = Color(0xFFC62828), fontFamily = appFontFamily())
                 }
             },
-            dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text("取消", fontFamily = appFontFamily()) } }
+            dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text(stringResource(R.string.common_cancel), fontFamily = appFontFamily()) } }
         )
     }
 }
@@ -221,23 +223,23 @@ fun LogViewerPage(onBack: () -> Unit) {
 private fun StatsCard(stats: LogStats) {
     val colors = themeColors()
     SettingsCard {
-        SectionHeader("概览")
+        SectionHeader(stringResource(R.string.log_overview))
         Spacer(Modifier.height(8.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            StatItem("总计", stats.total.toString(), colors.onSurface)
-            StatItem("错误", stats.errorCount.toString(), Color(0xFFC62828))
-            StatItem("警告", stats.warnCount.toString(), Color.White)
-            StatItem("信息", stats.infoCount.toString(), Color(0xFF1565C0))
-            StatItem("调试", stats.debugCount.toString(), Color(0xFF616161))
+            StatItem(stringResource(R.string.log_total), stats.total.toString(), colors.onSurface)
+            StatItem(stringResource(R.string.log_error), stats.errorCount.toString(), Color(0xFFC62828))
+            StatItem(stringResource(R.string.log_warning), stats.warnCount.toString(), Color.White)
+            StatItem(stringResource(R.string.log_info), stats.infoCount.toString(), Color(0xFF1565C0))
+            StatItem(stringResource(R.string.log_debug), stats.debugCount.toString(), Color(0xFF616161))
         }
         if (stats.topTags.isNotEmpty()) {
             Spacer(Modifier.height(12.dp))
-            Text("高频标签 Top 5:", fontSize = 13.sp, color = colors.secondaryText, fontFamily = appFontFamily())
+            Text(stringResource(R.string.log_top_tags), fontSize = 13.sp, color = colors.secondaryText, fontFamily = appFontFamily())
             Spacer(Modifier.height(4.dp))
             stats.topTags.take(5).forEach { (tag, count) ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(tag, fontSize = 13.sp, color = colors.onSurface, fontFamily = appFontFamily())
-                    Text("$count 次", fontSize = 13.sp, color = colors.secondaryText, fontFamily = appFontFamily())
+                    Text(stringResource(R.string.log_occurrences, count), fontSize = 13.sp, color = colors.secondaryText, fontFamily = appFontFamily())
                 }
             }
         }
@@ -255,10 +257,10 @@ private fun StatItem(label: String, value: String, color: Color) {
 @Composable
 private fun LevelFilterRow(selectedLevel: String?, stats: LogStats, onSelect: (String) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        LevelChip("E", "错误 ${stats.errorCount}", selectedLevel == "E", Color(0xFFC62828), onSelect)
-        LevelChip("W", "警告 ${stats.warnCount}", selectedLevel == "W", Color.White, onSelect)
-        LevelChip("I", "信息 ${stats.infoCount}", selectedLevel == "I", Color(0xFF1565C0), onSelect)
-        LevelChip("D", "调试 ${stats.debugCount}", selectedLevel == "D", Color(0xFF616161), onSelect)
+        LevelChip("E", stringResource(R.string.log_level_error, stats.errorCount), selectedLevel == "E", Color(0xFFC62828), onSelect)
+        LevelChip("W", stringResource(R.string.log_level_warning, stats.warnCount), selectedLevel == "W", Color.White, onSelect)
+        LevelChip("I", stringResource(R.string.log_level_info, stats.infoCount), selectedLevel == "I", Color(0xFF1565C0), onSelect)
+        LevelChip("D", stringResource(R.string.log_level_debug, stats.debugCount), selectedLevel == "D", Color(0xFF616161), onSelect)
     }
 }
 

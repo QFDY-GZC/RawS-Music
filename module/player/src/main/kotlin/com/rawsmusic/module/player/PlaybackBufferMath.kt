@@ -11,4 +11,11 @@ internal object PlaybackBufferMath {
         if (bytes <= 0 || bytesPerSecond <= 0) return 0L
         return bytes.toLong() * 1000L / bytesPerSecond
     }
+
+    fun bytesForDuration(bytesPerSecond: Long, durationMs: Long): Int {
+        if (bytesPerSecond <= 0 || durationMs <= 0) return 0
+        return (bytesPerSecond * durationMs / 1000L)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+    }
 }

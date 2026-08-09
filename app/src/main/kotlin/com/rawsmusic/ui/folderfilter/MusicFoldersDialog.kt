@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -64,8 +65,7 @@ import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
 import java.io.File
 
 private const val TAG = "MusicFoldersDialog"
@@ -86,6 +86,9 @@ fun MusicFoldersDialog(
     var saving by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var refreshTick by remember { mutableLongStateOf(0L) }
+    var folderUriByPath by remember {
+        mutableStateOf(AppPreferences.Scanner.folderDialogUriByPath)
+    }
 
     val visibleNodes by remember(roots, refreshTick) {
         derivedStateOf {
@@ -208,7 +211,9 @@ fun MusicFoldersDialog(
             return
         }
 
-        addLocalPath(realPath)
+        val normalizedPath = normalizePath(realPath)
+        folderUriByPath = folderUriByPath + (normalizedPath to uri.toString())
+        addLocalPath(normalizedPath)
     }
 
     fun saveAndScan() {
@@ -223,6 +228,18 @@ fun MusicFoldersDialog(
 
         AppPreferences.UI.scanPaths = pathsToSave
         AppPreferences.UI.rootScanPaths = roots.map { it.path }
+
+        // ACTION_OPEN_DOCUMENT_TREE grants access to the whole selected subtree. Keep the
+        // tree URI alongside its resolved path so the scanner can recursively enumerate
+        // children even when MediaStore or direct path traversal misses nested files.
+        val reconciledUris = FolderDialogUriSelectionPolicy.reconcile(
+            currentUris = AppPreferences.Scanner.musicFolderUris,
+            previousDialogMap = AppPreferences.Scanner.folderDialogUriByPath,
+            currentDialogMap = folderUriByPath,
+            selectedPaths = pathsToSave
+        )
+        AppPreferences.Scanner.folderDialogUriByPath = folderUriByPath
+        AppPreferences.Scanner.musicFolderUris = reconciledUris
 
         Toast.makeText(
             context,
@@ -292,45 +309,19 @@ fun MusicFoldersDialog(
         }
     }
 
-    Dialog(
+    RawMiuixOverlayDialog(
+        show = true,
+        title = stringResource(R.string.folder_filter_title),
+        summary = stringResource(R.string.folder_filter_summary),
+        backgroundColor = MiuixTheme.colorScheme.surfaceContainerHigh,
         onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnBackPress = true,
-            dismissOnClickOutside = true
-        )
+        renderInRootScaffold = true
     ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .heightIn(min = 420.dp, max = 680.dp),
-            shape = RoundedCornerShape(28.dp),
-            color = MiuixTheme.colorScheme.surfaceContainerHigh,
-            tonalElevation = 6.dp,
-            shadowElevation = 12.dp
-        ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp)
+                .heightIn(min = 380.dp, max = 620.dp)
         ) {
-            Text(
-                text = stringResource(R.string.folder_filter_title),
-                color = MiuixTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(Modifier.height(4.dp))
-
-            Text(
-                text = stringResource(R.string.folder_filter_summary),
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                style = MaterialTheme.typography.bodySmall
-            )
-
-            Spacer(Modifier.height(16.dp))
-
             FolderPickerHeader(
                 selectedCount = normalizedSelected.size,
                 rootCount = roots.size,
@@ -420,8 +411,7 @@ fun MusicFoldersDialog(
                 onSaveAndScan = { saveAndScan() }
             )
         }
-        }
-    }
+}
 }
 
 @Composable

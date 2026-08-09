@@ -514,17 +514,6 @@ object MediaStoreScanner {
         }
     }
 
-    private fun isEmbeddedArtworkPreferredFormat(path: String, format: String): Boolean {
-        val ext = path.substringAfterLast('.', "").lowercase()
-        val fmt = format.lowercase()
-        return ext in EMBEDDED_ARTWORK_PREFERRED_EXTENSIONS ||
-            fmt in EMBEDDED_ARTWORK_PREFERRED_EXTENSIONS
-    }
-
-    private val EMBEDDED_ARTWORK_PREFERRED_EXTENSIONS = setOf(
-        "dsf", "dff", "wav", "aiff", "aif", "ape"
-    )
-
     private fun sanitizeMediaStoreText(value: String): String =
         if (value.isMetadataDefault()) "" else value
 
@@ -659,38 +648,25 @@ object MediaStoreScanner {
 
     fun scanCustomPathsByFileSystem(
         context: Context,
-        customPaths: List<String>
+        customPaths: List<String>,
+        excludedPaths: Set<String> = emptySet()
     ): List<AudioFile> {
-        val out = mutableListOf<AudioFile>()
-        Log.d(TAG, "legacy scan enabled=${AppPreferences.Scanner.legacyFileAccessEnabled}, paths=$customPaths")
+        val files = SelectedFolderFileWalker.collect(
+            rootPaths = customPaths,
+            excludedPaths = excludedPaths,
+            acceptFile = ::isSupportedAudioFile
+        )
+        Log.d(
+            TAG,
+            "recursive path scan enabled=${AppPreferences.Scanner.legacyFileAccessEnabled}, " +
+                "paths=$customPaths excluded=${excludedPaths.size} discovered=${files.size}"
+        )
 
-        customPaths
-            .map { java.io.File(it) }
-            .filter { it.exists() && (it.canRead() || Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) }
-            .forEach { root ->
-                Log.d(TAG, "legacy path: ${root.absolutePath}, exists=${root.exists()}, canRead=${root.canRead()}")
-                scanDirectoryRecursive(context, root, out)
-            }
-
-        Log.d(TAG, "legacy parsed: ${out.size} files")
-        return out
-    }
-
-    private fun scanDirectoryRecursive(
-        context: Context,
-        dir: java.io.File,
-        out: MutableList<AudioFile>
-    ) {
-        val files = runCatching { dir.listFiles() }.getOrNull() ?: return
-
-        files.forEach { file ->
-            when {
-                file.isDirectory -> scanDirectoryRecursive(context, file, out)
-                file.isFile && isSupportedAudioFile(file) -> {
-                    readAudioFileByPath(context, file)?.let(out::add)
-                }
-            }
+        val out = files.mapNotNull { file ->
+            readAudioFileByPath(context, file)
         }
+        Log.d(TAG, "recursive path parsed: ${out.size} missing files")
+        return out
     }
 
     private fun isSupportedAudioFile(file: java.io.File): Boolean {
@@ -778,7 +754,8 @@ object MediaStoreScanner {
     private val LEGACY_AUDIO_EXTENSIONS = setOf(
         "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus",
         "ape", "wv", "tta", "tak", "alac", "aiff", "aif",
-        "dsf", "dff", "mka", "mpc"
+        "dsf", "dff", "mka", "mpc", "ac3", "eac3", "ec3",
+        "truehd", "thd", "mlp"
     )
 
     private val LEGACY_VIDEO_EXTENSIONS = setOf(

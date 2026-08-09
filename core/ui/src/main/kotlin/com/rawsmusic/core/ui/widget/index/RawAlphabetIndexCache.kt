@@ -88,9 +88,8 @@ object RawAlphabetIndexCache {
 
         val labels = buildList {
             QuickMixedLabels.forEach { label ->
-                if (label == "#" || targets.containsKey(label)) add(label)
+                if (targets.containsKey(label)) add(label)
             }
-            if (!contains("#")) add("#")
         }
 
         return RawAlphabetIndexData(

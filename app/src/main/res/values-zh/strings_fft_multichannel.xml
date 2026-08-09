@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_fft_convolver_select_ir_multichannel_desc">完整保留 WAV 声道，不做下混。支持共享单声道、逐声道卷积和完整矩阵；立体声矩阵顺序为 LL、LR、RL、RR。</string>
+    <string name="settings_fft_convolver_channels">%1$d 声道</string>
+</resources>

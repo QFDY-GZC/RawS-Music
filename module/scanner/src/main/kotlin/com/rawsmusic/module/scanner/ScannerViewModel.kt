@@ -21,7 +21,9 @@ class ScannerViewModel : BaseViewModel() {
 
     fun startScan(context: Context) {
         viewModelScope.launch {
-            val hasPermission = if (context.isAtLeastT) {
+            val hasPermission = if (AppPreferences.Scanner.legacyFileAccessEnabled) {
+                LegacyFileAccess.hasPermission(context)
+            } else if (context.isAtLeastT) {
                 PermissionUtils.requestMediaPermission(context)
             } else {
                 PermissionUtils.requestStoragePermission(context)
@@ -35,7 +37,11 @@ class ScannerViewModel : BaseViewModel() {
             _scanState.value = ScanState.Scanning
             val customPaths = AppPreferences.UI.scanPaths
 
-            ScanManager.startScan(context, customPaths).collect { progress ->
+            ScanManager.startScan(
+                context = context,
+                customPaths = customPaths,
+                useMediaStore = !AppPreferences.Scanner.legacyFileAccessEnabled
+            ).collect { progress ->
                 when (progress) {
                     is ScanProgress.Started -> {
                         _scanProgress.value = 0 to progress.totalEstimated

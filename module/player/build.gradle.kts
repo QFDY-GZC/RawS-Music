@@ -10,7 +10,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        minSdk = 23
+        minSdk = 24
         consumerProguardFiles("consumer-rules.pro")
     }
 
@@ -41,4 +41,6 @@ dependencies {
 
     implementation(libs.gson)
     implementation(libs.mmkv)
+
+    testImplementation("junit:junit:4.13.2")
 }
