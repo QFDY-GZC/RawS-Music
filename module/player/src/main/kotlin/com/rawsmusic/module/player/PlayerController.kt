@@ -10,6 +10,7 @@ import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.utils.PowerTraceLogger
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.core.common.model.PlayMode
 import com.rawsmusic.core.common.model.PlayQueue
@@ -27,6 +28,7 @@ import com.rawsmusic.module.player.dsp.GraphicEQController
 import com.rawsmusic.module.player.dsp.ExperimentalGainController
 import com.rawsmusic.module.player.dsp.LoudnessBalanceController
 import com.rawsmusic.module.player.dsp.MonoBassController
+import com.rawsmusic.module.player.dsp.MonoOutputController
 import com.rawsmusic.module.player.dsp.DynamicEqController
 import com.rawsmusic.module.player.dsp.MoogLadderController
 import com.rawsmusic.module.player.dsp.CompressorController
@@ -97,6 +99,7 @@ import com.rawsmusic.module.player.control.PlayerUiSelectionControlCoordinator
 import com.rawsmusic.module.player.control.PlayerInterruptionControlCoordinator
 import com.rawsmusic.module.player.control.PlayerBackendStateControlCoordinator
 import com.rawsmusic.module.player.control.PlayerGaplessControlCoordinator
+import com.rawsmusic.module.player.control.resolveGaplessNextIndex
 import com.rawsmusic.module.player.control.PlayerPlayPauseSeedCoordinator
 import com.rawsmusic.module.player.control.PlayerPlayRequestResolver
 import com.rawsmusic.module.player.control.PlayerRestoreControlCoordinator
@@ -189,6 +192,7 @@ class PlayerController private constructor(context: Context) {
             },
             releaseIdleResources = { reason ->
                 AppLogger.i(TAG, "USB exclusive idle in background; releasing DAC resources: reason=$reason")
+                rememberUsbPausedResumePoint("idle_release:$reason")
                 val rendererDrained = runCatching {
                     ffmpegPlayer.stopForUsbExclusiveCutover(timeoutMs = 5_000L)
                 }.getOrDefault(false)
@@ -345,6 +349,7 @@ class PlayerController private constructor(context: Context) {
             ensureExperimentalGainConnected()
             ensureLoudnessBalanceConnected()
             ensureMonoBassConnected()
+            ensureMonoOutputConnected()
             ensureDynamicEqConnected()
             ensureMoogLadderConnected()
             ensureCompressorConnected()
@@ -390,6 +395,11 @@ class PlayerController private constructor(context: Context) {
         get() = dspControllerRegistry.monoBassController
 
     fun ensureMonoBassConnected() = dspControllerRegistry.ensureMonoBassConnected()
+
+    val monoOutputController: MonoOutputController
+        get() = dspControllerRegistry.monoOutputController
+
+    fun ensureMonoOutputConnected() = dspControllerRegistry.ensureMonoOutputConnected()
 
     val dynamicEqController: DynamicEqController
         get() = dspControllerRegistry.dynamicEqController
@@ -494,6 +504,7 @@ class PlayerController private constructor(context: Context) {
         usbBackgroundGuardCoordinator.sync(reason)
 
     private val _currentSong = MutableStateFlow<AudioFile?>(null)
+    @Volatile private var autoTransitionLyrics: LyricData? = null
     val currentSong: StateFlow<AudioFile?> = _currentSong.asStateFlow()
     private val usbFormatPolicyCoordinator by lazy {
         PlayerUsbFormatPolicyCoordinator(
@@ -665,16 +676,48 @@ class PlayerController private constructor(context: Context) {
     private val gaplessControlCoordinator = PlayerGaplessControlCoordinator(
         callbacks = PlayerGaplessControlCoordinator.Callbacks(
             gaplessEnabled = { AppPreferences.Player.gaplessPlaybackEnabled },
-            crossfadeSeconds = { AppPreferences.Player.crossfadeDuration },
+            automaticCrossfadeEnabled = { AppPreferences.Player.automaticCrossfadeEnabled },
             currentQueue = { _queue.value },
             currentPlayMode = { playbackModeController.currentPlayMode },
             peekShuffleIndex = shuffleQueueController::peekNextIndex,
             applyPlan = { plan ->
+                val current = _currentSong.value
+                val queueSnapshot = _queue.value
+                val nextIndex = resolveGaplessNextIndex(
+                    queue = queueSnapshot,
+                    playMode = playbackModeController.currentPlayMode,
+                    peekShuffleIndex = shuffleQueueController::peekNextIndex,
+                )
+                val next = queueSnapshot.songs.getOrNull(nextIndex)
+                    ?.takeIf { plan.nextSongPath == null || it.path == plan.nextSongPath }
+                val autoEnabled = plan.automaticCrossfadeEnabled
+                val decision = if (autoEnabled) {
+                    AutoTransitionPolicy.build(
+                        current = current,
+                        next = next,
+                        lyrics = autoTransitionLyrics,
+                    )
+                } else {
+                    AutoTransitionPolicy.Decision(
+                        recipe = null,
+                        forceGapless = false,
+                        reason = "automatic_crossfade_disabled",
+                    )
+                }
+                ffmpegPlayer.updateAutoTransitionRecipe(decision.recipe)
                 ffmpegPlayer.updateNextSongPlan(
                     nextPath = plan.nextSongPath,
-                    durationMs = plan.crossfadeDurationMs,
-                    reason = "queue_gapless_plan"
+                    automaticCrossfadeEnabled = autoEnabled && !decision.forceGapless && decision.recipe != null,
+                    reason = "queue_gapless_plan:${decision.reason}"
                 )
+                decision.recipe?.let { recipe ->
+                    AppLogger.i(
+                        TAG,
+                        "AutoTransition recipe source=${recipe.source} confidence=${recipe.confidence} " +
+                            "trigger=${recipe.triggerPositionMs} handover=${recipe.handoverPositionMs} " +
+                            "handoverMs=${recipe.handoverDurationMs} target=${recipe.targetPath}"
+                    )
+                }
             },
             logInfo = { message -> Log.d(TAG, message) },
             logWarning = { message, error -> Log.w(TAG, message, error) },
@@ -1021,6 +1064,9 @@ class PlayerController private constructor(context: Context) {
             isUsbExclusiveActive = { _usbExclusiveActive.value },
             nativeStreamState = { sharedUsbAudioEngine.getNativeStreamState() },
             nativeSessionBroken = { sharedUsbAudioEngine.isNativeSessionBroken() },
+            resumeUsbWritesAfterPause = { reason ->
+                sharedUsbAudioEngine.resumeWritesAfterPause(reason)
+            },
             hasCurrentSong = { _currentSong.value != null },
             recoverUsbExclusiveAsync = ::recoverUsbExclusiveAsync,
             ffmpegResume = { ffmpegPlayer.resume() },
@@ -1028,6 +1074,14 @@ class PlayerController private constructor(context: Context) {
             transitionPlayState = { state, reason -> smTransition(state, reason) },
             startUsbKeepAlive = { reason -> usbSystemAudioKeepAlive.start(reason) },
             startProgressUpdate = ::startProgressUpdate,
+            resumeUsbSessionEnvelope = { reason ->
+                fadeUsbExclusiveSessionTo(
+                    target = 1.0f,
+                    fadeMs = TransitionPreferences.transportDurationOrZero(),
+                    reason = reason,
+                    waitForEnvelope = false,
+                )
+            },
             resetPreparedUsbSession = {
                 sharedUsbAudioEngine.resetSessionForPlayback("user_resume_prepared")
             },
@@ -1330,6 +1384,8 @@ class PlayerController private constructor(context: Context) {
                             )
                             FFmpegBridge.resetDebugLog("gapless_playback_report_start:${songs[newIndex].path}")
                             playbackStatsTracker.reset()
+                            autoTransitionLyrics = null
+                            ffmpegPlayer.updateAutoTransitionRecipe(null)
                         } else {
                             // Manual same-profile USB switching commits queue/UI state before
                             // the feeder swaps decoders. The callback still has to prepare the
@@ -4306,6 +4362,23 @@ class PlayerController private constructor(context: Context) {
     fun play(song: AudioFile, queue: List<AudioFile> = emptyList(), index: Int = 0) =
         transportControlCoordinator.play(song, queue, index)
 
+    /**
+     * Refresh the semantic auto-transition recipe when lyrics arrive asynchronously.
+     * Lyrics are tied to the current renderer identity, so a new/gapless committed track clears
+     * this field until its own LyricData is published by MainActivity.
+     */
+    fun onLyricsUpdated(song: AudioFile?, lyricData: LyricData?) {
+        val current = _currentSong.value ?: return
+        if (song != null && !samePlaybackItem(current, song)) {
+            AppLogger.d(TAG, "AutoTransition: ignore stale lyrics song=${song.path} current=${current.path}")
+            return
+        }
+        autoTransitionLyrics = lyricData
+        if (_queue.value.songs.isNotEmpty()) {
+            gaplessControlCoordinator.prepareNextSong()
+        }
+    }
+
     private fun samePlaybackItem(a: AudioFile, b: AudioFile): Boolean =
         playRequestResolver.sameItem(a, b)
 
@@ -4447,6 +4520,8 @@ class PlayerController private constructor(context: Context) {
 
         try {
             playbackQueueCommitter.commit(song, queue, index)
+            autoTransitionLyrics = null
+            ffmpegPlayer.updateAutoTransitionRecipe(null)
             // Persist the new identity before decoder startup so process death during
             // preparation cannot resurrect the previously playing song.
             persistSelectedSongForColdStart(song)
@@ -4609,6 +4684,8 @@ class PlayerController private constructor(context: Context) {
         transportTransitioning = true
         AppLogger.w(TAG, "USB_WARM_PAUSE_START")
         try {
+            val pausedPosition = _position.value.coerceAtLeast(0L)
+            val pausedSong = _currentSong.value
             // DSD stop/pause destroys the active audio transport.
             // Never let a DSD or PCM→DSD handle enter the ordinary PCM warm-standby path:
             // the RAW/DoP altsetting, packer phase and per-session modulator state must be
@@ -4650,6 +4727,11 @@ class PlayerController private constructor(context: Context) {
             // Ordinary pause keeps the USB engine warm. The optional bandwidth-release policy may
             // move to Alt 0, but the decoder and media identity remain one serialized operation.
             ffmpegPlayer.pauseDecoderOnly("manual_pause_warm")
+            val silenced = sharedUsbAudioEngine.pauseToSilence("manual_pause_warm")
+            AppLogger.i(
+                TAG,
+                "USB_PAUSE_TRACE immediate_silence=$silenced path=${pausedSong?.path} position=$pausedPosition"
+            )
             // HiBy releases its mute-data AudioTrack on pause, even while native USB remains warm.
             usbSystemAudioKeepAlive.stop("manual_pause_warm")
             if (AppPreferences.Player.usbReleaseBandwidthAfterPlayback) {
@@ -4678,6 +4760,19 @@ class PlayerController private constructor(context: Context) {
         } finally {
             transportTransitioning = false
         }
+    }
+
+    private fun rememberUsbPausedResumePoint(reason: String) {
+        val song = _currentSong.value ?: return
+        val displayPosition = _position.value.coerceAtLeast(0L)
+        if (displayPosition <= 0L) return
+        pendingSeekPosition = displayPosition
+        pendingSeekPath = song.path
+        playbackStatePersistenceController.savePosition()
+        AppLogger.i(
+            TAG,
+            "USB_PAUSE_TRACE checkpoint reason=$reason path=${song.path} position=$displayPosition"
+        )
     }
 
     private fun pauseSystemImmediateUi() {
@@ -4828,7 +4923,18 @@ class PlayerController private constructor(context: Context) {
         savePosition()
         unregisterNoisyReceiver()
         abandonAudioFocus()
+        val transportFadeMs = TransitionPreferences.transportDurationOrZero()
         if (_usbExclusiveActive.value) {
+            // USB exclusive has one transport-fade owner: the native session envelope. Strict
+            // bit-perfect and hardware-volume routes are rejected by canUseUsbSessionPcmEnvelope(),
+            // so STOP never modifies those streams just to manufacture a fade.
+            if (_playState.value == PlayState.PLAYING && transportFadeMs > 0) {
+                fadeUsbExclusiveSessionTo(
+                    target = 0.0f,
+                    fadeMs = transportFadeMs,
+                    reason = "player_stop",
+                )
+            }
             usbSystemAudioKeepAlive.stop("player_stop")
             val rendererDrained = ffmpegPlayer.stopForUsbExclusiveCutover(timeoutMs = 5_000L)
             if (rendererDrained) {
@@ -4837,6 +4943,12 @@ class PlayerController private constructor(context: Context) {
                 AppLogger.e(TAG, "player_stop kept USB session alive: playback Runnable did not exit")
             }
         } else {
+            if (_playState.value == PlayState.PLAYING && transportFadeMs > 0) {
+                ffmpegPlayer.fadeOutForTransitionBlocking(
+                    durationMs = transportFadeMs,
+                    reason = "player_stop",
+                )
+            }
             ffmpegPlayer.stop()
         }
         smTransition(PlayState.STOPPED, "stop")
@@ -5085,8 +5197,12 @@ class PlayerController private constructor(context: Context) {
      */
     private fun configuredManualShortFadeMs(): Int {
         return when (TransitionPreferences.manualTrackTransitionMode) {
-            TransitionPreferences.ManualTrackTransitionMode.SHORT_FADE -> TransitionPreferences.manualTrackFadeMs
-            else -> 0
+            TransitionPreferences.ManualTrackTransitionMode.NONE -> 0
+            // Both non-NONE manual modes must enter the serialized/manual-switch route.
+            // CROSSFADE used to return 0 here, so shouldRouteExplicitPlayThroughManualSwitch()
+            // bypassed the only branch that can request the prepared-next crossfade.
+            TransitionPreferences.ManualTrackTransitionMode.SHORT_FADE,
+            TransitionPreferences.ManualTrackTransitionMode.CROSSFADE -> TransitionPreferences.manualTrackFadeMs
         }.coerceAtLeast(0)
     }
 

@@ -2,7 +2,6 @@ package com.rawsmusic.module.player
 
 import android.content.Context
 import android.media.AudioFormat
-import com.rawsmusic.module.player.usb.UsbAudioFormatPolicy
 
 /** Pure PCM/output decisions shared by Android and native playback paths. */
 internal class FfmpegPcmOutputPolicy(
@@ -32,9 +31,9 @@ internal class FfmpegPcmOutputPolicy(
             NativeAudioEngine.isSupported(AudioOutputManager.getCurrentOutputMode(context))
 
     val outputBytesPerSample: Int
-        get() = UsbAudioFormatPolicy.decoderBytesPerSample(bitsPerSample())
+        get() = AudioOutputFormatPolicy.decoderBytesPerSample(bitsPerSample())
 
-    fun playbackBytesPerSample(): Int = UsbAudioFormatPolicy.playbackBytesPerSample(
+    fun playbackBytesPerSample(): Int = AudioOutputFormatPolicy.playbackBytesPerSample(
         usbExclusiveMode = isUsbExclusive(),
         bitsPerSample = bitsPerSample(),
         useFloatOutput = useFloatOutput,

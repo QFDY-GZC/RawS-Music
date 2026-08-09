@@ -349,10 +349,13 @@ class FfmpegAudioPlayer(private val context: Context) {
             }
             playbackSession.preparedNextTrackPath = value
         }
-    /** Crossfade 时长（毫秒），0 = 仅 gapless 无缝播放 */
+    /** Manual crossfade duration only. Automatic crossfade owns an independent recipe/switch. */
     var crossfadeDurationMs: Int
         get() = playbackSession.crossfadeDurationMs
         set(value) { playbackSession.crossfadeDurationMs = value }
+
+    @Volatile
+    private var automaticCrossfadeEnabled: Boolean = false
     private val crossfadeTransition = CrossfadeTransitionController(
         tag = TAG,
         convertS32ToS16 = { source, length, destination, sourceBits ->
@@ -362,12 +365,16 @@ class FfmpegAudioPlayer(private val context: Context) {
             pcmOutputConversion.convertS32ToS24(source, length, destination, sourceBits)
         }
     )
+    private val autoTransitionRuntime = AutoTransitionRuntime(TAG)
     private val playbackFadeRuntime = PlaybackFadeRuntime(
         tag = TAG,
         isPlaying = { isPlaying.get() },
         isReleased = { isReleased.get() },
         isPlayingState = { _state == State.PLAYING },
-        shouldBypass = { usbRawDsdDirectActive },
+        // USB exclusive owns transport/session gain at the native USB renderer. Applying the
+        // PCM sample envelope here as well multiplies two independent fades (roughly t^2 on
+        // startup) and can also touch strict bit-perfect payloads. Keep exactly one fade owner.
+        shouldBypass = { usbExclusiveMode },
         useFloatOutput = { useFloatOutput },
         usePacked24Output = { usePacked24Output }
     )
@@ -745,6 +752,31 @@ class FfmpegAudioPlayer(private val context: Context) {
 
     private var volume = 1.0f
 
+    private val nativeRouteRebuildLock = Any()
+    private var pendingNativeRouteRebuildReason: String? = null
+    private var pendingNativeRouteRebuildDeviceId: Int = 0
+
+    private fun armNativeOutputRouteRebuild(reason: String, forcedDeviceId: Int) {
+        synchronized(nativeRouteRebuildLock) {
+            pendingNativeRouteRebuildReason = reason
+            pendingNativeRouteRebuildDeviceId = forcedDeviceId.coerceAtLeast(0)
+        }
+        AppLogger.w(
+            TAG,
+            "Native output route rebuild armed: reason=$reason deviceId=${forcedDeviceId.coerceAtLeast(0)} " +
+                "state=${_state.name}",
+        )
+    }
+
+    private fun consumePendingNativeOutputRouteRebuild(): Pair<String, Int>? =
+        synchronized(nativeRouteRebuildLock) {
+            val reason = pendingNativeRouteRebuildReason ?: return@synchronized null
+            val deviceId = pendingNativeRouteRebuildDeviceId
+            pendingNativeRouteRebuildReason = null
+            pendingNativeRouteRebuildDeviceId = 0
+            reason to deviceId
+        }
+
     private val androidAudioRouteController = AndroidAudioRouteController(
         context = context,
         isUsbExclusiveMode = { usbExclusiveMode },
@@ -754,6 +786,7 @@ class FfmpegAudioPlayer(private val context: Context) {
         nativeAudioEngineProvider = { nativeAudioEngine },
         audioTrackProvider = { audioTrack },
         recreateAudioTrackInline = { forceSco, forcedDevice -> recreateAudioTrackInline(forceSco, forcedDevice) },
+        requestNativeOutputRebuild = ::armNativeOutputRouteRebuild,
         runOnPlaybackExecutor = { block -> playbackWorker.execute("android_audio_route", block) },
         wakePlaybackLoop = { /* consumePendingAndroidAudioTrackRouteRebuild is polled in the write loop */ },
         onAndroidUsbAudioRouteAdded = { onAndroidUsbAudioRouteAdded?.invoke() }
@@ -1253,7 +1286,7 @@ class FfmpegAudioPlayer(private val context: Context) {
         PcmWaveformDispatcher(
             frameCallback = { onPcmWaveformFrame },
             sampleEncoding = { bitsPerSample ->
-                UsbAudioFormatPolicy.visualizerSampleEncoding(
+                AudioOutputFormatPolicy.visualizerSampleEncoding(
                     bitsPerSample = bitsPerSample,
                     useFloatOutput = useFloatOutput,
                     usePacked24Output = usePacked24Output,
@@ -1288,30 +1321,60 @@ class FfmpegAudioPlayer(private val context: Context) {
         playbackFadeCoordinator.armNextStartFadeIn(durationMs, reason)
     }
 
-    fun updateNextSongPlan(nextPath: String?, durationMs: Int, reason: String) {
+    internal fun updateAutoTransitionRecipe(recipe: AutoTransitionPolicy.Recipe?) {
+        autoTransitionRuntime.updateRecipe(recipe)
+        AppLogger.i(
+            TAG,
+            "AutoCrossfade recipe: source=${recipe?.source} target=${recipe?.targetPath} " +
+                "trigger=${recipe?.triggerPositionMs} handover=${recipe?.handoverPositionMs}"
+        )
+    }
+
+    fun updateNextSongPlan(nextPath: String?, automaticCrossfadeEnabled: Boolean, reason: String) {
         this.nextSongPath = nextPath
-        crossfadeDurationMs = durationMs.coerceAtLeast(0)
-        if (nextPath.isNullOrBlank() || !usbExclusiveMode || _state != State.PLAYING || !isPlaying.get()) {
+        // Automatic transition no longer borrows playbackSession.crossfadeDurationMs. Keep that
+        // field exclusively for an explicit manual crossfade request and clear any legacy/stale
+        // automatic duration so the renderer loop cannot keep polling a phantom fixed threshold.
+        if (!manualCrossfadeRequested) {
+            crossfadeDurationMs = 0
+        }
+        val automaticRecipe = autoTransitionRuntime.currentRecipe()
+        val autoMixBlocked = automaticCrossfadeEnabled && automaticRecipe != null &&
+            (isStrictUsbBitPerfectPath() || wavBitsPerSample <= 1 || usbRawDsdDirectActive)
+        this.automaticCrossfadeEnabled = automaticCrossfadeEnabled && !autoMixBlocked && automaticRecipe != null
+        if (autoMixBlocked) {
+            AppLogger.i(
+                TAG,
+                "AutoCrossfade bypassed for bit-perfect/DSD renderer; keep gapless target=$nextPath reason=$reason"
+            )
+        }
+        if (nextPath.isNullOrBlank() || _state != State.PLAYING || !isPlaying.get()) {
             nextDecoderPrepareEpoch.incrementAndGet()
             return
         }
 
         val generation = playbackSession.generation
         val epoch = nextDecoderPrepareEpoch.incrementAndGet()
-        nextDecoderPrepareExecutor.execute {
-            if (epoch != nextDecoderPrepareEpoch.get() ||
-                generation != playbackSession.generation ||
-                this.nextSongPath != nextPath ||
-                isReleased.get()
-            ) {
-                return@execute
+        // Pre-open the automatic target as soon as a natural-transition recipe exists. The old
+        // path waited until the exact lyric/envelope trigger and could spend that audible window
+        // synchronously opening FFmpeg, leaving no actual incoming samples to mix.
+        if (this.automaticCrossfadeEnabled || usbExclusiveMode) {
+            nextDecoderPrepareExecutor.execute {
+                if (epoch != nextDecoderPrepareEpoch.get() ||
+                    generation != playbackSession.generation ||
+                    this.nextSongPath != nextPath ||
+                    isReleased.get()
+                ) {
+                    return@execute
+                }
+                if (gaplessNextDecoder.pathFor(generation) == nextPath) return@execute
+                val ok = prepareNextDecoder(nextPath, generation)
+                AppLogger.i(
+                    TAG,
+                    "Next decoder producer finished: ok=$ok auto=${this.automaticCrossfadeEnabled} " +
+                        "usb=$usbExclusiveMode path=$nextPath gen=$generation reason=$reason"
+                )
             }
-            if (gaplessNextDecoder.pathFor(generation) == nextPath) return@execute
-            val ok = prepareNextDecoder(nextPath, generation)
-            AppLogger.i(
-                TAG,
-                "USB next decoder producer finished: ok=$ok path=$nextPath gen=$generation reason=$reason"
-            )
         }
     }
 
@@ -1638,7 +1701,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                 }
             )
 
-            val bytesPerSample = UsbAudioFormatPolicy.decoderBytesPerSample(wavBitsPerSample)
+            val bytesPerSample = AudioOutputFormatPolicy.decoderBytesPerSample(wavBitsPerSample)
             val bytesPerSec = wavSampleRate * wavChannels * bytesPerSample
             val ringCapacity = (bytesPerSec * 3).toInt().coerceAtLeast(65536)
             val rb = RingBuffer(ringCapacity)
@@ -1647,7 +1710,7 @@ class FfmpegAudioPlayer(private val context: Context) {
 
             isPlaying.set(true)
 
-            val frameSize = wavChannels * UsbAudioFormatPolicy.decoderBytesPerSample(wavBitsPerSample)
+            val frameSize = wavChannels * AudioOutputFormatPolicy.decoderBytesPerSample(wavBitsPerSample)
             val usbChunkSize = ((16384 / frameSize) * frameSize).coerceAtLeast(frameSize * 256)
             AppLogger.i(TAG, "USB decoder chunk: $usbChunkSize bytes (decoderFrameSize=$frameSize)")
             if (seekPositionMs > 0) {
@@ -2037,10 +2100,11 @@ class FfmpegAudioPlayer(private val context: Context) {
             AppLogger.w(TAG, "attemptUsbRecovery: engine not initialized, falling through to hard recovery")
         }
 
-        // ── 第 2 步：交给 Controller 作为唯一 full-reopen owner ──
-        // The feeder must never release/reopen the process-global USB engine.
-        // A controller-owned reopen returns true from the callback; either way
-        // this feeder exits its local recovery attempt without touching lifecycle.
+        // ── 第 2 步：让 Controller 决定 recovery ownership ──
+        // The feeder must never directly release/reopen the process-global USB engine.
+        // A controller-owned FullReopen returns true. A false result can deliberately mean
+        // that a modeled RetryLastGoodProfile remains feeder-owned; in that case we re-run
+        // the manager's serialized prepare/start path below while preserving decoder/ring/position.
         val controllerOwnsRecovery = onUsbStreamHealthFailure?.invoke(
             UsbSilentKind.TransportError,
             "feeder_soft_recovery_failed_forceProfileReinit=$forceProfileReinit feedbackUnsafe=$feedbackUnsafe"
@@ -2049,7 +2113,31 @@ class FfmpegAudioPlayer(private val context: Context) {
             TAG,
             "attemptUsbRecovery: destructive recovery delegated to controller owner=$controllerOwnsRecovery"
         )
-        return false
+        if (controllerOwnsRecovery) {
+            // Controller has scheduled/started the process-global full reopen. This feeder
+            // must leave lifecycle ownership alone and let the replacement playback own it.
+            return false
+        }
+
+        // A false callback result means the controller intentionally left a modeled profile
+        // retry (for example RetryLastGoodProfile) to this feeder. Previously we returned
+        // false here as well, so the caller killed the feeder while PlayerController kept
+        // PLAYING. Re-run prepare/start on the serialized transport owner and preserve the
+        // current decoder/ring/position instead of falling out of the playback loop.
+        if (!isStillCurrentPlayback(sourcePath, generation) || !isPlaying.get()) return false
+        AppLogger.w(
+            TAG,
+            "attemptUsbRecovery: controller left recovery to feeder; applying serialized profile reprepare"
+        )
+        return attemptUsbRecovery(
+            sampleRate = sampleRate,
+            bits = bits,
+            channels = channels,
+            sourcePath = sourcePath,
+            generation = generation,
+            forceProfileReinit = true,
+            profileReprepareOnly = true,
+        )
     }
 
     fun stop() {
@@ -2289,6 +2377,10 @@ class FfmpegAudioPlayer(private val context: Context) {
     }
 
     private fun canCrossfadePreparedNext(next: GaplessNextDecoder.Prepared): Boolean {
+        if (wavBitsPerSample <= 1 || next.bitsPerSample <= 1 || usbRawDsdDirectActive || isStrictUsbBitPerfectPath()) {
+            AppLogger.i(TAG, "Crossfade disabled for bit-perfect/DSD payload curBits=$wavBitsPerSample nextBits=${next.bitsPerSample}")
+            return false
+        }
         val sameRate = next.sampleRate == wavSampleRate
         val sameChannels = next.channels == wavChannels
         // 允许 16/24/32 在同一输出容器中安全转换；采样率/声道不一致时不能直接逐样本混音。
@@ -2304,6 +2396,67 @@ class FfmpegAudioPlayer(private val context: Context) {
             )
         }
         return ok
+    }
+
+    private fun startQueuedCrossfadeIfDue(
+        generation: Int,
+        sampleRate: Int,
+        bufferSize: Int,
+        remainingMs: Long,
+        nativeLoop: Boolean,
+    ) {
+        if (crossfadeTransition.active || nextSongPath.isNullOrBlank() || _durationMs <= 0) return
+        val path = nextSongPath ?: return
+        val manualTrigger = isManualCrossfadeTrigger(path, generation)
+        val autoRecipe = if (automaticCrossfadeEnabled) {
+            autoTransitionRuntime.currentRecipe()?.takeIf { it.targetPath == path }
+        } else null
+        if (manualTrigger && crossfadeDurationMs <= 0) return
+        val autoStart = if (!manualTrigger && autoRecipe != null) {
+            autoTransitionRuntime.resolveStartPlan(_positionMs, _durationMs)
+        } else null
+        if (!manualTrigger && autoStart == null) return
+
+        val preparedOk = gaplessNextDecoder.pathFor(generation) == path || prepareNextDecoder(path, generation)
+        val prepared = gaplessNextDecoder.snapshotFor(generation)
+        if (!preparedOk || prepared == null || prepared.path != path) {
+            if (manualTrigger) clearManualCrossfadeRequest("${if (nativeLoop) "native_" else ""}manual_crossfade_prepare_failed")
+            return
+        }
+        if (!canCrossfadePreparedNext(prepared)) {
+            if (manualTrigger) {
+                clearManualCrossfadeRequest("${if (nativeLoop) "native_" else ""}manual_crossfade_incompatible")
+            } else if (autoRecipe != null) {
+                // Automatic policy must degrade to an already-prepared gapless handoff instead of
+                // repeatedly trying an impossible PCM mix until EOF. This covers sample-rate/channel
+                // changes as well as a runtime bit-perfect/DSD route becoming active after planning.
+                automaticCrossfadeEnabled = false
+                autoTransitionRuntime.updateRecipe(null)
+                AppLogger.i(TAG, "AutoCrossfade: incompatible renderer pair -> gapless target=$path")
+            }
+            return
+        }
+
+        val started = when {
+            manualTrigger -> crossfadeTransition.start(
+                targetPath = path,
+                durationMs = crossfadeDurationMs,
+                sampleRate = sampleRate,
+                bufferSize = bufferSize,
+                remainingMs = crossfadeDurationMs.toLong(),
+            )
+            autoStart != null -> crossfadeTransition.startAuto(
+                targetPath = path,
+                plan = autoStart,
+                sampleRate = sampleRate,
+                bufferSize = bufferSize,
+                remainingMs = remainingMs,
+            )
+            else -> false
+        }
+        if (started && manualTrigger) {
+            clearManualCrossfadeRequest("${if (nativeLoop) "native_" else ""}manual_crossfade_started")
+        }
     }
 
     private fun retireCurrentDecoderForGapless() {
@@ -2360,6 +2513,7 @@ class FfmpegAudioPlayer(private val context: Context) {
     }
 
     private fun commitGaplessTrack(path: String, startPositionMs: Long) {
+        autoTransitionRuntime.resetAfterTrackBoundary()
         playbackTrackCommitter.commit(
             reason = "gapless",
             path = path,
@@ -2736,7 +2890,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                 seedWrittenBytes(prefillBytesWritten.toLong())
             }
 
-            AppLogger.i(TAG, "Streaming loop init: crossfadeDurationMs=$crossfadeDurationMs, nextSongPath=$nextSongPath, _durationMs=$_durationMs, prefillBytes=$prefillBytesWritten")
+            AppLogger.i(TAG, "Streaming loop init: manualCrossfadeMs=$crossfadeDurationMs autoCrossfade=$automaticCrossfadeEnabled nextSongPath=$nextSongPath, _durationMs=$_durationMs, prefillBytes=$prefillBytesWritten")
 
             while (isPlaying.get() && !isReleased.get()) {
                 if (shouldAbortStreamingForObsoleteRequest(sourcePath, generation, "loop_start")) {
@@ -2748,46 +2902,27 @@ class FfmpegAudioPlayer(private val context: Context) {
                     continue
                 }
 
-                // Crossfade 启动检测：自动模式在当前歌曲剩余时间 <= crossfade 时长时开始；
-                // 手动切歌模式由 PlayerController 预打开下一首后立即拉起。
-                if (!crossfadeTransition.active && crossfadeDurationMs > 0 && nextSongPath != null && _durationMs > 0) {
-                    val path = nextSongPath!!
-                    val manualTrigger = isManualCrossfadeTrigger(path, generation)
+                // Manual transitions start immediately from their own duration. Natural playback
+                // is driven only by the lyrics/envelope recipe; there is no user duration threshold.
+                if (!crossfadeTransition.active && nextSongPath != null && _durationMs > 0 &&
+                    (crossfadeDurationMs > 0 || automaticCrossfadeEnabled)
+                ) {
                     val remainingMs = (_durationMs - _positionMs).coerceAtLeast(1L)
-                    if (remainingMs % 5000 < 50 || manualTrigger) {
-                        AppLogger.d(TAG, "Crossfade check: pos=$_positionMs dur=$_durationMs rem=$remainingMs xfadeDur=$crossfadeDurationMs next=$nextSongPath manual=$manualTrigger")
-                    }
-                    if (manualTrigger || remainingMs in 1L..crossfadeDurationMs.toLong()) {
-                        val preparedOk = gaplessNextDecoder.pathFor(generation) == path || prepareNextDecoder(path, generation)
-                        if (shouldAbortStreamingForObsoleteRequest(sourcePath, generation, "after_prepare_crossfade")) {
-                            break
-                        }
-                        if (preparedOk) {
-                            val prepared = gaplessNextDecoder.snapshotFor(generation)
-                            if (prepared != null && prepared.path == path && canCrossfadePreparedNext(prepared)) {
-                                if (crossfadeTransition.start(
-                                        targetPath = path,
-                                        durationMs = crossfadeDurationMs,
-                                        sampleRate = wavSampleRate,
-                                        bufferSize = buffer.size,
-                                        remainingMs = if (manualTrigger) crossfadeDurationMs.toLong() else remainingMs
-                                    )
-                                ) {
-                                    if (manualTrigger) clearManualCrossfadeRequest("manual_crossfade_started")
-                                }
-                            } else {
-                                if (manualTrigger) clearManualCrossfadeRequest("manual_crossfade_incompatible")
-                                crossfadeTransition.reset("incompatible_next_format")
-                            }
-                        } else if (manualTrigger) {
-                            clearManualCrossfadeRequest("manual_crossfade_prepare_failed")
-                        }
+                    startQueuedCrossfadeIfDue(
+                        generation = generation,
+                        sampleRate = wavSampleRate,
+                        bufferSize = buffer.size,
+                        remainingMs = remainingMs,
+                        nativeLoop = false,
+                    )
+                    if (shouldAbortStreamingForObsoleteRequest(sourcePath, generation, "after_prepare_crossfade")) {
+                        break
                     }
                 }
 
                 // Gapless pre-open: prepare the next decoder before the current stream reaches EOF.
                 // Opening at EOF is audible on slower devices because it blocks the handoff path.
-                if (!crossfadeTransition.active && crossfadeDurationMs <= 0 && nextSongPath != null && _durationMs > 0 && !gaplessNextDecoder.isPreparedFor(generation)) {
+                if (!crossfadeTransition.active && nextSongPath != null && _durationMs > 0 && !gaplessNextDecoder.isPreparedFor(generation)) {
                     val remainingMs = _durationMs - _positionMs
                     if (remainingMs in 1L..GAPLESS_PREOPEN_WINDOW_MS) {
                         prepareNextDecoder(nextSongPath!!, generation)
@@ -2819,16 +2954,27 @@ class FfmpegAudioPlayer(private val context: Context) {
                     if (currentRead == -1) {
                         // 超时，检查是否仍在播放
                         if (!isPlaying.get()) break
-                        // 解码器已完成 → 当前歌曲解码完毕
-                        // 关键修复：不等 ring buffer 完全消费，立刻强制切换
-                        // 否则需要等旧 ring buffer 中剩余的 ~760KB 数据消费完（3-4 秒）才能 switch
+                        // Decoder producer completion is not necessarily renderer completion.
+                        // Automatic mode must preserve its scheduled envelope; only the legacy manual
+                        // path keeps the old low-latency producer-EOF shortcut.
                         if (decoderDone) {
+                            if (crossfadeTransition.isAutomaticActive()) {
+                                // Producer EOF is not playback EOF. The decoder can finish several seconds
+                                // ahead while the RingBuffer/output clock still owns audible old-track PCM.
+                                // Never reset an AUTOMATIC envelope here: wait for RingBuffer.markEOF()/drain
+                                // and let the eight-second renderer timeline decide the handoff. This mirrors
+                                // AM's separation between media preparation and renderer automation.
+                                AppLogger.d(
+                                    TAG,
+                                    "AutoCrossfade: producer EOF observed; keep renderer timeline " +
+                                        "elapsed=${crossfadeTransition.elapsedMs(bytesPerMs)}ms rbAvail=${rb.available()}B"
+                                )
+                                continue
+                            }
                             val xfadeElapsedMs = crossfadeTransition.elapsedMs(bytesPerMs)
                             AppLogger.d(TAG, "Crossfade: current song decoder EOF, force switch (xfadeElapsed=${xfadeElapsedMs}ms, rbAvail=${rb.available()}B) — 关闭旧 rb 跳过 760KB 残数据")
                             crossfadeTransition.reset("current_decoder_eof")
-                            // 关闭旧 ring buffer（丢弃剩余 ~760KB 旧数据），让 readWithTimeout 下次返回 0
-                            // 旧歌已经淡出到几乎无声（crossfade 进度 ~99%），丢弃 760KB 听感无感
-                            // 但能省下 3-4 秒卡顿
+                            // Manual legacy path keeps its old low-latency producer-EOF shortcut.
                             try { rb.close() } catch (_: Exception) {}
                             if (switchToNextSong()) {
                                 _positionMs = xfadeElapsedMs
@@ -2894,6 +3040,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                             }
                             AppLogger.d(TAG, "Crossfade: COMPLETE start: prevFormat(sr=$wavSampleRate,ch=$wavChannels,bits=$wavBitsPerSample) nextFormat(sr=${prep.sampleRate},ch=${prep.channels},bits=${prep.bitsPerSample}) decoderHandle=$decoderHandle nextHandle=${prep.handle} audioTrack=${audioTrack != null} (sampleRate=${audioTrack?.sampleRate})")
                             crossfadeTransition.reset("complete")
+                            autoTransitionRuntime.resetAfterTrackBoundary()
                             xlap("start")
                             // 关闭旧解码器，切换到新解码器
                             val oldHandle = decoderHandle
@@ -2988,6 +3135,17 @@ class FfmpegAudioPlayer(private val context: Context) {
                             continue
                         }
                     }
+                }
+
+                if (!crossfadeTransition.active && read > 0) {
+                    autoTransitionRuntime.observeCurrentPcm(
+                        positionMs = _positionMs,
+                        buffer = buffer,
+                        length = read,
+                        outputIsFloat = useFloatOutput,
+                        outputIsPacked24 = usePacked24Output,
+                        bitsPerSample = wavBitsPerSample,
+                    )
                 }
 
                 if (discardReadIfSeekCrossed(seekReadToken, "audiotrack")) {
@@ -3210,7 +3368,7 @@ class FfmpegAudioPlayer(private val context: Context) {
         val bytesPerMs = (actualSampleRate * frameSize).toDouble() / 1000.0
         val bufferFrames = ((actualSampleRate * 120L) / 1000L).toInt().coerceAtLeast(512)
 
-        val engine = NativeAudioEngine.create(
+        var engine = NativeAudioEngine.create(
             requestedMode = mode,
             sampleRate = actualSampleRate,
             channels = actualChannels,
@@ -3244,6 +3402,75 @@ class FfmpegAudioPlayer(private val context: Context) {
         val positionAccumulator = FractionalPlaybackPositionAccumulator()
 
         var lifecycleInterrupted = false
+
+        fun rebuildNativeEngineForRoute(reason: String, forcedDeviceId: Int): Boolean {
+            val targetDeviceId = if (forcedDeviceId > 0) {
+                forcedDeviceId
+            } else {
+                preferredNativeOutputDeviceId()
+            }
+            // Route availability may change the effective backend itself. A stored DIRECT mode,
+            // for example, is intentionally downgraded to AAudio when Bluetooth becomes the only
+            // external route on API <= 33. Re-evaluate policy instead of blindly reopening the
+            // backend that was valid when playback originally started.
+            val routeMode = AudioOutputManager.getCurrentOutputMode(context)
+            if (routeMode == AudioOutputMode.AUDIO_TRACK) {
+                AppLogger.w(
+                    TAG,
+                    "Native route rebuild cannot switch to AudioTrack in-place: reason=$reason; " +
+                        "keeping mode=${engine.actualMode}",
+                )
+                return false
+            }
+            val routeEncoding = if (routeMode == AudioOutputMode.OPENSL_ES) {
+                AudioFormat.ENCODING_PCM_16BIT
+            } else {
+                probedEncoding
+            }
+            val previousEngine = engine
+            val replacement = NativeAudioEngine.create(
+                requestedMode = routeMode,
+                sampleRate = actualSampleRate,
+                channels = actualChannels,
+                encoding = routeEncoding,
+                bufferFrames = bufferFrames,
+                preferredDeviceId = targetDeviceId,
+                spatializationBehavior = AndroidSpatialAudio.aaudioSpatializationBehavior(context, routeMode),
+                contentSpatialized = AndroidSpatialAudio.aaudioContentSpatialized(routeMode),
+            )
+            if (replacement == null) {
+                AppLogger.e(
+                    TAG,
+                    "Native route rebuild failed: reason=$reason requested=$routeMode deviceId=$targetDeviceId; " +
+                        "keeping mode=${previousEngine.actualMode}",
+                )
+                return false
+            }
+
+            replacement.setVolume(volume)
+            val detached = replaceNativeAudioEngine(replacement)
+            engine = replacement
+            started = false
+            if (detached != null && detached !== replacement) {
+                nativeAudioEngineLifecycle.closeDetached(
+                    engine = detached,
+                    reason = "native_route_rebuild_$reason",
+                    stop = true,
+                    flush = false,
+                )
+            }
+            AppLogger.w(
+                TAG,
+                "Native route rebuild committed: reason=$reason deviceId=$targetDeviceId " +
+                    "old=${previousEngine.actualMode} new=${replacement.actualMode} positionMs=$_positionMs",
+            )
+            return true
+        }
+
+        fun consumeNativeRouteRebuildIfNeeded() {
+            val pending = consumePendingNativeOutputRouteRebuild() ?: return
+            rebuildNativeEngineForRoute(pending.first, pending.second)
+        }
 
         fun writeToEngine(src: ByteArray, read: Int, sourceBits: Int = wavBitsPerSample): Int {
             val data: ByteArray
@@ -3285,6 +3512,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                 dispatchWaveformFrame(
                     buffer, processedRead, actualChannels, actualSampleRate, wavBitsPerSample
                 )
+                consumeNativeRouteRebuildIfNeeded()
                 val written = writeToEngine(buffer, processedRead, wavBitsPerSample)
                 if (written < 0) return false
                 prefillBytesWritten += written
@@ -3310,29 +3538,17 @@ class FfmpegAudioPlayer(private val context: Context) {
                     continue
                 }
 
-                if (!crossfadeTransition.active && crossfadeDurationMs > 0 && nextSongPath != null && _durationMs > 0) {
-                    val path = nextSongPath!!
-                    val manualTrigger = isManualCrossfadeTrigger(path, generation)
+                if (!crossfadeTransition.active && nextSongPath != null && _durationMs > 0 &&
+                    (crossfadeDurationMs > 0 || automaticCrossfadeEnabled)
+                ) {
                     val remainingMs = (_durationMs - _positionMs).coerceAtLeast(1L)
-                    if (manualTrigger || remainingMs in 1L..crossfadeDurationMs.toLong()) {
-                        val preparedOk = gaplessNextDecoder.pathFor(generation) == path ||
-                            prepareNextDecoder(path, generation)
-                        val prepared = gaplessNextDecoder.snapshotFor(generation)
-                        if (preparedOk && prepared != null && prepared.path == path && canCrossfadePreparedNext(prepared)) {
-                            if (crossfadeTransition.start(
-                                    targetPath = path,
-                                    durationMs = crossfadeDurationMs,
-                                    sampleRate = actualSampleRate,
-                                    bufferSize = buffer.size,
-                                    remainingMs = if (manualTrigger) crossfadeDurationMs.toLong() else remainingMs
-                                )
-                            ) {
-                                if (manualTrigger) clearManualCrossfadeRequest("native_manual_crossfade_started")
-                            }
-                        } else if (manualTrigger) {
-                            clearManualCrossfadeRequest("native_manual_crossfade_prepare_failed")
-                        }
-                    }
+                    startQueuedCrossfadeIfDue(
+                        generation = generation,
+                        sampleRate = actualSampleRate,
+                        bufferSize = buffer.size,
+                        remainingMs = remainingMs,
+                        nativeLoop = true,
+                    )
                 }
 
                 val preparedCrossfade = if (crossfadeTransition.active) {
@@ -3362,7 +3578,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                     }
 
                     if (read > 0) {
-                        val decoderBytesPerSample = if (bufferSourceBits <= 16) 2 else 4
+                        val decoderBytesPerSample = AudioOutputFormatPolicy.decoderBytesPerSample(bufferSourceBits)
                         val decoderFrameSize = actualChannels * decoderBytesPerSample
                         val decoderBytesPerMs = actualSampleRate.toDouble() * decoderFrameSize.toDouble() / 1000.0
                         val mixResult = crossfadeTransition.mixNextIntoCurrent(
@@ -3398,6 +3614,17 @@ class FfmpegAudioPlayer(private val context: Context) {
                             continue
                         }
                     }
+                }
+
+                if (!crossfadeTransition.active && read > 0) {
+                    autoTransitionRuntime.observeCurrentPcm(
+                        positionMs = _positionMs,
+                        buffer = buffer,
+                        length = read,
+                        outputIsFloat = false,
+                        outputIsPacked24 = false,
+                        bitsPerSample = bufferSourceBits,
+                    )
                 }
 
                 if (discardReadIfSeekCrossed(seekReadToken, "native")) {
@@ -3453,6 +3680,8 @@ class FfmpegAudioPlayer(private val context: Context) {
                 dispatchWaveformFrame(
                     buffer, processedRead, actualChannels, actualSampleRate, bufferSourceBits
                 )
+
+                consumeNativeRouteRebuildIfNeeded()
 
                 if (needsAudioTrackFlush.compareAndSet(true, false)) {
                     engine.flush()
@@ -3569,7 +3798,7 @@ class FfmpegAudioPlayer(private val context: Context) {
         val engine = UsbAudioEngine
 
         val actualSampleRate = wavSampleRate.coerceAtLeast(44100)
-        val sourcePcmFrameSize = wavChannels * UsbAudioFormatPolicy.decoderBytesPerSample(wavBitsPerSample)
+        val sourcePcmFrameSize = wavChannels * AudioOutputFormatPolicy.decoderBytesPerSample(wavBitsPerSample)
         var usbRuntimeFormat = engine.getRuntimeFormat()
         var usbDeviceFrameSize = usbRuntimeFormat.frameBytes.takeIf { it > 0 } ?: sourcePcmFrameSize
         var convertUsbS32ToPacked24 = false
@@ -4809,9 +5038,14 @@ class FfmpegAudioPlayer(private val context: Context) {
                 AppLogger.e(TAG, "USB streaming playback EXCEPTION", e)
             }
         } finally {
-            if (!lifecycleInterrupted && isPlaying.get() && isStillCurrentPlayback(sourcePath, generation) && !isReleased.get()) {
+            if (!lifecycleInterrupted && isStillCurrentPlayback(sourcePath, generation) && !isReleased.get()) {
+                // Any terminal feeder exit must also terminate the renderer PLAYING state.
+                // Leaving isPlaying=false with State.PLAYING makes PlayerController keep its
+                // progress/lyrics clock alive forever even though no feeder can advance
+                // _positionMs (the 100422 "00:00 while lyrics move" failure).
                 isPlaying.set(false)
                 if (_state == State.PLAYING) {
+                    AppLogger.w(TAG, "USB feeder ended while renderer still PLAYING; forcing PAUSED")
                     setState(State.PAUSED)
                 }
             }

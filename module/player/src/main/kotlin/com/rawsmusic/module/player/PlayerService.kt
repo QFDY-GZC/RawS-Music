@@ -30,6 +30,7 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
+import com.rawsmusic.core.common.model.LyricWord
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.core.common.artwork.EmbeddedArtworkRegion
 import com.rawsmusic.core.common.model.RepeatMode
@@ -38,6 +39,9 @@ import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.AudioFocusPreferences
 import com.rawsmusic.module.data.prefs.PlaylistStore
 import com.rawsmusic.module.player.lyrics.BluetoothLyricBridge
+import com.rawsmusic.module.player.lyrics.LiveLyricNotificationBridge
+import com.rawsmusic.module.player.lyrics.buildLiveLyricNotificationText
+import com.rawsmusic.module.player.lyrics.buildLiveLyricSecondaryText
 import com.rawsmusic.module.player.lyrics.PlaybackTickerState
 import com.rawsmusic.module.player.lyrics.PlayerServiceProxy
 import com.rawsmusic.module.player.lyrics.TickerBridge
@@ -54,6 +58,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URLDecoder
+import org.json.JSONArray
 
 class PlayerService : LifecycleService() {
 
@@ -72,6 +77,10 @@ class PlayerService : LifecycleService() {
         const val ACTION_ENSURE_WAKELOCK = "com.rawsmusic.action.ENSURE_WAKELOCK"
         const val ACTION_TOGGLE_FAVORITE = "com.rawsmusic.action.TOGGLE_FAVORITE"
         const val ACTION_TOGGLE_SHUFFLE = "com.rawsmusic.action.TOGGLE_SHUFFLE"
+        const val ACTION_TOGGLE_DESKTOP_LYRIC = "com.rawsmusic.action.TOGGLE_DESKTOP_LYRIC"
+        const val ACTION_REFRESH_NOTIFICATION = "com.rawsmusic.action.REFRESH_NOTIFICATION"
+        const val ACTION_SUPER_ISLAND_LYRIC = "com.rawsmusic.action.SUPER_ISLAND_LYRIC"
+        const val ACTION_SUPER_ISLAND_LYRIC_CLEAR = "com.rawsmusic.action.SUPER_ISLAND_LYRIC_CLEAR"
         /** USB 独占播放前台保活 */
         const val ACTION_USB_PLAYBACK_FOREGROUND = "com.rawsmusic.action.USB_PLAYBACK_FOREGROUND"
         /** Keep system media identity active before native USB starts */
@@ -112,8 +121,9 @@ class PlayerService : LifecycleService() {
         val currentLyrics: StateFlow<LyricData?> = _currentLyrics.asStateFlow()
 
         /** 更新当前歌词 — 供外部（MainActivity）调用 */
-        fun updateLyrics(lyricData: LyricData?) {
+        fun updateLyrics(lyricData: LyricData?, song: AudioFile? = null) {
             _currentLyrics.value = lyricData
+            currentRuntimeController()?.onLyricsUpdated(song, lyricData)
         }
 
         fun pushLyricsToMediaSession() {
@@ -354,6 +364,9 @@ class PlayerService : LifecycleService() {
     }
 
     private var mediaSessionCompat: MediaSessionCompat? = null
+    private val liveLyricNotificationBridge: LiveLyricNotificationBridge by lazy {
+        LiveLyricNotificationBridge(this)
+    }
     private var currentSong: AudioFile? = null
     private var currentPlayState: PlayState = PlayState.IDLE
     private var coverBitmap: Bitmap? = null
@@ -901,6 +914,7 @@ class PlayerService : LifecycleService() {
                 // 歌词已更新，仅更新歌词和元数据（保留已有封面）
                 updateLyricsInMetadata()
             }
+            ACTION_REFRESH_NOTIFICATION -> updateNotification()
             ACTION_ENSURE_WAKELOCK -> {
                 // 确保 WakeLock 持有（切歌期间防止被系统挂起）
                 acquireWakeLockIfNeeded()
@@ -1018,6 +1032,24 @@ class PlayerService : LifecycleService() {
                         updateNotification()
                     }
                 }
+            }
+            ACTION_TOGGLE_DESKTOP_LYRIC -> {
+                val enabled = !AppPreferences.Lyrics.desktopLyricEnabled
+                AppPreferences.Lyrics.desktopLyricEnabled = enabled
+                runCatching {
+                    val serviceIntent = Intent().apply {
+                        setClassName(packageName, "com.rawsmusic.lyric.DesktopLyricService")
+                        this.action = if (enabled) {
+                            "com.rawsmusic.action.ENABLE_DESKTOP_LYRIC"
+                        } else {
+                            "com.rawsmusic.action.HIDE_DESKTOP_LYRIC"
+                        }
+                    }
+                    startService(serviceIntent)
+                }.onFailure { error ->
+                    Log.w("PlayerService", "desktop lyric action failed enabled=$enabled", error)
+                }
+                updateNotification()
             }
         }
     }
@@ -1177,7 +1209,10 @@ class PlayerService : LifecycleService() {
      * 解决：自然切歌时歌词异步加载完成后，不清空已加载的封面
      */
     private fun updateLyricsInMetadata() {
-        val song = currentSong ?: return
+        val song = currentSong ?: run {
+            liveLyricNotificationBridge.clear()
+            return
+        }
         val lrcText = _currentLyrics.value?.let { lyrics ->
             if (!lyrics.isEmpty) buildLrcText(lyrics) else null
         }
@@ -1233,6 +1268,22 @@ class PlayerService : LifecycleService() {
             )
         }.build()
         mediaSessionCompat?.setPlaybackState(playbackState)
+        reassertUsbRemoteVolumeRoute("playback_state:${state.name}")
+    }
+
+    /**
+     * Some Android/OEM media-session implementations can rebuild the playback route while the
+     * app is in the background. Reattach the existing VolumeProvider when USB hardware volume
+     * is still the active route instead of silently falling back to STREAM_MUSIC.
+     */
+    private fun reassertUsbRemoteVolumeRoute(reason: String) {
+        val session = mediaSessionCompat ?: return
+        val provider = usbVolumeProvider ?: return
+        if (!playerController.shouldUseUsbRemoteVolume()) return
+        session.setPlaybackToRemote(provider)
+        session.isActive = true
+        provider.syncFromController()
+        Log.d("PlayerService", "USB remote volume route reasserted: reason=$reason")
     }
 
     private fun rebuildMetadataWithBluetoothLyric() {
@@ -1619,7 +1670,130 @@ class PlayerService : LifecycleService() {
 
     private var isForegroundStarted = false
 
+    private fun updateLiveLyricNotification(positionMs: Long = lastKnownPosition) {
+        val enabled = AppPreferences.Lyrics.liveUpdateLyricEnabled
+        liveLyricNotificationBridge.setEnabled(enabled)
+        if (!enabled || currentPlayState != PlayState.PLAYING) {
+            liveLyricNotificationBridge.clear()
+            return
+        }
+        val song = currentSong ?: return
+        val lyrics = _currentLyrics.value ?: run {
+            liveLyricNotificationBridge.clear()
+            return
+        }
+        val index = lyrics.findCurrentLine(positionMs)
+        val line = lyrics.getLine(index) ?: run {
+            liveLyricNotificationBridge.clear()
+            return
+        }
+        val display = buildLiveLyricNotificationText(
+            line = line,
+            mode = AppPreferences.Lyrics.liveUpdateLyricMode,
+            positionMs = positionMs
+        ) ?: run {
+            liveLyricNotificationBridge.clear()
+            return
+        }
+        val fullLine = AppPreferences.Lyrics.liveUpdateLyricDisplayMode ==
+            AppPreferences.Lyrics.LIVE_UPDATE_LYRIC_DISPLAY_MODE_FULL
+        val secondary = buildLiveLyricSecondaryText(
+            line,
+            AppPreferences.Lyrics.liveUpdateLyricSecondaryMode
+        )
+        liveLyricNotificationBridge.sendLyric(
+            songTitle = song.title.ifBlank { song.displayName },
+            lyric = if (fullLine) display.fullLyric else display.lyric,
+            compactLyric = if (fullLine) display.fullLyric else display.compactLyric,
+            allowLongCompactLyric = !fullLine && display.allowLongCompactLyric,
+            preserveCompactLyric = fullLine,
+            secondaryLyric = secondary,
+            artwork = coverBitmap
+        )
+    }
+
+    /**
+     * Keep vendor-specific Focus payloads out of the player module. The event contains only
+     * bounded lyric metadata; the app layer resolves artwork and owns the Xiaomi service.
+     */
+    private fun publishSuperIslandLyric(positionMs: Long = lastKnownPosition) {
+        val intent = if (
+            currentPlayState == PlayState.PLAYING &&
+            AppPreferences.Lyrics.xiaomiSuperIslandLyricEnabled
+        ) {
+            val song = currentSong
+            val lyrics = _currentLyrics.value
+            val index = song?.let { lyrics?.findCurrentLine(positionMs) } ?: -1
+            val line = lyrics?.getLine(index)
+            if (song != null && line != null) {
+                Intent(ACTION_SUPER_ISLAND_LYRIC).apply {
+                    setPackage(packageName)
+                    // setPackage() still leaves this as an implicit package-scoped
+                    // broadcast. The receiver intentionally has no public filter, so
+                    // point to the app-owned bridge explicitly or HyperOS drops it.
+                    component = ComponentName(
+                        packageName,
+                        "com.rawsmusic.lyric.XiaomiSuperIslandLyricReceiver"
+                    )
+                    putExtra("title", song.title)
+                    putExtra("artist", song.artist)
+                    putExtra("album", song.album)
+                    putExtra("path", song.path)
+                    putExtra("albumArtPath", song.albumArtPath)
+                    putExtra("duration", song.duration)
+                    putExtra("position", positionMs)
+                    putExtra("lineTime", line.timeStamp)
+                    putExtra("lineEnd", line.endTime)
+                    putExtra("lineText", line.text)
+                    putExtra("lineTranslation", line.translation)
+                    putExtra("lineRomanization", line.romanization)
+                    putExtra("lineWords", encodeLyricWords(line.words))
+                    putExtra("linePronunciationWords", encodeLyricWords(line.pronunciationWords))
+                    putExtra("lineBackgroundWords", encodeLyricWords(line.backgroundWords))
+                    putExtra("lineBackgroundText", line.backgroundText.orEmpty())
+                    putExtra("lineBackgroundTranslation", line.backgroundTranslation.orEmpty())
+                    putExtra("lineBackgroundStart", line.backgroundStartTime ?: 0L)
+                    putExtra("lineBackgroundEnd", line.backgroundEndTime ?: 0L)
+                    putExtra("lineAgent", line.agent.orEmpty())
+                    putExtra("lineAgentName", line.agentName.orEmpty())
+                    putExtra("lineIsTtml", line.isTtml)
+                }
+            } else null
+        } else null
+        try {
+            val event = intent ?: Intent(ACTION_SUPER_ISLAND_LYRIC_CLEAR).apply {
+                setPackage(packageName)
+                component = ComponentName(
+                    packageName,
+                    "com.rawsmusic.lyric.XiaomiSuperIslandLyricReceiver"
+                )
+            }
+            sendBroadcast(event)
+        } catch (error: Exception) {
+            Log.w("PlayerService", "Unable to publish Super Island lyric event", error)
+        }
+    }
+
+    private fun encodeLyricWords(words: List<LyricWord>): String {
+        val json = JSONArray()
+        words.asSequence()
+            .filter { it.text.isNotBlank() && it.end >= it.begin }
+            .take(64)
+            .forEach { word ->
+                json.put(
+                    org.json.JSONObject().apply {
+                        put("text", word.text.take(96))
+                        put("begin", word.begin)
+                        put("end", word.end)
+                    }
+                )
+            }
+        return json.toString()
+    }
+
     private fun updateNotification() {
+        updateLiveLyricNotification()
+        publishSuperIslandLyric()
         val notification = buildNotification()
         if (!isForegroundStarted) {
             startForegroundCompat(NOTIFICATION_ID, notification)
@@ -1849,28 +2023,6 @@ class PlayerService : LifecycleService() {
         val ctrl = playerController
         val isShuffle = ctrl.isShuffle.value
         val repeatMode = ctrl.repeatMode.value
-        val isFavorite = song?.let { PlaylistStore.getInstance(this).isFavorite(it) } == true
-
-        val favIntent = PendingIntent.getService(
-            this, 10,
-            Intent(this, PlayerService::class.java).setAction(ACTION_TOGGLE_FAVORITE),
-            flags
-        )
-        builder.addAction(
-            Notification.Action.Builder(
-                android.graphics.drawable.Icon.createWithResource(
-                    this,
-                    if (isFavorite) {
-                        R.drawable.ic_notification_favorite_filled
-                    } else {
-                        R.drawable.ic_notification_favorite
-                    }
-                ),
-                if (isFavorite) "取消收藏" else "收藏",
-                favIntent
-            ).build()
-        )
-
         val prevIntent = PendingIntent.getService(
             this, 0,
             Intent(this, PlayerService::class.java).setAction(ACTION_PREVIOUS),
@@ -1922,28 +2074,65 @@ class PlayerService : LifecycleService() {
             ).build()
         )
 
-        val modeIntent = PendingIntent.getService(
-            this, 11,
-            Intent(this, PlayerService::class.java).setAction(ACTION_TOGGLE_SHUFFLE),
-            flags
-        )
-        val modeIcon = when {
-            isShuffle -> R.drawable.ic_notification_shuffle
-            repeatMode == RepeatMode.ONE -> R.drawable.ic_repeat_one
-            else -> R.drawable.ic_repeat
+        val selectedButtons = AppPreferences.Lyrics.mediaNotificationButtonIds.toSet()
+        if (AppPreferences.Lyrics.MEDIA_NOTIFICATION_BUTTON_PLAYBACK_MODE in selectedButtons) {
+            val modeIntent = PendingIntent.getService(
+                this, 11,
+                Intent(this, PlayerService::class.java).setAction(ACTION_TOGGLE_SHUFFLE),
+                flags
+            )
+            val modeIcon = when {
+                isShuffle -> R.drawable.ic_notification_shuffle
+                repeatMode == RepeatMode.ONE -> R.drawable.ic_repeat_one
+                else -> R.drawable.ic_repeat
+            }
+            val modeLabel = when {
+                isShuffle -> "随机播放"
+                repeatMode == RepeatMode.ONE -> "单曲循环"
+                repeatMode == RepeatMode.ALL -> "列表循环"
+                else -> "顺序播放"
+            }
+            builder.addAction(
+                Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(this, modeIcon),
+                    modeLabel, modeIntent
+                ).build()
+            )
         }
-        val modeLabel = when {
-            isShuffle -> "随机播放"
-            repeatMode == RepeatMode.ONE -> "单曲循环"
-            repeatMode == RepeatMode.ALL -> "列表循环"
-            else -> "顺序播放"
+
+        if (AppPreferences.Lyrics.MEDIA_NOTIFICATION_BUTTON_DESKTOP_LYRIC in selectedButtons) {
+            val desktopIntent = PendingIntent.getService(
+                this, 12,
+                Intent(this, PlayerService::class.java).setAction(ACTION_TOGGLE_DESKTOP_LYRIC),
+                flags
+            )
+            builder.addAction(
+                Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_flyme_ticker),
+                    "桌面歌词", desktopIntent
+                ).build()
+            )
         }
-        builder.addAction(
-            Notification.Action.Builder(
-                android.graphics.drawable.Icon.createWithResource(this, modeIcon),
-                modeLabel, modeIntent
-            ).build()
-        )
+
+        if (AppPreferences.Lyrics.MEDIA_NOTIFICATION_BUTTON_FAVORITE in selectedButtons) {
+            val isFavorite = song?.let { PlaylistStore.getInstance(this).isFavorite(it) } == true
+            val favIntent = PendingIntent.getService(
+                this, 10,
+                Intent(this, PlayerService::class.java).setAction(ACTION_TOGGLE_FAVORITE),
+                flags
+            )
+            builder.addAction(
+                Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(
+                        this,
+                        if (isFavorite) R.drawable.ic_notification_favorite_filled
+                        else R.drawable.ic_notification_favorite
+                    ),
+                    if (isFavorite) "取消收藏" else "收藏",
+                    favIntent
+                ).build()
+            )
+        }
 
         mediaSessionCompat?.let { session ->
             val compatToken = session.sessionToken
@@ -1972,7 +2161,7 @@ class PlayerService : LifecycleService() {
             }
 
             val mediaStyle = Notification.MediaStyle()
-                .setShowActionsInCompactView(1, 2, 3)
+                .setShowActionsInCompactView(0, 1, 2)
             if (frameworkToken != null) {
                 mediaStyle.setMediaSession(frameworkToken)
             }
@@ -2028,6 +2217,10 @@ class PlayerService : LifecycleService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        runCatching {
+            sendBroadcast(Intent(ACTION_SUPER_ISLAND_LYRIC_CLEAR).setPackage(packageName))
+        }
+        liveLyricNotificationBridge.clear()
         stopUsbBackgroundGuardian("service_destroy")
         releaseRuntimeController("service_destroy")
         isRunning = false
@@ -2421,6 +2614,7 @@ class PlayerService : LifecycleService() {
 
         session.isActive = true
         session.setPlaybackState(playbackState)
+        reassertUsbRemoteVolumeRoute("usb_playback_state:$reason")
         provider.syncFromController()
 
         android.util.Log.i("PlayerService", "MediaSession playbackState: playing=$playing reason=$reason volume=${provider.currentVolume}")
@@ -2442,13 +2636,17 @@ class PlayerService : LifecycleService() {
         if (currentPlayState == PlayState.PLAYING) {
             positionUpdateJob = lifecycleScope.launch(Dispatchers.Main) {
                 while (true) {
-                    kotlinx.coroutines.delay(1000)
+                    kotlinx.coroutines.delay(
+                        if (AppPreferences.Lyrics.liveUpdateLyricEnabled) 220L else 1000L
+                    )
                     if (currentPlayState == PlayState.PLAYING) {
                         val elapsed = if (lastPositionTime > 0) SystemClock.elapsedRealtime() - lastPositionTime else 0L
                         val estimatedPosition = (lastKnownPosition + elapsed).coerceAtLeast(0L)
                         val duration = currentSong?.duration ?: 0L
                         if (duration > 0 && estimatedPosition <= duration) {
                             updateMediaSessionPlaybackState(PlayState.PLAYING, estimatedPosition)
+                            updateLiveLyricNotification(estimatedPosition)
+                            publishSuperIslandLyric(estimatedPosition)
                             notifyPlaybackWidgetProgress()
                         }
                     }

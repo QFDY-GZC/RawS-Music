@@ -18,6 +18,7 @@ internal class PlayerResumeCoordinator(
     private val isUsbExclusiveActive: () -> Boolean,
     private val nativeStreamState: () -> UsbAudioEngine.NativeStreamState,
     private val nativeSessionBroken: () -> Boolean,
+    private val resumeUsbWritesAfterPause: (String) -> Boolean,
     private val hasCurrentSong: () -> Boolean,
     private val recoverUsbExclusiveAsync: () -> Unit,
     private val ffmpegResume: () -> Boolean,
@@ -25,6 +26,7 @@ internal class PlayerResumeCoordinator(
     private val transitionPlayState: (PlayState, String) -> Unit,
     private val startUsbKeepAlive: (String) -> Unit,
     private val startProgressUpdate: () -> Unit,
+    private val resumeUsbSessionEnvelope: suspend (String) -> Unit,
     private val resetPreparedUsbSession: () -> Unit,
     private val isRenderSwitching: () -> Boolean,
     private val clearRenderSwitching: () -> Unit,
@@ -45,6 +47,11 @@ internal class PlayerResumeCoordinator(
                 return
             }
             if (nativeState == UsbAudioEngine.NativeStreamState.STREAMING) {
+                if (!resumeUsbWritesAfterPause("manual_resume_warm_streaming")) {
+                    AppLogger.w(tag, "resume: native USB write gate could not be reopened, recovering")
+                    recoverUsbExclusiveAsync()
+                    return
+                }
                 val resumed = ffmpegResume()
                 if (resumed && isUsbHardwareVolumeRouteActive()) {
                     AppLogger.i(tag, "USB warm resume keeps Feature Unit at the user value")
@@ -54,6 +61,10 @@ internal class PlayerResumeCoordinator(
                     recoverUsbExclusiveAsync()
                     return
                 }
+                // Warm pause leaves the software/session-volume route at zero. USB exclusive
+                // deliberately bypasses the PCM sample fade, so restore the one authoritative
+                // native-session envelope here instead of multiplying two fade owners.
+                resumeUsbSessionEnvelope("manual_resume_warm_streaming")
                 transitionPlayState(PlayState.PLAYING, "resume_warm")
                 startUsbKeepAlive("manual_resume_warm_streaming")
                 startProgressUpdate()

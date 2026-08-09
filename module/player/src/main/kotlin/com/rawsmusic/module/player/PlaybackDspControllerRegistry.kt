@@ -10,6 +10,7 @@ import com.rawsmusic.module.player.dsp.FftConvolverController
 import com.rawsmusic.module.player.dsp.GraphicEQController
 import com.rawsmusic.module.player.dsp.LoudnessBalanceController
 import com.rawsmusic.module.player.dsp.MonoBassController
+import com.rawsmusic.module.player.dsp.MonoOutputController
 import com.rawsmusic.module.player.dsp.MoogLadderController
 import com.rawsmusic.module.player.dsp.NativeDSPEngine
 import com.rawsmusic.module.player.dsp.Panoramic360Controller
@@ -39,6 +40,7 @@ internal class PlaybackDspControllerRegistry(
     private var experimentalGain: ExperimentalGainController? = null
     private var loudnessBalance: LoudnessBalanceController? = null
     private var monoBass: MonoBassController? = null
+    private var monoOutput: MonoOutputController? = null
     private var dynamicEq: DynamicEqController? = null
     private var moogLadder: MoogLadderController? = null
     private var fftConvolver: FftConvolverController? = null
@@ -71,6 +73,9 @@ internal class PlaybackDspControllerRegistry(
 
     val monoBassController: MonoBassController
         get() = monoBass ?: MonoBassController(engineOrStub("MonoBass", logMissing = false)).also { monoBass = it }
+
+    val monoOutputController: MonoOutputController
+        get() = monoOutput ?: MonoOutputController(engineOrStub("MonoOutput", logMissing = false)).also { monoOutput = it }
 
     val dynamicEqController: DynamicEqController
         get() = dynamicEq ?: DynamicEqController(engineOrStub("DynamicEQ", logMissing = false)).also { dynamicEq = it }
@@ -137,6 +142,12 @@ internal class PlaybackDspControllerRegistry(
     fun ensureMonoBassConnected() {
         initializedEngine()?.let { engine ->
             (monoBass ?: MonoBassController(engine).also { monoBass = it }).connectEngine(engine)
+        }
+    }
+
+    fun ensureMonoOutputConnected() {
+        initializedEngine()?.let { engine ->
+            (monoOutput ?: MonoOutputController(engine).also { monoOutput = it }).connectEngine(engine)
         }
     }
 
