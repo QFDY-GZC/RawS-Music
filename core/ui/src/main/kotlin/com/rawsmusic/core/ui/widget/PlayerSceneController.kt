@@ -4,11 +4,16 @@ import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.util.Log
 import android.view.animation.DecelerateInterpolator
+import android.view.animation.Interpolator
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlin.math.abs
+import kotlin.math.roundToLong
+import kotlin.math.sin
 
 /**
  * Pure Compose scene controller for the player stack.
@@ -41,6 +46,21 @@ class PlayerSceneController {
         private set
 
     var composeTransitionProgress by mutableFloatStateOf(0f)
+        private set
+
+    /**
+     * Stable state object for the persistent MAIN/PLAYER sheet.
+     *
+     * Passing the float through MainActivity made the whole activity content recompose on every
+     * drag/settle frame. Apple Music updates the already-laid-out sheet and artwork views instead;
+     * consumers should pass this State object down and read it only in the sheet subtree.
+     */
+    val mainPlayerSheetExpansionState: State<Float> = derivedStateOf {
+        currentMainPlayerExpansion()
+    }
+
+    /** True only while the finger drives the scene; release animations are not interactive. */
+    var composeIsInteractiveGesture by mutableStateOf(false)
         private set
 
     val playerLyricsTransitionCoordinator = PlayerLyricsTransitionCoordinator()
@@ -82,6 +102,15 @@ class PlayerSceneController {
     private var toScene = Scene.MAIN
     private var sceneAnimator: ValueAnimator? = null
     private var sceneAnimGeneration = 0
+    private var playerReturnPreparationToken = 0
+    private var playerReturnPreparationActive = false
+    private var mainPlayerSheetDragActive = false
+    private var mainPlayerSheetDragStartExpansion = 0f
+    private var mainPlayerSheetCommittedScene = Scene.MAIN
+    // ViewDragHelper's velocity branch normalizes the remaining *physical* drag distance by the
+    // parent width, while its no-velocity branch uses the drag range. Compose keeps expansion as a
+    // ratio, so retain travel/width once the sheet is measured and reconstruct that pixel ratio.
+    private var mainPlayerSheetTravelToWidthRatio = 1f
 
     fun updateDefaultBackgroundEnabled(enabled: Boolean) {
         isDefaultBackgroundEnabled = enabled
@@ -114,6 +143,8 @@ class PlayerSceneController {
     }
 
     fun switchToSceneSilent(targetScene: Scene) {
+        playerReturnPreparationToken++
+        playerReturnPreparationActive = false
         sceneAnimator?.cancel()
         val oldScene = currentScene
         currentScene = targetScene
@@ -126,6 +157,7 @@ class PlayerSceneController {
         composeCurrentScene = targetScene
         composeIsTransitioning = false
         composeTransitionProgress = 0f
+        composeIsInteractiveGesture = false
         playerLyricsTransitionCoordinator.finish()
         if (oldScene != targetScene) {
             onSceneChanged?.invoke(targetScene, oldScene)
@@ -133,6 +165,10 @@ class PlayerSceneController {
     }
 
     fun startCoverDrag(targetScene: Scene = Scene.MAIN) {
+        if (targetScene == Scene.MAIN && isMainPlayerSheetAvailable()) {
+            beginMainPlayerSheetDrag()
+            return
+        }
         if (isTransitioning || composeIsTransitioning) return
         if (currentScene != Scene.PLAYER && currentScene != Scene.LYRIC && currentScene != Scene.ALBUM_DETAIL) return
         if (currentScene == targetScene) return
@@ -144,6 +180,10 @@ class PlayerSceneController {
     }
 
     fun updateCoverDrag(ratio: Float) {
+        if (mainPlayerSheetDragActive) {
+            updateMainPlayerSheetExpansion(mainPlayerSheetDragStartExpansion - ratio)
+            return
+        }
         updateInteractiveDrag(ratio)
     }
 
@@ -152,17 +192,28 @@ class PlayerSceneController {
     }
 
     fun endCoverDrag(shouldClose: Boolean, duration: Long = SCENE_ANIM_DURATION, velocity: Float = 0f) {
+        if (mainPlayerSheetDragActive) {
+            // The gesture owner has already applied the platform minimum-fling threshold and
+            // nearest-anchor rule. Do not make a second decision in normalized coordinates: AM's
+            // ViewDragHelper chooses the anchor once, then the settler only animates to it.
+            settleMainPlayerSheet(expanded = !shouldClose, velocity = -velocity)
+            return
+        }
         val visualToScene = toScene
         val target = if (shouldClose) visualToScene else fromScene
         val endRatio = if (shouldClose) 1f else 0f
+        val mainPlayerTransition =
+            (fromScene == Scene.PLAYER && visualToScene == Scene.MAIN) ||
+                (fromScene == Scene.MAIN && visualToScene == Scene.PLAYER)
         settleScene(
             oldScene = fromScene,
             targetScene = target,
-            duration = duration,
+            duration = if (mainPlayerTransition) PLAYER_SCENE_ANIM_DURATION else duration,
             startRatio = transitionRatio,
             endRatio = endRatio,
             velocity = velocity,
-            visualToScene = visualToScene
+            visualToScene = visualToScene,
+            velocityIsRatioPerSecond = mainPlayerTransition
         )
     }
 
@@ -190,6 +241,10 @@ class PlayerSceneController {
     }
 
     fun startCoverSwipeUpDrag(from: Scene = Scene.PLAYER, to: Scene = Scene.LYRIC) {
+        if (isMainPlayerVisualTransition()) {
+            beginMainPlayerSheetDrag()
+            return
+        }
         if (isTransitioning || composeIsTransitioning) return
         if (currentScene != from && currentScene != to) return
         val actualFrom = currentScene
@@ -209,10 +264,18 @@ class PlayerSceneController {
     }
 
     fun updateCoverSwipeUpDrag(ratio: Float) {
+        if (mainPlayerSheetDragActive) {
+            updateMainPlayerSheetExpansion(mainPlayerSheetDragStartExpansion + ratio)
+            return
+        }
         updateInteractiveDrag(ratio)
     }
 
     fun endCoverSwipeUpDrag(shouldOpen: Boolean, duration: Long = SCENE_ANIM_DURATION, velocity: Float = 0f) {
+        if (mainPlayerSheetDragActive) {
+            settleMainPlayerSheet(expanded = shouldOpen, velocity = velocity)
+            return
+        }
         val visualToScene = toScene
         val target = if (shouldOpen) visualToScene else fromScene
         val endRatio = if (shouldOpen) 1f else 0f
@@ -343,6 +406,7 @@ class PlayerSceneController {
         isTransitioning = false
         composeIsTransitioning = false
         composeTransitionProgress = 0f
+        composeIsInteractiveGesture = false
         playerLyricsTransitionCoordinator.cancel()
     }
 
@@ -354,15 +418,154 @@ class PlayerSceneController {
     fun openPlayPage(animated: Boolean = true) {
         if (currentScene != Scene.MAIN) return
         onPrepareMainToPlayer?.invoke()
-        if (animated) transitionToScene(Scene.PLAYER) else switchToSceneSilent(Scene.PLAYER)
+        if (animated) {
+            transitionToScene(Scene.PLAYER, duration = PLAYER_SCENE_ANIM_DURATION)
+        } else {
+            switchToSceneSilent(Scene.PLAYER)
+        }
     }
+
+    /**
+     * Starts the AM-style main -> player bottom-sheet gesture.
+     *
+     * Unlike opening the player after the gesture, this mounts the player scene at ratio 0 and
+     * lets the caller drive the same transition ratio for the whole drag. The release only
+     * chooses the final anchor, so there is no second entrance animation after the finger lifts.
+     */
+    fun startMainToPlayerDrag() {
+        if (!isMainPlayerSheetAvailable()) return
+        if (currentMainPlayerExpansion() <= 0f) {
+            onPrepareMainToPlayer?.invoke()
+        }
+        beginMainPlayerSheetDrag()
+    }
+
+    fun updateMainToPlayerDrag(ratio: Float) {
+        if (!mainPlayerSheetDragActive) return
+        updateMainPlayerSheetExpansion(ratio)
+    }
+
+    fun updateMainPlayerSheetGeometry(travelPx: Float, parentWidthPx: Float) {
+        if (travelPx <= 0f || parentWidthPx <= 0f) return
+        mainPlayerSheetTravelToWidthRatio = travelPx / parentWidthPx
+    }
+
+    fun endMainToPlayerDrag(shouldOpen: Boolean, velocity: Float = 0f) {
+        if (!mainPlayerSheetDragActive) return
+        settleMainPlayerSheet(expanded = shouldOpen, velocity = -velocity)
+    }
+
+    /**
+     * AM keeps MAIN and PLAYER as the two anchors of one draggable sheet. A new pointer may
+     * capture that sheet while ViewDragHelper is still settling it, so preserve the absolute
+     * expansion instead of restarting a route-relative transition at zero.
+     */
+    private fun beginMainPlayerSheetDrag() {
+        val expansion = currentMainPlayerExpansion()
+        mainPlayerSheetCommittedScene = currentScene
+        sceneAnimGeneration++
+        sceneAnimator?.cancel()
+        sceneAnimator = null
+        playerLyricsTransitionCoordinator.finish()
+        fromScene = Scene.MAIN
+        toScene = Scene.PLAYER
+        composeFromScene = Scene.MAIN
+        composeToScene = Scene.PLAYER
+        transitionRatio = expansion
+        composeTransitionProgress = expansion
+        isTransitioning = true
+        composeIsTransitioning = true
+        composeIsInteractiveGesture = true
+        mainPlayerSheetDragStartExpansion = expansion
+        mainPlayerSheetDragActive = true
+        onTransitionProgress?.invoke(Scene.PLAYER, expansion)
+    }
+
+    private fun updateMainPlayerSheetExpansion(expansion: Float) {
+        if (!mainPlayerSheetDragActive) return
+        val clamped = expansion.coerceIn(0f, 1f)
+        transitionRatio = clamped
+        composeTransitionProgress = clamped
+        onTransitionProgress?.invoke(Scene.PLAYER, clamped)
+    }
+
+    private fun settleMainPlayerSheet(expanded: Boolean, velocity: Float) {
+        val start = transitionRatio.coerceIn(0f, 1f)
+        val end = if (expanded) 1f else 0f
+        val targetScene = if (expanded) Scene.PLAYER else Scene.MAIN
+        val callbackOldScene = mainPlayerSheetCommittedScene
+        mainPlayerSheetDragActive = false
+        sceneAnimator?.cancel()
+        fromScene = Scene.MAIN
+        toScene = Scene.PLAYER
+        composeFromScene = Scene.MAIN
+        composeToScene = Scene.PLAYER
+        transitionRatio = start
+        composeTransitionProgress = start
+        isTransitioning = true
+        composeIsTransitioning = true
+        composeIsInteractiveGesture = false
+
+        val gen = ++sceneAnimGeneration
+        sceneAnimator = ValueAnimator.ofFloat(start, end).apply {
+            duration = mainPlayerSheetVelocityAwareDuration(
+                abs(end - start),
+                velocity,
+            )
+            interpolator = PLAYER_SHEET_INTERPOLATOR
+            addUpdateListener { animation ->
+                transitionRatio = animation.animatedValue as Float
+                composeTransitionProgress = transitionRatio
+                onTransitionProgress?.invoke(Scene.PLAYER, transitionRatio)
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                private var cancelled = false
+
+                override fun onAnimationCancel(animation: android.animation.Animator) {
+                    cancelled = true
+                }
+
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (sceneAnimator === animation) sceneAnimator = null
+                    if (cancelled || sceneAnimGeneration != gen) return
+                    currentScene = targetScene
+                    composeCurrentScene = targetScene
+                    transitionRatio = 0f
+                    composeTransitionProgress = 0f
+                    isTransitioning = false
+                    composeIsTransitioning = false
+                    composeIsInteractiveGesture = false
+                    mainPlayerSheetDragActive = false
+                    if (callbackOldScene != targetScene) {
+                        onSceneChanged?.invoke(targetScene, callbackOldScene)
+                    }
+                }
+            })
+            start()
+        }
+    }
+
+    private fun currentMainPlayerExpansion(): Float = when {
+        composeIsTransitioning && composeFromScene == Scene.MAIN && composeToScene == Scene.PLAYER ->
+            composeTransitionProgress.coerceIn(0f, 1f)
+        composeIsTransitioning && composeFromScene == Scene.PLAYER && composeToScene == Scene.MAIN ->
+            (1f - composeTransitionProgress).coerceIn(0f, 1f)
+        currentScene == Scene.PLAYER || composeCurrentScene == Scene.PLAYER -> 1f
+        else -> 0f
+    }
+
+    private fun isMainPlayerSheetAvailable(): Boolean {
+        val visualPair = isMainPlayerVisualTransition()
+        return visualPair || currentScene == Scene.MAIN || currentScene == Scene.PLAYER
+    }
+
+    private fun isMainPlayerVisualTransition(): Boolean = composeIsTransitioning &&
+        ((composeFromScene == Scene.MAIN && composeToScene == Scene.PLAYER) ||
+            (composeFromScene == Scene.PLAYER && composeToScene == Scene.MAIN))
 
     fun closePlayPage(animated: Boolean = true) {
         if (currentScene != Scene.PLAYER) return
-        // Temporarily bypass the player -> main shared-cover handoff.  Keep the
-        // scene state path simple while the player/mini-player artwork paths are
-        // being stabilized; player -> lyric animation remains enabled below.
-        if (animated) transitionToScene(Scene.MAIN) else switchToSceneSilent(Scene.MAIN)
+        closePlayerStackToMain(animated)
     }
 
     fun closePlayPageWithCoverAlign(animated: Boolean = true) {
@@ -371,8 +574,41 @@ class PlayerSceneController {
 
     fun closeCurrentPlayerStackToMain(animated: Boolean = true) {
         if (currentScene == Scene.MAIN) return
-        // Same as closePlayPage(): no temporary shared-cover handoff to main.
-        if (animated) transitionToScene(Scene.MAIN) else switchToSceneSilent(Scene.MAIN)
+        closePlayerStackToMain(animated)
+    }
+
+    /**
+     * Prepare the source artwork before starting a player -> main transition.
+     *
+     * The old path started the animator immediately and asked MainActivity for the list target
+     * afterwards. That left one frame with no valid shared target, so the player flashed and the
+     * next open was committed silently. Apple waits until both endpoints are measured first.
+     */
+    private fun closePlayerStackToMain(animated: Boolean) {
+        if (currentScene == Scene.MAIN) return
+        if (!animated) {
+            playerReturnPreparationToken++
+            playerReturnPreparationActive = false
+            switchToSceneSilent(Scene.MAIN)
+            return
+        }
+        if (playerReturnPreparationActive) return
+
+        val token = ++playerReturnPreparationToken
+        playerReturnPreparationActive = true
+        val proceed: () -> Unit = proceed@{
+            if (token != playerReturnPreparationToken || !playerReturnPreparationActive) return@proceed
+            playerReturnPreparationActive = false
+            if (currentScene != Scene.MAIN) {
+                transitionToScene(Scene.MAIN, duration = PLAYER_SCENE_ANIM_DURATION)
+            }
+        }
+        val prepare = onPreparePlayerToMain
+        if (prepare != null) {
+            prepare(proceed)
+        } else {
+            proceed()
+        }
     }
 
     fun openLyricPage(animated: Boolean = true) {
@@ -432,6 +668,7 @@ class PlayerSceneController {
         isTransitioning = true
         composeIsTransitioning = true
         composeTransitionProgress = 0f
+        composeIsInteractiveGesture = true
     }
 
     private fun updateInteractiveDrag(ratio: Float) {
@@ -451,7 +688,8 @@ class PlayerSceneController {
         startRatio: Float,
         endRatio: Float,
         velocity: Float = 0f,
-        visualToScene: Scene = targetScene
+        visualToScene: Scene = targetScene,
+        velocityIsRatioPerSecond: Boolean = false,
     ) {
         sceneAnimator?.cancel()
         fromScene = oldScene
@@ -465,6 +703,7 @@ class PlayerSceneController {
         composeIsTransitioning = true
         transitionRatio = startRatio.coerceIn(0f, 1f)
         composeTransitionProgress = transitionRatio
+        composeIsInteractiveGesture = false
         val playerLyricsSessionId = playerLyricsTransitionCoordinator.activeSession
             ?.takeIf {
                 PlayerLyricsTransitionCoordinator.isPlayerLyricsPair(oldScene, visualToScene)
@@ -474,15 +713,27 @@ class PlayerSceneController {
             playerLyricsTransitionCoordinator.updateProgress(transitionRatio)
         }
         val ratioDelta = abs(endRatio - startRatio)
+        val mainPlayerTransition =
+            (oldScene == Scene.MAIN && visualToScene == Scene.PLAYER) ||
+                (oldScene == Scene.PLAYER && visualToScene == Scene.MAIN)
         val animDuration = if (playerLyricsSessionId != null) {
             playerLyricsVelocityAwareDuration(duration, ratioDelta, velocity)
+        } else if (mainPlayerTransition) {
+            playerSceneVelocityAwareDuration(duration, ratioDelta, velocity)
         } else {
             velocityAwareDuration(duration, ratioDelta, velocity)
         }
         val gen = ++sceneAnimGeneration
         sceneAnimator = ValueAnimator.ofFloat(startRatio, endRatio).apply {
             this.duration = animDuration
-            interpolator = DecelerateInterpolator(PAGE_DECELERATE)
+            interpolator = if (
+                (oldScene == Scene.MAIN && visualToScene == Scene.PLAYER) ||
+                (oldScene == Scene.PLAYER && visualToScene == Scene.MAIN)
+            ) {
+                PLAYER_SHEET_INTERPOLATOR
+            } else {
+                DecelerateInterpolator(PAGE_DECELERATE)
+            }
             addUpdateListener { anim ->
                 transitionRatio = anim.animatedValue as Float
                 composeTransitionProgress = transitionRatio
@@ -504,6 +755,7 @@ class PlayerSceneController {
                     if (cancelled) {
                         isTransitioning = false
                         composeIsTransitioning = false
+                        composeIsInteractiveGesture = false
                         if (playerLyricsSessionId != null &&
                             playerLyricsTransitionCoordinator.activeSession?.id == playerLyricsSessionId
                         ) {
@@ -517,6 +769,7 @@ class PlayerSceneController {
                     composeCurrentScene = targetScene
                     composeIsTransitioning = false
                     composeTransitionProgress = 0f
+                    composeIsInteractiveGesture = false
                     if (playerLyricsSessionId != null &&
                         playerLyricsTransitionCoordinator.activeSession?.id == playerLyricsSessionId
                     ) {
@@ -546,6 +799,59 @@ class PlayerSceneController {
             .toLong()
     }
 
+    /**
+     * Persistent NORMAL sheet settle duration. [widthVelocityPerSecond] is physical Y velocity
+     * divided by the sheet parent width after platform min/max fling clamping, which makes this
+     * algebraically equivalent to ViewDragHelper.computeAxisDuration for the vertical axis.
+     */
+    private fun mainPlayerSheetVelocityAwareDuration(
+        ratioDelta: Float,
+        widthVelocityPerSecond: Float,
+    ): Long {
+        if (ratioDelta <= 0f) return 1L
+        val distance = ratioDelta.coerceIn(0f, 1f)
+        val velocity = abs(widthVelocityPerSecond)
+        val durationMs = if (velocity == 0f) {
+            // ViewDragHelper uses delta / verticalDragRange when velocity is zero. Because
+            // distance is already expansion delta, this branch is exactly equivalent.
+            (distance + 1f) * PLAYER_SCENE_NO_VELOCITY_STEP_MS
+        } else {
+            // Velocity branch is different: distanceRatio = abs(deltaPx) / parentWidth. Rebuild
+            // that from expansion delta rather than incorrectly feeding expansion itself.
+            val distanceToWidth = minOf(1f, distance * mainPlayerSheetTravelToWidthRatio)
+            val sineDistance = sin(
+                (distanceToWidth - 0.5f) * PLAYER_SCENE_SINE_RADIANS
+            ) * 0.5f + 0.5f
+            kotlin.math.round((sineDistance / velocity) * 1000f) * PLAYER_SCENE_VELOCITY_SCALE
+        }
+        return durationMs
+            .roundToLong()
+            .coerceIn(1L, PLAYER_SCENE_SETTLE_MAX_MS)
+    }
+
+    /** Legacy/non-persistent MAIN <-> PLAYER duration path. Keep its historical ratio velocity
+     * semantics so FLOATING style is not changed by the NORMAL bottom-sheet alignment. */
+    private fun playerSceneVelocityAwareDuration(
+        baseDuration: Long,
+        ratioDelta: Float,
+        ratioVelocityPerSecond: Float,
+    ): Long {
+        if (ratioDelta <= 0f) return 1L
+        val distance = ratioDelta.coerceIn(0f, 1f)
+        val velocity = abs(ratioVelocityPerSecond)
+        val durationMs = if (velocity < PLAYER_SCENE_MIN_FLING_RATIO_PER_SECOND) {
+            (distance + 1f) * PLAYER_SCENE_NO_VELOCITY_STEP_MS
+        } else {
+            val sineDistance = sin(
+                (minOf(1f, distance) - 0.5f) * PLAYER_SCENE_SINE_RADIANS
+            ) * 0.5f + 0.5f
+            kotlin.math.round((sineDistance / velocity) * 1000f) * PLAYER_SCENE_VELOCITY_SCALE
+        }
+        return durationMs
+            .roundToLong()
+            .coerceIn(1L, PLAYER_SCENE_SETTLE_MAX_MS)
+    }
+
     private fun velocityAwareDuration(baseDuration: Long, ratioDelta: Float, velocity: Float): Long {
         if (ratioDelta <= 0f) return 1L
         val baseMs = (baseDuration * ratioDelta).coerceAtLeast(VELOCITY_ADAPT_MIN_MS.toFloat())
@@ -558,9 +864,19 @@ class PlayerSceneController {
         const val SWIPE_THRESHOLD_RATIO = 0.30f
         private const val PAGE_DECELERATE = 2.0f
         private const val SCENE_ANIM_DURATION = 250L
+        private const val PLAYER_SCENE_ANIM_DURATION = 600L
+        private const val PLAYER_SCENE_SETTLE_MAX_MS = 600L
+        private const val PLAYER_SCENE_NO_VELOCITY_STEP_MS = 256f
+        private const val PLAYER_SCENE_SINE_RADIANS = 0.47123894f
+        private const val PLAYER_SCENE_VELOCITY_SCALE = 4f
+        private const val PLAYER_SCENE_MIN_FLING_RATIO_PER_SECOND = 0.06f
         private const val PLAYER_LYRIC_SETTLE_MIN_MS = 80L
         private const val VELOCITY_ADAPT_MIN_MS = 100L
         private const val VELOCITY_ADAPT_MAX_MS = 250L
         private const val VELOCITY_SENSITIVITY = 0.002f
+        private val PLAYER_SHEET_INTERPOLATOR = Interpolator { value ->
+            val shifted = value - 1f
+            shifted * shifted * shifted * shifted * shifted + 1f
+        }
     }
 }

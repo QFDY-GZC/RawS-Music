@@ -16,8 +16,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
+import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 interface ImmersiveBackgroundHost {
@@ -33,6 +37,8 @@ interface ImmersiveBackgroundHost {
 }
 
 class ImmersiveBackgroundState : ImmersiveBackgroundHost {
+    private val artworkScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var coverJob: Job? = null
     internal var currentBitmap by mutableStateOf<Bitmap?>(null)
         private set
     internal var dominantColor by mutableStateOf(Color(0xFF333333))
@@ -55,29 +61,31 @@ class ImmersiveBackgroundState : ImmersiveBackgroundHost {
 
         if (!needReload && !path.isNullOrBlank()) return
         if (path.isNullOrBlank()) {
+            coverJob?.cancel()
             currentBitmap = null
             return
         }
 
         val gen = ++coverGeneration
-        BitmapProvider.load(
-            key = path,
-            targetWidth = 1080,
-            targetHeight = 1080,
-            priority = BitmapRequest.Priority.LOADING_WIDGET,
-            surface = ArtworkSurface.Playback,
-            callback = { bitmap ->
-                if (gen != coverGeneration) return@load
-                if (bitmap != null && !bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0) {
-                    currentBitmap = bitmap
-                } else {
-                    currentBitmap = null
-                }
+        coverJob?.cancel()
+        coverJob = artworkScope.launch {
+            val bitmap = CoilArtworkRuntime.executeBitmap(
+                key = path,
+                width = 1080,
+                height = 1080,
+                surface = ArtworkSurface.Playback
+            )
+            if (gen != coverGeneration) return@launch
+            currentBitmap = bitmap?.takeIf {
+                !it.isRecycled && it.width > 0 && it.height > 0
             }
-        )
+        }
     }
 
     override fun clear() {
+        coverJob?.cancel()
+        coverJob = null
+        coverGeneration += 1
         currentPath = null
         currentBitmap = null
     }

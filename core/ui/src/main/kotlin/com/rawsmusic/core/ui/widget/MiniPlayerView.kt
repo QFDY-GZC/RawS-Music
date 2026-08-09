@@ -3,6 +3,7 @@ package com.rawsmusic.core.ui.widget
 import android.graphics.Paint
 import android.graphics.PathMeasure
 import android.graphics.RectF
+import android.os.SystemClock
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -42,6 +43,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -55,6 +57,7 @@ import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.R
+import com.rawsmusic.core.ui.scene.CoverTransitionTarget
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.rawsmusic.core.ui.theme.ThemeManager
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
@@ -65,6 +68,7 @@ import kotlin.math.abs
 
 private const val MINI_PLAYER_SWITCH_THRESHOLD = 0.20f
 private const val MINI_PLAYER_SWITCH_DURATION_MS = 260
+private const val MINI_PLAYER_POST_DRAG_CLICK_BLOCK_MS = 320L
 private val MiniPlayerSwitchEasing = NativePlayerArtworkSwitchEasing
 
 private data class MiniPlayerContentSnapshot(
@@ -114,20 +118,30 @@ fun ComposeMiniPlayer(
     queueSize: Int = 0,
     backdrop: Backdrop? = null,
     animateArtwork: Boolean = false,
+    drawBackground: Boolean = true,
+    drawOuterProgress: Boolean = true,
+    containerHeight: androidx.compose.ui.unit.Dp = 62.dp,
+    containerShape: Shape = RoundedCornerShape(50),
+    clipContent: Boolean = true,
+    contentPaddingHorizontal: androidx.compose.ui.unit.Dp = 8.dp,
+    contentPaddingVertical: androidx.compose.ui.unit.Dp = 6.dp,
+    primaryContentColor: Color? = null,
+    secondaryContentColor: Color? = null,
     onClick: () -> Unit = {},
     onPlayPause: () -> Unit = {},
     onSkipPrevious: () -> Unit = {},
     onSkipNext: () -> Unit = {},
     onSwitchProgress: (progress: Float, active: Boolean) -> Unit = { _, _ -> },
     onCoverBoundsChanged: (RectF?) -> Unit = {},
+    onCoverTargetChanged: (CoverTransitionTarget?) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val cs = MiuixTheme.colorScheme
     val isLight = cs.background.luminance() > 0.5f
-    val shape = RoundedCornerShape(50)
+    val shape = containerShape
 
-    val textColor = cs.onBackground
-    val secondaryColor = cs.onSurfaceVariantSummary
+    val textColor = primaryContentColor ?: cs.onBackground
+    val secondaryColor = secondaryContentColor ?: cs.onSurfaceVariantSummary
 
     val artworkModeState = rememberMiniPlayerArtworkMode()
     val artworkMode = artworkModeState.value
@@ -202,6 +216,19 @@ fun ComposeMiniPlayer(
     var pendingIdentity by remember { mutableStateOf<String?>(null) }
     var settledQueueIndex by remember { mutableIntStateOf(queueCurrentIndex) }
     var transitionJob by remember { mutableStateOf<Job?>(null) }
+    // The mini-player owns both horizontal track switching and tap-to-open. Keep a short
+    // post-drag suppression window so the UP that commits a track switch can never leak through
+    // the sibling clickable/tap detector and force-open the full player. AM treats dragging the
+    // mini player and tapping it as mutually exclusive gesture outcomes.
+    var suppressOpenUntilUptimeMs by remember { mutableStateOf(0L) }
+    fun blockOpenFromCurrentHorizontalGesture() {
+        suppressOpenUntilUptimeMs = SystemClock.uptimeMillis() + MINI_PLAYER_POST_DRAG_CLICK_BLOCK_MS
+    }
+    val guardedOpenPlayer = {
+        if (SystemClock.uptimeMillis() >= suppressOpenUntilUptimeMs) {
+            onClick()
+        }
+    }
     val scope = rememberCoroutineScope()
 
     fun previewForDirection(direction: Int): MiniPlayerContentSnapshot? {
@@ -329,18 +356,24 @@ fun ComposeMiniPlayer(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .height(62.dp)
-            .clip(shape)
-            .miniPlayerOuterRemainingProgress(
-                progress = progress,
-                radiusDp = 31f,
-                color = cs.primary
+            .height(containerHeight)
+            .then(if (clipContent) Modifier.clip(shape) else Modifier)
+            .then(
+                if (drawOuterProgress) {
+                    Modifier.miniPlayerOuterRemainingProgress(
+                        progress = progress,
+                        radiusDp = containerHeight.value / 2f,
+                        color = cs.primary
+                    )
+                } else {
+                    Modifier
+                }
             )
             .onSizeChanged { contentWidthPx = it.width.toFloat().coerceAtLeast(1f) }
             .pointerInput(Unit) {
                 detectHorizontalDragGestures(
                     onDragStart = {
+                        blockOpenFromCurrentHorizontalGesture()
                         val interruptedTarget = incomingSnapshot
                         transitionJob?.cancel()
                         transitionJob = null
@@ -379,6 +412,7 @@ fun ComposeMiniPlayer(
                         change.consume()
                     },
                     onDragEnd = {
+                        blockOpenFromCurrentHorizontalGesture()
                         val direction = when {
                             dragOffsetPx < 0f -> 1
                             dragOffsetPx > 0f -> -1
@@ -397,19 +431,24 @@ fun ComposeMiniPlayer(
                             cancelDrag()
                         }
                     },
-                    onDragCancel = { cancelDrag() }
+                    onDragCancel = {
+                        blockOpenFromCurrentHorizontalGesture()
+                        cancelDrag()
+                    }
                 )
             }
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = onClick
+                onClick = guardedOpenPlayer
             )
     ) {
-        LiquidGlassMiniPlayerBg(
-            backdrop = backdrop,
-            isLight = isLight
-        )
+        if (drawBackground) {
+            LiquidGlassMiniPlayerBg(
+                backdrop = backdrop,
+                isLight = isLight
+            )
+        }
         val outgoing = outgoingSnapshot
         val incoming = incomingSnapshot
         if (transitionDirection != 0 && outgoing != null && incoming != null) {
@@ -420,13 +459,15 @@ fun ComposeMiniPlayer(
                 textColor = textColor,
                 secondaryColor = secondaryColor,
                 animateArtwork = animateArtwork,
-                onClick = onClick,
+                onClick = guardedOpenPlayer,
                 onPlayPause = onPlayPause,
                 onCoverBoundsChanged = {},
                 onToggleArtworkMode = {
                     artworkModeState.value = artworkModeState.value.toggle()
                 },
                 controlsEnabled = false,
+                contentPaddingHorizontal = contentPaddingHorizontal,
+                contentPaddingVertical = contentPaddingVertical,
                 modifier = Modifier.graphicsLayer {
                     translationX = dragOffsetPx
                     alpha = 1f - progress * 0.10f
@@ -440,13 +481,15 @@ fun ComposeMiniPlayer(
                 textColor = textColor,
                 secondaryColor = secondaryColor,
                 animateArtwork = false,
-                onClick = onClick,
+                onClick = guardedOpenPlayer,
                 onPlayPause = onPlayPause,
                 onCoverBoundsChanged = {},
                 onToggleArtworkMode = {
                     artworkModeState.value = artworkModeState.value.toggle()
                 },
                 controlsEnabled = false,
+                contentPaddingHorizontal = contentPaddingHorizontal,
+                contentPaddingVertical = contentPaddingVertical,
                 modifier = Modifier.graphicsLayer {
                     translationX = dragOffsetPx + transitionDirection * contentWidthPx
                     alpha = 0.90f + progress * 0.10f
@@ -461,13 +504,36 @@ fun ComposeMiniPlayer(
                 textColor = textColor,
                 secondaryColor = secondaryColor,
                 animateArtwork = animateArtwork,
-                onClick = onClick,
+                onClick = guardedOpenPlayer,
                 onPlayPause = onPlayPause,
-                onCoverBoundsChanged = onCoverBoundsChanged,
+                onCoverBoundsChanged = { rect ->
+                    onCoverBoundsChanged(rect)
+                    val sourceRadiusDp = when (artworkMode) {
+                        // NormalMiniArtwork is a 44dp circle.
+                        MiniPlayerArtworkMode.Normal -> 22f
+                        // VinylMiniArtwork reports the 40dp front sleeve, which is a square
+                        // with a 10dp corner radius. Do not collapse this to the old hard-coded
+                        // 22dp circle when the player sheet takes ownership.
+                        MiniPlayerArtworkMode.Vinyl -> 10f
+                    }
+                    onCoverTargetChanged(
+                        rect?.let { bounds ->
+                            CoverTransitionTarget(
+                                bounds = RectF(bounds),
+                                radiusDp = sourceRadiusDp,
+                                source = CoverTransitionTarget.Source.MiniPlayer,
+                                songId = currentSong?.id ?: -1L,
+                                coverKey = coverPath.orEmpty(),
+                            )
+                        }
+                    )
+                },
                 onToggleArtworkMode = {
                     artworkModeState.value = artworkModeState.value.toggle()
                 },
-                controlsEnabled = true
+                controlsEnabled = true,
+                contentPaddingHorizontal = contentPaddingHorizontal,
+                contentPaddingVertical = contentPaddingVertical
             )
         }
     }
@@ -485,6 +551,8 @@ private fun MiniPlayerSlidingContent(
     onCoverBoundsChanged: (RectF?) -> Unit,
     onToggleArtworkMode: () -> Unit,
     controlsEnabled: Boolean,
+    contentPaddingHorizontal: androidx.compose.ui.unit.Dp = 8.dp,
+    contentPaddingVertical: androidx.compose.ui.unit.Dp = 6.dp,
     modifier: Modifier = Modifier
 ) {
     val hasLyric = snapshot.lyricText.isNotBlank()
@@ -499,7 +567,10 @@ private fun MiniPlayerSlidingContent(
     Row(
         modifier = modifier
             .fillMaxSize()
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .padding(
+                horizontal = contentPaddingHorizontal,
+                vertical = contentPaddingVertical,
+            ),
         verticalAlignment = Alignment.CenterVertically
     ) {
         MiniPlayerArtwork(

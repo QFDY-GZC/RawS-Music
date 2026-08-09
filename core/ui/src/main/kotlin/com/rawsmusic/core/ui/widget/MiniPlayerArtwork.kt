@@ -86,32 +86,32 @@ fun MiniPlayerArtwork(
         enabled = animateArtwork && isPlaying && mode == MiniPlayerArtworkMode.Vinyl
     )
 
-    // A new song must own a new artwork composition. This disposes the previous request and handle
-    // before the next one can render, so a late/failed request can never leave the old cover visible.
-    key(currentCoverKey) {
-        when (mode) {
-            MiniPlayerArtworkMode.Normal -> {
-                NormalMiniArtwork(
-                    coverPath = currentCoverKey,
-                    rotation = appliedRotation,
-                    contentDescription = contentDescription,
-                    onCoverBoundsChanged = onCoverBoundsChanged,
-                    onDoubleTapToggleMode = onDoubleTapToggleMode,
-                    onSingleTap = onSingleTap,
-                    modifier = modifier.size(52.dp)
-                )
-            }
-            MiniPlayerArtworkMode.Vinyl -> {
-                VinylMiniArtwork(
-                    coverPath = currentCoverKey,
-                    rotation = appliedRotation,
-                    contentDescription = contentDescription,
-                    onCoverBoundsChanged = onCoverBoundsChanged,
-                    onDoubleTapToggleMode = onDoubleTapToggleMode,
-                    onSingleTap = onSingleTap,
-                    modifier = modifier.requiredSize(width = 70.dp, height = 52.dp)
-                )
-            }
+    // Keep the physical holder mounted while the source key changes. Poweramp changes the
+    // bitmap owned by a stable artwork view, rather than disposing the view and exposing an
+    // empty frame between two songs. BitmapImage keeps the previous frame until the provider
+    // confirms a replacement or a terminal no-art result.
+    when (mode) {
+        MiniPlayerArtworkMode.Normal -> {
+            NormalMiniArtwork(
+                coverPath = currentCoverKey,
+                rotation = appliedRotation,
+                contentDescription = contentDescription,
+                onCoverBoundsChanged = onCoverBoundsChanged,
+                onDoubleTapToggleMode = onDoubleTapToggleMode,
+                onSingleTap = onSingleTap,
+                modifier = modifier.size(52.dp)
+            )
+        }
+        MiniPlayerArtworkMode.Vinyl -> {
+            VinylMiniArtwork(
+                coverPath = currentCoverKey,
+                rotation = appliedRotation,
+                contentDescription = contentDescription,
+                onCoverBoundsChanged = onCoverBoundsChanged,
+                onDoubleTapToggleMode = onDoubleTapToggleMode,
+                onSingleTap = onSingleTap,
+                modifier = modifier.requiredSize(width = 70.dp, height = 52.dp)
+            )
         }
     }
 }
@@ -152,7 +152,10 @@ private fun NormalMiniArtwork(
         modifier = modifier.pointerInput(Unit) {
             detectTapGestures(
                 onTap = { onSingleTap() },
-                onDoubleTap = { onDoubleTapToggleMode() }
+                // Supplying onDoubleTap makes Compose defer onTap until the platform double-tap
+                // timeout expires. Keep opening the player immediate and retain the artwork-mode
+                // shortcut on long press instead.
+                onLongPress = { onDoubleTapToggleMode() }
             )
         },
         contentAlignment = Alignment.Center
@@ -188,7 +191,7 @@ private fun VinylMiniArtwork(
         modifier = modifier.pointerInput(Unit) {
             detectTapGestures(
                 onTap = { onSingleTap() },
-                onDoubleTap = { onDoubleTapToggleMode() }
+                onLongPress = { onDoubleTapToggleMode() }
             )
         },
         contentAlignment = Alignment.CenterStart
@@ -273,7 +276,8 @@ private fun CoverVisual(
                 targetHeight = targetSize,
                 priority = BitmapRequest.Priority.LOADING_LIST,
                 surface = ArtworkSurface.MiniPlayer,
-                fadeInMillis = RawArtworkPolicy.SMALL_SURFACE_FADE_MS
+                fadeInMillis = RawArtworkPolicy.SMALL_SURFACE_FADE_MS,
+                holdPreviousOnKeyChange = true
             )
         }
         else -> {
