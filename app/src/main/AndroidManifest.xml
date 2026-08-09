@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    android:versionName="0.9.61beta">
+    android:versionName="0.9.80beta">
 
-    <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur" />
+    <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur,com.xzakota.hyper.notification.focus" />
 
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
@@ -17,8 +17,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
@@ -85,6 +88,21 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="audio/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" android:mimeType="audio/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="application/octet-stream" />
+            </intent-filter>
 
             <meta-data
                 android:name="android.app.shortcuts"
@@ -119,6 +137,8 @@
         <activity android:name=".ui.settings.LyricManagementActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.LyricSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.StatusBarLyricActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.SystemLyricDeliveryActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.XiaomiSuperIslandSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.PlayerInterfaceActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.AlbumArtActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.GlobalFontSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
@@ -155,6 +175,15 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+        <meta-data android:name="moe.shizuku.client.V3_SUPPORT" android:value="true" />
+
         <!-- 沉浸模式歌词界面 -->
         <activity
             android:name=".ui.lyric.ImmersiveLyricActivity"
@@ -188,6 +217,19 @@
 
         <service
             android:name=".lyric.DesktopLyricService"
+            android:exported="false" />
+
+        <service
+            android:name=".lyric.XiaomiSuperIslandLyricService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Live rendering of lyrics for Xiaomi Super Island" />
+        </service>
+
+        <receiver
+            android:name=".lyric.XiaomiSuperIslandLyricReceiver"
             android:exported="false" />
 
         <service
@@ -291,7 +333,7 @@
         <service
             android:name=".separation.AiSeparationJobService"
             android:exported="false"
-            android:foregroundServiceType="mediaProcessing" />
+            android:foregroundServiceType="dataSync" />
 
     </application>
 
