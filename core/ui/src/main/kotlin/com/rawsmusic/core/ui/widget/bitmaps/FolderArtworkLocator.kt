@@ -11,7 +11,7 @@ internal object FolderArtworkLocator {
         "front.jpg", "Front.jpg"
     )
 
-    fun find(audioPath: String?, minimumBytes: Long = 1024L): File? {
+    fun find(audioPath: String?, minimumBytes: Long = 0L): File? {
         val directory = audioPath
             ?.takeIf { it.isNotBlank() }
             ?.let(::File)

@@ -43,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
@@ -70,7 +71,8 @@ import com.rawsmusic.core.common.utils.PowerTraceLogger
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.theme.RawThemeRuntimeState
 import com.rawsmusic.core.ui.theme.ThemeManager
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
+import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
 import android.os.SystemClock
 import kotlin.math.PI
 import kotlin.math.abs
@@ -397,29 +399,43 @@ private fun rememberRawFlowIsDarkTheme(): Boolean {
 private fun flowPaletteCacheKey(
     mode: RawFlowMode,
     isSystemDark: Boolean,
-    sourceCoverKey: String?
-): String = "${mode.prefValue}:$isSystemDark:${sourceCoverKey.orEmpty()}"
+    sourceCoverKey: String?,
+    backgroundStyle: RawBackgroundStyle = RawBackgroundStyle.FLOW,
+): String = "${backgroundStyle.prefValue}:${mode.prefValue}:$isSystemDark:${sourceCoverKey.orEmpty()}"
 
 private fun resolveFlowColorsFromMemory(
+    context: Context,
     sourceCoverKey: String?,
     mode: RawFlowMode,
     isSystemDark: Boolean,
-    fallbackColors: List<Color>
+    fallbackColors: List<Color>,
+    backgroundStyle: RawBackgroundStyle = RawBackgroundStyle.FLOW,
 ): List<Color>? {
-    if (sourceCoverKey.isNullOrBlank() || mode == RawFlowMode.UNIVERSAL || mode == RawFlowMode.OFF) {
+    if (
+        sourceCoverKey.isNullOrBlank() ||
+        mode == RawFlowMode.OFF ||
+        (backgroundStyle != RawBackgroundStyle.STATIC && mode == RawFlowMode.UNIVERSAL)
+    ) {
         return null
     }
-    val cacheKey = flowPaletteCacheKey(mode, isSystemDark, sourceCoverKey)
+    val cacheKey = flowPaletteCacheKey(mode, isSystemDark, sourceCoverKey, backgroundStyle)
     flowPaletteCache.get(cacheKey)?.let { return it }
-    val bitmap = BitmapProvider.peekThumbnail(
-        sourceCoverKey,
-        FLOW_EXTRACT_SIZE,
-        FLOW_EXTRACT_SIZE
-    ) ?: BitmapProvider.peekAny(sourceCoverKey)
+    val bitmap = CoilArtworkRuntime.peekBitmap(
+        context = context,
+        key = sourceCoverKey,
+        width = FLOW_EXTRACT_SIZE,
+        height = FLOW_EXTRACT_SIZE,
+        surface = ArtworkSurface.Playback
+    )
     if (bitmap == null || bitmap.isRecycled) return null
-    val extracted = RawFlowPaletteExtractor.extract(bitmap, mode, isSystemDark)
+    val extracted = extractRawBackgroundColors(
+        bitmap = bitmap,
+        backgroundStyle = backgroundStyle,
+        mode = mode,
+        isSystemDark = isSystemDark,
+    )
     if (extracted.isEmpty()) return null
-    return completeExtractedFlowColors(extracted, fallbackColors).also {
+    return finalizeExtractedBackgroundColors(extracted, fallbackColors, backgroundStyle).also {
         flowPaletteCache.put(cacheKey, it)
     }
 }
@@ -437,6 +453,22 @@ fun RawFlowBackground(
     surface: RawBackgroundSurface = RawBackgroundSurface.SCENE
 ) {
     val context = LocalContext.current.applicationContext
+    val coilArtwork by produceState<AndroidBitmap?>(
+        initialValue = sourceArtwork?.takeUnless { it.isRecycled },
+        key1 = sourceCoverKey,
+        key2 = sourceArtwork,
+    ) {
+        value = sourceArtwork?.takeUnless { it.isRecycled }
+            ?: sourceCoverKey?.takeIf { it.isNotBlank() }?.let { key ->
+                CoilArtworkRuntime.executeBitmap(
+                    context = context,
+                    key = key,
+                    width = FLOW_EXTRACT_SIZE,
+                    height = FLOW_EXTRACT_SIZE,
+                    surface = ArtworkSurface.Playback
+                )
+            }
+    }
     RawFlowTuningState.ensureInitialized(context)
     val tuningRevision = RawFlowTuningState.revision
     val backgroundStyle = RawFlowTuningState.style
@@ -477,49 +509,71 @@ fun RawFlowBackground(
         return
     }
 
-    val fallbackColors = remember(flowMode, isSystemDark) { defaultFlowColors(flowMode, isSystemDark) }
-    val paletteCacheKey = remember(flowMode, isSystemDark, sourceCoverKey) {
-        flowPaletteCacheKey(flowMode, isSystemDark, sourceCoverKey)
+    val fallbackColors = remember(flowMode, isSystemDark, backgroundStyle) {
+        if (backgroundStyle == RawBackgroundStyle.STATIC) {
+            uappDarkAlbumGradient(UAPP_DARK_ALBUM_FALLBACK_ACCENT)
+        } else {
+            defaultFlowColors(flowMode, isSystemDark)
+        }
+    }
+    val paletteCacheKey = remember(flowMode, isSystemDark, sourceCoverKey, backgroundStyle) {
+        flowPaletteCacheKey(flowMode, isSystemDark, sourceCoverKey, backgroundStyle)
     }
     val inheritedColors = remember(
         flowMode,
         isSystemDark,
         fallbackSourceCoverKey,
-        fallbackColors
+        fallbackColors,
+        backgroundStyle,
     ) {
         resolveFlowColorsFromMemory(
+            context = context,
             sourceCoverKey = fallbackSourceCoverKey,
             mode = flowMode,
             isSystemDark = isSystemDark,
-            fallbackColors = fallbackColors
+            fallbackColors = fallbackColors,
+            backgroundStyle = backgroundStyle,
         ) ?: fallbackColors
     }
     val initialColors = remember(
         flowMode,
         isSystemDark,
         sourceCoverKey,
-        sourceArtwork,
+        coilArtwork,
         inheritedColors,
-        fallbackColors
+        fallbackColors,
+        backgroundStyle,
     ) {
-        if (flowMode == RawFlowMode.UNIVERSAL || sourceCoverKey.isNullOrBlank()) {
+        if (
+            sourceCoverKey.isNullOrBlank() ||
+            (backgroundStyle != RawBackgroundStyle.STATIC && flowMode == RawFlowMode.UNIVERSAL)
+        ) {
             fallbackColors
         } else {
-            sourceArtwork
+            coilArtwork
                 ?.takeUnless { it.isRecycled }
-                ?.let { RawFlowPaletteExtractor.extract(it, flowMode, isSystemDark) }
+                ?.let {
+                    extractRawBackgroundColors(
+                        bitmap = it,
+                        backgroundStyle = backgroundStyle,
+                        mode = flowMode,
+                        isSystemDark = isSystemDark,
+                    )
+                }
                 ?.takeIf { it.isNotEmpty() }
-                ?.let { completeExtractedFlowColors(it, fallbackColors) }
+                ?.let { finalizeExtractedBackgroundColors(it, fallbackColors, backgroundStyle) }
                 ?: resolveFlowColorsFromMemory(
+                    context = context,
                     sourceCoverKey = sourceCoverKey,
                     mode = flowMode,
                     isSystemDark = isSystemDark,
-                    fallbackColors = fallbackColors
+                    fallbackColors = fallbackColors,
+                    backgroundStyle = backgroundStyle,
                 )
                 ?: inheritedColors
         }
     }
-    var targetColors by remember(flowMode, isSystemDark, sourceCoverKey) {
+    var targetColors by remember(flowMode, isSystemDark, sourceCoverKey, backgroundStyle) {
         mutableStateOf(initialColors)
     }
 
@@ -527,12 +581,16 @@ fun RawFlowBackground(
         flowMode,
         runtimeRevision,
         sourceCoverKey,
-        sourceArtwork,
+        coilArtwork,
         fallbackColors,
-        isSystemDark
+        isSystemDark,
+        backgroundStyle,
     ) {
         val paletteStartMs = SystemClock.elapsedRealtime()
-        if (flowMode == RawFlowMode.UNIVERSAL || sourceCoverKey.isNullOrBlank()) {
+        if (
+            sourceCoverKey.isNullOrBlank() ||
+            (backgroundStyle != RawBackgroundStyle.STATIC && flowMode == RawFlowMode.UNIVERSAL)
+        ) {
             targetColors = fallbackColors
             PowerTraceLogger.flowPalette(
                 stage = "fallback_static",
@@ -545,18 +603,29 @@ fun RawFlowBackground(
             return@LaunchedEffect
         }
 
-        sourceArtwork
+        coilArtwork
             ?.takeUnless { it.isRecycled }
-            ?.let { RawFlowPaletteExtractor.extract(it, flowMode, isSystemDark) }
+            ?.let {
+                extractRawBackgroundColors(
+                    bitmap = it,
+                    backgroundStyle = backgroundStyle,
+                    mode = flowMode,
+                    isSystemDark = isSystemDark,
+                )
+            }
             ?.takeIf { it.isNotEmpty() }
             ?.let { extracted ->
-                val completed = completeExtractedFlowColors(extracted, fallbackColors)
+                val completed = finalizeExtractedBackgroundColors(
+                    extracted,
+                    fallbackColors,
+                    backgroundStyle,
+                )
                 flowPaletteCache.put(paletteCacheKey, completed)
                 targetColors = completed
                 PowerTraceLogger.flowPalette(
                     stage = "transition_artwork",
                     mode = flowMode.prefValue,
-                    source = "sourceArtwork",
+                    source = "Coil",
                     colorCount = completed.size,
                     elapsedMs = SystemClock.elapsedRealtime() - paletteStartMs,
                     coverKey = sourceCoverKey
@@ -577,32 +646,40 @@ fun RawFlowBackground(
             return@LaunchedEffect
         }
 
-        // Project-style：流光只复用已经在内存里的当前封面，不主动排队解码整首歌。
-        // 这样主界面/列表页不会因为后台动态取色而把大量音频文件重新读一遍。
         var appliedAlbumPalette = false
-        for (waitMs in FLOW_PALETTE_RETRY_DELAYS_MS) {
-            if (waitMs > 0L) delay(waitMs)
-            val bitmap = BitmapProvider.peekThumbnail(sourceCoverKey, FLOW_EXTRACT_SIZE, FLOW_EXTRACT_SIZE)
-                ?: BitmapProvider.peekAny(sourceCoverKey)
-                ?: continue
-            if (bitmap.isRecycled) continue
-
-            val extracted = RawFlowPaletteExtractor.extract(bitmap, flowMode, isSystemDark)
-            if (extracted.isEmpty()) continue
-
-            val completed = completeExtractedFlowColors(extracted, fallbackColors)
-            flowPaletteCache.put(paletteCacheKey, completed)
-            targetColors = completed
-            appliedAlbumPalette = true
-            PowerTraceLogger.flowPalette(
-                stage = "memory_hit",
-                mode = flowMode.prefValue,
-                source = "BitmapProvider.peek",
-                colorCount = completed.size,
-                elapsedMs = SystemClock.elapsedRealtime() - paletteStartMs,
-                coverKey = sourceCoverKey
+        val bitmap = coilArtwork?.takeUnless { it.isRecycled }
+            ?: CoilArtworkRuntime.executeBitmap(
+                context = context,
+                key = sourceCoverKey,
+                width = FLOW_EXTRACT_SIZE,
+                height = FLOW_EXTRACT_SIZE,
+                surface = ArtworkSurface.Playback
             )
-            break
+        if (bitmap != null && !bitmap.isRecycled) {
+            val extracted = extractRawBackgroundColors(
+                bitmap = bitmap,
+                backgroundStyle = backgroundStyle,
+                mode = flowMode,
+                isSystemDark = isSystemDark,
+            )
+            if (extracted.isNotEmpty()) {
+                val completed = finalizeExtractedBackgroundColors(
+                    extracted,
+                    fallbackColors,
+                    backgroundStyle,
+                )
+                flowPaletteCache.put(paletteCacheKey, completed)
+                targetColors = completed
+                appliedAlbumPalette = true
+                PowerTraceLogger.flowPalette(
+                    stage = "memory_hit",
+                    mode = flowMode.prefValue,
+                    source = "Coil",
+                    colorCount = completed.size,
+                    elapsedMs = SystemClock.elapsedRealtime() - paletteStartMs,
+                    coverKey = sourceCoverKey
+                )
+            }
         }
 
         if (!appliedAlbumPalette) {
@@ -622,11 +699,18 @@ fun RawFlowBackground(
         fallbackColors,
         saturationScale,
         brightnessScale,
-        tuningRevision
+        tuningRevision,
+        backgroundStyle,
     ) {
-        targetColors.ifEmpty { fallbackColors }
-            .take(FLOW_MAX_COLOR_COUNT)
-            .map { tuneFlowColor(it, saturationScale, brightnessScale) }
+        val raw = targetColors.ifEmpty { fallbackColors }.take(FLOW_MAX_COLOR_COUNT)
+        if (backgroundStyle == RawBackgroundStyle.STATIC) {
+            // UAPP m12274G() already performs the static HSV saturation/value transform.
+            // Applying RawFlow's second saturation/brightness normalization here is what made
+            // the non-bottom background drift away from the MiniPlayer for the same cover.
+            raw
+        } else {
+            raw.map { tuneFlowColor(it, saturationScale, brightnessScale) }
+        }
     }
     val animatedColorSlots = List(FLOW_MAX_COLOR_COUNT) { index ->
         val slotTarget = resolvedColors.getOrElse(index) { resolvedColors.last() }
@@ -650,17 +734,22 @@ fun RawFlowBackground(
         val staticArtwork = remember(
             sourceCoverKey,
             fallbackSourceCoverKey,
-            sourceArtwork,
+            coilArtwork,
             surface
         ) {
             if (surface != RawBackgroundSurface.PLAYER) {
                 null
             } else {
-                sourceArtwork?.takeUnless { it.isRecycled }
+                coilArtwork?.takeUnless { it.isRecycled }
                     ?: listOfNotNull(sourceCoverKey, fallbackSourceCoverKey)
                         .firstNotNullOfOrNull { key ->
-                            BitmapProvider.peekThumbnail(key, FLOW_EXTRACT_SIZE, FLOW_EXTRACT_SIZE)
-                                ?: BitmapProvider.peekAny(key)
+                            CoilArtworkRuntime.peekBitmap(
+                                context = context,
+                                key = key,
+                                width = FLOW_EXTRACT_SIZE,
+                                height = FLOW_EXTRACT_SIZE,
+                                surface = ArtworkSurface.Playback
+                            )
                         }
                         ?.takeUnless { it.isRecycled }
             }
@@ -685,8 +774,11 @@ fun RawFlowBackground(
             if (surface == RawBackgroundSurface.PLAYER && staticArtwork != null) {
                 NativeStaticBackground.createPlayer(
                     artwork = staticArtwork,
-                    saturation = staticSaturation,
-                    brightness = staticBrightness,
+                    colors = nativeColors,
+                    // UAPP endpoints already contain its brightness/saturation policy. The native
+                    // player renderer contributes only texture/blur/detail; do not recolor twice.
+                    saturation = 1f,
+                    brightness = 1f,
                     gradient = staticGradient,
                     blur = staticBlur,
                     detail = staticDetail
@@ -694,8 +786,8 @@ fun RawFlowBackground(
             } else {
                 NativeStaticBackground.create(
                     colors = nativeColors,
-                    saturation = saturationScale,
-                    brightness = brightnessScale
+                    saturation = if (backgroundStyle == RawBackgroundStyle.STATIC) 1f else saturationScale,
+                    brightness = if (backgroundStyle == RawBackgroundStyle.STATIC) 1f else brightnessScale,
                 )
             }
         }
@@ -1239,6 +1331,29 @@ private fun flowBlobSeeds(): List<FlowBlobSeed> {
         FlowBlobSeed(0.88f, 0.78f, 0.30f, 0.29f, 0.43f, 0.46f, 4.40f, 0.43f, 0.73f, 0.54f, 0.36f, 0.49f, 0.67f),
         FlowBlobSeed(0.48f, 0.42f, 0.29f, 0.38f, 0.39f, 0.44f, 5.35f, 0.69f, 0.57f, 0.47f, 0.39f, 0.52f, 0.59f)
     )
+}
+
+private fun extractRawBackgroundColors(
+    bitmap: android.graphics.Bitmap,
+    backgroundStyle: RawBackgroundStyle,
+    mode: RawFlowMode,
+    isSystemDark: Boolean,
+): List<Color> {
+    if (backgroundStyle == RawBackgroundStyle.STATIC) {
+        val accent = uappStaticAlbumAccent(bitmap) ?: return emptyList()
+        return uappDarkAlbumGradient(accent)
+    }
+    return RawFlowPaletteExtractor.extract(bitmap, mode, isSystemDark)
+}
+
+private fun finalizeExtractedBackgroundColors(
+    extracted: List<Color>,
+    fallbackColors: List<Color>,
+    backgroundStyle: RawBackgroundStyle,
+): List<Color> = if (backgroundStyle == RawBackgroundStyle.STATIC) {
+    extracted.ifEmpty { fallbackColors }.take(2)
+} else {
+    completeExtractedFlowColors(extracted, fallbackColors)
 }
 
 private object RawFlowPaletteExtractor {

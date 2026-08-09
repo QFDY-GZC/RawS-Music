@@ -16,7 +16,8 @@ internal class ArtworkSourceAuthority {
 
     data class FolderFallbackPermit internal constructor(
         val providerKey: String,
-        internal val generation: Long
+        internal val generation: Long,
+        internal val confirmsEmbeddedAbsent: Boolean
     )
 
     private data class Entry(
@@ -49,20 +50,29 @@ internal class ArtworkSourceAuthority {
         }
     }
 
-    fun beginFolderFallback(providerKey: String): FolderFallbackPermit? = synchronized(lock) {
+    fun beginFolderFallback(
+        providerKey: String,
+        confirmsEmbeddedAbsent: Boolean
+    ): FolderFallbackPermit? = synchronized(lock) {
         if (providerKey.isBlank()) return@synchronized null
         val entry = entries.getOrPut(providerKey) { Entry() }
         if (entry.state == EmbeddedState.Present) return@synchronized null
-        if (entry.state == EmbeddedState.Unknown) {
+        if (confirmsEmbeddedAbsent && entry.state == EmbeddedState.Unknown) {
             entry.generation++
             entry.state = EmbeddedState.Absent
         }
-        FolderFallbackPermit(providerKey, entry.generation)
+        FolderFallbackPermit(
+            providerKey = providerKey,
+            generation = entry.generation,
+            confirmsEmbeddedAbsent = confirmsEmbeddedAbsent
+        )
     }
 
     fun canCommitFolderFallback(permit: FolderFallbackPermit): Boolean = synchronized(lock) {
         val entry = entries[permit.providerKey] ?: return@synchronized false
-        entry.state == EmbeddedState.Absent && entry.generation == permit.generation
+        entry.generation == permit.generation &&
+            (entry.state == EmbeddedState.Absent ||
+                (entry.state == EmbeddedState.Unknown && permit.confirmsEmbeddedAbsent))
     }
 
     fun mayUseFolderFallback(providerKey: String): Boolean = synchronized(lock) {

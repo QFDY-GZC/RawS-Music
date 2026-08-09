@@ -68,7 +68,6 @@ import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.core.ui.R
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.bitmaps.DefaultAlbumArtworkPolicy
 import com.rawsmusic.core.ui.widget.bitmaps.FolderArtworkLocator
 import kotlinx.coroutines.Dispatchers
@@ -279,7 +278,6 @@ private object OriginalArtworkResolver {
     suspend fun resolve(context: Context, song: AudioFile?, coverKey: String?): OriginalArtworkSource? =
         withContext(Dispatchers.IO) {
             val key = coverKey.orEmpty()
-            existingImage(BitmapProvider.originalArtworkSourcePath(key))?.let { return@withContext it }
             directCoverSource(context, key)?.let { return@withContext it }
 
             val audioPath = song?.path.orEmpty().ifBlank { audioPathFromKey(key) }
@@ -294,7 +292,7 @@ private object OriginalArtworkResolver {
             }
 
             // External images are fallback-only when a real audio file is available. This keeps the
-            // original-art viewer consistent with BitmapProvider and prevents folder.jpg from
+            // Keep the original-art viewer consistent with the artwork resolver and prevent folder.jpg from
             // replacing an embedded picture owned by the current track.
             existingImage(song?.albumArtPath)?.let { return@withContext it }
             folderCover(audioPath)?.let { return@withContext sourceFor(it) }

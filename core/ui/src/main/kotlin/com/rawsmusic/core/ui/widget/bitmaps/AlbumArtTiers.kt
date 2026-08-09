@@ -7,7 +7,7 @@ package com.rawsmusic.core.ui.widget.bitmaps
  * HiRes   – 1024px: playback screen cover.
  * FullRes – 1440px: fullscreen / pinch-zoom cover.
  *
- * v5: extracted from BitmapProvider / AlbumArtCache so every caller uses
+ * v5: extracted from BitmapProvider so every caller uses
  * the same constants instead of ad-hoc magic numbers.
  */
 object AlbumArtTiers {
@@ -88,6 +88,13 @@ object AlbumArtTiers {
             if (priority == BitmapRequest.Priority.LOADING_LIST && maxSide <= LIST_SMALL_MAX_SIDE) {
                 val smallTarget = maxSide.coerceIn(LIST_SMALL_MIN_SIDE, LIST_SMALL_MAX_SIDE)
                 return Target(smallTarget, smallTarget)
+            }
+            // Large PowerList grids deliberately request their visual size. The old list clamp
+            // silently turned GRID_2's 784px request into 512px, while the holder still judged
+            // completion against 784px and requeued the same source forever.
+            if (priority == BitmapRequest.Priority.LOADING_LIST && maxSide >= 768) {
+                val largeTarget = maxSide.coerceAtMost(HI_RES_SIDE)
+                return Target(largeTarget, largeTarget)
             }
             val lowTarget = maxSide.coerceIn(LOW_RES_MIN_SIDE, LOW_RES_NORMAL_CAP)
             return Target(lowTarget, lowTarget)

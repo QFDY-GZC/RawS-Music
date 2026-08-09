@@ -1,12 +1,14 @@
 package com.rawsmusic.core.ui.widget.player
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.spring
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -31,6 +33,62 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.proify.lyricon.lyric.model.LyricWord
 import io.github.proify.lyricon.lyric.model.interfaces.IRichLyricLine
+import java.text.Bidi
+import java.text.BreakIterator
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.roundToInt
+
+// AM sources expose this as R.dimen.lyrics_karaoke_gradient_feather_width, but the decompiled
+// archive does not contain resource values. Keep the fallback centralized; the gradient geometry
+// and progress math below match C11983A.m15398q0().
+private val AM_KARAOKE_FEATHER_WIDTH_FALLBACK = 12.dp
+// R.dimen.lyrics_karaoke_emphasis_shadow_radius is referenced by AM but its resource value is
+// missing from the decompiled archive. Keep the fallback in one place so it can be replaced when
+// resources.arsc/dimens.xml is available.
+private val AM_KARAOKE_EMPHASIS_SHADOW_RADIUS_FALLBACK = 5.dp
+private const val AM_KARAOKE_EMPHASIS_MIN_DURATION_MS = 1_000L
+private const val AM_KARAOKE_EMPHASIS_SCALE_MAX_DURATION_MS = 2_000L
+private const val AM_KARAOKE_EMPHASIS_ANIMATION_MAX_DURATION_MS = 3_000L
+private const val AM_KARAOKE_EMPHASIS_MAX_GLYPHS = 7
+private const val AM_KARAOKE_EMPHASIS_MAX_SCALE_DELTA = 0.14f
+private const val AM_KARAOKE_EMPHASIS_SHADOW_ALPHA = 0.5019608f // round(127.5) / 255
+private const val AM_KARAOKE_EMPHASIS_STAGGER_FRACTION = 0.4f
+private const val AM_KARAOKE_EMPHASIS_MAX_STAGGER_MS = 400f
+private val AM_KARAOKE_EMPHASIS_EASING = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f)
+
+private fun amKaraokeFeatherScaleForText(text: String): Float {
+    // C11983A.m15393h0() does not use one global feather width. For ordinary karaoke words
+    // whose exact Flex-line edge metadata is unavailable in Compose, its stable non-edge branch
+    // scales the resource width by 0.5 for very short words and 0.25 for longer words. Keep that
+    // source-backed distinction here instead of applying the full resource width to every word.
+    // The remaining 1.0 edge case depends on FullWidthAlphaGradientFlexboxLayout row geometry and
+    // will be added when the mask owner is moved to an AM-like whole-line layout.
+    val glyphCount = splitGraphemeClusters(text.trim()).size
+    return when {
+        glyphCount <= 0 -> 1f
+        glyphCount <= 2 -> 0.5f
+        else -> 0.25f
+    }
+}
+
+// C11983A.f38923k0 / f38924l0: these scripts stay in AM's shaped-word lane instead of the
+// split-on-glyph emphasis lane because splitting would break script shaping. CJK/Kana are the
+// exception: multi-glyph long notes are explicitly allowed through the split lane.
+private val AM_KARAOKE_SHAPED_SCRIPT_BLOCKS = setOf(
+    Character.UnicodeBlock.THAI,
+    Character.UnicodeBlock.ARABIC,
+    Character.UnicodeBlock.ARABIC_SUPPLEMENT,
+    Character.UnicodeBlock.ARABIC_EXTENDED_A,
+    Character.UnicodeBlock.ARABIC_PRESENTATION_FORMS_A,
+    Character.UnicodeBlock.ARABIC_PRESENTATION_FORMS_B,
+    Character.UnicodeBlock.DEVANAGARI,
+    Character.UnicodeBlock.HANGUL_SYLLABLES,
+    Character.UnicodeBlock.HANGUL_JAMO,
+    Character.UnicodeBlock.HANGUL_COMPATIBILITY_JAMO,
+)
 
 /**
  * Karaoke lyric line.
@@ -125,12 +183,18 @@ fun KaraokeTimedText(
                     )
                     val isCurrentWord = timing.progress > 0f && timing.progress < 1f
                     val isCompleted = timing.progress >= 1f
+                    // AM uses LyricsWord.getDuration() for long-note emphasis. Keep that raw word
+                    // duration separate from RawSMusic's sweep end, which may be clipped to the
+                    // next word begin to avoid karaoke-color overlap.
+                    val emphasisEndMs = segment.word.end
+                        .takeIf { it > timing.beginMs }
+                        ?: timing.endMs
 
                     KaraokeWordGroup(
                         text = segment.text,
                         progress = timing.progress,
                         wordBeginMs = timing.beginMs,
-                        wordEndMs = timing.endMs,
+                        emphasisEndMs = emphasisEndMs,
                         positionMs = positionMs,
                         isCurrentWord = isCurrentWord,
                         isCompleted = isCompleted,
@@ -155,7 +219,7 @@ private fun KaraokeWordGroup(
     text: String,
     progress: Float,
     wordBeginMs: Long,
-    wordEndMs: Long,
+    emphasisEndMs: Long,
     positionMs: Long,
     isCurrentWord: Boolean,
     isCompleted: Boolean,
@@ -169,49 +233,350 @@ private fun KaraokeWordGroup(
 ) {
     val density = LocalDensity.current
     val maxLiftPx = with(density) { wordLiftDp.toPx() }
+    val shadowRadiusPx = with(density) { AM_KARAOKE_EMPHASIS_SHADOW_RADIUS_FALLBACK.toPx() }
 
-    // 已开始的单词只上抬，不再在完成后回落。当前行切走时该组会退出组合，
-    // 因此不会把抬升状态泄漏到下一行。
+    // Keep RawSMusic's existing AM-matched word lift spring (0.93 / 25). This is a separate axis
+    // from AM's long-note emphasis scale; the default wordLiftScale is 0, so emphasis does not get
+    // accidentally double-scaled.
     val lift = remember(text, wordBeginMs) { Animatable(0f) }
-    val shouldLift = liftEnabled && (isCurrentWord || isCompleted)
-    val sustainGlow = if (glowEnabled) {
-        sustainGlowAlpha(
-            positionMs = positionMs,
-            beginMs = wordBeginMs,
-            endMs = wordEndMs,
-            active = isCurrentWord
-        )
-    } else {
-        0f
-    }
+    // AM drives lift from the timed word event itself, not from a partially-filled karaoke mask.
+    // Once fired, the word stays lifted until line/reset ownership releases it.
+    val shouldLift = liftEnabled && positionMs >= wordBeginMs
 
     LaunchedEffect(text, wordBeginMs, shouldLift) {
-        if (shouldLift) {
-            lift.animateTo(
-                targetValue = 1f,
-                animationSpec = spring(dampingRatio = 0.93f, stiffness = 25f)
-            )
-        } else {
-            lift.snapTo(0f)
-        }
+        lift.animateTo(
+            targetValue = if (shouldLift) 1f else 0f,
+            animationSpec = spring(dampingRatio = 0.93f, stiffness = 25f)
+        )
     }
 
-    ProgressiveLyricText(
-        text = text,
-        progress = progress,
-        highlightColor = highlightColor,
-        dimColor = dimColor,
-        style = style,
-        sustainGlowAlpha = sustainGlow,
-        modifier = Modifier.graphicsLayer {
-            translationY = -maxLiftPx * lift.value
-            val scale = 1f + wordLiftScale * lift.value
-            scaleX = scale
-            scaleY = scale
-            transformOrigin = TransformOrigin(0.5f, 1f)
-        }
-    )
+    val coreText = remember(text) { text.trimEnd() }
+    val suffix = remember(text, coreText) { text.substring(coreText.length) }
+    val glyphs = remember(coreText) { splitGraphemeClusters(coreText) }
+    val emphasisEligible = remember(coreText, wordBeginMs, emphasisEndMs, glyphs) {
+        isAMLongNoteEmphasisEligible(
+            text = coreText,
+            durationMs = (emphasisEndMs - wordBeginMs).coerceAtLeast(1L),
+            glyphCount = glyphs.size,
+        )
+    }
 
+    val wholeWordModifier = Modifier.graphicsLayer {
+        translationY = -maxLiftPx * lift.value
+        val legacyScale = 1f + wordLiftScale * lift.value
+        scaleX = legacyScale
+        scaleY = legacyScale
+        transformOrigin = TransformOrigin(0.5f, 1f)
+    }
+    val splitGlyphBaseModifier = Modifier.graphicsLayer {
+        // Split-character AM lanes own vertical lift per glyph. Keep only the legacy whole-word
+        // scale here so the outer node never double-applies translationY.
+        val legacyScale = 1f + wordLiftScale * lift.value
+        scaleX = legacyScale
+        scaleY = legacyScale
+        transformOrigin = TransformOrigin(0.5f, 1f)
+    }
+
+    val splitEmphasis = emphasisEligible && shouldSplitAMLongNoteEmphasis(coreText, glyphs)
+    when {
+        splitEmphasis -> {
+            AMEmphasisWord(
+                glyphs = glyphs,
+                suffix = suffix,
+                wordProgress = progress,
+                wordBeginMs = wordBeginMs,
+                emphasisEndMs = emphasisEndMs,
+                positionMs = positionMs,
+                highlightColor = highlightColor,
+                dimColor = dimColor,
+                style = style,
+                shadowRadiusPx = shadowRadiusPx,
+                glowEnabled = glowEnabled,
+                wordLiftPx = maxLiftPx,
+                liftEnabled = liftEnabled,
+                modifier = splitGlyphBaseModifier,
+            )
+        }
+        emphasisEligible -> {
+            // AM keeps CJK single-glyph and shaping-sensitive scripts in one text view instead of
+            // splitting them into characters.  They still need the long-note emphasis owner; our
+            // previous port incorrectly treated "do not split" as "do not emphasize", which made
+            // the glow disappear for the most common single-character CJK long notes.
+            AMShapedEmphasisWord(
+                text = text,
+                wordProgress = progress,
+                wordBeginMs = wordBeginMs,
+                emphasisEndMs = emphasisEndMs,
+                positionMs = positionMs,
+                highlightColor = highlightColor,
+                dimColor = dimColor,
+                style = style,
+                shadowRadiusPx = shadowRadiusPx,
+                glowEnabled = glowEnabled,
+                modifier = wholeWordModifier,
+            )
+        }
+        else -> {
+            ProgressiveLyricText(
+                text = text,
+                progress = progress,
+                highlightColor = highlightColor,
+                dimColor = dimColor,
+                style = style,
+                shadowAlpha = 0f,
+                shadowRadiusPx = shadowRadiusPx,
+                rtl = isTextRtl(text),
+                modifier = wholeWordModifier,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AMShapedEmphasisWord(
+    text: String,
+    wordProgress: Float,
+    wordBeginMs: Long,
+    emphasisEndMs: Long,
+    positionMs: Long,
+    highlightColor: Color,
+    dimColor: Color,
+    style: TextStyle,
+    shadowRadiusPx: Float,
+    glowEnabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val rawDurationMs = (emphasisEndMs - wordBeginMs).coerceAtLeast(1L)
+    val fraction = amGlyphEmphasisFraction(
+        elapsedMs = (positionMs - wordBeginMs).toFloat(),
+        rawDurationMs = rawDurationMs,
+        glyphCount = 1,
+        glyphIndex = 0,
+    )
+    val scale = 1f + (amEmphasisTargetScale(rawDurationMs) - 1f) * fraction
+    val rtl = remember(text) { isTextRtl(text) }
+    AMGappedGlyphLayout(
+        modifier = modifier,
+        scales = listOf(scale),
+        rtl = rtl,
+        suffixPresent = false,
+    ) {
+        ProgressiveLyricText(
+            text = text,
+            progress = wordProgress,
+            highlightColor = highlightColor,
+            dimColor = dimColor,
+            style = style,
+            shadowAlpha = if (glowEnabled) fraction * AM_KARAOKE_EMPHASIS_SHADOW_ALPHA else 0f,
+            shadowRadiusPx = shadowRadiusPx,
+            rtl = rtl,
+        )
+    }
+}
+
+/**
+ * AM long-note emphasis reconstructed from C11983A.m15423a0() + C12217i.
+ *
+ * Each glyph has two independent ValueAnimator-equivalent phases:
+ *  - grow: startDelay = index * min(0.4 * rawDuration / glyphCount, 400ms)
+ *  - return: startDelay = growStart + rawDuration / (glyphCount / 2f)
+ * Both phases use the same capped duration (<= 3000ms) and PathInterpolator(0.25, .1, .25, 1).
+ * The return phase cancels grow and starts from the exact scale/shadow reached at that instant.
+ */
+@Composable
+private fun AMEmphasisWord(
+    glyphs: List<String>,
+    suffix: String,
+    wordProgress: Float,
+    wordBeginMs: Long,
+    emphasisEndMs: Long,
+    positionMs: Long,
+    highlightColor: Color,
+    dimColor: Color,
+    style: TextStyle,
+    shadowRadiusPx: Float,
+    glowEnabled: Boolean,
+    wordLiftPx: Float,
+    liftEnabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val rawDurationMs = (emphasisEndMs - wordBeginMs).coerceAtLeast(1L)
+    val elapsedMs = (positionMs - wordBeginMs).toFloat()
+    val glyphCount = glyphs.size.coerceAtLeast(1)
+    val density = LocalDensity.current
+    val featherPx = with(density) {
+        AM_KARAOKE_FEATHER_WIDTH_FALLBACK.toPx() *
+            amKaraokeFeatherScaleForText(glyphs.joinToString(separator = ""))
+    }
+    val glyphWidths = remember(glyphs) {
+        mutableStateListOf<Float>().apply { repeat(glyphCount) { add(1f) } }
+    }
+    val glyphLiftStates = remember(glyphs, wordBeginMs) {
+        List(glyphCount) { Animatable(0f) }
+    }
+    val targetScale = amEmphasisTargetScale(rawDurationMs)
+    val emphasisFractions = remember(positionMs, wordBeginMs, emphasisEndMs, glyphs) {
+        List(glyphCount) { index ->
+            amGlyphEmphasisFraction(
+                elapsedMs = elapsedMs,
+                rawDurationMs = rawDurationMs,
+                glyphCount = glyphCount,
+                glyphIndex = index,
+            )
+        }
+    }
+    val scales = remember(emphasisFractions, targetScale) {
+        emphasisFractions.map { fraction -> 1f + (targetScale - 1f) * fraction }
+    }
+    val rtl = remember(glyphs) { isTextRtl(glyphs.joinToString(separator = "")) }
+
+    AMGappedGlyphLayout(
+        modifier = modifier,
+        scales = scales,
+        rtl = rtl,
+        suffixPresent = suffix.isNotEmpty(),
+        content = {
+            glyphs.forEachIndexed { index, glyph ->
+                // AM splits these words into individual CustomTextViews. Map the global karaoke
+                // sweep into the same logical glyph slots while keeping the feather inside each
+                // glyph. The emphasis timing itself is independent from highlight sweep timing.
+                val totalWidth = glyphWidths.sum().coerceAtLeast(1f)
+                val glyphStart = glyphWidths.take(index).sum()
+                val glyphWidth = glyphWidths[index].coerceAtLeast(1f)
+                val boundary = wordProgress.coerceIn(0f, 1f) * totalWidth
+                val localProgress = ((boundary - glyphStart) / glyphWidth).coerceIn(0f, 1f)
+                val localFadeStart = ((boundary - featherPx - glyphStart) / glyphWidth).coerceIn(0f, 1f)
+                val localFadeEnd = ((boundary - glyphStart) / glyphWidth).coerceIn(0f, 1f)
+                val liftStartMs = amGlyphLiftStartMs(rawDurationMs, glyphCount, index)
+                val shouldGlyphLift = liftEnabled && elapsedMs >= liftStartMs
+                val glyphLift = glyphLiftStates[index]
+                LaunchedEffect(glyphs, wordBeginMs, index, shouldGlyphLift) {
+                    glyphLift.animateTo(
+                        targetValue = if (shouldGlyphLift) 1f else 0f,
+                        animationSpec = spring(dampingRatio = 0.93f, stiffness = 25f),
+                    )
+                }
+                ProgressiveLyricText(
+                    text = glyph,
+                    progress = localProgress,
+                    highlightColor = highlightColor,
+                    dimColor = dimColor,
+                    style = style,
+                    shadowAlpha = if (glowEnabled) {
+                        emphasisFractions[index] * AM_KARAOKE_EMPHASIS_SHADOW_ALPHA
+                    } else {
+                        0f
+                    },
+                    shadowRadiusPx = shadowRadiusPx,
+                    rtl = rtl,
+                    fadeStartOverride = localFadeStart,
+                    fadeEndOverride = localFadeEnd,
+                    modifier = Modifier.graphicsLayer {
+                        translationY = -wordLiftPx * glyphLift.value
+                    },
+                    onWidthMeasured = { measuredWidth ->
+                        if (abs(glyphWidths[index] - measuredWidth) > 0.5f) {
+                            glyphWidths[index] = measuredWidth
+                        }
+                    },
+                )
+            }
+            if (suffix.isNotEmpty()) {
+                ProgressiveLyricText(
+                    text = suffix,
+                    progress = wordProgress,
+                    highlightColor = highlightColor,
+                    dimColor = dimColor,
+                    style = style,
+                    shadowAlpha = 0f,
+                    shadowRadiusPx = shadowRadiusPx,
+                    rtl = rtl,
+                    modifier = Modifier.graphicsLayer {
+                        val suffixLift = glyphLiftStates.lastOrNull()?.value ?: 0f
+                        translationY = -wordLiftPx * suffixLift
+                    },
+                )
+            }
+        },
+    )
+}
+
+/**
+ * Equivalent of AM's TimeAnimator spacing compensation. C12217i stores half of each glyph's
+ * scale-induced width growth; C11983A then walks from the visual centre outward and translates
+ * neighbours so scaled glyphs do not collide. The parent width intentionally stays at the
+ * unscaled width, matching View scaling + translation rather than relayout.
+ */
+@Composable
+private fun AMGappedGlyphLayout(
+    modifier: Modifier,
+    scales: List<Float>,
+    rtl: Boolean,
+    suffixPresent: Boolean,
+    content: @Composable () -> Unit,
+) {
+    Layout(modifier = modifier, content = content) { measurables, constraints ->
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val placeables = measurables.map { it.measure(loose) }
+        val emphasisCount = scales.size.coerceAtMost(placeables.size)
+        val baselines = placeables.map { placeable ->
+            placeable[FirstBaseline].takeIf { it != AlignmentLine.Unspecified } ?: placeable.height
+        }
+        val baseline = baselines.maxOrNull() ?: 0
+        val descent = placeables.mapIndexed { index, placeable ->
+            placeable.height - baselines[index]
+        }.maxOrNull() ?: 0
+        val height = baseline + descent
+        val originalWidth = placeables.sumOf { it.width }
+
+        val halfGrowth = FloatArray(emphasisCount) { index ->
+            ((scales[index] - 1f) * placeables[index].width) / 2f
+        }
+        val translations = amGlyphSpacingTranslations(halfGrowth, rtl)
+
+        layout(
+            width = originalWidth.coerceIn(constraints.minWidth, constraints.maxWidth),
+            height = height.coerceIn(constraints.minHeight, constraints.maxHeight),
+            alignmentLines = mapOf(FirstBaseline to baseline, LastBaseline to baseline),
+        ) {
+            var logicalX = 0
+            placeables.forEachIndexed { index, placeable ->
+                val baseX = if (!rtl) {
+                    logicalX
+                } else {
+                    originalWidth - logicalX - placeable.width
+                }
+                val translationX = if (index < emphasisCount) translations[index].roundToInt() else {
+                    // Trailing separators stay attached to the final visual glyph rather than
+                    // becoming a second animated glyph.
+                    if (suffixPresent && emphasisCount > 0) translations[emphasisCount - 1].roundToInt() else 0
+                }
+                val childBaseline = baselines[index]
+                val pivotYFraction = if (placeable.height > 0) {
+                    (childBaseline.toFloat() / placeable.height.toFloat()).coerceIn(0f, 1f)
+                } else {
+                    1f
+                }
+                if (index < emphasisCount) {
+                    placeable.placeWithLayer(
+                        x = baseX + translationX,
+                        y = baseline - childBaseline,
+                    ) {
+                        scaleX = scales[index]
+                        scaleY = scales[index]
+                        // C11983A: height - lastBaselineToBottomHeight == last baseline.
+                        transformOrigin = TransformOrigin(0.5f, pivotYFraction)
+                    }
+                } else {
+                    placeable.place(
+                        x = baseX + translationX,
+                        y = baseline - childBaseline,
+                    )
+                }
+                logicalX += placeable.width
+            }
+        }
+    }
 }
 
 // ========== Shared progressive text ==========
@@ -223,7 +588,12 @@ private fun ProgressiveLyricText(
     highlightColor: Color,
     dimColor: Color,
     style: TextStyle,
-    sustainGlowAlpha: Float,
+    shadowAlpha: Float,
+    shadowRadiusPx: Float,
+    rtl: Boolean,
+    fadeStartOverride: Float? = null,
+    fadeEndOverride: Float? = null,
+    onWidthMeasured: ((Float) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var widthPx by remember(text) { mutableFloatStateOf(1f) }
@@ -232,55 +602,53 @@ private fun ProgressiveLyricText(
     // 逐字歌词可见时 positionMs 按 16 ms 分发，直接使用权威进度，避免短 tween
     // 对连续目标反复重启造成拖尾。Compose 会按设备 vsync（通常 60/90/120 Hz）重绘。
     val p = progress.coerceIn(0f, 1f)
-    // Keep only a tiny anti-aliased edge. A wide feather makes the bright front sit
-    // visibly behind the timestamp even when the underlying word progress is exact.
-    val featherPx = with(density) { 3.dp.toPx() }.coerceAtMost(widthPx * 0.12f)
-    val sweepPx = widthPx * p
-    val fadeStart = ((sweepPx - featherPx) / widthPx).coerceIn(0f, 1f)
-    val fadeEnd = (sweepPx / widthPx).coerceIn(0f, 1f)
-    val fadeSpan = (fadeEnd - fadeStart).coerceAtLeast(0f)
-    val fadeSoft = (fadeStart + fadeSpan * 0.42f).coerceIn(fadeStart, fadeEnd)
-    val fadeTail = (fadeStart + fadeSpan * 0.78f).coerceIn(fadeStart, fadeEnd)
-
+    val featherPx = with(density) {
+        AM_KARAOKE_FEATHER_WIDTH_FALLBACK.toPx() * amKaraokeFeatherScaleForText(text)
+    }.coerceAtMost(widthPx)
+    val featherFraction = (featherPx / widthPx).coerceIn(0f, 1f)
+    val fadeStart = fadeStartOverride ?: (p - featherFraction).coerceIn(0f, 1f)
+    val fadeEnd = fadeEndOverride ?: p
     val brush = Brush.linearGradient(
         colorStops = arrayOf(
             0f to highlightColor,
             fadeStart to highlightColor,
-            fadeSoft to highlightColor.copy(alpha = 0.88f),
-            fadeTail to highlightColor.copy(alpha = 0.34f),
             fadeEnd to highlightColor.copy(alpha = 0f),
-            1f to highlightColor.copy(alpha = 0f)
+            1f to highlightColor.copy(alpha = 0f),
         ),
-        start = Offset.Zero,
-        end = Offset(widthPx, 0f)
+        start = if (rtl) Offset(widthPx, 0f) else Offset.Zero,
+        end = if (rtl) Offset.Zero else Offset(widthPx, 0f),
     )
+    val shadow = if (shadowAlpha > 0.0001f) {
+        Shadow(
+            // C12217i always uses a white shadow; it is not tinted with the lyric highlight color.
+            color = Color.White.copy(alpha = shadowAlpha.coerceIn(0f, AM_KARAOKE_EMPHASIS_SHADOW_ALPHA)),
+            offset = Offset.Zero,
+            blurRadius = shadowRadiusPx,
+        )
+    } else {
+        null
+    }
+    val baseStyle = if (shadow != null) style.copy(shadow = shadow) else style
 
     Layout(
         modifier = modifier,
         content = {
+            // Keep the dim layer as the shadow owner. The highlighted layer is drawn on top, so
+            // the white bloom remains behind the final karaoke color exactly like setShadowLayer().
             Text(
                 text = text,
                 color = dimColor,
-                style = style,
-                onTextLayout = { widthPx = it.size.width.toFloat().coerceAtLeast(1f) }
+                style = baseStyle,
+                onTextLayout = {
+                    val measuredWidth = it.size.width.toFloat().coerceAtLeast(1f)
+                    widthPx = measuredWidth
+                    onWidthMeasured?.invoke(measuredWidth)
+                }
             )
             when {
                 p <= 0.001f -> Unit
                 p >= 0.999f -> Text(text = text, color = highlightColor, style = style)
                 else -> Text(text = text, style = style.copy(brush = brush))
-            }
-            if (sustainGlowAlpha > 0f) {
-                Text(
-                    text = text,
-                    color = highlightColor.copy(alpha = sustainGlowAlpha * 0.34f),
-                    style = style.copy(
-                        shadow = Shadow(
-                            color = highlightColor.copy(alpha = sustainGlowAlpha * 0.54f),
-                            offset = Offset.Zero,
-                            blurRadius = 14f
-                        )
-                    )
-                )
             }
         }
     ) { measurables, constraints ->
@@ -288,12 +656,14 @@ private fun ProgressiveLyricText(
         val placeables = measurables.map { it.measure(loose) }
         val width = placeables.maxOfOrNull { it.width } ?: 0
         val height = placeables.maxOfOrNull { it.height } ?: 0
-        val baseline = placeables.firstOrNull()
+        val firstBaseline = placeables.firstOrNull()
             ?.get(FirstBaseline)?.takeIf { it != AlignmentLine.Unspecified } ?: height
+        val lastBaseline = placeables.firstOrNull()
+            ?.get(LastBaseline)?.takeIf { it != AlignmentLine.Unspecified } ?: firstBaseline
         layout(
             width = width.coerceIn(constraints.minWidth, constraints.maxWidth),
             height = height.coerceIn(constraints.minHeight, constraints.maxHeight),
-            alignmentLines = mapOf(FirstBaseline to baseline, LastBaseline to baseline)
+            alignmentLines = mapOf(FirstBaseline to firstBaseline, LastBaseline to lastBaseline)
         ) {
             placeables.forEach { it.placeRelative(0, 0) }
         }
@@ -502,23 +872,142 @@ private fun wordTimingState(
     return WordTimingState(progress = progress, beginMs = begin, endMs = end)
 }
 
-private fun sustainGlowAlpha(
-    positionMs: Long,
-    beginMs: Long,
-    endMs: Long,
-    active: Boolean
+private fun amEmphasisTargetScale(rawDurationMs: Long): Float {
+    val normalized = (
+        rawDurationMs.coerceIn(
+            AM_KARAOKE_EMPHASIS_MIN_DURATION_MS,
+            AM_KARAOKE_EMPHASIS_SCALE_MAX_DURATION_MS,
+        ) - AM_KARAOKE_EMPHASIS_MIN_DURATION_MS
+        ).toFloat() /
+        (AM_KARAOKE_EMPHASIS_SCALE_MAX_DURATION_MS - AM_KARAOKE_EMPHASIS_MIN_DURATION_MS).toFloat()
+    return 1f + AM_KARAOKE_EMPHASIS_MAX_SCALE_DELTA * normalized.coerceIn(0f, 1f)
+}
+
+private fun amGlyphLiftStartMs(
+    rawDurationMs: Long,
+    glyphCount: Int,
+    glyphIndex: Int,
 ): Float {
-    if (!active) return 0f
-    val duration = endMs - beginMs
-    if (duration < 900L || positionMs !in beginMs until endMs) return 0f
-    val elapsed = positionMs - beginMs
-    val delay = minOf(420L, (duration * 0.36f).toLong().coerceAtLeast(1L))
-    if (elapsed < delay) return 0f
-    val progress = ((elapsed - delay).toFloat() / (duration - delay).coerceAtLeast(1L))
-        .coerceIn(0f, 1f)
-    return when {
-        progress < 0.18f -> progress / 0.18f
-        progress > 0.82f -> (1f - progress) / 0.18f
-        else -> 1f
-    }.coerceIn(0f, 1f)
+    if (glyphCount <= 0 || glyphIndex <= 0) return 0f
+    val rawDuration = rawDurationMs.toFloat().coerceAtLeast(1f)
+    val staggerStep = ((AM_KARAOKE_EMPHASIS_STAGGER_FRACTION * rawDuration) / glyphCount.toFloat())
+        .coerceAtMost(AM_KARAOKE_EMPHASIS_MAX_STAGGER_MS)
+    return staggerStep * glyphIndex
+}
+
+private fun amGlyphEmphasisFraction(
+    elapsedMs: Float,
+    rawDurationMs: Long,
+    glyphCount: Int,
+    glyphIndex: Int,
+): Float {
+    if (elapsedMs <= 0f || glyphCount <= 0) return 0f
+    val rawDuration = rawDurationMs.toFloat().coerceAtLeast(1f)
+    val animatorDuration = rawDurationMs
+        .coerceAtMost(AM_KARAOKE_EMPHASIS_ANIMATION_MAX_DURATION_MS)
+        .toFloat()
+        .coerceAtLeast(1f)
+    val growStart = amGlyphLiftStartMs(rawDurationMs, glyphCount, glyphIndex)
+    if (elapsedMs < growStart) return 0f
+
+    // C11983A: size6 = rawDuration / (glyphCount / 2f), and return animator starts at
+    // currentGlyphStart + size6. Its onAnimationStart cancels the grow animator.
+    val returnOffset = rawDuration / (glyphCount.toFloat() / 2f)
+    val returnStart = growStart + returnOffset
+    val growLinear = ((elapsedMs - growStart) / animatorDuration).coerceIn(0f, 1f)
+    val grow = AM_KARAOKE_EMPHASIS_EASING.transform(growLinear)
+    if (elapsedMs < returnStart) return grow
+
+    val growAtReturnLinear = ((returnStart - growStart) / animatorDuration).coerceIn(0f, 1f)
+    val growAtReturn = AM_KARAOKE_EMPHASIS_EASING.transform(growAtReturnLinear)
+    val returnLinear = ((elapsedMs - returnStart) / animatorDuration).coerceIn(0f, 1f)
+    val returnEase = AM_KARAOKE_EMPHASIS_EASING.transform(returnLinear)
+    return (growAtReturn * (1f - returnEase)).coerceIn(0f, 1f)
+}
+
+private fun amGlyphSpacingTranslations(halfGrowth: FloatArray, rtl: Boolean): FloatArray {
+    val count = halfGrowth.size
+    if (count <= 1) return FloatArray(count)
+    val translations = FloatArray(count)
+    // Java source uses integer division for odd counts: 5 / 2 -> 2.0f.
+    val center = if (count % 2 == 0) (count / 2f) - 0.5f else (count / 2).toFloat()
+    val leftStart = if (floor(center) == center) floor(center).toInt() - 1 else floor(center).toInt()
+    val rightStart = if (ceil(center) == center) ceil(center).toInt() + 1 else ceil(center).toInt()
+
+    var index = leftStart
+    while (index >= 0) {
+        var amount = halfGrowth[index]
+        val next = index + 1
+        if (next.toFloat() <= center && next < count) amount += halfGrowth[next]
+        if (next.toFloat() < center && next < count) amount += abs(translations[next])
+        translations[index] = (if (rtl) amount else -amount) * 0.5f
+        index--
+    }
+
+    index = rightStart
+    while (index < count) {
+        var amount = halfGrowth[index]
+        val previous = index - 1
+        if (previous.toFloat() >= center && previous >= 0) amount += halfGrowth[previous]
+        if (previous.toFloat() > center && previous >= 0) amount += abs(translations[previous])
+        translations[index] = (if (rtl) -amount else amount) * 0.5f
+        index++
+    }
+    return translations
+}
+
+private fun isAMLongNoteEmphasisEligible(
+    text: String,
+    durationMs: Long,
+    glyphCount: Int,
+): Boolean {
+    if (text.isBlank()) return false
+    if (durationMs < AM_KARAOKE_EMPHASIS_MIN_DURATION_MS) return false
+    if (glyphCount <= 0) return false
+    // AM stores C15891t.m21948B0(text).toString().length(), i.e. UTF-16 String.length.
+    if (text.length !in 1..AM_KARAOKE_EMPHASIS_MAX_GLYPHS) return false
+
+    return true
+}
+
+private fun shouldSplitAMLongNoteEmphasis(
+    text: String,
+    glyphs: List<String>,
+): Boolean {
+    if (glyphs.size <= 1) return false
+    val blocks = unicodeBlocksOf(text)
+    if (blocks.any { it in AM_KARAOKE_SHAPED_SCRIPT_BLOCKS }) return false
+    // CJK/Kana can use AM's per-character lane once there is more than one visible glyph.
+    return true
+}
+
+private fun unicodeBlocksOf(text: String): Set<Character.UnicodeBlock> {
+    val result = LinkedHashSet<Character.UnicodeBlock>()
+    var index = 0
+    while (index < text.length) {
+        val codePoint = Character.codePointAt(text, index)
+        Character.UnicodeBlock.of(codePoint)?.let(result::add)
+        index += Character.charCount(codePoint)
+    }
+    return result
+}
+
+private fun splitGraphemeClusters(text: String): List<String> {
+    if (text.isEmpty()) return emptyList()
+    val iterator = BreakIterator.getCharacterInstance(Locale.ROOT)
+    iterator.setText(text)
+    val result = ArrayList<String>()
+    var start = iterator.first()
+    var end = iterator.next()
+    while (end != BreakIterator.DONE) {
+        result += text.substring(start, end)
+        start = end
+        end = iterator.next()
+    }
+    return result
+}
+
+private fun isTextRtl(text: String): Boolean {
+    if (text.isBlank()) return false
+    return !Bidi(text, Bidi.DIRECTION_DEFAULT_LEFT_TO_RIGHT).baseIsLeftToRight()
 }

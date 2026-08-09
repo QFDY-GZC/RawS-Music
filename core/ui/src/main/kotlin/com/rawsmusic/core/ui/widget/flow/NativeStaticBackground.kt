@@ -35,13 +35,14 @@ internal object NativeStaticBackground {
 
     fun createPlayer(
         artwork: Bitmap,
+        colors: IntArray,
         saturation: Float,
         brightness: Float,
         gradient: Float,
         blur: Float,
         detail: Float
     ): Bitmap? {
-        if (!available || artwork.isRecycled) return null
+        if (!available || artwork.isRecycled || colors.isEmpty()) return null
         return runCatching {
             val sampleSize = (1 shl detail.toInt().coerceIn(0, 10)).coerceIn(8, 256)
             val scaled = Bitmap.createScaledBitmap(
@@ -67,6 +68,7 @@ internal object NativeStaticBackground {
             )
             val output = renderPlayer(
                 artwork = artworkPixels,
+                colors = colors,
                 artworkWidth = readable.width,
                 artworkHeight = readable.height,
                 width = WIDTH,
@@ -95,6 +97,7 @@ internal object NativeStaticBackground {
 
     private external fun renderPlayer(
         artwork: IntArray,
+        colors: IntArray,
         artworkWidth: Int,
         artworkHeight: Int,
         width: Int,

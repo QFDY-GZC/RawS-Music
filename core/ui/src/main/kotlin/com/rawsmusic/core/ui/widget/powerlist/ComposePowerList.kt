@@ -1,14 +1,15 @@
 package com.rawsmusic.core.ui.widget.powerlist
 
 import android.graphics.Bitmap
+import android.graphics.BitmapShader
 import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.Path
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -44,6 +45,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
@@ -73,23 +75,22 @@ import com.rawsmusic.core.ui.scene.LocalSharedTransitionSpec
 import com.rawsmusic.core.ui.scene.SharedCoverSnapshot
 import com.rawsmusic.core.ui.scene.powerListSceneTransitionItem
 import com.rawsmusic.core.ui.theme.ThemeManager
-import com.rawsmusic.core.ui.widget.bitmaps.ArtworkDisplayResolver
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkHandle
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
-import com.rawsmusic.core.ui.widget.bitmaps.RawArtworkPolicy
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.bitmaps.DefaultAlbumArtwork
 import com.rawsmusic.core.ui.widget.bitmaps.DefaultAlbumArtworkPolicy
 import com.rawsmusic.core.ui.widget.bitmaps.shouldShowDefaultAlbumArtwork
 import com.rawsmusic.core.ui.widget.bitmaps.FileArtworkId
-import com.rawsmusic.core.ui.widget.bitmaps.PowerListArtworkRecords
 import com.rawsmusic.core.ui.widget.bitmaps.PowerListCoilArtwork
 import com.rawsmusic.core.ui.widget.bitmaps.PowerListCoilArtworkModel
 import com.rawsmusic.core.ui.widget.bitmaps.SizeSlotCache
 import com.rawsmusic.core.ui.widget.player.copySongInfoToClipboard
 import com.rawsmusic.module.data.prefs.FontManager
+import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
+import java.util.concurrent.atomic.AtomicLong
 import coil.request.ImageRequest
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.icon.MiuixIcons
@@ -99,8 +100,6 @@ import android.text.TextPaint
 import android.text.TextUtils
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntRect
-import java.util.concurrent.atomic.AtomicLong
-import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -333,19 +332,6 @@ fun ComposePowerList(
             }
             updateSettledBaseScroll(state.viewportScrollY.toInt())
         }
-        // Dense grids may keep loading artwork during a slow drag, but a continuous fling must
-        // not repeatedly start cold file work. Each scroll delta closes the admission gate; a
-        // short quiet window reopens it even if the finger is still resting on the screen.
-        var artworkScrollSerial by remember { mutableIntStateOf(0) }
-        var gridColdArtworkAllowed by remember { mutableStateOf(true) }
-        LaunchedEffect(artworkScrollSerial) {
-            val serial = artworkScrollSerial
-            if (serial <= 0) return@LaunchedEffect
-            delay(RawArtworkPolicy.VIEWPORT_SETTLE_MS)
-            if (artworkScrollSerial == serial) {
-                gridColdArtworkAllowed = true
-            }
-        }
         val scrollableState = rememberScrollableState { delta ->
             if (state.isTransitioning || state.isPinching || state.isBoundaryElasticActive) {
                 delta
@@ -353,8 +339,6 @@ fun ComposePowerList(
                 val old = state.viewportScrollY
                 val newValue = (old - delta).coerceIn(0f, maxScrollY)
                 if (newValue != old) {
-                    gridColdArtworkAllowed = false
-                    artworkScrollSerial++
                     bottomChromeScrollState?.onContentScroll(newValue - old)
                 }
                 state.viewportScrollY = newValue
@@ -362,27 +346,33 @@ fun ComposePowerList(
                 old - newValue
             }
         }
-        // Alphabet/locator jumps update viewportScrollY without driving Compose's scrollableState.
-        // Treat them as an active navigation gesture for a short settle window so 4-column grids
-        // and list modes do not start decoding every intermediate target while the user is
-        // dragging the side index.  Once no new jump arrives, the final visible window is armed
-        // and the current cells request artwork immediately.
-        var externalScrollGateSerial by remember { mutableIntStateOf(0) }
-        LaunchedEffect(state.scrollToIndexRequestSerial) {
-            val serial = state.scrollToIndexRequestSerial
-            if (serial <= 0) return@LaunchedEffect
-            externalScrollGateSerial = serial
-            delay(POWER_LIST_EXTERNAL_SCROLL_SETTLE_DELAY_MS)
-            if (externalScrollGateSerial == serial) {
-                externalScrollGateSerial = 0
+        // Temporary diagnostics only. This observes frame gaps while scrolling/transitioning;
+        // it does not drive layout, animation, or artwork state.
+        if (POWER_LIST_TRACE_FRAMES) {
+            LaunchedEffect(scrollableState.isScrollInProgress, state.isTransitioning) {
+                if (!scrollableState.isScrollInProgress && !state.isTransitioning) {
+                    return@LaunchedEffect
+                }
+                var previousFrameNs = withFrameNanos { it }
+                while (true) {
+                    val frameNs = withFrameNanos { it }
+                    val gapMs = (frameNs - previousFrameNs) / 1_000_000L
+                    if (gapMs >= POWER_LIST_TRACE_FRAME_GAP_MS) {
+                        Log.w(
+                            POWER_LIST_TRACE_TAG,
+                            "POWER_LIST_TRACE frame_gap_ms=$gapMs " +
+                                "scrolling=${scrollableState.isScrollInProgress} " +
+                                "transitioning=${state.isTransitioning} " +
+                                "scrollY=${state.viewportScrollY.roundToInt()}"
+                        )
+                    }
+                    previousFrameNs = frameNs
+                    if (!scrollableState.isScrollInProgress && !state.isTransitioning) {
+                        break
+                    }
+                }
             }
         }
-        // scrollToIndexRequestIndex is a sticky target marker, not an active gesture flag.  Treating
-        // it as active keeps artwork decode suspended across cold start / alphabet jumps and leaves
-        // the first visible grid empty for seconds.  The serial gate above is the real short-lived
-        // activity window; once it clears, the final viewport may arm immediately.
-        val externalScrollActive = externalScrollGateSerial != 0
-
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -429,25 +419,18 @@ fun ComposePowerList(
                 } else {
                     settledBaseScrollYState.value
                 }
-                val settledRangeScrollY = if (pendingSettledScroll != null) {
-                    pendingSettledScroll.coerceIn(0, maxScrollY.roundToInt())
-                } else {
-                    (settledBaseScrollY + settledScrollOffsetPx.intValue).coerceIn(0, maxScrollY.roundToInt())
-                }
                 ComposePowerListSettledContent(
                     songs = songs,
                     state = state,
                     metrics = metrics,
                     scrollYPx = settledBaseScrollY,
-                    rangeScrollYPx = settledRangeScrollY,
                     viewportHeightPx = heightPx,
                     playingSongId = playingSongId,
                     currentPlayingIndex = currentPlayingIndex,
                     selectedPositions = selectedPositions,
                     hidePlayingCover = hidePlayingCover,
                     boundaryScale = state.boundaryElasticScale,
-                    interactionActive = scrollableState.isScrollInProgress || externalScrollActive || state.isPinching || state.isBoundaryElasticActive,
-                    gridColdArtworkAllowed = gridColdArtworkAllowed && !externalScrollActive,
+                    interactionActive = scrollableState.isScrollInProgress || state.isPinching || state.isBoundaryElasticActive,
                     topPaddingPx = contentTopPaddingPx,
                     sectionHeaders = sectionHeaders,
                     sectionHeaderHeightPx = sectionHeaderHeightPx,
@@ -461,10 +444,13 @@ fun ComposePowerList(
                     modifier = Modifier
                         .fillMaxSize()
                         .offset {
+                            // Keep the child tree in stable content coordinates. A row-boundary
+                            // update must not reset the inner layer and then apply the remainder
+                            // in a second layout pass, otherwise visible covers flash for one frame.
                             val offset = if (pendingSettledScroll != null) {
-                                pendingSettledScroll.coerceIn(0, maxScrollY.roundToInt()) - settledBaseScrollY
+                                pendingSettledScroll.coerceIn(0, maxScrollY.roundToInt())
                             } else {
-                                settledScrollOffsetPx.intValue
+                                settledBaseScrollY + settledScrollOffsetPx.intValue
                             }
                             androidx.compose.ui.unit.IntOffset(0, -offset)
                         }
@@ -472,45 +458,80 @@ fun ComposePowerList(
             }
 
             if (persistentHeaderHeightPx > 0) {
-                val pending = pendingTransitionScroll.value
-                val headerScrollYPx = when {
-                    state.isTransitioning && pending != null -> lerpIntLocal(
-                        pending.source,
-                        pending.target,
-                        state.transitionProgress.coerceIn(0f, 1f)
-                    )
-                    pending != null -> if (state.currentMode == pending.targetMode) {
-                        pending.target
-                    } else {
-                        pending.source
-                    }
-                    else -> state.viewportScrollY.roundToInt()
-                }
-                val headerTopPx = staticTopPaddingPx - headerScrollYPx
-                val headerVisible = headerTopPx < heightPx &&
-                    headerTopPx + persistentHeaderVisibilityHeightPx > 0
-
-                Box(
-                    modifier = Modifier
-                        .offset { androidx.compose.ui.unit.IntOffset(0, headerTopPx) }
-                        .requiredSize(
-                            width = with(density) { widthPx.toDp() },
-                            height = persistentHeaderHeight
-                        )
-                        .graphicsLayer {
-                            scaleX = state.boundaryElasticScale
-                            scaleY = state.boundaryElasticScale
-                            transformOrigin = TransformOrigin.Center
-                        }
-                        .powerListSceneTransitionItem(
-                            sceneId = sharedCoverSceneId,
-                            itemId = persistentHeaderSceneItemId.takeIf { headerVisible }.orEmpty()
-                        )
-                ) {
-                    persistentHeaderContent(headerVisible)
-                }
+                // Keep the exact scroll read inside the header subtree. Reading viewportScrollY
+                // here would invalidate this whole PowerList on every pixel; Poweramp scrolls its
+                // existing child views without rebuilding the rows during a fling.
+                ComposePowerListPersistentHeader(
+                    state = state,
+                    pendingTransitionScroll = pendingTransitionScroll,
+                    staticTopPaddingPx = staticTopPaddingPx,
+                    persistentHeaderHeight = persistentHeaderHeight,
+                    persistentHeaderVisibilityHeightPx = persistentHeaderVisibilityHeightPx,
+                    widthPx = widthPx,
+                    heightPx = heightPx,
+                    sharedCoverSceneId = sharedCoverSceneId,
+                    persistentHeaderSceneItemId = persistentHeaderSceneItemId,
+                    persistentHeaderContent = persistentHeaderContent
+                )
             }
         }
+    }
+}
+
+/**
+ * Scroll-sensitive chrome is isolated from the row renderer. The child still follows exact pixel
+ * movement, but changing its snapshot state no longer recomposes the visible grid/list cells.
+ */
+@Composable
+private fun ComposePowerListPersistentHeader(
+    state: ComposePowerListState,
+    pendingTransitionScroll: MutableState<PendingTransitionScrollPx?>,
+    staticTopPaddingPx: Int,
+    persistentHeaderHeight: Dp,
+    persistentHeaderVisibilityHeightPx: Int,
+    widthPx: Int,
+    heightPx: Int,
+    sharedCoverSceneId: String,
+    persistentHeaderSceneItemId: String,
+    persistentHeaderContent: @Composable (visible: Boolean) -> Unit
+) {
+    val density = LocalDensity.current
+    val pending = pendingTransitionScroll.value
+    val headerScrollYPx = when {
+        state.isTransitioning && pending != null -> lerpIntLocal(
+            pending.source,
+            pending.target,
+            state.transitionProgress.coerceIn(0f, 1f)
+        )
+        pending != null -> if (state.currentMode == pending.targetMode) {
+            pending.target
+        } else {
+            pending.source
+        }
+        else -> state.viewportScrollY.roundToInt()
+    }
+    val headerTopPx = staticTopPaddingPx - headerScrollYPx
+    val headerVisible = headerTopPx < heightPx &&
+        headerTopPx + persistentHeaderVisibilityHeightPx > 0
+
+    Box(
+        modifier = Modifier
+            .offset { androidx.compose.ui.unit.IntOffset(0, headerTopPx) }
+            .requiredSize(
+                width = with(density) { widthPx.toDp() },
+                height = persistentHeaderHeight
+            )
+            .graphicsLayer {
+                scaleX = state.boundaryElasticScale
+                scaleY = state.boundaryElasticScale
+                transformOrigin = TransformOrigin.Center
+            }
+            .powerListSceneTransitionItem(
+                sceneId = sharedCoverSceneId,
+                itemId = persistentHeaderSceneItemId.takeIf { headerVisible }.orEmpty()
+            )
+    ) {
+        persistentHeaderContent(headerVisible)
     }
 }
 
@@ -521,7 +542,6 @@ private fun ComposePowerListSettledContent(
     state: ComposePowerListState,
     metrics: ComposePowerListMetrics,
     scrollYPx: Int,
-    rangeScrollYPx: Int,
     viewportHeightPx: Int,
     playingSongId: Long,
     currentPlayingIndex: Int,
@@ -529,7 +549,6 @@ private fun ComposePowerListSettledContent(
     hidePlayingCover: Boolean,
     boundaryScale: Float,
     interactionActive: Boolean,
-    gridColdArtworkAllowed: Boolean,
     topPaddingPx: Int,
     sectionHeaders: List<PowerListSectionHeader>,
     sectionHeaderHeightPx: Int,
@@ -549,7 +568,6 @@ private fun ComposePowerListSettledContent(
         params = state.currentParams,
         metrics = metrics,
         scrollYPx = scrollYPx,
-        rangeScrollYPx = rangeScrollYPx,
         viewportHeightPx = viewportHeightPx,
         playingSongId = playingSongId,
         currentPlayingIndex = currentPlayingIndex,
@@ -557,7 +575,6 @@ private fun ComposePowerListSettledContent(
         hidePlayingCover = hidePlayingCover,
         boundaryScale = boundaryScale,
         interactionActive = interactionActive,
-        gridColdArtworkAllowed = gridColdArtworkAllowed,
         topPaddingPx = topPaddingPx,
         sectionHeaders = sectionHeaders,
         sectionHeaderHeightPx = sectionHeaderHeightPx,
@@ -581,7 +598,6 @@ private fun ComposePowerListViewportLayer(
     params: ListZoomParams,
     metrics: ComposePowerListMetrics,
     scrollYPx: Int,
-    rangeScrollYPx: Int,
     viewportHeightPx: Int,
     playingSongId: Long,
     currentPlayingIndex: Int,
@@ -589,7 +605,6 @@ private fun ComposePowerListViewportLayer(
     hidePlayingCover: Boolean,
     boundaryScale: Float,
     interactionActive: Boolean,
-    gridColdArtworkAllowed: Boolean,
     topPaddingPx: Int,
     sectionHeaders: List<PowerListSectionHeader>,
     sectionHeaderHeightPx: Int,
@@ -612,61 +627,69 @@ private fun ComposePowerListViewportLayer(
             sectionHeaderHeightPx = sectionHeaderHeightPx
         )
     }
-    val densityValue = LocalDensity.current.density
+    // Match Poweramp's FastLayout contract: children are laid out only when a row enters or
+    // leaves the viewport; the remaining pixel motion belongs to the parent container. Passing
+    // exact scrollY into every item makes every Canvas/text/click target recompute on every touch
+    // frame, which is the main source of the dense-grid hitch.
+    val rowStridePx = geometry.rowStridePx.coerceAtLeast(1)
+    val layoutScrollRow = scrollYPx.coerceAtLeast(0) / rowStridePx
+    val layoutScrollYPx = layoutScrollRow * rowStridePx
     // Project-style album-art binding is split in two:
     // 1) renderRange keeps every actually visible item composed so covers never blink out at
     //    the bottom edge during a drag;
     // 2) the provider-visible art window now follows renderRange.  The previous bottom-obscured
     //    window deferred lower-edge cells, causing DISPLAY_EMPTY_NEW_ID until another scroll pass.
-    val rawRenderRange = visibleRangeForScroll(
-        itemCount = songs.size,
-        mode = mode,
-        geometry = geometry,
-        scrollYPx = rangeScrollYPx.coerceAtLeast(0),
-        viewportHeightPx = viewportHeightPx
-    )
-    val renderRange = capPowerListRange(rawRenderRange, POWER_LIST_MAX_RENDER_ITEMS)
-    // Project-style visible binding: every currently rendered visible artwork cell
-    // is allowed to ask the provider immediately.  Step25 restored the older bottom-obscured
-    // artwork window, but that splits drawing from request admission: cells that are still visible
-    // in renderRange but temporarily outside activeArtRange repeatedly paint placeholder, then
-    // bitmap, then placeholder as the window advances.  That is the high-frequency shimmer/stutter
-    // seen in dense grids.  The design does not defer a visible artwork view because it is near the
-    // bottom edge; it binds each visible holder immediately.  Keep off-screen prefetch empty,
-    // but make the visible artwork window equal to the rendered visible window.
-    val activeArtRange = renderRange
-    val decodeSuspendedForScroll = false
-    val powerListCacheRevision = BitmapProvider.powerListCacheRevision
-    val activeArtRevision = remember(
-        activeArtRange.first,
-        activeArtRange.last,
-        powerListCacheRevision,
+    val rawRenderRange = remember(
+        songs.size,
         mode,
-        params,
-        metrics
+        geometry,
+        layoutScrollRow,
+        viewportHeightPx
     ) {
-        var hash = 17
-        hash = hash * 31 + activeArtRange.first
-        hash = hash * 31 + activeArtRange.last
-        hash = hash * 31 + powerListCacheRevision.hashCode()
-        hash = hash * 31 + mode.ordinal
-        hash = hash * 31 + params.hashCode()
-        hash
-    }
-    // Visible artwork requests are armed immediately.  The old settle gate made covers load only
-    // after scrolling stopped; it also caused alpha restarts as the gate toggled.  We still keep
-    // offscreen prewarm disabled, so this does not decode never-visible rows.
-    val artworkSettled = !activeArtRange.isEmpty()
-    val range = if (renderRange.isEmpty() || abs(boundaryScale - 1f) < 0.001f) {
-        renderRange
-    } else {
-        expandRangeByRows(
-            range = renderRange,
+        visibleRangeForScroll(
             itemCount = songs.size,
-            columns = geometry.columns,
-            rowsBefore = 1,
-            rowsAfter = 1
+            mode = mode,
+            geometry = geometry,
+            scrollYPx = layoutScrollYPx,
+            viewportHeightPx = viewportHeightPx
         )
+    }
+    // Keep the physical holder window row-banded. The outer layer still applies the exact
+    // pixel offset, so this preserves smooth motion without rebuilding the visible grid when a
+    // partial row crosses the viewport edge during a fling. Retain one trailing row so the next
+    // row is already attached before it becomes visible.
+    val maxRenderItems = remember(geometry.columns, geometry.rowStridePx, viewportHeightPx) {
+        powerListMaxRenderItems(
+            columns = geometry.columns,
+            rowStridePx = geometry.rowStridePx,
+            viewportHeightPx = viewportHeightPx
+        )
+    }
+    val renderRange = remember(rawRenderRange, songs.size, geometry.columns, maxRenderItems) {
+        capPowerListRange(
+            expandRangeByRows(
+                range = rawRenderRange,
+                itemCount = songs.size,
+                columns = geometry.columns,
+                rowsBefore = 0,
+                rowsAfter = 1
+            ),
+            maxItems = maxRenderItems,
+            columns = geometry.columns
+        )
+    }
+    val range = remember(renderRange, songs.size, geometry.columns, boundaryScale) {
+        if (renderRange.isEmpty() || abs(boundaryScale - 1f) < 0.001f) {
+            renderRange
+        } else {
+            expandRangeByRows(
+                range = renderRange,
+                itemCount = songs.size,
+                columns = geometry.columns,
+                rowsBefore = 1,
+                rowsAfter = 1
+            )
+        }
     }
     // Project-style settled holder pool. The previous step26 range-relative slot
     // (`index - range.first`) recreates every visible cell whenever the first visible row changes.
@@ -675,175 +698,136 @@ private fun ComposePowerListViewportLayer(
     // ComposeSlotPool is the public RawS-Music smooth baseline: the physical slot survives row
     // shifts, while the artwork cell state below atomically rebinds FileArtworkId/current wrapper.
     val settledSlotPool = remember(mode) { ComposeSlotPool() }
-    settledSlotPool.beginFrame(
-        firstVisibleIndex = range.first.coerceAtLeast(0),
-        visibleCount = if (range.isEmpty()) 0 else range.last - range.first + 1
-    )
-    // Off-screen/covered art prefetch stays disabled.  Only item binding may load art.
-    val prefetchRange = IntRange.EMPTY
-    SideEffect {
-        state.updateVisibleRangeForNavigation(renderRange)
-    }
-    // The provider must not follow the exact clipped render range. During a fling that range gains
-    // and loses a partial row every few frames (24 <-> 28 keys in a 4-column grid), which advances
-    // the provider generation, purges waiters, and requeues already-cached thumbnails. Keep drawing
-    // exact, but admit artwork through a row-banded window that only shifts after several rows.
-    val providerViewportRange = remember(
-        songs.size,
-        geometry,
-        rangeScrollYPx,
-        viewportHeightPx,
-        mode
-    ) {
-        stableArtworkViewportRange(
-            itemCount = songs.size,
-            geometry = geometry,
-            scrollYPx = rangeScrollYPx,
-            viewportHeightPx = viewportHeightPx
+    // FastLayout does not clear/rebuild its child slots for fractional pixel motion.  Keep this
+    // operation row-windowed as well; calling beginFrame on every Compose frame clears all ring
+    // entries and performs O(visibleItems) work without changing any holder identity.
+    remember(range, mode) {
+        settledSlotPool.beginFrame(
+            firstVisibleIndex = range.first.coerceAtLeast(0),
+            visibleCount = if (range.isEmpty()) 0 else range.last - range.first + 1
         )
     }
-    val viewportCacheKeys = if (POWER_LIST_USE_COIL_ARTWORK) {
-        emptySet<String>()
-    } else {
-        remember(providerViewportRange, mode, params, geometry, densityValue, songs) {
-            powerListViewportCacheKeys(
-                songs = songs,
-                range = providerViewportRange,
-                mode = mode,
-                params = params,
-                geometry = geometry,
-                // Cache-key generation only needs the cell size/bucket, not the current pixel scroll.
-                // Feeding rangeScrollYPx here made the provider viewport churn on every fling frame,
-                // purging waiters and restarting row effects. The design arms a stable visible window
-                // before binding views; we mirror that by keeping keys stable until the visible index
-                // range or layout bucket actually changes.
-                scrollYPx = 0,
-                density = densityValue
-            )
+    if (state.currentVisibleRange != renderRange) {
+        SideEffect {
+            state.updateVisibleRangeForNavigation(renderRange)
         }
     }
-    // Pre-arm the provider before child rows bind. Keep this as an immediate parent-side
-    // provider update rather than a LaunchedEffect/SideEffect: rows below may attach requests in
-    // the same composition pass, and the artwork provider knows the visible window before each
-    // artwork view binds.  updatePowerListViewport() is internally cheap when the key set is
-    // unchanged, so calling it here avoids the cold-start probe -> detach -> callback-lost race.
-    val artworkViewportReady = !providerViewportRange.isEmpty()
-    // Public RawS-Music / project-style pacing: do not make artwork-provider behavior depend on
-    // the number of grid columns.  The previous dense-grid gate only affected 3/4-column modes and
-    // made their visible cells compete with a different provider policy than every other layout,
-    // which matches the remaining symptom: only dense grids flicker or hitch.  Visible cells are
-    // still gated by viewportCacheKeys/row binding; the provider should decide queue priority from
-    // request state, not from a hard-coded column threshold in the UI layer.
-    if (POWER_LIST_USE_COIL_ARTWORK) {
-        // Coil A/B branch owns list/grid request lifecycle. Keep the legacy provider viewport cold
-        // so it cannot purge waiters, emit viewport traces, or enqueue a parallel request wave.
-        BitmapProvider.updatePowerListViewport(emptySet(), active = false, suspendDecoding = true, allowIndexer = false)
-    } else {
-        BitmapProvider.updatePowerListViewport(
-            viewportCacheKeys,
-            active = artworkViewportReady,
-            suspendDecoding = false,
-            allowIndexer = artworkViewportReady
-        )
-    }
-    DisposableEffect(Unit) {
-        onDispose {
-            BitmapProvider.updatePowerListViewport(emptySet(), active = false)
-        }
-    }
-    LaunchedEffect(
-        prefetchRange.first,
-        prefetchRange.last,
-        activeArtRange.first,
-        activeArtRange.last,
-        mode,
-        params,
-        metrics,
-        rangeScrollYPx,
-        interactionActive
+    Box(
+        // The parent modifier owns the exact scroll offset. Keeping this subtree in world
+        // coordinates means a row-window change cannot race a fractional translation update.
+        modifier = modifier
     ) {
-        if (interactionActive || prefetchRange.isEmpty()) return@LaunchedEffect
-        // Project-style viewport loading: keep off-screen work behind a short idle debounce.
-        // Fast flings keep cancelling this effect, so we do not leave a long decode queue for
-        // every item the user merely passed over.
-        delay(POWER_LIST_PREFETCH_IDLE_DELAY_MS)
-        prewarmSettledBitmaps(
-            songs = songs,
-            range = prefetchRange,
-            visibleRange = activeArtRange,
-            mode = mode,
-            params = params,
-            geometry = geometry,
-            scrollYPx = rangeScrollYPx.coerceAtLeast(0),
-            density = densityValue
-        )
-    }
-    Box(modifier = modifier) {
         ComposePowerListSectionHeaders(
             headers = sectionHeaders,
             geometry = geometry,
-            scrollYPx = scrollYPx.coerceAtLeast(0),
+            scrollYPx = 0,
             viewportHeightPx = viewportHeightPx,
             boundaryScale = boundaryScale,
             content = sectionHeaderContent
         )
         if (range.isEmpty()) return@Box
-        for (index in range.first..range.last) {
+        val positionByIndex = remember(range, geometry, mode) {
+            HashMap<Int, ComposeItemPosition>(range.last - range.first + 1).apply {
+                for (itemIndex in range.first..range.last) {
+                    val itemPosition = positionFor(
+                        index = itemIndex,
+                        geometry = geometry,
+                        mode = mode,
+                        scrollYPx = 0
+                    )
+                    if (!itemPosition.isEmpty()) put(itemIndex, itemPosition)
+                }
+            }
+        }
+        // Compose preserves a keyed child most reliably when both its key and its sibling order
+        // stay stable. Iterating by song index rotates the physical slot order at every row
+        // boundary (for example 4..27,0..3), which disposed the entire visible window even
+        // though each overlapping song still owned the same slot. Render in physical slot order
+        // and only update the slot's bound index, matching a retained grid holder pool.
+        val settledSlotBindings = remember(range, mode) {
+            ArrayList<Pair<Int, Int>>(range.last - range.first + 1).apply {
+                for (itemIndex in range.first..range.last) {
+                    val slotId = settledSlotPool.slotIdFor(itemIndex)
+                    if (slotId >= 0) add(slotId to itemIndex)
+                }
+                sortBy { it.first }
+            }
+        }
+        for ((physicalSlotId, index) in settledSlotBindings) {
             val song = songs.getOrNull(index) ?: continue
-            val itemKey = powerListKey(song, index)
-            val position = positionFor(
-                index = index,
-                geometry = geometry,
-                mode = mode,
-                scrollYPx = scrollYPx.coerceAtLeast(0)
-            )
-            if (position.isEmpty()) continue
+            val position = positionByIndex[index] ?: continue
             val isPlaying = if (playingSongId > 0L) {
                 song.id == playingSongId
             } else {
                 index == currentPlayingIndex
             }
             val hideCover = hidePlayingCover && isPlaying
-            val compositionSlot = "settled-slot-${mode.name}-${settledSlotPool.slotIdFor(index)}"
-            // This key must wrap the loop item itself, not only a child inside it. Otherwise
-            // Compose matches the loop position first and disposes/recreates the artwork state whenever
-            // a grid row crosses the viewport edge, despite the ring slot being stable.
+            val compositionSlot = "settled-slot-${mode.name}-$physicalSlotId"
+            val sharedCoverElementId = sharedCoverElementIdProvider(song, index)
+            val artworkPriority = if (index !in rawRenderRange) {
+                BitmapRequest.Priority.LOADING_PREFETCH
+            } else {
+                BitmapRequest.Priority.LOADING_LIST
+            }
             key(compositionSlot) {
-            ComposePowerListTransitionItem(
-                // Project-style physical holder slot. The holder persists across row-boundary
-                // movement; artwork identity is bound inside the holder, not by tearing down the
-                // whole cell when range.first advances. This prevents request detach/callback-lost
-                // bursts in 3/4-column grids while keeping cross-id artwork leakage guarded by the
-                // artwork cell's FileArtworkId/no-art gate.
-                compositionSlot = compositionSlot,
-                song = song,
-                index = index,
-                revealBaseIndex = range.first,
-                mode = mode,
-                params = params,
-                position = position,
-                // RenderRange keeps the visual cell alive; activeArtRange decides which visible
-                // cells may start list artwork work right now. This separates drawing from decode
-                // admission and prevents dense grids from launching an entire 64-item request wave.
-                deferBitmapLoad = index !in activeArtRange || !artworkViewportReady,
-                artBindRevision = activeArtRevision,
-                scrollingArtworkUpdates = mode.isGrid && !gridColdArtworkAllowed,
-                isPlaying = isPlaying,
-                isSelected = index in selectedPositions,
-                selectionActive = selectedPositions.isNotEmpty(),
-                boundaryScale = boundaryScale,
-                hideCover = hideCover,
-                sharedCoverSceneId = sharedCoverSceneId,
-                sharedCoverElementId = sharedCoverElementIdProvider(song, index),
-                onCoverBoundsChanged = if (isPlaying) onPlayingCoverBoundsChanged else { _: RectF? -> },
-                onCoverTargetChanged = if (isPlaying) onPlayingCoverTargetChanged else { _: CoverTransitionTarget? -> },
-                onClick = { target ->
-                    onPlayingCoverBoundsChanged(target?.bounds)
-                    onPlayingCoverTargetChanged(target)
-                    onSongClick(song, index)
-                },
-                onLongClick = { onSongLongClick(song, index) }
-            )
+                val noopCoverBoundsChanged = remember { { _: RectF? -> } }
+                val noopCoverTargetChanged = remember { { _: CoverTransitionTarget? -> } }
+                val coverBoundsChanged = if (isPlaying) {
+                    onPlayingCoverBoundsChanged
+                } else {
+                    noopCoverBoundsChanged
+                }
+                val coverTargetChanged = if (isPlaying) {
+                    onPlayingCoverTargetChanged
+                } else {
+                    noopCoverTargetChanged
+                }
+                val itemClick = remember(
+                    song.id,
+                    song.path,
+                    onSongClick,
+                    onPlayingCoverBoundsChanged,
+                    onPlayingCoverTargetChanged
+                ) {
+                    { target: CoverTransitionTarget? ->
+                        onPlayingCoverBoundsChanged(target?.bounds)
+                        onPlayingCoverTargetChanged(target)
+                        onSongClick(song, index)
+                    }
+                }
+                val itemLongClick = remember(song.id, song.path, onSongLongClick) {
+                    { onSongLongClick(song, index) }
+                }
+                ComposePowerListTransitionItem(
+                    // Project-style physical holder slot. The holder persists across row-boundary
+                    // movement; artwork identity is bound inside the holder, not by tearing down the
+                    // whole cell when range.first advances. This prevents request detach/callback-lost
+                    // bursts in 3/4-column grids while keeping cross-id artwork leakage guarded by the
+                    // artwork cell's FileArtworkId/no-art gate.
+                    compositionSlot = compositionSlot,
+                    song = song,
+                    index = index,
+                    mode = mode,
+                    params = params,
+                    position = position,
+                    // Every rendered holder binds immediately. The provider owns source records and
+                    // request coalescing; the scroll layer only moves physical holders and must not
+                    // suspend or restart artwork work at row boundaries.
+                    deferBitmapLoad = false,
+                    isPlaying = isPlaying,
+                    isSelected = index in selectedPositions,
+                    selectionActive = selectedPositions.isNotEmpty(),
+                    boundaryScale = boundaryScale,
+                    hideCover = hideCover,
+                    interactionActive = interactionActive,
+                    artworkPriority = artworkPriority,
+                    sharedCoverSceneId = sharedCoverSceneId,
+                    sharedCoverElementId = sharedCoverElementId,
+                    onCoverBoundsChanged = coverBoundsChanged,
+                    onCoverTargetChanged = coverTargetChanged,
+                    onClick = itemClick,
+                    onLongClick = itemLongClick
+                )
             }
         }
     }
@@ -962,9 +946,6 @@ private fun ComposePowerListTransitionLayer(
             slotPool = slotPool
         )
     }
-    LaunchedEffect(transitionItems) {
-        prewarmTransitionBitmaps(transitionItems)
-    }
     val progressProvider = remember(state) { { state.transitionProgress.coerceIn(0f, 1f) } }
     val zoomInTransition = powerListModeOrder(state.targetMode) > powerListModeOrder(state.sourceMode)
     Box(modifier = modifier) {
@@ -1071,19 +1052,18 @@ private fun ComposePowerListTransitionItem(
     compositionSlot: Any,
     song: AudioFile,
     index: Int,
-    revealBaseIndex: Int = index,
     mode: ComposePowerListDisplayMode,
     params: ListZoomParams,
     position: ComposeItemPosition,
     layoutPosition: ComposeItemPosition = position,
     deferBitmapLoad: Boolean = false,
-    artBindRevision: Int = 0,
-    scrollingArtworkUpdates: Boolean = false,
     isPlaying: Boolean,
     isSelected: Boolean,
     selectionActive: Boolean = false,
     boundaryScale: Float = 1f,
     hideCover: Boolean = false,
+    interactionActive: Boolean = false,
+    artworkPriority: BitmapRequest.Priority = BitmapRequest.Priority.LOADING_LIST,
     sharedCoverSceneId: String = "",
     sharedCoverElementId: String = "",
     onCoverBoundsChanged: (RectF?) -> Unit,
@@ -1093,6 +1073,20 @@ private fun ComposePowerListTransitionItem(
     contentAlpha: Float = 1f
 ) {
     val density = LocalDensity.current
+    if (POWER_LIST_TRACE_ART) {
+        DisposableEffect(compositionSlot, song.id, song.path) {
+            powerListArtLog(
+                "ITEM_BIND slot=$compositionSlot index=$index song=${song.id} " +
+                    "key=${song.coverKey.tailForLog()}"
+            )
+            onDispose {
+                powerListArtLog(
+                    "ITEM_DISPOSE slot=$compositionSlot index=$index song=${song.id} " +
+                        "key=${song.coverKey.tailForLog()}"
+                )
+            }
+        }
+    }
     val itemModifier = Modifier
         .offset {
             androidx.compose.ui.unit.IntOffset(
@@ -1104,9 +1098,15 @@ private fun ComposePowerListTransitionItem(
             width = with(density) { layoutPosition.width.toDp() },
             height = with(density) { layoutPosition.height.toDp() }
         )
-        .powerListSceneTransitionItem(
-            sceneId = sharedCoverSceneId,
-            itemId = sharedCoverElementId
+        .then(
+            if (!interactionActive || isPlaying) {
+                Modifier.powerListSceneTransitionItem(
+                    sceneId = sharedCoverSceneId,
+                    itemId = sharedCoverElementId
+                )
+            } else {
+                Modifier
+            }
         )
         .graphicsLayer { alpha = position.alpha.coerceIn(0f, 1f) }
 
@@ -1115,18 +1115,17 @@ private fun ComposePowerListTransitionItem(
             ComposePowerListDrawnItem(
                 song = song,
                 index = index,
-                revealBaseIndex = revealBaseIndex,
                 mode = mode,
                 params = params,
                 position = position,
                 deferBitmapLoad = deferBitmapLoad,
-                artBindRevision = artBindRevision,
-                scrollingArtworkUpdates = scrollingArtworkUpdates,
                 isPlaying = isPlaying,
                 isSelected = isSelected,
                 selectionActive = selectionActive,
                 boundaryScale = boundaryScale,
                 hideCover = hideCover,
+                interactionActive = interactionActive,
+                artworkPriority = artworkPriority,
                 sharedCoverSceneId = sharedCoverSceneId,
                 sharedCoverElementId = sharedCoverElementId,
                 onCoverBoundsChanged = onCoverBoundsChanged,
@@ -1269,7 +1268,6 @@ private fun ComposePowerListOneSlotItem(
             ComposePowerListDrawnItem(
                 song = song,
                 index = index,
-                revealBaseIndex = index,
                 mode = mode,
                 params = params,
                 position = basePosition,
@@ -1293,18 +1291,17 @@ private fun ComposePowerListOneSlotItem(
 private fun ComposePowerListDrawnItem(
     song: AudioFile,
     index: Int,
-    revealBaseIndex: Int = index,
     mode: ComposePowerListDisplayMode,
     params: ListZoomParams,
     position: ComposeItemPosition,
     deferBitmapLoad: Boolean = false,
-    artBindRevision: Int = 0,
-    scrollingArtworkUpdates: Boolean = false,
     isPlaying: Boolean,
     isSelected: Boolean,
     selectionActive: Boolean = false,
     boundaryScale: Float = 1f,
     hideCover: Boolean = false,
+    interactionActive: Boolean = false,
+    artworkPriority: BitmapRequest.Priority = BitmapRequest.Priority.LOADING_LIST,
     sharedCoverSceneId: String = "",
     sharedCoverElementId: String = "",
     onCoverBoundsChanged: (RectF?) -> Unit,
@@ -1338,189 +1335,53 @@ private fun ComposePowerListDrawnItem(
         }
     }
     val coverSize = max(rects.cover.width, rects.cover.height).coerceAtLeast(1)
-    // Cached wrappers bind immediately in every mode. Cold source decoding is different: opening
-    // several audio files while a dense grid is moving creates visible CPU/IO contention, so 3/4
-    // column grids defer only those cache misses until the drag settles. This keeps scroll frames
-    // stable without hiding already-prepared artwork.
+    // Cached wrappers bind immediately.  Cold source decoding stays on BitmapProvider's worker
+    // lane, so the holder never performs file work during a scroll frame.
     val effectiveDeferBitmapLoad = deferBitmapLoad
     val useCoilArtwork = POWER_LIST_USE_COIL_ARTWORK
-    val bitmap = if (useCoilArtwork) {
-        null
+    val artworkState = if (useCoilArtwork) {
+        PowerListBitmapState(bitmap = null, terminalNoArt = false)
     } else {
         rememberPowerListBitmap(
             key = song.coverKey,
             albumAliasKey = "",
+            externalArtworkPath = song.albumArtPath,
             targetWidth = coverSize,
             targetHeight = coverSize,
             // Visible artwork always joins the serial list queue. The provider already keeps this
             // queue ordered, so gating until a full gesture stop only turns a smooth stream of covers
             // into a simultaneous post-scroll burst.
             deferLoad = effectiveDeferBitmapLoad,
-            artBindRevision = artBindRevision,
             index = index,
-            modeLabel = mode.name
+            modeLabel = mode.name,
+            priority = artworkPriority
         )
     }
-    val coverAlpha = remember { Animatable(1f) }
-
-    // Equivalent artwork view cell state.
-    // Keep this deliberately tiny: bound identity + current wrapper + optional previous wrapper for
-    // same-id quality upgrades.  Do not let scroll state, viewport generation, or previously seen
-    // sets participate in artwork visibility.  The important behavior is atomic wrapper
-    // replacement: when the newly bound identity already has a provider record, draw it immediately;
-    // only a real record miss may fall back to the placeholder.
-    var aaBoundArtworkKey by remember { mutableStateOf("") }
-    var aaCurrentHandle by remember { mutableStateOf<ArtworkHandle?>(null) }
-    var aaPreviousHandle by remember { mutableStateOf<ArtworkHandle?>(null) }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            aaPreviousHandle?.release()
-            aaPreviousHandle = null
-            aaCurrentHandle?.release()
-            aaCurrentHandle = null
-            aaBoundArtworkKey = ""
-        }
+    val bitmap = artworkState.bitmap
+    val terminalNoArtwork = artworkState.terminalNoArt
+    val drawableBitmap = if (useCoilArtwork) {
+        null
+    } else {
+        artworkState.handle
+            ?.takeIf { it.isValid }
+            ?.bitmap
+            ?.takeIf { !it.isRecycled }
+            ?: bitmap?.takeIf { !it.isRecycled }
     }
-
-    val artworkIdentityKey = song.coverKey
-    if (!useCoilArtwork) LaunchedEffect(bitmap, artworkIdentityKey, coverSize, mode.name) {
-        val boundKey = artworkIdentityKey
-        val currentBitmap = bitmap?.takeIf { !it.isRecycled }
-        val existingHandle = aaCurrentHandle
-        val previousHandle = existingHandle?.takeIf { it.isValid }
-        val previousBitmap = previousHandle?.bitmap?.takeIf { !it.isRecycled }
-        val sameIdentity = aaBoundArtworkKey.isNotBlank() && aaBoundArtworkKey == boundKey
-
-        if (currentBitmap == null) {
-            if (sameIdentity && previousBitmap != null) {
-                // Same artwork identity is still waiting for a better wrapper or for a temporary request
-                // callback.  Keep the accepted wrapper attached, matching the temporary
-                // detach/rebind behavior, and never pulse alpha back to zero.
-                aaPreviousHandle?.release()
-                aaPreviousHandle = null
-                coverAlpha.snapTo(1f)
-                powerListArtLog(
-                    "AA_CELL_KEEP_CURRENT index=$index mode=$mode size=$coverSize key=${boundKey.tailForLog()}"
-                )
-            } else {
-                // New identity genuinely has no wrapper after the synchronous record probe.  Only
-                // now do we clear the old artwork.  This is the important difference from step17:
-                // old -> new is atomic when the new record exists; old -> placeholder happens only
-                // on record miss, not before the record lookup.
-                aaPreviousHandle?.release()
-                aaPreviousHandle = null
-                aaCurrentHandle?.release()
-                aaCurrentHandle = null
-                aaBoundArtworkKey = boundKey
-                coverAlpha.snapTo(1f)
-                powerListArtLog(
-                    "AA_CELL_MISS_PLACEHOLDER index=$index mode=$mode size=$coverSize defer=$effectiveDeferBitmapLoad key=${boundKey.tailForLog()}"
-                )
-            }
-            return@LaunchedEffect
-        }
-
-        val alreadyCurrent = sameIdentity && previousBitmap === currentBitmap && previousHandle != null
-        if (alreadyCurrent) {
-            aaPreviousHandle?.release()
-            aaPreviousHandle = null
-            coverAlpha.snapTo(1f)
-            powerListArtLog(
-                "AA_CELL_READY_KEEP index=$index mode=$mode size=$coverSize bitmap=${currentBitmap.width}x${currentBitmap.height} key=${boundKey.tailForLog()}"
-            )
-            return@LaunchedEffect
-        }
-
-        val nextHandle = BitmapProvider.acquireLoaded(
-            key = boundKey,
-            bitmap = currentBitmap,
-            targetWidth = coverSize,
-            targetHeight = coverSize,
-            surface = ArtworkSurface.List
-        )
-        if (nextHandle == null || !nextHandle.isValid) {
-            nextHandle?.release()
-            if (!sameIdentity) {
-                aaPreviousHandle?.release()
-                aaPreviousHandle = null
-                aaCurrentHandle?.release()
-                aaCurrentHandle = null
-                aaBoundArtworkKey = boundKey
-                coverAlpha.snapTo(1f)
-                powerListArtLog(
-                    "AA_CELL_HANDLE_MISS_PLACEHOLDER index=$index mode=$mode size=$coverSize key=${boundKey.tailForLog()}"
-                )
-            }
-            return@LaunchedEffect
-        }
-
-        val sameIdQualityUpgrade = sameIdentity &&
-            previousHandle != null &&
-            previousBitmap != null &&
-            previousBitmap !== currentBitmap &&
-            !mode.isGrid
-
-        aaBoundArtworkKey = boundKey
-        if (sameIdQualityUpgrade) {
-            aaPreviousHandle?.release()
-            aaPreviousHandle = previousHandle
-            aaCurrentHandle = nextHandle
-            coverAlpha.snapTo(0f)
-            powerListArtLog(
-                "AA_CELL_UPGRADE_FADE index=$index mode=$mode size=$coverSize bitmap=${currentBitmap.width}x${currentBitmap.height} key=${boundKey.tailForLog()}"
-            )
-            val duration = ArtworkDisplayResolver.listFadeDurationMillis(
-                modeLabel = mode.name,
-                firstBitmap = false,
-                cacheHitAlreadyVisible = false
-            ).coerceAtMost(RawArtworkPolicy.VIEW_FADE_MS)
-            if (duration > 0) {
-                coverAlpha.animateTo(1f, tween(durationMillis = duration))
-            } else {
-                coverAlpha.snapTo(1f)
-            }
-            aaPreviousHandle?.release()
-            aaPreviousHandle = null
-        } else {
-            // Cache hits during a drag stay direct.  A cold grid cover accepted after the drag
-            // settles fades over the placeholder once, in visible order; this preserves motion
-            // smoothness while avoiding a whole-screen re-fade of artwork that was already drawn.
-            aaPreviousHandle?.release()
-            aaPreviousHandle = null
-            if (existingHandle !== nextHandle) {
-                existingHandle?.release()
-            }
-            // Keep loading while the grid moves, but do not start a 200ms reveal that a following
-            // slot rebind will cancel halfway through. During continuous motion a ready bitmap is
-            // shown immediately; once the scroll has been quiet long enough, new covers reveal.
-            val revealGridArtwork = mode.isGrid &&
-                !scrollingArtworkUpdates &&
-                (!sameIdentity || previousBitmap == null)
-            if (revealGridArtwork) {
-                val relativeIndex = (index - revealBaseIndex).coerceAtLeast(0)
-                val row = relativeIndex / mode.columns.coerceAtLeast(1)
-                val column = relativeIndex % mode.columns.coerceAtLeast(1)
-                val stagger = ArtworkDisplayResolver.listRevealStaggerMillis(mode.name)
-                val revealDelay = (row * stagger * 2 + column * stagger)
-                    .coerceAtMost(POWER_LIST_GRID_REVEAL_MAX_DELAY_MS)
-                // Set alpha before publishing the new wrapper. Publishing first leaves one
-                // composition frame at alpha=1, which appears as a flash before the fade starts.
-                coverAlpha.snapTo(0f)
-                aaCurrentHandle = nextHandle
-                if (revealDelay > 0) delay(revealDelay.toLong())
-                coverAlpha.animateTo(
-                    targetValue = 1f,
-                    animationSpec = tween(durationMillis = RawArtworkPolicy.VIEW_FADE_MS)
-                )
-            } else {
-                aaCurrentHandle = nextHandle
-                coverAlpha.snapTo(1f)
-            }
-            powerListArtLog(
-                "AA_CELL_READY_DIRECT index=$index mode=$mode size=$coverSize bitmap=${currentBitmap.width}x${currentBitmap.height} key=${boundKey.tailForLog()}"
-            )
-        }
+    // Keep the shader attached to the physical holder. Drawing a rounded bitmap with a
+    // BitmapShader avoids rebuilding a Path and entering/leaving a clip stack for every cell on
+    // every scroll frame. This is the same retained-source shape used by Poweramp's AAImageView.
+    val previousBitmap = artworkState.previousBitmap
+        ?.takeIf { !it.isRecycled && it !== drawableBitmap }
+    val drawableShader = remember(drawableBitmap) {
+        drawableBitmap
+            ?.takeIf { !it.isRecycled }
+            ?.let { BitmapShader(it, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP) }
+    }
+    val previousShader = remember(previousBitmap) {
+        previousBitmap
+            ?.takeIf { !it.isRecycled }
+            ?.let { BitmapShader(it, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP) }
     }
     val title = song.displayName
     val subtitle = song.subtitle()
@@ -1548,15 +1409,43 @@ private fun ComposePowerListDrawnItem(
     val titleColor = colors.title
     val subtitleColor = colors.secondary
     val metaColor = colors.meta
+    val configuredTypeface = FontManager.typeface
+    val titleText = rememberPowerListPreparedText(
+        text = title,
+        rect = rects.title,
+        density = density.density * density.fontScale,
+        bold = true,
+        configuredTypeface = configuredTypeface
+    )
+    val subtitleText = rememberPowerListPreparedText(
+        text = subtitle,
+        rect = rects.subtitle,
+        density = density.density * density.fontScale,
+        bold = false,
+        configuredTypeface = configuredTypeface
+    )
+    val metaText = rememberPowerListPreparedText(
+        text = meta,
+        rect = rects.meta,
+        density = density.density * density.fontScale,
+        bold = false,
+        leftInsetPx = if (hasCollectionMetaIcon) 16f * density.density else 0f,
+        configuredTypeface = configuredTypeface
+    )
 
-    var rootBounds by remember { mutableStateOf<RectF?>(null) }
+    // The bounds are only read when this physical holder is clicked. Keeping them in a stable
+    // slot avoids invalidating every list cell on every scroll-layout callback; the old
+    // mutableState value made dense 3/4-column flings recompose the artwork and text together.
+    val rootBounds = remember { arrayOfNulls<RectF>(1) }
+    val trackRootBounds = isPlaying ||
+        (!interactionActive && sharedCoverSceneId.isNotBlank() && sharedCoverElementId.isNotBlank())
     val shouldHideForSharedCover = shouldHideSharedCover(
         sceneId = sharedCoverSceneId,
         elementId = sharedCoverElementId
     )
 
     fun clickedCoverTarget(): CoverTransitionTarget? {
-        val root = rootBounds ?: return null
+        val root = rootBounds[0] ?: return null
         val cover = rects.cover
         val bounds = RectF(
             root.left + cover.left,
@@ -1573,20 +1462,36 @@ private fun ComposePowerListDrawnItem(
         )
     }
 
+    val rootBoundsModifier = if (trackRootBounds) {
+        Modifier.onGloballyPositioned { coordinates ->
+            val bounds = coordinates.boundsInRoot()
+            val next = RectF(bounds.left, bounds.top, bounds.right, bounds.bottom)
+            val previous = rootBounds[0]
+            if (previous == null || !previous.nearlyEquals(next, tolerance = 1f)) {
+                rootBounds[0] = next
+            }
+        }
+    } else {
+        Modifier
+    }
+
     Box(
         modifier = modifier
-            .onGloballyPositioned { coordinates ->
-                val bounds = coordinates.boundsInRoot()
-                rootBounds = RectF(bounds.left, bounds.top, bounds.right, bounds.bottom)
-            }
+            .then(rootBoundsModifier)
             .then(if (isPlaying) Modifier.trackDrawnCoverBounds(rects.cover, onCoverBoundsChanged) else Modifier)
             .then(if (isPlaying) Modifier.trackDrawnCoverTarget(rects.cover, rects.coverRadiusDp, song.id, song.coverKey, -1, onCoverTargetChanged) else Modifier)
-            .trackSharedCoverSlot(
-                sceneId = sharedCoverSceneId,
-                elementId = sharedCoverElementId,
-                cover = rects.cover,
-                radiusDp = rects.coverRadiusDp,
-                coverKey = song.coverKey
+            .then(
+                if (!interactionActive || isPlaying) {
+                    Modifier.trackSharedCoverSlot(
+                        sceneId = sharedCoverSceneId,
+                        elementId = sharedCoverElementId,
+                        cover = rects.cover,
+                        radiusDp = rects.coverRadiusDp,
+                        coverKey = song.coverKey
+                    )
+                } else {
+                    Modifier
+                }
             )
             .combinedClickable(onClick = { onClick(clickedCoverTarget()) }, onLongClick = onLongClick)
     ) {
@@ -1605,100 +1510,85 @@ private fun ComposePowerListDrawnItem(
             val coverRight = coverLeft + cover.width
             val coverBottom = coverTop + cover.height
             val radius = rects.coverRadiusDp * density.density
-            powerListPath.reset()
-            powerListPath.addRoundRect(
-                coverLeft,
-                coverTop,
-                coverRight,
-                coverBottom,
-                radius,
-                radius,
-                Path.Direction.CW
-            )
-            canvas.save()
-            canvas.clipPath(powerListPath)
             powerListPaint.shader = null
             if (hideCover || shouldHideForSharedCover) {
                 // Keep the slot empty while the shared cover overlay is flying.
             } else {
-                powerListBitmapPaint.alpha = 255
-                powerListPaint.color = colors.secondary.copy(alpha = 0.085f).toArgb()
-                canvas.drawRoundRect(coverLeft, coverTop, coverRight, coverBottom, radius, radius, powerListPaint)
-            }
-            // Equivalent draw gate: once the physical cell is rebound to a new
-            // artwork identity, the old wrapper must not be drawn for that new item.  Step18
-            // correctly made record hits old->new atomic, but the Canvas fallback still used
-            // aaCurrentHandle even before the LaunchedEffect cleared it on a record miss/no-art
-            // item.  That produced one-frame flashes where no-art songs briefly showed the
-            // previous row's cover.  Only use the retained artwork wrapper when it belongs to the
-            // currently bound song; otherwise draw the new record bitmap if it was synchronously
-            // supplied, or the stable placeholder on a genuine miss.
-            val drawKey = artworkIdentityKey
-            val retainedCurrent = aaCurrentHandle
-                ?.takeIf { aaBoundArtworkKey == drawKey && it.isValid }
-                ?.bitmap
-                ?.takeIf { !it.isRecycled }
-            val retainedPrevious = aaPreviousHandle
-                ?.takeIf { aaBoundArtworkKey == drawKey && it.isValid }
-                ?.bitmap
-                ?.takeIf { !it.isRecycled }
-            val drawableBitmap = if (useCoilArtwork) null else bitmap?.takeIf { !it.isRecycled } ?: retainedCurrent
-            val underlayBitmap = retainedPrevious
-                ?.takeIf { drawableBitmap != null && it !== drawableBitmap }
-            if (!hideCover && !shouldHideForSharedCover && drawableBitmap != null) {
-                if (underlayBitmap != null) {
-                    powerListBitmapMatrix.reset()
-                    configureCenterCropMatrix(
-                        matrix = powerListBitmapMatrix,
-                        bitmap = underlayBitmap,
-                        left = coverLeft,
-                        top = coverTop,
-                        width = cover.width.toFloat(),
-                        height = cover.height.toFloat()
-                    )
-                    powerListBitmapPaint.alpha = 255
-                    canvas.drawBitmap(underlayBitmap, powerListBitmapMatrix, powerListBitmapPaint)
+                // Keep the placeholder behind the accepted source while a holder is resolving.
+                // When a new source is accepted, draw the retained source first and fade the new
+                // shader over it. This is the same two-layer operation used by Poweramp's
+                // AAImageView, with its normal 200 ms artwork transition.
+                val fade = artworkState.fadeProgress.coerceIn(0f, 1f)
+                if (drawableShader == null && previousShader == null) {
+                    powerListPaint.color = colors.secondary.copy(alpha = 0.085f).toArgb()
+                    canvas.drawRoundRect(coverLeft, coverTop, coverRight, coverBottom, radius, radius, powerListPaint)
+                } else {
+                    fun drawArtworkLayer(shader: BitmapShader, bitmap: Bitmap, alpha: Int) {
+                        powerListBitmapMatrix.reset()
+                        configureCenterCropMatrix(
+                            matrix = powerListBitmapMatrix,
+                            bitmap = bitmap,
+                            left = coverLeft,
+                            top = coverTop,
+                            width = cover.width.toFloat(),
+                            height = cover.height.toFloat()
+                        )
+                        shader.setLocalMatrix(powerListBitmapMatrix)
+                        powerListPaint.color = android.graphics.Color.WHITE
+                        powerListPaint.alpha = alpha.coerceIn(0, 255)
+                        powerListPaint.shader = shader
+                        canvas.drawRoundRect(coverLeft, coverTop, coverRight, coverBottom, radius, radius, powerListPaint)
+                    }
+
+                    if (previousShader != null && previousBitmap != null && fade < 1f) {
+                        drawArtworkLayer(
+                            shader = previousShader,
+                            bitmap = previousBitmap,
+                            alpha = ((1f - fade) * 255f).roundToInt()
+                        )
+                    }
+                    if (drawableShader != null && drawableBitmap != null) {
+                        drawArtworkLayer(
+                            shader = drawableShader,
+                            bitmap = drawableBitmap,
+                            alpha = if (previousShader == null) 255 else (fade * 255f).roundToInt()
+                        )
+                    }
+                    powerListPaint.shader = null
+                    powerListPaint.alpha = 255
                 }
-                powerListBitmapMatrix.reset()
-                configureCenterCropMatrix(
-                    matrix = powerListBitmapMatrix,
-                    bitmap = drawableBitmap,
-                    left = coverLeft,
-                    top = coverTop,
-                    width = cover.width.toFloat(),
-                    height = cover.height.toFloat()
-                )
-                val alpha = coverAlpha.value.coerceIn(0f, 1f)
-                powerListBitmapPaint.alpha = (alpha * 255f).roundToInt()
-                canvas.drawBitmap(drawableBitmap, powerListBitmapMatrix, powerListBitmapPaint)
-                powerListBitmapPaint.alpha = 255
             }
-            canvas.restore()
 
             drawPowerListText(
                 canvas = canvas,
-                text = title,
+                text = titleText.display,
                 rect = rects.title,
                 color = titleColor,
                 density = density.density * density.fontScale,
-                bold = true
+                bold = true,
+                typefaceOverride = titleText.typeface,
+                alreadyEllipsized = true
             )
             drawPowerListText(
                 canvas = canvas,
-                text = subtitle,
+                text = subtitleText.display,
                 rect = rects.subtitle,
                 color = subtitleColor,
                 density = density.density * density.fontScale,
-                bold = false
+                bold = false,
+                typefaceOverride = subtitleText.typeface,
+                alreadyEllipsized = true
             )
             drawPowerListText(
                 canvas = canvas,
-                text = meta,
+                text = metaText.display,
                 rect = rects.meta,
                 color = metaColor,
                 density = density.density * density.fontScale,
                 bold = false,
-                leftInsetPx = if (hasCollectionMetaIcon) 16f * density.density else 0f
+                leftInsetPx = if (hasCollectionMetaIcon) 16f * density.density else 0f,
+                typefaceOverride = metaText.typeface,
+                alreadyEllipsized = true
             )
             canvas.restore()
         }
@@ -1752,6 +1642,7 @@ private fun ComposePowerListDrawnItem(
                 targetSide = coverSize,
                 modeLabel = mode.name,
                 radiusDp = rects.coverRadiusDp,
+                freezeDuringInteraction = interactionActive,
                 modifier = Modifier
                     .offset {
                         androidx.compose.ui.unit.IntOffset(rects.cover.left, rects.cover.top)
@@ -1763,7 +1654,8 @@ private fun ComposePowerListDrawnItem(
             )
         }
 
-        if (!useCoilArtwork && shouldShowDefaultAlbumArtwork(song.coverKey, coverSize, coverSize) &&
+        if (!useCoilArtwork && drawableBitmap == null &&
+            shouldShowDefaultAlbumArtwork(song.coverKey, coverSize, coverSize) &&
             !hideCover && !shouldHideForSharedCover
         ) {
             DefaultAlbumArtwork(
@@ -1800,7 +1692,7 @@ private fun PowerListCoilCover(
     modeLabel: String,
     radiusDp: Float,
     retainedSide: Int? = null,
-    retainedModeLabel: String? = null,
+    freezeDuringInteraction: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -1812,87 +1704,127 @@ private fun PowerListCoilCover(
         )
     }
     val defaultArtworkEnabled = DefaultAlbumArtworkPolicy.enabled
-    val model = remember(coverKey, decodeSide, modeLabel, defaultArtworkEnabled) {
+    // A physical PowerList holder survives row movement. Keep its requested decode tier stable
+    // while scrolling/pinching; otherwise a zoom frame changes the Coil model, clears the
+    // painter for one frame, and then fades the same cover back in.
+    val stableDecodeSide = remember(coverKey) { mutableIntStateOf(decodeSide) }
+    val previousDecodeSide = remember(coverKey) { mutableIntStateOf(decodeSide) }
+    LaunchedEffect(coverKey, decodeSide, freezeDuringInteraction) {
+        if (!freezeDuringInteraction && stableDecodeSide.intValue != decodeSide) {
+            previousDecodeSide.intValue = stableDecodeSide.intValue
+            stableDecodeSide.intValue = decodeSide
+        }
+    }
+    val activeDecodeSide = stableDecodeSide.intValue
+    val model = remember(coverKey, activeDecodeSide, defaultArtworkEnabled) {
         PowerListCoilArtworkModel(
             coverKey = coverKey,
-            targetSide = decodeSide,
-            modeLabel = modeLabel,
+            targetSide = activeDecodeSide,
+            // modeLabel is layout metadata, not artwork identity. Keeping it stable prevents a
+            // 3-column/4-column recomposition from restarting the same image request.
+            modeLabel = "LIST_STABLE",
             defaultArtworkEnabled = DefaultAlbumArtworkPolicy.enabled
         )
     }
-    val request = remember(context, model) {
+    val previousMemoryCacheKey = remember(
+        coverKey,
+        activeDecodeSide,
+        previousDecodeSide.intValue,
+        defaultArtworkEnabled
+    ) {
+        previousDecodeSide.intValue
+            .takeIf { it > 0 && it != activeDecodeSide }
+            ?.let { side ->
+            PowerListCoilArtworkModel(
+                coverKey = coverKey,
+                targetSide = side,
+                modeLabel = "LIST_STABLE",
+                defaultArtworkEnabled = defaultArtworkEnabled
+            ).cacheKey
+        }
+    }
+    val retainedRequest = remember(context, model, previousMemoryCacheKey) {
         ImageRequest.Builder(context)
             .data(model)
             .size(model.side, model.side)
             .memoryCacheKey(model.cacheKey)
             .diskCacheKey(model.cacheKey)
-            .allowHardware(BitmapProvider.useHardwareBitmap)
+            .apply {
+                if (!previousMemoryCacheKey.isNullOrBlank()) {
+                    placeholderMemoryCacheKey(previousMemoryCacheKey)
+                }
+            }
+            .allowHardware(true)
             .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
-            .diskCachePolicy(coil.request.CachePolicy.DISABLED)
+            .diskCachePolicy(coil.request.CachePolicy.ENABLED)
             .networkCachePolicy(coil.request.CachePolicy.DISABLED)
-            .crossfade(false)
+            // PowerList owns the geometry transition. A Coil crossfade wraps the result in a
+            // transition drawable, which leaves the bitmap-only Canvas empty at pinch boundaries.
+            .crossfade(0)
             .build()
     }
-    val fallbackBitmap = remember(model.cacheKey) {
-        BitmapProvider.peekPowerListFallbackThumbnail(
-            key = model.id.value,
-            targetWidth = model.side,
-            targetHeight = model.side
-        )
-    }?.takeIf { !it.isRecycled }
-    val retainedDecodeSide = remember(retainedSide, retainedModeLabel) {
-        retainedSide?.let { side ->
-            powerListDecodeSideForMode(
-                requestedSide = side.coerceAtLeast(1),
-                modeLabel = retainedModeLabel.orEmpty()
-            )
-        }
-    }
-    val retainedBitmap = remember(coverKey, retainedDecodeSide, defaultArtworkEnabled) {
-        retainedDecodeSide?.let { side ->
-            BitmapProvider.peekPowerListFallbackThumbnail(
-                key = FileArtworkId.fromCoverKey(coverKey).value,
-                targetWidth = side,
-                targetHeight = side
-            )
-        }
-    }?.takeIf { !it.isRecycled }
     val painter = rememberAsyncImagePainter(
-        model = request,
+        model = retainedRequest,
         imageLoader = imageLoader
     )
-    val imageAlpha by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (painter.state is coil.compose.AsyncImagePainter.State.Success) 1f else 0f,
-        animationSpec = tween(durationMillis = RawArtworkPolicy.VIEW_FADE_MS),
-        label = "powerlist_coil_artwork_fade"
-    )
+    // The settled and transition renderers are separate compositions. Seed every new holder from
+    // the already-decoded source tier synchronously, so entering or leaving pinch never exposes
+    // Coil's transient Empty/Loading state, including for non-interpolated items.
+    val cachedBitmap = remember(coverKey, activeDecodeSide, retainedSide, defaultArtworkEnabled) {
+        val retainedDecodeSide = retainedSide?.coerceAtLeast(1)
+        retainedDecodeSide
+            ?.let { PowerListCoilArtwork.peekBitmap(context, coverKey, it, it) }
+            ?: PowerListCoilArtwork.peekBitmap(
+                context = context,
+                key = coverKey,
+                width = activeDecodeSide,
+                height = activeDecodeSide
+            )
+    }
+    val lastAcceptedBitmap = remember(coverKey) { mutableStateOf(cachedBitmap) }
+    val painterState = painter.state
+    val currentBitmap = (painterState as? AsyncImagePainter.State.Success)
+        ?.result
+        ?.drawable
+        ?.let { it as? android.graphics.drawable.BitmapDrawable }
+        ?.bitmap
+        ?.takeIf { !it.isRecycled }
+    LaunchedEffect(painterState) {
+        if (currentBitmap != null && !currentBitmap.isRecycled) {
+            lastAcceptedBitmap.value = currentBitmap
+        }
+    }
+    val retainedSlotBitmap = lastAcceptedBitmap.value?.takeIf { !it.isRecycled }
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(radiusDp.dp))
             .fillMaxSize()
     ) {
-        if (retainedBitmap != null) {
-            PowerListBitmapCanvas(
-                bitmap = retainedBitmap,
-                placeholderColor = Color.Transparent,
-                modifier = Modifier.fillMaxSize()
-            )
+        // Coil remains the request/cache owner. The scrolling surface draws only the last
+        // accepted bitmap, so a row-window rebind cannot expose Coil's transient Empty/Loading
+        // painter for one frame.
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val bitmap = currentBitmap ?: retainedSlotBitmap
+            if (bitmap != null && !bitmap.isRecycled) {
+                powerListBitmapMatrix.reset()
+                configureCenterCropMatrix(
+                    matrix = powerListBitmapMatrix,
+                    bitmap = bitmap,
+                    left = 0f,
+                    top = 0f,
+                    width = size.width,
+                    height = size.height
+                )
+                powerListPaint.shader = null
+                powerListPaint.alpha = 255
+                powerListPaint.isFilterBitmap = true
+                drawContext.canvas.nativeCanvas.drawBitmap(
+                    bitmap,
+                    powerListBitmapMatrix,
+                    powerListPaint
+                )
+            }
         }
-        if (fallbackBitmap != null) {
-            PowerListBitmapCanvas(
-                bitmap = fallbackBitmap,
-                placeholderColor = Color.Transparent,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-        Image(
-            painter = painter,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer { alpha = imageAlpha }
-        )
     }
 }
 
@@ -2023,13 +1955,14 @@ private fun ComposeTransitionRects.scaledAbout(
 private fun rememberPowerListBitmap(
     key: String,
     albumAliasKey: String = "",
+    externalArtworkPath: String = "",
     targetWidth: Int,
     targetHeight: Int,
     deferLoad: Boolean = false,
-    artBindRevision: Int = 0,
     index: Int = -1,
-    modeLabel: String = ""
-): Bitmap? {
+    modeLabel: String = "",
+    priority: BitmapRequest.Priority = BitmapRequest.Priority.LOADING_LIST
+): PowerListBitmapState {
     val id = remember(key) { FileArtworkId.fromCoverKey(key) }
     val decodeSide = remember(targetWidth, targetHeight, modeLabel) {
         powerListDecodeSideForMode(
@@ -2042,77 +1975,137 @@ private fun rememberPowerListBitmap(
     val bucket = remember(decodeWidth, decodeHeight) {
         SizeSlotCache.computeBucket(decodeWidth, decodeHeight)
     }
-    val recentFailure = key.isNotBlank() && BitmapProvider.hasRecentThumbnailFailure(
-        key = id.value,
-        targetWidth = decodeWidth,
-        targetHeight = decodeHeight,
-        providerAliasKey = ""
-    )
-    val handleState = remember(id.value, decodeWidth, decodeHeight) {
-        mutableStateOf(
-            PowerListArtworkRecords.acquire(
-                id = id,
+    // Keep this state attached to the physical PowerList slot, not to the song identity. This is
+    // the Compose equivalent of Poweramp's AAImageView retaining its current wrapper while a new
+    // source record is being resolved. Re-keying this state by id cleared the drawable at every
+    // row reuse and made a fast fling look like a decode failure.
+    val bitmapState = remember(decodeWidth, decodeHeight, modeLabel) {
+        val initialBitmap = BitmapProvider.peekThumbnail(
+            key = id.value,
+            targetWidth = decodeWidth,
+            targetHeight = decodeHeight,
+            providerAliasKey = albumAliasKey
+        )?.takeIf { !it.isRecycled }?.also {
+            powerListArtLog(
+                "AA_CACHE_PEEK index=$index mode=$modeLabel bucket=$bucket bitmap=${it.width}x${it.height} id=${id.value.tailForLog()}"
+            )
+        }
+        val initialHandle = initialBitmap?.let {
+            BitmapProvider.acquireLoaded(
+                key = id.value,
+                bitmap = it,
                 targetWidth = decodeWidth,
                 targetHeight = decodeHeight,
                 surface = ArtworkSurface.List,
                 providerAliasKey = albumAliasKey
-            )?.also {
-                powerListArtLog(
-                    "AA_RECORD_HIT index=$index mode=$modeLabel bucket=$bucket bitmap=${it.bitmap.width}x${it.bitmap.height} id=${id.value.tailForLog()}"
-                )
-            }
+            )
+        }
+        mutableStateOf(
+            PowerListBitmapState(
+                bitmap = initialHandle?.bitmap ?: initialBitmap,
+                // A provider failure is not a holder state. The source record may become
+                // available on the next probe, so only a callback carrying terminalNoArt may
+                // clear the retained wrapper.
+                terminalNoArt = false,
+                handle = initialHandle,
+                sourceKey = id.value
+            )
         )
     }
+    // A physical PowerList slot can be rebound before its provider callback returns. Keep a
+    // monotonically increasing bind generation, like Poweramp's AAImageView position/id check,
+    // so an old callback can warm the provider cache but can never mutate the new slot binding.
+    val bindGeneration = remember { AtomicLong(0L) }
+    val artworkFade = remember { Animatable(1f) }
+    val currentFadeToken = bitmapState.value.fadeToken
 
-    DisposableEffect(id.value, decodeWidth, decodeHeight) {
+    LaunchedEffect(currentFadeToken) {
+        if (bitmapState.value.previousBitmap == null) {
+            artworkFade.snapTo(1f)
+            return@LaunchedEffect
+        }
+        artworkFade.snapTo(0f)
+        artworkFade.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = POWER_LIST_ART_FADE_MS)
+        )
+        if (bitmapState.value.fadeToken == currentFadeToken) {
+            bitmapState.value = bitmapState.value.copy(previousBitmap = null, fadeProgress = 1f)
+        }
+    }
+
+    DisposableEffect(decodeWidth, decodeHeight, modeLabel) {
         onDispose {
-            replacePowerListHandle(handleState, null)
+            // The source wrapper is owned by this physical holder until a rebind or detach. The
+            // provider cache itself remains alive for other holders and future scroll frames.
+            bitmapState.value.handle?.release()
         }
     }
 
-    LaunchedEffect(id.value, decodeWidth, decodeHeight, recentFailure, deferLoad, modeLabel, artBindRevision) {
-        if (id.isBlank) {
-            powerListArtLog("AA_SKIP_BLANK index=$index mode=$modeLabel")
-            replacePowerListHandle(handleState, null)
-            return@LaunchedEffect
+    DisposableEffect(
+        id.value,
+        albumAliasKey,
+        externalArtworkPath,
+        decodeWidth,
+        decodeHeight,
+        deferLoad,
+        modeLabel,
+        priority
+    ) {
+        val boundKey = id.value
+        // Attach an already decoded wrapper immediately. When there is no cached wrapper, keep
+        // the previous one until this source finishes, matching Poweramp's holder behavior.
+        if (bitmapState.value.sourceKey != boundKey) {
+            val cachedBitmap = BitmapProvider.peekThumbnail(
+                key = boundKey,
+                targetWidth = decodeWidth,
+                targetHeight = decodeHeight,
+                providerAliasKey = albumAliasKey
+            )?.takeIf { !it.isRecycled }
+            if (cachedBitmap != null) {
+                val nextHandle = BitmapProvider.acquireLoaded(
+                    key = boundKey,
+                    bitmap = cachedBitmap,
+                    targetWidth = decodeWidth,
+                    targetHeight = decodeHeight,
+                    surface = ArtworkSurface.List,
+                    providerAliasKey = albumAliasKey
+                )
+                val previousState = bitmapState.value
+                val oldHandle = previousState.handle
+                val nextBitmap = nextHandle?.bitmap ?: cachedBitmap
+                val retainedBitmap = previousState.bitmap
+                    ?.takeIf {
+                        previousState.sourceKey != boundKey &&
+                            it !== nextBitmap &&
+                            !it.isRecycled
+                    }
+                val nextFadeToken = if (retainedBitmap != null) {
+                    previousState.fadeToken + 1L
+                } else {
+                    0L
+                }
+                bitmapState.value = PowerListBitmapState(
+                    bitmap = nextBitmap,
+                    terminalNoArt = false,
+                    handle = nextHandle,
+                    sourceKey = boundKey,
+                    previousBitmap = retainedBitmap,
+                    fadeToken = nextFadeToken,
+                    fadeProgress = if (retainedBitmap == null) 1f else 0f
+                )
+                if (oldHandle !== nextHandle) oldHandle?.release()
+            }
         }
-        if (recentFailure) {
-            powerListArtLog("AA_NOT_FOUND_CLEAR index=$index mode=$modeLabel id=${id.value.tailForLog()}")
-            PowerListArtworkRecords.markNotFound(id)
-            replacePowerListHandle(handleState, null)
-            return@LaunchedEffect
-        }
-        powerListArtLog(
-            "AA_VISIBLE index=$index mode=$modeLabel target=${targetWidth}x${targetHeight} decode=${decodeWidth}x${decodeHeight} defer=$deferLoad id=${id.value.tailForLog()}"
-        )
-        PowerListArtworkRecords.acquire(
-            id = id,
-            targetWidth = decodeWidth,
-            targetHeight = decodeHeight,
-            surface = ArtworkSurface.List,
-            providerAliasKey = albumAliasKey
-        )?.let { cached ->
-            powerListArtLog(
-                "AA_RECORD_EFFECT index=$index mode=$modeLabel bucket=$bucket bitmap=${cached.bitmap.width}x${cached.bitmap.height} id=${id.value.tailForLog()}"
-            )
-            replacePowerListHandle(handleState, cached)
-            return@LaunchedEffect
-        }
-        if (deferLoad) {
-            powerListArtLog(
-                "AA_REQUEST_DEFER index=$index mode=$modeLabel decode=${decodeWidth}x${decodeHeight} id=${id.value.tailForLog()}"
-            )
-            return@LaunchedEffect
-        }
-    }
 
-    val hasFinalBitmap = handleState.value?.let { handle ->
-        handle.isValid && isPowerListBitmapAcceptable(handle.bitmap, decodeWidth, decodeHeight, modeLabel)
-    } == true
-
-    DisposableEffect(id.value, decodeWidth, decodeHeight, recentFailure, hasFinalBitmap, deferLoad, modeLabel) {
-        if (id.isBlank || recentFailure || hasFinalBitmap || deferLoad) {
-            if (deferLoad && !hasFinalBitmap && !id.isBlank && !recentFailure) {
+        // Do not key this effect by the callback result. A successful callback must update the
+        // current holder in place; rebuilding the effect immediately would detach/cancel the
+        // source request and is unlike Poweramp's stable bitmap wrapper lifecycle.
+        val cachedBitmapIsReady = bitmapState.value.sourceKey == boundKey && bitmapState.value.bitmap?.let { bitmap ->
+            !bitmap.isRecycled && isPowerListBitmapAcceptable(bitmap, decodeWidth, decodeHeight)
+        } == true
+        if (cachedBitmapIsReady || deferLoad) {
+            if (deferLoad && !cachedBitmapIsReady) {
                 powerListArtLog(
                     "AA_REQUEST_DEFER_NO_ASYNC index=$index mode=$modeLabel decode=${decodeWidth}x${decodeHeight} id=${id.value.tailForLog()}"
                 )
@@ -2120,46 +2113,107 @@ private fun rememberPowerListBitmap(
             onDispose { }
         } else {
             val seq = powerListArtSeq.incrementAndGet()
+            val callbackGeneration = bindGeneration.incrementAndGet()
             powerListArtLog(
                 "AA_REQUEST_LOAD seq=$seq index=$index mode=$modeLabel decode=${decodeWidth}x${decodeHeight} id=${id.value.tailForLog()}"
             )
-            val request = BitmapProvider.loadViewportThumbnail(
+            lateinit var request: BitmapRequest
+            request = BitmapProvider.loadViewportThumbnail(
                 key = id.value,
                 targetWidth = decodeWidth,
                 targetHeight = decodeHeight,
-                priority = BitmapRequest.Priority.LOADING_LIST,
-                providerAliasKey = albumAliasKey
+                priority = priority,
+                providerAliasKey = albumAliasKey,
+                externalArtworkPath = externalArtworkPath
             ) { loaded ->
+                if (bindGeneration.get() != callbackGeneration) {
+                    powerListArtLog(
+                        "AA_REQUEST_DROP_REBOUND seq=$seq index=$index mode=$modeLabel id=${id.value.tailForLog()}"
+                    )
+                    return@loadViewportThumbnail
+                }
                 if (loaded != null && !loaded.isRecycled) {
                     powerListArtLog(
                         "AA_REQUEST_CALLBACK seq=$seq index=$index mode=$modeLabel bitmap=${loaded.width}x${loaded.height} id=${id.value.tailForLog()}"
                     )
-                    val handle = PowerListArtworkRecords.publishBitmap(
-                        id = id,
+                    val nextHandle = BitmapProvider.acquireLoaded(
+                        key = id.value,
                         bitmap = loaded,
                         targetWidth = decodeWidth,
                         targetHeight = decodeHeight,
-                        high = false
+                        surface = ArtworkSurface.List,
+                        providerAliasKey = albumAliasKey
                     )
-                    replacePowerListHandle(handleState, handle)
+                    val previousState = bitmapState.value
+                    val oldHandle = previousState.handle
+                    val nextBitmap = nextHandle?.bitmap ?: loaded
+                    val retainedBitmap = previousState.bitmap
+                        ?.takeIf {
+                            previousState.sourceKey != boundKey &&
+                                it !== nextBitmap &&
+                                !it.isRecycled
+                        }
+                    val nextFadeToken = if (retainedBitmap != null) {
+                        previousState.fadeToken + 1L
+                    } else {
+                        0L
+                    }
+                    bitmapState.value = PowerListBitmapState(
+                        bitmap = nextBitmap,
+                        terminalNoArt = false,
+                        handle = nextHandle,
+                        sourceKey = boundKey,
+                        previousBitmap = retainedBitmap,
+                        fadeToken = nextFadeToken,
+                        fadeProgress = if (retainedBitmap == null) 1f else 0f
+                    )
+                    if (oldHandle !== nextHandle) oldHandle?.release()
                 } else {
-                    powerListArtLog(
-                        "AA_REQUEST_CALLBACK_NOT_FOUND seq=$seq index=$index mode=$modeLabel id=${id.value.tailForLog()}"
-                    )
-                    PowerListArtworkRecords.markNotFound(id)
-                    replacePowerListHandle(handleState, null)
+                    if (request.terminalNoArt) {
+                        powerListArtLog(
+                            "AA_REQUEST_CALLBACK_NO_ART seq=$seq index=$index mode=$modeLabel id=${id.value.tailForLog()}"
+                        )
+                        val oldHandle = bitmapState.value.handle
+                        bitmapState.value = PowerListBitmapState(
+                            bitmap = null,
+                            terminalNoArt = true,
+                            sourceKey = boundKey,
+                            fadeToken = 0L,
+                            fadeProgress = 1f
+                        )
+                        oldHandle?.release()
+                    } else {
+                        powerListArtLog(
+                            "AA_REQUEST_CALLBACK_TRANSIENT seq=$seq index=$index mode=$modeLabel id=${id.value.tailForLog()}"
+                        )
+                        // Keep the last accepted wrapper. A transient open/decode failure must
+                        // not turn into a 30-minute no-art sentinel or a placeholder flash.
+                        bitmapState.value = bitmapState.value.copy(terminalNoArt = false)
+                    }
                 }
             }
             onDispose {
+                // Invalidate the callback before cancelling. The provider may already have
+                // posted a result to the main looper, so cancellation alone is not a binding
+                // identity check.
+                bindGeneration.incrementAndGet()
                 powerListArtLog(
                     "AA_REQUEST_DETACH seq=$seq index=$index mode=$modeLabel cancelled=${request.isCancelled} id=${id.value.tailForLog()}"
                 )
+                // A fast fling can detach an entire row window in one frame. Keep completed
+                // source records in BitmapProvider's cache, but do not let detached list cells
+                // keep queued work alive; otherwise a single serial decoder spends the fling
+                // resolving covers that are already far outside the viewport.
+                // Let an already-started source probe finish and warm the shared bitmap cache.
+                // Only work that is still queued may be discarded by BitmapProvider. Cancelling
+                // the active decode here makes a fast fling repeatedly restart the same serial
+                // provider lane and leaves the next holder with a transient blank cover.
                 BitmapProvider.cancel(request, keepDecoding = true)
             }
         }
     }
 
-    return handleState.value?.takeIf { it.isValid }?.bitmap?.takeIf { !it.isRecycled }
+    return bitmapState.value.copy(fadeProgress = artworkFade.value)
 }
 
 // PowerList visible album-art decode cap. Keep large grid/hero covers crisp without touching scanner metadata paths.
@@ -2170,25 +2224,29 @@ private const val POWER_LIST_LIST_ZOOMED_DECODE = 512
 private const val POWER_LIST_GRID_4_DECODE = 384
 private const val POWER_LIST_GRID_3_DECODE = 512
 private const val POWER_LIST_GRID_2_DECODE = 784
-private const val POWER_LIST_MAX_RENDER_ITEMS = 64
-private const val POWER_LIST_GRID_REVEAL_MAX_DELAY_MS = 180
-private const val POWER_LIST_VIEWPORT_LEADING_ROWS = 1
-private const val POWER_LIST_VIEWPORT_TRAILING_ROWS = 2
-// 1024px covers are much heavier than the old 256px cap. Match design spec: visible first,
-// then only a tiny idle prefetch window, not every item passed during a fling.
-private const val POWER_LIST_PREFETCH_MAX_ITEMS = 0
+private const val POWER_LIST_MAX_RENDER_ITEMS = 48
+private const val POWER_LIST_ART_FADE_MS = 200
 
-// Keep only the project-style provider/record state for PowerList artwork.
-// Older Compose-side reveal/stale-retain/memory-owner helpers were intentionally removed here:
-// step14+ uses PowerListArtworkRecords as the single wrapper store, and extra UI caches can
-// reintroduce stale/no-art flashes that the design avoids by binding the artwork view directly to P.
-private val POWER_LIST_PREFETCH_IDLE_DELAY_MS = RawArtworkPolicy.OFFSCREEN_PREWARM_IDLE_MS
-private const val POWER_LIST_EXTERNAL_SCROLL_SETTLE_DELAY_MS = 180L
+// Keep artwork ownership in BitmapProvider/ArtworkHandle. Compose only keeps the last accepted
+// physical-cell bitmap while a replacement request is in flight, matching Poweramp's view holder.
 // Experimental A/B branch: list/grid covers are painted by Coil while BitmapProvider remains the
 // RawSMusic-specific decoder/cache backend. Flip to false to restore the legacy artwork record path.
 private const val POWER_LIST_USE_COIL_ARTWORK = true
 private const val POWER_LIST_TRACE_ART = false
+private const val POWER_LIST_TRACE_FRAMES = false
+private const val POWER_LIST_TRACE_FRAME_GAP_MS = 24L
+private const val POWER_LIST_TRACE_TAG = "RawPowerList"
 private val powerListArtSeq = AtomicLong(0L)
+
+private data class PowerListBitmapState(
+    val bitmap: Bitmap?,
+    val terminalNoArt: Boolean,
+    val handle: ArtworkHandle? = null,
+    val sourceKey: String = "",
+    val previousBitmap: Bitmap? = null,
+    val fadeToken: Long = 0L,
+    val fadeProgress: Float = 1f
+)
 
 private fun powerListDecodeSideForMode(requestedSide: Int, modeLabel: String): Int {
     val fixedSide = when (modeLabel) {
@@ -2208,21 +2266,14 @@ private fun powerListDecodeSideForMode(requestedSide: Int, modeLabel: String): I
 private fun isPowerListBitmapAcceptable(
     bitmap: Bitmap,
     targetWidth: Int,
-    targetHeight: Int,
-    modeLabel: String
+    targetHeight: Int
 ): Boolean {
     if (bitmap.isRecycled) return false
     val requestedSide = max(targetWidth, targetHeight).coerceAtLeast(1)
-    if (requestedSide <= 160) return true
-    val ratio = when (modeLabel) {
-        ComposePowerListDisplayMode.GRID_4.name,
-        ComposePowerListDisplayMode.GRID_3.name,
-        ComposePowerListDisplayMode.GRID_2.name -> 0.86f
-        "TRANSITION" -> 0.72f
-        else -> 0.64f
-    }
-    val minSide = (requestedSide * ratio).roundToInt().coerceAtLeast(1)
-    return bitmap.width >= minSide && bitmap.height >= minSide
+    // A cache hit is only complete when both dimensions cover the cell. Accepting the generic
+    // 384/512 low tier for a 784px grid cell made the holder stop requesting the proper source,
+    // so Canvas then enlarged a low-resolution bitmap and the outer lanes looked soft.
+    return minOf(bitmap.width, bitmap.height) >= requestedSide
 }
 
 private fun replacePowerListHandle(
@@ -2354,34 +2405,46 @@ private fun Modifier.trackSharedCoverSlot(
             }
         }
 
+        val lastSnapshot = remember { arrayOfNulls<SharedCoverSnapshot>(1) }
         onGloballyPositioned { coordinates ->
             if (!shouldTrack) return@onGloballyPositioned
             val pos = coordinates.positionInWindow()
-            registry.register(
+            val snapshot = SharedCoverSnapshot(
                 sceneId = sceneId,
                 elementId = elementId,
-                snapshot = SharedCoverSnapshot(
-                    sceneId = sceneId,
-                    elementId = elementId,
-                    boundsInWindow = Rect(
-                        left = pos.x + cover.left,
-                        top = pos.y + cover.top,
-                        right = pos.x + cover.left + cover.width,
-                        bottom = pos.y + cover.top + cover.height
-                    ),
-                    coverKey = coverKey,
-                    radiusDp = radiusDp
-                )
+                boundsInWindow = Rect(
+                    left = pos.x + cover.left,
+                    top = pos.y + cover.top,
+                    right = pos.x + cover.left + cover.width,
+                    bottom = pos.y + cover.top + cover.height
+                ),
+                coverKey = coverKey,
+                radiusDp = radiusDp
             )
+            val previous = lastSnapshot[0]
+            if (previous == null ||
+                previous.coverKey != snapshot.coverKey ||
+                previous.radiusDp != snapshot.radiusDp ||
+                !rectNearlyEquals(previous.boundsInWindow, snapshot.boundsInWindow)
+            ) {
+                lastSnapshot[0] = snapshot
+                registry.register(sceneId = sceneId, elementId = elementId, snapshot = snapshot)
+            }
         }
     }
 }
 
+private fun rectNearlyEquals(first: Rect, second: Rect, tolerance: Float = 0.5f): Boolean {
+    return abs(first.left - second.left) <= tolerance &&
+        abs(first.top - second.top) <= tolerance &&
+        abs(first.right - second.right) <= tolerance &&
+        abs(first.bottom - second.bottom) <= tolerance
+}
+
 private val powerListPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-private val powerListBitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
+private val powerListBitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 private val powerListTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG)
 private val powerListBitmapMatrix = Matrix()
-private val powerListPath = Path()
 
 private fun configureCenterCropMatrix(
     matrix: Matrix,
@@ -2416,28 +2479,80 @@ private fun drawPowerListText(
     color: Color,
     density: Float,
     bold: Boolean,
-    leftInsetPx: Float = 0f
+    leftInsetPx: Float = 0f,
+    typefaceOverride: Typeface? = null,
+    alreadyEllipsized: Boolean = false
 ) {
     if (text.isBlank() || rect.alpha <= 0f || rect.width <= 0 || rect.height <= 0) return
     val fontSizeSp = rect.fontSizeSp.takeIf { it > 0f } ?: 14f
     powerListTextPaint.color = color.copy(alpha = color.alpha * rect.alpha.coerceIn(0f, 1f)).toArgb()
     powerListTextPaint.textSize = fontSizeSp * density
-    val configuredTypeface = FontManager.typeface
-    powerListTextPaint.typeface = when {
-        configuredTypeface == null -> if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-        bold -> Typeface.create(configuredTypeface, Typeface.BOLD)
-        else -> configuredTypeface
+    powerListTextPaint.typeface = typefaceOverride ?: run {
+        val configuredTypeface = FontManager.typeface
+        when {
+            configuredTypeface == null -> if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            bold -> Typeface.create(configuredTypeface, Typeface.BOLD)
+            else -> configuredTypeface
+        }
     }
     val availableWidth = (rect.width.toFloat() - leftInsetPx).coerceAtLeast(1f)
-    val display = TextUtils.ellipsize(
-        text,
-        powerListTextPaint,
-        availableWidth,
-        TextUtils.TruncateAt.END
-    )
+    val display = if (alreadyEllipsized) {
+        text
+    } else {
+        TextUtils.ellipsize(
+            text,
+            powerListTextPaint,
+            availableWidth,
+            TextUtils.TruncateAt.END
+        )
+    }
     val fontMetrics = powerListTextPaint.fontMetrics
     val baseline = rect.top + (rect.height - fontMetrics.ascent - fontMetrics.descent) * 0.5f
     canvas.drawText(display.toString(), rect.left.toFloat() + leftInsetPx, baseline, powerListTextPaint)
+}
+
+private data class PreparedPowerListText(
+    val display: String,
+    val typeface: Typeface
+)
+
+@Composable
+private fun rememberPowerListPreparedText(
+    text: String,
+    rect: ComposeItemRect,
+    density: Float,
+    bold: Boolean,
+    leftInsetPx: Float = 0f,
+    configuredTypeface: Typeface?
+): PreparedPowerListText {
+    return remember(
+        text,
+        rect.width,
+        rect.fontSizeSp,
+        density,
+        bold,
+        leftInsetPx,
+        configuredTypeface
+    ) {
+        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
+            textSize = (rect.fontSizeSp.takeIf { it > 0f } ?: 14f) * density
+            typeface = when {
+                configuredTypeface == null -> if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                bold -> Typeface.create(configuredTypeface, Typeface.BOLD)
+                else -> configuredTypeface
+            }
+        }
+        val availableWidth = (rect.width.toFloat() - leftInsetPx).coerceAtLeast(1f)
+        PreparedPowerListText(
+            display = TextUtils.ellipsize(
+                text,
+                paint,
+                availableWidth,
+                TextUtils.TruncateAt.END
+            ).toString(),
+            typeface = paint.typeface ?: Typeface.DEFAULT
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -2590,24 +2705,24 @@ private fun TransitionCover(
             PowerListCoilCover(
                 coverKey = song.coverKey,
                 targetSide = targetCoverSize,
-                modeLabel = targetMode.name,
+                modeLabel = "TRANSITION_STABLE",
                 radiusDp = 0f,
                 retainedSide = sourceCoverSize,
-                retainedModeLabel = sourceMode.name,
                 modifier = Modifier.fillMaxSize()
             )
         } else {
             val coverSize = maxOf(sourceCoverSize, targetCoverSize)
-            val bitmap = rememberPowerListBitmap(
+            val artworkState = rememberPowerListBitmap(
                 key = song.coverKey,
                 albumAliasKey = "",
+                externalArtworkPath = song.albumArtPath,
                 targetWidth = coverSize,
                 targetHeight = coverSize,
                 index = index,
                 modeLabel = "TRANSITION"
             )
             PowerListBitmapCanvas(
-                bitmap = bitmap,
+                bitmap = artworkState.bitmap,
                 placeholderColor = Color.Transparent,
                 modifier = Modifier.fillMaxSize()
             )
@@ -2974,33 +3089,34 @@ private fun buildTransitionItems(
 }
 
 
-private fun capPowerListRange(range: IntRange, maxItems: Int): IntRange {
+private fun capPowerListRange(
+    range: IntRange,
+    maxItems: Int,
+    columns: Int
+): IntRange {
     if (range.isEmpty() || maxItems <= 0) return IntRange.EMPTY
-    val cappedLast = (range.first + maxItems - 1).coerceAtMost(range.last)
-    return range.first..cappedLast
+    val safeColumns = columns.coerceAtLeast(1)
+    val firstRow = range.first / safeColumns
+    val rowCount = ((maxItems + safeColumns - 1) / safeColumns).coerceAtLeast(1)
+    val cappedLast = (firstRow + rowCount) * safeColumns - 1
+    return range.first..cappedLast.coerceAtMost(range.last)
 }
 
-private fun prewarmTransitionBitmaps(items: List<ComposeTransitionItem>) {
-    if (items.isEmpty()) return
-    for (item in items.take(POWER_LIST_PREFETCH_MAX_ITEMS)) {
-        val targetCover = item.targetRects.cover
-        val sourceCover = item.sourceRects.cover
-        val targetSize = max(targetCover.width, targetCover.height)
-            .coerceAtLeast(1)
-            .coerceAtMost(POWER_LIST_COVER_DECODE_MAX)
-        val sourceSize = max(sourceCover.width, sourceCover.height)
-            .coerceAtLeast(1)
-            .coerceAtMost(POWER_LIST_COVER_DECODE_MAX)
-        val targetKey = item.song.coverKey
-        if (targetKey.isNotBlank()) {
-            if (BitmapProvider.peekThumbnail(targetKey, targetSize, targetSize) == null) {
-                BitmapProvider.loadPrefetchThumbnail(targetKey, targetSize, targetSize)
-            }
-            if (sourceSize != targetSize && BitmapProvider.peekThumbnail(targetKey, sourceSize, sourceSize) == null) {
-                BitmapProvider.loadPrefetchThumbnail(targetKey, sourceSize, sourceSize)
-            }
-        }
-    }
+private fun powerListMaxRenderItems(
+    columns: Int,
+    rowStridePx: Int,
+    viewportHeightPx: Int
+): Int {
+    val safeColumns = columns.coerceAtLeast(1)
+    val safeStride = rowStridePx.coerceAtLeast(1)
+    val visibleRows = ((viewportHeightPx.coerceAtLeast(1) + safeStride - 1) / safeStride)
+        .coerceAtLeast(1)
+    // Keep one row ahead of the viewport. This is the same small prefetch window used by the
+    // reference FastLayout: fractional scrolling moves the existing children, while only a row
+    // crossing the boundary needs a new holder. The cap is intentionally row-aligned so a dense
+    // grid never creates a partially rendered edge row.
+    val bufferedRows = (visibleRows + 1).coerceAtMost(12)
+    return (bufferedRows * safeColumns).coerceIn(safeColumns, POWER_LIST_MAX_RENDER_ITEMS)
 }
 
 private fun Modifier.trackCoverTarget(
@@ -3067,68 +3183,6 @@ private fun Modifier.trackDrawnCoverTarget(
             }
         }
     }
-}
-
-private fun powerListViewportCacheKeys(
-    songs: List<AudioFile>,
-    range: IntRange,
-    mode: ComposePowerListDisplayMode,
-    params: ListZoomParams,
-    geometry: ComposePowerListGeometry,
-    scrollYPx: Int,
-    density: Float
-): Set<String> {
-    if (range.isEmpty()) return emptySet()
-    val keys = LinkedHashSet<String>()
-    for (index in range.first..range.last) {
-        val song = songs.getOrNull(index) ?: continue
-        val key = song.coverKey
-        if (key.isBlank()) continue
-        val position = positionFor(
-            index = index,
-            geometry = geometry,
-            mode = mode,
-            scrollYPx = scrollYPx
-        )
-        val rects = composeAAItemSceneRects(position, mode, params, density)
-        val size = powerListDecodeSideForMode(
-            requestedSide = max(rects.cover.width, rects.cover.height).coerceAtLeast(1),
-            modeLabel = mode.name
-        )
-        keys += BitmapProvider.thumbnailCacheKey(
-            key = key,
-            targetWidth = size,
-            targetHeight = size,
-            providerAliasKey = ""
-        )
-    }
-    return keys
-}
-
-/**
- * Rendering follows the exact visible intersection. Provider admission advances in row bands so
- * a partial row entering/leaving during a fling does not purge and restart the same requests.
- */
-private fun stableArtworkViewportRange(
-    itemCount: Int,
-    geometry: ComposePowerListGeometry,
-    scrollYPx: Int,
-    viewportHeightPx: Int
-): IntRange {
-    if (itemCount <= 0 || viewportHeightPx <= 0) return IntRange.EMPTY
-    val visible = boundsIntersectingRangeForScroll(
-        itemCount = itemCount,
-        geometry = geometry,
-        scrollYPx = scrollYPx,
-        viewportHeightPx = viewportHeightPx
-    )
-    return expandRangeByRows(
-        range = visible,
-        itemCount = itemCount,
-        columns = geometry.columns,
-        rowsBefore = POWER_LIST_VIEWPORT_LEADING_ROWS,
-        rowsAfter = POWER_LIST_VIEWPORT_TRAILING_ROWS
-    )
 }
 
 @Composable
@@ -3207,42 +3261,6 @@ private fun ComposePowerListTransitionSectionHeaders(
             ) {
                 content(header)
             }
-        }
-    }
-}
-
-private fun prewarmSettledBitmaps(
-    songs: List<AudioFile>,
-    range: IntRange,
-    visibleRange: IntRange,
-    mode: ComposePowerListDisplayMode,
-    params: ListZoomParams,
-    geometry: ComposePowerListGeometry,
-    scrollYPx: Int,
-    density: Float
-) {
-    if (range.isEmpty()) return
-    var requested = 0
-    for (index in range.first..range.last) {
-        if (requested >= POWER_LIST_PREFETCH_MAX_ITEMS) break
-        if (!visibleRange.isEmpty() && index in visibleRange) continue
-        val song = songs.getOrNull(index) ?: continue
-        val key = song.coverKey
-        if (key.isBlank()) continue
-        val position = positionFor(
-            index = index,
-            geometry = geometry,
-            mode = mode,
-            scrollYPx = scrollYPx
-        )
-        val rects = composeAAItemSceneRects(position, mode, params, density)
-        val size = powerListDecodeSideForMode(
-            requestedSide = max(rects.cover.width, rects.cover.height).coerceAtLeast(1),
-            modeLabel = mode.name
-        )
-        if (BitmapProvider.peekThumbnail(key, size, size) == null) {
-            BitmapProvider.loadPrefetchThumbnail(key, size, size)
-            requested++
         }
     }
 }
@@ -3492,9 +3510,14 @@ private fun transitionScrollModel(
         maxScrollForGeometry(itemCount, sourceGeometry, viewportHeightPx)
     )
     val sourceCenterY = sourceScrollY + viewportHeightPx.coerceAtLeast(0) / 2
-    val anchorPosition = sourceGeometry.itemBounds.indices.minByOrNull { index ->
-        abs(sourceGeometry.itemBounds[index].center.y - sourceCenterY)
-    }?.coerceIn(0, itemCount - 1) ?: 0
+    // FastLayout resolves the anchor from ordered child bounds. Do not scan the whole library
+    // during every transition frame; a large library otherwise turns the first scene switch into
+    // an O(n) main-thread pass before the animation can draw.
+    val anchorPosition = nearestItemIndexForCenter(
+        bounds = sourceGeometry.itemBounds,
+        centerY = sourceCenterY,
+        itemCount = itemCount
+    )
     val sourceAnchor = sourceGeometry.itemBounds[anchorPosition]
     val targetAnchor = targetGeometry.itemBounds.getOrNull(anchorPosition) ?: sourceAnchor
     val sourceOffsetFraction = if (sourceAnchor.height > 0) {
@@ -3555,18 +3578,53 @@ private fun boundsIntersectingRangeForScroll(
     val viewportTop = 0
     val viewportBottom = viewportHeightPx.coerceAtLeast(0)
     if (viewportBottom <= viewportTop) return IntRange.EMPTY
-    var first = Int.MAX_VALUE
-    var last = Int.MIN_VALUE
-    geometry.itemBounds.take(itemCount).forEachIndexed { index, bounds ->
-        val top = bounds.top - scrollYPx
-        val bottom = bounds.bottom - scrollYPx
-        if (bottom > viewportTop && top < viewportBottom) {
-            first = minOf(first, index)
-            last = maxOf(last, index)
+    val bounds = geometry.itemBounds
+    val count = itemCount.coerceAtMost(bounds.size)
+    if (count <= 0) return IntRange.EMPTY
+
+    // Item bounds are monotonically ordered by top (grid rows share the same top), so the
+    // viewport window can be located without walking every song in the library.
+    val worldTop = scrollYPx + viewportTop
+    val worldBottom = scrollYPx + viewportBottom
+    val first = lowerBound(count) { index -> bounds[index].bottom > worldTop }
+    val lastExclusive = lowerBound(count) { index -> bounds[index].top >= worldBottom }
+    return if (first >= lastExclusive) IntRange.EMPTY else first..(lastExclusive - 1)
+}
+
+private inline fun lowerBound(
+    size: Int,
+    predicate: (Int) -> Boolean
+): Int {
+    var low = 0
+    var high = size
+    while (low < high) {
+        val middle = (low + high) ushr 1
+        if (predicate(middle)) {
+            high = middle
+        } else {
+            low = middle + 1
         }
     }
+    return low
+}
 
-    return if (first == Int.MAX_VALUE) IntRange.EMPTY else first..last
+private fun nearestItemIndexForCenter(
+    bounds: List<IntRect>,
+    centerY: Int,
+    itemCount: Int
+): Int {
+    val count = itemCount.coerceAtMost(bounds.size)
+    if (count <= 0) return 0
+    val insertion = lowerBound(count) { index -> bounds[index].center.y >= centerY }
+    val left = (insertion - 1).coerceAtLeast(0)
+    val right = insertion.coerceAtMost(count - 1)
+    return if (
+        abs(bounds[left].center.y - centerY) <= abs(bounds[right].center.y - centerY)
+    ) {
+        left
+    } else {
+        right
+    }
 }
 
 private fun expandRangeByRows(

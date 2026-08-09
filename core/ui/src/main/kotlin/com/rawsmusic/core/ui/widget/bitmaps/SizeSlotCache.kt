@@ -1,6 +1,7 @@
 package com.rawsmusic.core.ui.widget.bitmaps
 
 import android.graphics.Bitmap
+import android.os.SystemClock
 import kotlin.math.abs
 
 /**
@@ -11,14 +12,18 @@ import kotlin.math.abs
  * v7d: 新增 sourceKey 反向索引（sourceIndex），getAnyForSource 优先查索引，
  * 避免 prefix 全表扫描；sourceKey 由 put 调用方传入。
  * v8: bucket 距离相同的时候选更大的槽位，避免 384/768 目标被 256/512 旧图命中后发糊。
- * v9 / design alignment phase 3d: exact-size entries are now ref-aware owners. UI
- * surfaces acquire an [ArtworkHandle] for the bucket they draw and release it on detach; LRU
+ * v9 / design alignment phase 3d: exact-size entries are now the single ref-aware provider owner.
+ * UI surfaces acquire an [ArtworkHandle] for the bucket they draw and release it on detach; LRU
  * trimming skips attached entries instead of silently dropping artwork that is still being painted.
  */
 class SizeSlotCache(
     private val maxBytes: Int = defaultMaxBytes()
 ) {
+    // A fast fling can detach and reattach the same row within a few frames. Keep the last
+    // detached artwork warm for that short interval, matching Poweramp's retained image wrapper,
+    // without pinning the entire library in memory.
     companion object {
+        private const val RECENT_RELEASE_GRACE_MS = 900L
         private val SIZE_SLOTS = intArrayOf(16, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 2048)
 
         fun computeBucket(width: Int, height: Int): Int {
@@ -32,9 +37,8 @@ class SizeSlotCache(
 
         fun defaultMaxBytes(): Int {
             val maxMem = Runtime.getRuntime().maxMemory().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-            // SizeSlotCache is no longer the only strong owner: AlbumArtCache and PowerList keep
-            // short-lived handles as well. Keep this exact-bucket tier tighter, and let attached
-            // entries exceed the budget briefly rather than forcing a bad recycle/drop.
+            // Keep the provider's exact-bucket tier bounded, and let attached entries exceed the
+            // budget briefly rather than forcing a bad recycle/drop.
             return (maxMem / 12).coerceAtLeast(20 * 1024 * 1024).coerceAtMost(64 * 1024 * 1024)
         }
     }
@@ -45,10 +49,12 @@ class SizeSlotCache(
         val bucket: Int,
         val byteCount: Int,
         val sourceKey: String,
-        var refs: Int = 0
+        var refs: Int = 0,
+        var lastReleasedAtMs: Long = 0L
     ) {
         fun valid(): Boolean = !bitmap.isRecycled
-        fun evictable(): Boolean = refs <= 0
+        fun evictable(nowMs: Long): Boolean =
+            refs <= 0 && (lastReleasedAtMs == 0L || nowMs - lastReleasedAtMs >= RECENT_RELEASE_GRACE_MS)
     }
 
     private val lock = Any()
@@ -62,13 +68,15 @@ class SizeSlotCache(
         entry.bitmap
     }
 
-    fun getAnyForSource(sourceKey: String): Bitmap? = synchronized(lock) {
+    fun getAnyForSource(sourceKey: String, minimumSide: Int = 1): Bitmap? = synchronized(lock) {
+        val requiredSide = minimumSide.coerceAtLeast(1)
         // v7d: 优先查 sourceIndex，避免全表 prefix 扫描
         val indexed = sourceIndex[sourceKey]
         if (indexed != null && indexed.isNotEmpty()) {
             val entry = indexed.asSequence()
                 .mapNotNull { map[it] }
                 .filter { it.valid() }
+                .filter { maxOf(it.bitmap.width, it.bitmap.height) >= requiredSide }
                 .maxByOrNull { it.bucket }
             if (entry != null) return entry.bitmap
         }
@@ -79,6 +87,7 @@ class SizeSlotCache(
             .filter { it.key.startsWith(prefix) }
             .map { it.value }
             .filter { it.valid() }
+            .filter { maxOf(it.bitmap.width, it.bitmap.height) >= requiredSide }
             .maxByOrNull { it.bucket }
             ?: return null
         fallback.bitmap
@@ -104,14 +113,17 @@ class SizeSlotCache(
 
     fun acquireAnyForSource(
         sourceKey: String,
-        surface: ArtworkSurface = ArtworkSurface.Widget
+        surface: ArtworkSurface = ArtworkSurface.Widget,
+        minimumSide: Int = 1
     ): ArtworkHandle? = synchronized(lock) {
         if (sourceKey.isBlank()) return@synchronized null
+        val requiredSide = minimumSide.coerceAtLeast(1)
         val indexed = sourceIndex[sourceKey]
         if (indexed != null && indexed.isNotEmpty()) {
             val entry = indexed.asSequence()
                 .mapNotNull { map[it] }
                 .filter { it.valid() }
+                .filter { maxOf(it.bitmap.width, it.bitmap.height) >= requiredSide }
                 .maxByOrNull { it.bucket }
             if (entry != null) return@synchronized acquireEntryLocked(entry, surface)
         }
@@ -121,6 +133,7 @@ class SizeSlotCache(
             .filter { it.key.startsWith(prefix) }
             .map { it.value }
             .filter { it.valid() }
+            .filter { maxOf(it.bitmap.width, it.bitmap.height) >= requiredSide }
             .maxByOrNull { it.bucket }
             ?: return@synchronized null
         acquireEntryLocked(fallback, surface)
@@ -130,13 +143,39 @@ class SizeSlotCache(
         if (bitmap.isRecycled) return
         val bc = safeByteCount(bitmap)
         if (bc <= 0) return
-        synchronized(lock) {
+        return synchronized(lock) {
+            val existing = map[key]
+            if (existing != null && existing.bitmap === bitmap && existing.valid()) {
+                return@synchronized
+            }
             removeLocked(key)
-            if (bc > maxBytes) return
-            map[key] = Entry(key, bitmap, bucket, bc, sourceKey)
-            sourceIndex.getOrPut(sourceKey) { HashSet() }.add(key)
-            currentBytes += bc
+            insertLocked(key, bitmap, bucket, bc, sourceKey)
             trimToSize(maxBytes)
+        }
+    }
+
+    /** Publish and retain one exact entry without a put/acquire gap. */
+    fun putAndAcquire(
+        key: String,
+        bitmap: Bitmap,
+        bucket: Int,
+        sourceKey: String,
+        surface: ArtworkSurface
+    ): ArtworkHandle? {
+        if (bitmap.isRecycled) return null
+        val bc = safeByteCount(bitmap)
+        if (bc <= 0 || bc > maxBytes) return null
+        return synchronized(lock) {
+            val existing = map[key]
+            if (existing != null && existing.bitmap === bitmap && existing.valid()) {
+                return@synchronized acquireEntryLocked(existing, surface)
+            }
+            removeLocked(key)
+            insertLocked(key, bitmap, bucket, bc, sourceKey)
+            val entry = map[key] ?: return@synchronized null
+            val handle = acquireEntryLocked(entry, surface)
+            trimToSize(maxBytes)
+            handle
         }
     }
 
@@ -189,7 +228,12 @@ class SizeSlotCache(
 
     private fun releaseEntry(entry: Entry) {
         synchronized(lock) {
-            if (entry.refs > 0) entry.refs--
+            if (entry.refs > 0) {
+                entry.refs--
+                if (entry.refs == 0) {
+                    entry.lastReleasedAtMs = SystemClock.uptimeMillis()
+                }
+            }
             trimToSize(maxBytes)
         }
     }
@@ -203,10 +247,11 @@ class SizeSlotCache(
     }
 
     private fun trimToSize(targetBytes: Int) {
+        val nowMs = SystemClock.uptimeMillis()
         val iter = map.entries.iterator()
         while (currentBytes > targetBytes && iter.hasNext()) {
             val entry = iter.next().value
-            if (!entry.evictable()) {
+            if (!entry.evictable(nowMs)) {
                 continue
             }
             currentBytes -= entry.byteCount
@@ -221,6 +266,19 @@ class SizeSlotCache(
         removeFromSourceIndex(removed.sourceKey, removed.key)
         currentBytes -= removed.byteCount
         if (currentBytes < 0) currentBytes = 0
+    }
+
+    private fun insertLocked(
+        key: String,
+        bitmap: Bitmap,
+        bucket: Int,
+        byteCount: Int,
+        sourceKey: String
+    ) {
+        if (byteCount > maxBytes) return
+        map[key] = Entry(key, bitmap, bucket, byteCount, sourceKey)
+        sourceIndex.getOrPut(sourceKey) { HashSet() }.add(key)
+        currentBytes += byteCount
     }
 
     private fun removeFromSourceIndex(sourceKey: String, key: String) {

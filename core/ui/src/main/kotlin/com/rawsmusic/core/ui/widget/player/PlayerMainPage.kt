@@ -75,6 +75,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -96,15 +97,17 @@ import com.rawsmusic.core.ui.widget.PlayerLyricsScrollDirection
 import com.rawsmusic.core.ui.widget.PlayerLyricsTransitionCoordinator
 import com.rawsmusic.core.ui.widget.flow.rememberCurrentRawFlowMode
 import com.rawsmusic.core.ui.widget.flow.RawFlowBackground
+import com.rawsmusic.core.ui.widget.flow.rememberUappStaticAlbumAccent
 import com.rawsmusic.core.ui.widget.bitmaps.AlbumArtTiers
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
+import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
 import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkTransition
 import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkTransitionState
 import com.rawsmusic.core.ui.widget.bitmaps.PlayerArtworkAnimationStyle
 import com.rawsmusic.core.ui.widget.bitmaps.PlayerArtworkDirection
 import com.rawsmusic.core.ui.widget.bitmaps.PlayerArtworkItemRole
-import com.rawsmusic.core.ui.widget.bitmaps.playerArtworkForegroundTransform
+import com.rawsmusic.core.ui.widget.bitmaps.playerArtworkTitleTransform
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.module.data.prefs.AppPreferences
 import io.github.proify.lyricon.lyric.model.Song
@@ -208,6 +211,9 @@ fun PlayerMainPage(
     onCoverSwipeDownStart: () -> Unit = {},
     onCoverSwipeDownProgress: (Float) -> Unit = {},
     onCoverSwipeDownEnd: (Boolean, Float) -> Unit = { _, _ -> },
+    mainPlayerSheetTransitionActive: Boolean = false,
+    rootOwnsPlayerSheetDownGesture: Boolean = false,
+    rootOwnsPlayerLyricUpGesture: Boolean = false,
     onArtworkAnchorChanged: (PlayerLyricsArtworkAnchor?) -> Unit = {},
     showAlbumArt: Boolean = true,
     renderBackdrop: Boolean = true,
@@ -373,12 +379,6 @@ fun PlayerMainPage(
         }
     }
 
-    LaunchedEffect(coverPath) {
-        if (!coverPath.isNullOrBlank()) {
-            BitmapProvider.warmPlaybackArt(coverPath)
-            BitmapProvider.warmFullCoverArt(coverPath)
-        }
-    }
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -420,6 +420,9 @@ fun PlayerMainPage(
                     onSwipeDownStart = onCoverSwipeDownStart,
                     onSwipeDownProgress = onCoverSwipeDownProgress,
                     onSwipeDownEnd = onCoverSwipeDownEnd,
+                    mainPlayerSheetTransitionActive = mainPlayerSheetTransitionActive,
+                    rootOwnsPlayerSheetDownGesture = rootOwnsPlayerSheetDownGesture,
+                    rootOwnsPlayerLyricUpGesture = rootOwnsPlayerLyricUpGesture,
                     queueSongs = queueSongs,
                     queueCurrentIndex = queueCurrentIndex,
                     onPrevious = onPrevious,
@@ -497,6 +500,7 @@ fun PlayerMainPage(
                     onSwipeUpStart = onCoverSwipeUpStart,
                     onSwipeUpProgress = onCoverSwipeUpProgress,
                     onSwipeUpEnd = onCoverSwipeUpEnd,
+                    rootOwnsPlayerLyricUpGesture = rootOwnsPlayerLyricUpGesture,
                     onSongInfoLongPressGestureActiveChange = { active ->
                         songInfoLongPressGestureActive = active
                         onModalVisibleChange(active || playerMoreSheetActive || showAudioChain)
@@ -529,6 +533,9 @@ fun PlayerMainPage(
                     onSwipeDownStart = onCoverSwipeDownStart,
                     onSwipeDownProgress = onCoverSwipeDownProgress,
                     onSwipeDownEnd = onCoverSwipeDownEnd,
+                    mainPlayerSheetTransitionActive = mainPlayerSheetTransitionActive,
+                    rootOwnsPlayerSheetDownGesture = rootOwnsPlayerSheetDownGesture,
+                    rootOwnsPlayerLyricUpGesture = rootOwnsPlayerLyricUpGesture,
                     queueSongs = queueSongs,
                     queueCurrentIndex = queueCurrentIndex,
                     onPrevious = onPrevious,
@@ -548,7 +555,7 @@ fun PlayerMainPage(
                     showArt = showAlbumArt && !playerMoreSheetActive,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .aspectRatio(1.02f)
+                        .aspectRatio(1f)
                         .graphicsLayer {
                             alpha = queueArtworkAlpha
                         }
@@ -606,6 +613,7 @@ fun PlayerMainPage(
                     onSwipeUpStart = onCoverSwipeUpStart,
                     onSwipeUpProgress = onCoverSwipeUpProgress,
                     onSwipeUpEnd = onCoverSwipeUpEnd,
+                    rootOwnsPlayerLyricUpGesture = rootOwnsPlayerLyricUpGesture,
                     onSongInfoLongPressGestureActiveChange = { active ->
                         songInfoLongPressGestureActive = active
                         onModalVisibleChange(active || playerMoreSheetActive || showAudioChain)
@@ -715,8 +723,10 @@ fun StandardPlayerBackdrop(
     artworkTransitionState: PlaybackArtworkTransitionState? = null,
     modifier: Modifier = Modifier
 ) {
-    // Keep the background fixed while cross-blending the outgoing and incoming artwork lanes.
-    // Native draw order is dominant-first, so each RawFlow layer is stacked in that order.
+    // Background follows the same exact artwork identities as the foreground transition. Auto
+    // Crossfade used to disable these layers and fall back to coverPath; when the committed song
+    // changed that made RawFlow jump palettes in one frame. Keep the outgoing background opaque
+    // underneath and smoothly fade the prepared incoming layer over it instead.
     val layers = artworkTransitionState?.backgroundLayers().orEmpty()
     val currentLayerKey = artworkTransitionState?.foregroundCurrentKey()
     val currentLayerArtwork = artworkTransitionState?.let {
@@ -771,6 +781,9 @@ private fun AlbumArtCard(
     onSwipeDownStart: () -> Unit,
     onSwipeDownProgress: (Float) -> Unit,
     onSwipeDownEnd: (Boolean, Float) -> Unit,
+    mainPlayerSheetTransitionActive: Boolean,
+    rootOwnsPlayerSheetDownGesture: Boolean,
+    rootOwnsPlayerLyricUpGesture: Boolean,
     queueSongs: List<AudioFile>,
     queueCurrentIndex: Int,
     onPrevious: () -> Unit,
@@ -805,9 +818,16 @@ private fun AlbumArtCard(
     val latestOnSwipeDownStart by rememberUpdatedState(onSwipeDownStart)
     val latestOnSwipeDownProgress by rememberUpdatedState(onSwipeDownProgress)
     val latestOnSwipeDownEnd by rememberUpdatedState(onSwipeDownEnd)
+    val latestMainPlayerSheetTransitionActive by rememberUpdatedState(mainPlayerSheetTransitionActive)
+    val latestRootOwnsPlayerSheetDownGesture by rememberUpdatedState(rootOwnsPlayerSheetDownGesture)
+    val latestRootOwnsPlayerLyricUpGesture by rememberUpdatedState(rootOwnsPlayerLyricUpGesture)
     val latestOnArtworkAnchorChanged by rememberUpdatedState(onArtworkAnchorChanged)
     val latestOnArtworkBoundsChanged by rememberUpdatedState(onArtworkBoundsChanged)
     val densityValue = LocalDensity.current.density
+    val windowHeightPx = LocalWindowInfo.current.containerSize.height.toFloat()
+    val playerSheetTravelPx = (windowHeightPx - with(LocalDensity.current) { 122.dp.toPx() })
+        .coerceAtLeast(1f)
+    val systemBackEdgeGuardPx = with(LocalDensity.current) { 24.dp.toPx() }
 
     LaunchedEffect(
         coverPath,
@@ -880,6 +900,7 @@ private fun AlbumArtCard(
                     var horizontalSlopOffset = 0f
                     var horizontalInterceptionReported = false
                     var finishedNormally = false
+                    val sheetGesture = latestMainPlayerSheetTransitionActive
 
                     fun adjacentKey(direction: PlayerArtworkDirection): String? {
                         val songs = latestQueueSongs
@@ -900,26 +921,23 @@ private fun AlbumArtCard(
                         return song?.resolvePlaybackArtworkKey(null)
                     }
 
-                    fun horizontalProgress(dx: Float): Float {
+                    fun horizontalSignedPosition(dx: Float): Float {
                         val width = cardSize.width.toFloat().coerceAtLeast(1f)
                         val adjustedDx = dx - horizontalSlopOffset
-                        return when (horizontalDirection) {
-                            PlayerArtworkDirection.Next -> (-adjustedDx / width).coerceIn(0f, 1f)
-                            PlayerArtworkDirection.Previous -> (adjustedDx / width).coerceIn(0f, 1f)
-                            null -> 0f
-                        }
+                        return (adjustedDx / width).coerceIn(-1f, 1f)
                     }
 
                     fun finishHorizontal(dx: Float, velocityX: Float) {
                         if (!horizontalStarted) return
                         val width = cardSize.width.toFloat().coerceAtLeast(1f)
+                        val commitDirection = artworkTransitionState.direction
                         artworkTransitionState.endGesture(
-                            progress = horizontalProgress(dx),
+                            progress = artworkTransitionState.ratio,
                             velocityPxPerSecond = velocityX,
                             artworkWidthPx = width,
                             density = densityValue
                         ) {
-                            when (horizontalDirection) {
+                            when (commitDirection) {
                                 PlayerArtworkDirection.Previous -> latestOnPrevious()
                                 PlayerArtworkDirection.Next -> latestOnNext()
                                 null -> Unit
@@ -929,7 +947,11 @@ private fun AlbumArtCard(
 
                     fun finishVertical(dy: Float, velocityY: Float, cancelled: Boolean) {
                         if (axis != 2 || verticalDirection == 0) return
-                        val height = cardSize.height.toFloat().coerceAtLeast(1f)
+                        val height = if (verticalDirection > 0 || sheetGesture) {
+                            playerSheetTravelPx
+                        } else {
+                            cardSize.height.toFloat().coerceAtLeast(1f)
+                        }
                         val progress = when (verticalDirection) {
                             -1 -> (-dy / height).coerceIn(0f, 1f)
                             else -> (dy / height).coerceIn(0f, 1f)
@@ -955,10 +977,16 @@ private fun AlbumArtCard(
                             }
                             latestOnSwipeUpEnd(commit, settleVelocity)
                         } else {
-                            val commit = !cancelled && (
-                                progress >= 0.30f || velocityY >= 900f
-                            )
-                            latestOnSwipeDownEnd(commit, velocityY)
+                            val commit = !cancelled && when {
+                                velocityY >= 120f -> true
+                                velocityY <= -120f -> false
+                                else -> progress >= 0.5f
+                            }
+                            // The scene controller settles in normalized sheet progress. Keep
+                            // the release velocity in the same unit as the cover travel so a
+                            // short drag cannot be treated as an extremely fast fling.
+                            val settleVelocity = if (cancelled) 0f else velocityY / height
+                            latestOnSwipeDownEnd(commit, settleVelocity)
                         }
                     }
 
@@ -980,6 +1008,16 @@ private fun AlbumArtCard(
                             if (axis == 0 && (absX > viewConfiguration.touchSlop || absY > viewConfiguration.touchSlop)) {
                                 when {
                                     absX > absY * 1.20f -> {
+                                        // Keep the platform's predictive-back edge authoritative.
+                                        // The artwork switch recognizer used to lock horizontal
+                                        // motion at Initial pass even when the gesture began at a
+                                        // system edge, making side-back unreliable.
+                                        if (startPosition.x <= systemBackEdgeGuardPx ||
+                                            startPosition.x >= cardSize.width - systemBackEdgeGuardPx
+                                        ) {
+                                            axis = 3
+                                            continue
+                                        }
                                         val candidate = if (dx < 0f) {
                                             PlayerArtworkDirection.Next
                                         } else {
@@ -991,9 +1029,9 @@ private fun AlbumArtCard(
                                             axis = 1
                                             horizontalDirection = candidate
                                             horizontalStarted = true
-                                            horizontalSlopOffset =
-                                                (if (candidate == PlayerArtworkDirection.Previous) 1f else -1f) *
-                                                    viewConfiguration.touchSlop
+                                            // Use the exact accepted position as the signed track origin. This
+                                            // removes touch slop without biasing a later crossing to the other side.
+                                            horizontalSlopOffset = dx
                                             horizontalInterceptionReported = true
                                             // Only horizontal track switching blocks the root scene interceptor.
                                             // Vertical drags must stay available for player -> lyric/main transitions.
@@ -1003,20 +1041,45 @@ private fun AlbumArtCard(
                                         }
                                     }
                                     absY > absX * 1.20f -> {
-                                        axis = 2
-                                        verticalDirection = if (dy < 0f) -1 else 1
-                                        if (verticalDirection < 0) latestOnSwipeUpStart() else latestOnSwipeDownStart()
+                                        val candidateDirection = if (dy < 0f) -1 else 1
+                                        // In the persistent AM-style sheet, the parent owns
+                                        // PLAYER -> MAIN and settling recapture. Keep only the
+                                        // stable PLAYER upward artwork gesture here for lyrics.
+                                        if (
+                                            (candidateDirection < 0 && latestRootOwnsPlayerLyricUpGesture) ||
+                                            (latestRootOwnsPlayerSheetDownGesture &&
+                                                (candidateDirection > 0 || latestMainPlayerSheetTransitionActive))
+                                        ) {
+                                            axis = 3
+                                        } else {
+                                            axis = 2
+                                            verticalDirection = candidateDirection
+                                            if (verticalDirection < 0) {
+                                                latestOnSwipeUpStart()
+                                            } else {
+                                                latestOnSwipeDownStart()
+                                            }
+                                        }
                                     }
                                 }
                             }
 
                             when (axis) {
                                 1 -> {
-                                    artworkTransitionState.updateGesture(horizontalProgress(dx))
+                                    artworkTransitionState.updateContinuousGesture(
+                                        signedDragPosition = horizontalSignedPosition(dx),
+                                        previousKey = adjacentKey(PlayerArtworkDirection.Previous),
+                                        nextKey = adjacentKey(PlayerArtworkDirection.Next),
+                                    )
+                                    horizontalDirection = artworkTransitionState.direction
                                     change.consume()
                                 }
                                 2 -> {
-                                    val height = cardSize.height.toFloat().coerceAtLeast(1f)
+                                    val height = if (verticalDirection > 0 || sheetGesture) {
+                                        playerSheetTravelPx
+                                    } else {
+                                        cardSize.height.toFloat().coerceAtLeast(1f)
+                                    }
                                     val progress = when (verticalDirection) {
                                         -1 -> (-dy / height).coerceIn(0f, 1f)
                                         else -> (dy / height).coerceIn(0f, 1f)
@@ -1184,6 +1247,7 @@ private fun StandardPlayerBody(
     onSwipeUpStart: () -> Unit,
     onSwipeUpProgress: (Float) -> Unit,
     onSwipeUpEnd: (Boolean, Float) -> Unit,
+    rootOwnsPlayerLyricUpGesture: Boolean,
     onSongInfoLongPressGestureActiveChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1216,6 +1280,7 @@ private fun StandardPlayerBody(
                         onSwipeUpStart = onSwipeUpStart,
                         onSwipeUpProgress = onSwipeUpProgress,
                         onSwipeUpEnd = onSwipeUpEnd,
+                        rootOwnsPlayerLyricUpGesture = rootOwnsPlayerLyricUpGesture,
                         onLongPressGestureActiveChange =
                             onSongInfoLongPressGestureActiveChange,
                         modifier = Modifier
@@ -1522,6 +1587,7 @@ private fun ArtworkTitleInfoPager(
     onSwipeUpStart: () -> Unit,
     onSwipeUpProgress: (Float) -> Unit,
     onSwipeUpEnd: (Boolean, Float) -> Unit,
+    rootOwnsPlayerLyricUpGesture: Boolean,
     onLongPressGestureActiveChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1529,19 +1595,21 @@ private fun ArtworkTitleInfoPager(
     val redraw = artworkTransitionState.frameVersion
     val currentKey = artworkTransitionState.foregroundCurrentKey()
     val targetKey = artworkTransitionState.foregroundTargetKey()
-    val visualTransitionActive = targetKey.isNotBlank()
+    val automaticArtworkFade = artworkTransitionState.automaticFadeOnly
+    val visualTransitionActive = targetKey.isNotBlank() && !automaticArtworkFade
     val resolvedCurrent = remember(currentKey, queueSongs, currentSong) {
         resolvePlayerArtworkSong(currentKey, queueSongs, currentSong)
     }
     val resolvedTarget = remember(targetKey, queueSongs, currentSong) {
         resolvePlayerArtworkSong(targetKey, queueSongs, currentSong)
     }
-    val progress = artworkTransitionState.ratio.coerceIn(0f, 1f)
+    val progress = if (automaticArtworkFade) 0f else artworkTransitionState.ratio.coerceIn(0f, 1f)
     var pagerSize by remember { mutableStateOf(IntSize.Zero) }
     var dragY by remember { mutableStateOf(0f) }
     val latestOnSwipeUpStart by rememberUpdatedState(onSwipeUpStart)
     val latestOnSwipeUpProgress by rememberUpdatedState(onSwipeUpProgress)
     val latestOnSwipeUpEnd by rememberUpdatedState(onSwipeUpEnd)
+    val latestRootOwnsPlayerLyricUpGesture by rememberUpdatedState(rootOwnsPlayerLyricUpGesture)
     val latestOnLongPressGestureActiveChange by
         rememberUpdatedState(onLongPressGestureActiveChange)
     var titleLongPressActive by remember { mutableStateOf(false) }
@@ -1608,7 +1676,8 @@ private fun ArtworkTitleInfoPager(
                                 )
                         ) {
                             if (dy < 0f &&
-                                kotlin.math.abs(dy) > kotlin.math.abs(dx) * 1.2f
+                                kotlin.math.abs(dy) > kotlin.math.abs(dx) * 1.2f &&
+                                !latestRootOwnsPlayerLyricUpGesture
                             ) {
                                 accepted = true
                                 latestOnSwipeUpStart()
@@ -1656,19 +1725,21 @@ private fun ArtworkTitleInfoPager(
             }
     ) {
         val itemExtentPx = pagerSize.width.toFloat().coerceAtLeast(1f)
-        val currentTransform = playerArtworkForegroundTransform(
+        val currentTransform = playerArtworkTitleTransform(
             style = artworkAnimationStyle,
             role = PlayerArtworkItemRole.Current,
             direction = artworkTransitionState.direction,
             progress = progress,
-            itemExtentPx = itemExtentPx
+            itemExtentPx = itemExtentPx,
+            density = densityValue,
         )
-        val targetTransform = playerArtworkForegroundTransform(
+        val targetTransform = playerArtworkTitleTransform(
             style = artworkAnimationStyle,
             role = PlayerArtworkItemRole.Target,
             direction = artworkTransitionState.direction,
             progress = progress,
-            itemExtentPx = itemExtentPx
+            itemExtentPx = itemExtentPx,
+            density = densityValue,
         )
 
         @Composable
@@ -1703,21 +1774,25 @@ private fun ArtworkTitleInfoPager(
             )
         }
 
-        val currentTitleSong = resolvedCurrent ?: currentSong
-        val currentTitleKey = currentKey.ifBlank {
+        val currentTitleSong = if (automaticArtworkFade) currentSong else (resolvedCurrent ?: currentSong)
+        val currentTitleKey = if (automaticArtworkFade) {
             currentTitleSong?.path?.takeIf { it.isNotBlank() } ?: "player-title-empty"
+        } else {
+            currentKey.ifBlank {
+                currentTitleSong?.path?.takeIf { it.isNotBlank() } ?: "player-title-empty"
+            }
         }
         val orderedSlots = when {
             !visualTransitionActive -> listOf(
                 Triple(currentTitleKey, currentTitleSong, currentTransform)
             )
-            progress < 0.5f -> listOf(
-                Triple(targetKey, resolvedTarget, targetTransform),
-                Triple(currentTitleKey, currentTitleSong, currentTransform)
-            )
-            else -> listOf(
+            artworkTransitionState.direction == PlayerArtworkDirection.Next -> listOf(
                 Triple(currentTitleKey, currentTitleSong, currentTransform),
                 Triple(targetKey, resolvedTarget, targetTransform)
+            )
+            else -> listOf(
+                Triple(targetKey, resolvedTarget, targetTransform),
+                Triple(currentTitleKey, currentTitleSong, currentTransform)
             )
         }
 
@@ -1850,8 +1925,13 @@ private fun QualityPill(song: AudioFile?, text: String, onClick: () -> Unit, onL
 }
 
 @Composable
+internal fun rememberUappBottomAccentColor(coverPath: String?): Color =
+    rememberUappStaticAlbumAccent(coverPath)
+
+@Composable
 internal fun rememberCoverAccentColor(coverPath: String?): Color {
     val defaultColor = Color(0xFF6B5A70)
+    val context = LocalContext.current
     var color by remember { mutableStateOf(defaultColor) }
 
     LaunchedEffect(coverPath) {
@@ -1869,20 +1949,19 @@ internal fun rememberCoverAccentColor(coverPath: String?): Color {
         // 不把上一首的背景色缓存到新歌上。先退回稳定默认色，等当前封面已预热后再取色。
         color = defaultColor
 
-        repeat(3) { attempt ->
-            val next = withContext(Dispatchers.IO) {
-                val cached = BitmapProvider.peekThumbnail(key, 192, 192)
-                    ?: BitmapProvider.peekThumbnail(key, 512, 512)
-                    ?: BitmapProvider.peek(key, 512, 512)
-                    ?: BitmapProvider.peekAny(key)
-                cached?.safePaletteColor(defaultColor)
-            }
-            if (next != null) {
-                CoverAccentColorCache[key] = next
-                color = next
-                return@LaunchedEffect
-            }
-            kotlinx.coroutines.delay(if (attempt == 0) 80L else 180L)
+        val bitmap = CoilArtworkRuntime.executeBitmap(
+            context = context,
+            key = key,
+            width = 256,
+            height = 256,
+            surface = ArtworkSurface.Playback
+        )
+        val next = withContext(Dispatchers.Default) {
+            bitmap?.safePaletteColor(defaultColor)
+        }
+        if (next != null) {
+            CoverAccentColorCache[key] = next
+            color = next
         }
     }
     return color

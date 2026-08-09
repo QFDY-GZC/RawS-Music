@@ -356,7 +356,10 @@ internal fun PortraitDialFullCoverPage(
                     PortraitDialArtworkTier.Dormant -> BitmapRequest.Priority.IDLE
                 }
                 val hideCentre = hideCenterForSceneTransition && centreLane
-                key("portrait-dial:$virtualQueueIndex:$songIndex:$artworkKey") {
+                // The lane is the physical holder. Queue position and artwork identity are
+                // request inputs, not Compose identity; recreating this subtree on every commit
+                // was the source of the one-frame empty/blurred flash during fast switching.
+                key("portrait-dial-lane-$logicalOffset") {
                     Box(
                         modifier = Modifier
                             .align(Alignment.Center)
@@ -394,7 +397,7 @@ internal fun PortraitDialFullCoverPage(
                                     targetHeight = artworkTier.targetSidePx,
                                     surface = artworkSurface,
                                     priority = artworkPriority,
-                                    holdPreviousOnKeyChange = false,
+                                    holdPreviousOnKeyChange = true,
                                     fadeInMillis = 0,
                                     fadeOnBitmapChange = false,
                                     filterQuality = if (

@@ -42,7 +42,10 @@ internal object ArtworkSourceIndex {
 
             val record = records[kind] ?: continue
             val file = File(record.sourcePath)
-            if (file.exists() && file.canRead() && file.length() > 1024L) {
+            // The source record is already validated as a regular readable file. Do not impose a
+            // 1 KiB policy here: tiny but valid embedded covers are still usable image sources, and
+            // Poweramp keeps the source record independent from thumbnail-size heuristics.
+            if (file.isFile && file.canRead() && file.length() > 0L) {
                 return record
             }
 
@@ -111,10 +114,13 @@ internal object ArtworkSourceIndex {
         }
     }
 
-    fun beginFolderFallback(providerKey: String): ArtworkSourceAuthority.FolderFallbackPermit? {
+    fun beginFolderFallback(
+        providerKey: String,
+        confirmsEmbeddedAbsent: Boolean
+    ): ArtworkSourceAuthority.FolderFallbackPermit? {
         if (providerKey.isBlank()) return null
         return synchronized(mutationLock) {
-            authority.beginFolderFallback(providerKey)
+            authority.beginFolderFallback(providerKey, confirmsEmbeddedAbsent)
         }
     }
 
@@ -142,6 +148,18 @@ internal object ArtworkSourceIndex {
 
     fun embeddedStateFor(providerKey: String): ArtworkSourceAuthority.EmbeddedState =
         authority.stateFor(providerKey)
+
+    /**
+     * A decoder/open exception is not evidence that the file has no embedded art.  Drop only the
+     * authority decision and keep any valid source record so the next provider request can probe it
+     * again without rebuilding the whole artwork registry.
+     */
+    fun resetEmbeddedAuthority(providerKey: String) {
+        if (providerKey.isBlank()) return
+        synchronized(mutationLock) {
+            authority.reset(providerKey)
+        }
+    }
 
     fun remove(providerKey: String): Boolean {
         if (providerKey.isBlank()) return false
@@ -177,7 +195,7 @@ internal object ArtworkSourceIndex {
     ): SourceRecord? {
         if (sourcePath.isBlank()) return null
         val file = File(sourcePath)
-        if (!file.exists() || !file.canRead() || file.length() <= 1024L) return null
+        if (!file.isFile || !file.canRead() || file.length() <= 0L) return null
         return SourceRecord(
             sourcePath = file.absolutePath,
             kind = kind,

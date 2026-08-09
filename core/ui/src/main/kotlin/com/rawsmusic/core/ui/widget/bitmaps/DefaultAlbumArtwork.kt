@@ -35,11 +35,10 @@ object DefaultAlbumArtworkPolicy {
 fun shouldShowDefaultAlbumArtwork(key: String?, targetWidth: Int, targetHeight: Int): Boolean {
     if (!DefaultAlbumArtworkPolicy.enabled) return false
     val normalizedKey = key.orEmpty()
-    return normalizedKey.isBlank() || BitmapProvider.hasRecentThumbnailFailure(
-        key = normalizedKey,
-        targetWidth = targetWidth,
-        targetHeight = targetHeight
-    )
+    @Suppress("UNUSED_VARIABLE")
+    val requestedSize = targetWidth to targetHeight
+    return normalizedKey.isBlank() ||
+        CoilArtworkRuntime.isKnownNoArtwork(FileArtworkId.fromCoverKey(normalizedKey).value)
 }
 
 fun decodeDefaultAlbumArtwork(resources: Resources, targetSide: Int): Bitmap? {

@@ -6,11 +6,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Project-style owner/surface model for album artwork.
  *
- * Priority decides queue order; surface decides lifecycle semantics.  The important rule is that
- * hot UI surfaces (lists, mini player and prefetch) may bind only already-prepared low-res art.
- * Expensive source probing (MMR/FFmpeg/native tag extraction) belongs to Playback/Fullscreen or to
- * the background Indexer lane, so a cache miss in a visible row never opens and parses the audio
- * file on the UI-driven path.
+ * Priority decides queue order; surface decides lifecycle semantics.  Visible holders only bind
+ * through this provider; source probing and decoding stay on its worker lane, never on Compose's
+ * UI thread.  A list holder may therefore request a source record directly, while the provider
+ * owns coalescing, caching, and the rule that an already-started decode survives holder movement.
  */
 enum class ArtworkSurface(
     val allowsSourceDecode: Boolean,
@@ -19,22 +18,29 @@ enum class ArtworkSurface(
     val allowDiskThumbnailWrite: Boolean
 ) {
     List(
-        // Correctness first for visible rows.  RawSMusic does not yet have the
-        // stable media-library artwork type/id resolver; if a visible list row only schedules the background
-        // indexer, loose files can oscillate between a stale placeholder and null.  Let admitted
-        // visible rows decode their own file-version source directly; heavy stages remain serialized
-        // by BitmapProvider.sourceExtractionGate, so 3/4-column scrolling does not spawn parallel
-        // MMR/FFmpeg/TagLib probes.
+        // Poweramp's list holder asks the central provider for the source record. The provider
+        // performs source probing on its background lane, so this does not decode on Compose's
+        // thread and avoids the second List -> Indexer request that could lose the holder callback.
         allowsSourceDecode = true,
-        rememberNullAsNoArt = true,
+        // A list holder is a cold, transient observer. A single null while the media provider,
+        // native extractor, or storage mount is settling must not become a provider-wide
+        // no-art decision. Poweramp only commits its not-found wrapper after the source record
+        // has completed its probe; list rows retry through the same source record instead.
+        rememberNullAsNoArt = false,
         scheduleIndexerOnMiss = false,
-        allowDiskThumbnailWrite = true
+        // A visible holder must not start JPEG compression while a fling is decoding rows. The
+        // provider still reads an existing thumbnail; persistent warming is owned by Playback or
+        // Indexer, just like Poweramp's source wrapper cache is independent of a row holder.
+        allowDiskThumbnailWrite = false
     ),
     MiniPlayer(
         // Only one mini-player artwork is active. Decode its current song directly instead of
         // waiting for a list/indexer request that may finish after the UI has already detached.
         allowsSourceDecode = true,
-        rememberNullAsNoArt = false,
+        // The provider's terminal marker is source-level knowledge. Retain the previous frame
+        // during a transient miss, but let a confirmed no-art result clear it so a song without
+        // artwork can never inherit the previous song's cover.
+        rememberNullAsNoArt = true,
         scheduleIndexerOnMiss = false,
         allowDiskThumbnailWrite = false
     ),

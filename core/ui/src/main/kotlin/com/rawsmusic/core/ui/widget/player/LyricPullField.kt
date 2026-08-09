@@ -5,7 +5,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -16,11 +15,18 @@ internal class LyricPullFieldState {
     private val engine = LyricPullEngine()
     private val rowHeightsPx = mutableMapOf<Int, Int>()
     private val visibleIndices = linkedSetOf<Int>()
-    private val offsetsPx = mutableStateMapOf<Int, Float>()
+    // Keep per-row offsets out of snapshot state. Natural line changes already animate the
+    // LazyColumn itself; publishing every trailing-row offset as mutableStateMap entries forced
+    // N row recompositions + relayouts on every vsync.  Only a single frame revision is observable,
+    // and rows consume the plain map from graphicsLayer so updates stay in the layer phase.
+    private val offsetsPx = mutableMapOf<Int, Float>()
 
     var viewportHeightPx: Int by mutableIntStateOf(0)
         private set
     var generation: Int by mutableIntStateOf(0)
+        private set
+
+    var frameRevision: Int by mutableIntStateOf(0)
         private set
     var running: Boolean by mutableStateOf(false)
         private set
@@ -36,9 +42,15 @@ internal class LyricPullFieldState {
     fun setVisibleIndices(indices: Collection<Int>) {
         visibleIndices.clear()
         visibleIndices.addAll(indices)
-        offsetsPx.keys.toList().forEach { index ->
-            if (index !in visibleIndices) offsetsPx.remove(index)
+        var changed = false
+        val iterator = offsetsPx.keys.iterator()
+        while (iterator.hasNext()) {
+            if (iterator.next() !in visibleIndices) {
+                iterator.remove()
+                changed = true
+            }
         }
+        if (changed) frameRevision++
     }
 
     fun estimateCompactPullDistancePx(
@@ -122,12 +134,25 @@ internal class LyricPullFieldState {
     }
 
     private fun applyFrame(frame: LyricPullFrame) {
-        offsetsPx.keys.toList().forEach { index ->
-            if (index !in frame.offsetsPx) offsetsPx.remove(index)
+        var changed = false
+        val nextOffsets = frame.offsetsPx
+        val iterator = offsetsPx.keys.iterator()
+        while (iterator.hasNext()) {
+            val index = iterator.next()
+            if (index !in nextOffsets || nextOffsets[index] == 0f) {
+                iterator.remove()
+                changed = true
+            }
         }
-        frame.offsetsPx.forEach { (index, offset) ->
-            if (offset == 0f) offsetsPx.remove(index) else offsetsPx[index] = offset
+        nextOffsets.forEach { (index, offset) ->
+            if (offset == 0f) return@forEach
+            val old = offsetsPx[index]
+            if (old == null || old != offset) {
+                offsetsPx[index] = offset
+                changed = true
+            }
         }
+        if (changed) frameRevision++
         running = frame.running
     }
 }

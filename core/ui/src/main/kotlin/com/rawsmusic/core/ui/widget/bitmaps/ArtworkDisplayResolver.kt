@@ -3,7 +3,7 @@ package com.rawsmusic.core.ui.widget.bitmaps
 /**
  * Centralized project-style artwork display policy.
  *
- * Decode/cache ownership lives in [BitmapProvider], [SizeSlotCache] and [AlbumArtCache]. This
+ * Decode/cache ownership lives in [BitmapProvider] and its single [SizeSlotCache]. This
  * resolver owns the presentation rules: which already-prepared handle should be displayed first,
  * whether a previous image should be retained, and whether a newly accepted handle deserves a fade.
  * Keeping this logic in one place prevents list rows, mini player and playback pages from each
@@ -73,7 +73,11 @@ object ArtworkDisplayResolver {
         }
         exact?.release()
 
-        val any = BitmapProvider.acquireAny(key, surface)
+        val any = BitmapProvider.acquireAny(
+            key = key,
+            surface = surface,
+            minimumSide = maxOf(targetWidth, targetHeight)
+        )
         if (any?.isValid == true) {
             return Candidate(
                 handle = any,
@@ -115,7 +119,11 @@ object ArtworkDisplayResolver {
         }
         low?.release()
 
-        val any = BitmapProvider.acquireAny(key, surface)
+        val any = BitmapProvider.acquireAny(
+            key = key,
+            surface = surface,
+            minimumSide = hiResSize
+        )
         if (any?.isValid == true) {
             return Candidate(any, Reason.Any, qualityForSide(any, lowResSize, hiResSize))
         }

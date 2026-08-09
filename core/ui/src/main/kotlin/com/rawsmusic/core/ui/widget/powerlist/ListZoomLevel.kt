@@ -1,5 +1,7 @@
 package com.rawsmusic.core.ui.widget.powerlist
 
+import androidx.compose.runtime.Immutable
+
 /**
  * List zoom system for single-column mode.
  *
@@ -11,6 +13,7 @@ package com.rawsmusic.core.ui.widget.powerlist
 
 // ==================== Zoom Level Data ====================
 
+@Immutable
 data class ListZoomParams(
     /** Album art cover size in dp. -1 = MATCH_PARENT (cover height = rowHeight - margins) */
     val coverSizeDp: Float,

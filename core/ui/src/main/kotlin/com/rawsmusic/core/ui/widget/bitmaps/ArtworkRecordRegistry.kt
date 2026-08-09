@@ -31,8 +31,6 @@ data class ArtworkAcceptToken(
         append(record.globalRevision)
         append(':')
         append(record.sourceRevision)
-        append(':')
-        append(uiRevision)
     }
 
     fun sameDecodeIdentity(other: ArtworkAcceptToken): Boolean {
@@ -40,8 +38,7 @@ data class ArtworkAcceptToken(
             cacheKey == other.cacheKey &&
             bucket == other.bucket &&
             record.sourceRevision == other.record.sourceRevision &&
-            record.globalRevision == other.record.globalRevision &&
-            uiRevision == other.uiRevision
+            record.globalRevision == other.record.globalRevision
     }
 }
 
@@ -73,8 +70,8 @@ internal object ArtworkRecordRegistry {
     fun isCurrent(token: ArtworkAcceptToken, currentUiRevision: Long): Boolean {
         // currentUiRevision is intentionally not a hard rejection condition. artworkRevision is a
         // UI re-peek signal and may advance when an indexer prepares a better low-res thumbnail for
-        // another row. Source/global record revisions are the correctness boundary; uiRevision still
-        // participates in flightKey so requests created in different UI epochs do not share callbacks.
+        // another row. Source/global record revisions are the correctness boundary; UI refreshes
+        // must not split an otherwise shareable decode flight.
         @Suppress("UNUSED_VARIABLE")
         val observedUiRevision = currentUiRevision
         if (token.record.globalRevision != globalRevision.get()) return false

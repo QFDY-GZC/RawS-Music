@@ -113,6 +113,7 @@ fun LyricPage(
     onModifyAlbumArt: () -> Unit = {},
     onBack: () -> Unit = {},
     interactiveHorizontalSwipe: Boolean = false,
+    parentOwnsHorizontalSwipe: Boolean = false,
     onModalVisibleChange: (Boolean) -> Unit = {},
     onModalDismissActionChange: ((() -> Unit)?) -> Unit = {},
     onCoverSwipeDownStart: () -> Unit = {},
@@ -349,12 +350,6 @@ fun LyricPage(
         }
     }
 
-    LaunchedEffect(coverPath) {
-        if (!coverPath.isNullOrBlank()) {
-            BitmapProvider.warmPlaybackArt(coverPath)
-        }
-    }
-
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -372,7 +367,11 @@ fun LyricPage(
             }
     ) {
         if (renderBackdrop) {
-            StandardPlayerBackdrop(coverPath = coverPath, accent = accent)
+            StandardPlayerBackdrop(
+                coverPath = coverPath,
+                accent = accent,
+                artworkTransitionState = artworkTransitionState,
+            )
         }
 
         Box(
@@ -444,30 +443,31 @@ fun LyricPage(
                 onLineClick = onSeek,
                 onDoubleTap = onPlayPause,
                 onSwipeRight = onBack,
-                onSwipeRightStart = if (interactiveHorizontalSwipe) {
+                swipeRightGestureEnabled = !parentOwnsHorizontalSwipe,
+                onSwipeRightStart = if (interactiveHorizontalSwipe && !parentOwnsHorizontalSwipe) {
                     {
                         latestPublishArtworkSnapshot()
                         latestSwipeDownStart()
                     }
                 } else null,
-                onSwipeRightProgress = if (interactiveHorizontalSwipe) {
+                onSwipeRightProgress = if (interactiveHorizontalSwipe && !parentOwnsHorizontalSwipe) {
                     { ratio -> latestSwipeDownProgress(ratio) }
                 } else null,
-                onSwipeRightEnd = if (interactiveHorizontalSwipe) {
+                onSwipeRightEnd = if (interactiveHorizontalSwipe && !parentOwnsHorizontalSwipe) {
                     { commit, velocity -> latestSwipeDownEnd(commit, velocity) }
                 } else null,
                 modifier = Modifier
                     .fillMaxSize()
-                    .then(
-                        if (lyricTopLayoutStyle == LyricTopLayoutStyle.ScrollWithLyrics) {
-                            Modifier
-                        } else {
-                            Modifier.lyricFixedTopEdgeMask(
-                                headerBottomPx = fixedTopMaskStartPx,
-                                holdBelowHeader = 8.dp,
-                                fadeHeight = 72.dp
-                            )
-                        }
+                    .lyricAmViewportEdgeMask(
+                        // AM fades the whole lyrics viewport from its physical top edge. RawSMusic
+                        // additionally supports fixed headers; keep those pixels fully punched out
+                        // before starting the same 7%-of-viewport top feather.
+                        headerBottomPx = if (
+                            lyricTopLayoutStyle == LyricTopLayoutStyle.ScrollWithLyrics
+                        ) 0f else fixedTopMaskStartPx,
+                        holdBelowHeader = if (
+                            lyricTopLayoutStyle == LyricTopLayoutStyle.ScrollWithLyrics
+                        ) 0.dp else 8.dp,
                     )
             )
 
@@ -1176,40 +1176,57 @@ private fun LyricTitleOnlyHeader(
     }
 }
 
-private fun Modifier.lyricFixedTopEdgeMask(
+private fun Modifier.lyricAmViewportEdgeMask(
     headerBottomPx: Float,
-    holdBelowHeader: Dp = 8.dp,
-    fadeHeight: Dp = 72.dp
+    holdBelowHeader: Dp = 0.dp,
 ): Modifier = graphicsLayer {
+    // AlphaGradientFrameLayout renders its children to a layer and applies edge masks with
+    // PorterDuff.Mode.DST_IN. Offscreen + BlendMode.DstIn is the Compose equivalent.
     compositingStrategy = CompositingStrategy.Offscreen
 }.drawWithCache {
-    // Salt-style local alpha edge: the fixed header stays transparent and the lyric layer alone
-    // is clipped beneath it. The mask becomes fully opaque after a short local band, so it never
-    // behaves like a full-screen colored veil.
+    val heightPx = size.height.coerceAtLeast(1f)
+
+    // PlayerLyricsViewFragment uses 7% of the lyric viewport for the top alpha feather.
     val hiddenEndPx = (headerBottomPx + holdBelowHeader.toPx())
-        .coerceIn(0f, size.height)
-    val fadeEndPx = (hiddenEndPx + fadeHeight.toPx())
-        .coerceIn(hiddenEndPx, size.height)
-    val hiddenStop = if (size.height > 0f) hiddenEndPx / size.height else 0f
-    val fadeStop = if (size.height > 0f) fadeEndPx / size.height else 1f
-    val fadeSpan = (fadeStop - hiddenStop).coerceAtLeast(0f)
-    val mask = Brush.verticalGradient(
+        .coerceIn(0f, heightPx)
+    val topOpaquePx = (hiddenEndPx + heightPx * 0.07f)
+        .coerceIn(hiddenEndPx, heightPx)
+    val hiddenStop = hiddenEndPx / heightPx
+    val topOpaqueStop = topOpaquePx / heightPx
+    val topMask = Brush.verticalGradient(
         colorStops = arrayOf(
             0f to Color.Transparent,
             hiddenStop to Color.Transparent,
-            (hiddenStop + fadeSpan * 0.22f) to Color.Black.copy(alpha = 0.06f),
-            (hiddenStop + fadeSpan * 0.48f) to Color.Black.copy(alpha = 0.28f),
-            (hiddenStop + fadeSpan * 0.74f) to Color.Black.copy(alpha = 0.68f),
-            fadeStop to Color.Black,
-            1f to Color.Black
+            topOpaqueStop to Color.Black,
+            1f to Color.Black,
         ),
         startY = 0f,
-        endY = size.height
+        endY = heightPx,
+    )
+
+    // AM's bottom fade size is: (distance from the controls' top to the viewport bottom)
+    // + 27.75% of the viewport height.  RawSMusic's dedicated LYRIC scene has no controls
+    // overlaying this viewport; its bottomPadding is only LazyColumn trailing space.  Treat the
+    // controls top as the physical viewport bottom instead of turning bottomPadding into a fully
+    // transparent block.  This yields AM's exact no-overlay stops:
+    //   72.25% = full alpha, 96.25% = 5% alpha, 100% = transparent.
+    val bottomFadeStartStop = 1f - 0.2775f
+    val bottomFivePercentStop = 1f - (0.2775f - 0.24f)
+    val bottomMask = Brush.verticalGradient(
+        colorStops = arrayOf(
+            0f to Color.Black,
+            bottomFadeStartStop to Color.Black,
+            bottomFivePercentStop to Color.Black.copy(alpha = 0.05f),
+            1f to Color.Transparent,
+        ),
+        startY = 0f,
+        endY = heightPx,
     )
 
     onDrawWithContent {
         drawContent()
-        drawRect(brush = mask, blendMode = BlendMode.DstIn)
+        drawRect(brush = topMask, blendMode = BlendMode.DstIn)
+        drawRect(brush = bottomMask, blendMode = BlendMode.DstIn)
     }
 }
 

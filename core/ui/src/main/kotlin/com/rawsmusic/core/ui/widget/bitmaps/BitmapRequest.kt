@@ -14,6 +14,8 @@ class BitmapRequest(
     val key: String,
     /** Actual source/version key used to open/decode the artwork source. */
     val decodeKey: String = key,
+    /** Optional non-embedded image fallback belonging to the same audio record. */
+    val externalArtworkPath: String = "",
     /** 目标宽度 */
     val targetWidth: Int,
     /** 目标高度 */
@@ -64,21 +66,20 @@ class BitmapRequest(
     internal var inFlightOwner: Boolean = false
 
     @Volatile
-    internal var promotedInFlight: Boolean = false
-
-    @Volatile
     internal var keepAliveOnCancel: Boolean = false
 
     /**
-     * Power-list viewport guard. Visible list artwork is only useful while its item is still
-     * inside the current viewport. Worker threads check this before decoding so fast scrolls or
-     * page transitions do not keep decoding old covers in the background.
+     * True only after the provider has claimed the queued source probe.  A detached holder may
+     * remove a request that is still waiting in the Handler queue, but an already-running source
+     * probe is allowed to finish and warm the shared bitmap record.
      */
     @Volatile
-    internal var viewportRequired: Boolean = false
+    internal var sourceWorkStarted: Boolean = false
+        private set
 
+    /** Null is terminal only when the provider has confirmed that no artwork exists. */
     @Volatile
-    internal var viewportGeneration: Long = 0L
+    var terminalNoArt: Boolean = false
 
     /** 计算后的 size-slot bucket */
     val bucket: Int by lazy {
@@ -104,12 +105,31 @@ class BitmapRequest(
     }
 
     /**
-     * 取消请求
+     * Claim the source probe once, without racing a holder detach.
+     *
+     * A detached owner may still be the only queued representation of a shared flight.  In that
+     * case [keepAliveOnCancel] means "detach this listener", not "cancel the source"; a later
+     * holder is waiting on this same request and must still receive its result.
      */
-    fun cancel(keepAlive: Boolean = false) {
+    internal fun tryStartSourceWork(): Boolean = synchronized(this) {
+        if ((isCancelled && !keepAliveOnCancel) || sourceWorkStarted) return false
+        sourceWorkStarted = true
+        true
+    }
+
+    /** Cancel and report whether the source probe had already started. */
+    internal fun cancelAndGetSourceWorkStarted(keepAlive: Boolean): Boolean = synchronized(this) {
         keepAliveOnCancel = keepAlive
         isCancelled = true
         state = State.CANCELLED
+        sourceWorkStarted
+    }
+
+    /**
+     * 取消请求
+     */
+    fun cancel(keepAlive: Boolean = false) {
+        cancelAndGetSourceWorkStarted(keepAlive)
     }
 
     override fun equals(other: Any?): Boolean {

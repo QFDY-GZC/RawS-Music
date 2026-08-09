@@ -250,12 +250,6 @@ fun FullCoverPage(
         songs.getOrNull(visualCenterIndex) ?: currentSong
     }
     val displayedCoverKey = displayedSong.resolvePlaybackArtworkKey(coverPath)
-    LaunchedEffect(displayedCoverKey) {
-        if (!displayedCoverKey.isNullOrBlank()) {
-            BitmapProvider.warmFullCoverArt(displayedCoverKey)
-        }
-    }
-
     val neutralTransform = abs(scale - 1f) <= FullCoverZoomEpsilon &&
         abs(offsetX) <= 0.5f && abs(offsetY) <= 0.5f
     val sideLaneAlpha by animateFloatAsState(

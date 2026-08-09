@@ -21,7 +21,8 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object EmbeddedArtworkSourceCache {
     private const val TAG = "EmbeddedArtSource"
-    private const val MIN_ART_BYTES = 1024L
+    // A valid embedded image may be very small. Size is a decode concern, not an existence sentinel.
+    private const val MIN_ART_BYTES = 0L
     private const val DIR_NAME = "albumart_sources"
 
     data class Handle(

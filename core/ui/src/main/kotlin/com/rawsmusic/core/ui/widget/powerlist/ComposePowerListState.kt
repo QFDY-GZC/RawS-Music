@@ -20,6 +20,7 @@ private const val KEY_COLUMN_COUNT = "column_count"
 private const val SNAP_DURATION_MS = 500
 private const val COLUMN_COMMIT_DURATION_MS = 250
 private const val COLUMN_ROLLBACK_DURATION_MS = 500
+private const val ELASTIC_REBOUND_DURATION_MS = 350
 private const val VELOCITY_THRESHOLD_DP = 500f
 private const val POSITION_THRESHOLD = 0.3f
 private const val MIN_COLUMNS = 1
@@ -206,6 +207,7 @@ class ComposePowerListState internal constructor(
 
     private suspend fun animateTransition(confirm: Boolean, releaseVelocityDp: Float) {
         val start = transitionProgress
+        val startScale = transitionScaleFactor
         val end = if (confirm) 1f else 0f
         val baseDuration = if (sourceMode.isGrid || targetMode.isGrid) {
             if (confirm) COLUMN_COMMIT_DURATION_MS else COLUMN_ROLLBACK_DURATION_MS
@@ -218,14 +220,29 @@ class ComposePowerListState internal constructor(
                 if (confirm) 100 else baseDuration / 3,
                 baseDuration
             )
+        val animationDuration = if (abs(startScale - 1f) >= 0.001f) {
+            maxOf(duration, ELASTIC_REBOUND_DURATION_MS)
+        } else {
+            duration
+        }
         try {
             animate(
-                initialValue = start,
-                targetValue = end,
-                animationSpec = tween(durationMillis = duration, easing = LinearEasing)
-            ) { value, _ ->
-                transitionProgress = value
-                transitionScaleFactor = 1f
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = tween(durationMillis = animationDuration, easing = LinearEasing)
+            ) { elapsedFraction, _ ->
+                val transitionFraction = (
+                    elapsedFraction * animationDuration / duration.coerceAtLeast(1)
+                ).coerceIn(0f, 1f)
+                val elasticFraction = (
+                    elapsedFraction * animationDuration / ELASTIC_REBOUND_DURATION_MS
+                ).coerceIn(0f, 1f)
+                transitionProgress = lerp(start, end, transitionFraction)
+                transitionScaleFactor = lerp(
+                    startScale,
+                    1f,
+                    cubicEaseOut(elasticFraction)
+                )
             }
             completeTransition(confirm)
         } catch (cancelled: CancellationException) {
@@ -267,19 +284,21 @@ class ComposePowerListState internal constructor(
     private suspend fun animateBoundaryBack() {
         val generation = boundaryAnimationGeneration
         val start = boundaryRawOverPull
+        val startScale = boundaryElasticScale
         if (abs(start) < 0.001f) {
             boundaryRawOverPull = 0f
             boundaryElasticScale = 1f
             return
         }
         animate(
-            initialValue = start,
-            targetValue = 0f,
-            animationSpec = tween(durationMillis = 350)
-        ) { value, _ ->
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = ELASTIC_REBOUND_DURATION_MS, easing = LinearEasing)
+        ) { fraction, _ ->
             if (generation == boundaryAnimationGeneration) {
-                boundaryRawOverPull = value
-                boundaryElasticScale = computeBoundaryElasticScale(value)
+                val eased = cubicEaseOut(fraction)
+                boundaryRawOverPull = lerp(start, 0f, eased)
+                boundaryElasticScale = lerp(startScale, 1f, eased)
             }
         }
         if (generation == boundaryAnimationGeneration) {
@@ -398,32 +417,43 @@ private fun computeVelocityDuration(start: Float, end: Float, velocityDp: Float)
     return ((SNAP_DURATION_MS * distance) / normalizedVelocity).toInt().coerceIn(80, SNAP_DURATION_MS)
 }
 
-private fun easing(distance: Float): Float {
-    val clamped = (distance.coerceAtMost(3f) / 3f).coerceIn(0f, 1f)
-    return 1f - (1f - clamped) * (1f - clamped)
-}
-
 private fun elasticScale(signedDelta: Float, isZoomIn: Boolean): Float {
-    val beyond = if (signedDelta > 1f) signedDelta - 1f else -signedDelta
-    if (beyond <= 0f) return 1f
-    val eased = easing(beyond)
+    val overPull = when {
+        signedDelta > 1f -> signedDelta - 1f
+        signedDelta < 0f -> signedDelta
+        else -> return 1f
+    }
     val direction = if (isZoomIn) 1f else -1f
-    return (1f + eased * 0.15f * direction).coerceIn(0.85f, 1.15f)
+    val elasticOffset = computePowerampElasticOffset(overPull)
+    return (1f + elasticOffset * direction).coerceIn(0.9105f, 1.0895f)
 }
 
 private fun computeBoundaryElasticScale(rawOverPull: Float): Float {
-    val easedOffset = if (rawOverPull > 0f) {
+    val easedOffset = computePowerampElasticOffset(rawOverPull)
+    return (1f + easedOffset).coerceIn(0.9105f, 1.0895f)
+}
+
+private fun computePowerampElasticOffset(rawOverPull: Float): Float = when {
+    rawOverPull > 0f -> {
         boundaryEasing((rawOverPull.coerceAtMost(3f) / 3f).coerceIn(0f, 1f))
-    } else if (rawOverPull < 0f) {
+    }
+    rawOverPull < 0f -> {
         val reverse = (1f - (1f + rawOverPull).coerceIn(0.1f, 1f)) / 0.9f
         -boundaryEasing(reverse.coerceIn(0f, 1f))
-    } else {
-        0f
     }
-    return (1f + easedOffset).coerceIn(0.9105f, 1.0895f)
+    else -> 0f
 }
 
 private fun boundaryEasing(value: Float): Float {
     val clamped = value.coerceIn(0f, 1f)
     return sqrt(clamped * 0.2f) * 0.2f
+}
+
+private fun cubicEaseOut(value: Float): Float {
+    val remaining = 1f - value.coerceIn(0f, 1f)
+    return 1f - remaining * remaining * remaining
+}
+
+private fun lerp(start: Float, end: Float, fraction: Float): Float {
+    return start + (end - start) * fraction.coerceIn(0f, 1f)
 }

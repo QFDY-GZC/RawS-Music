@@ -40,7 +40,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
@@ -49,6 +48,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -58,6 +58,8 @@ import kotlin.math.PI
 
 private const val ARTWORK_LOCAL_UPDATE_MS = 50
 private const val ARTWORK_COMMIT_SETTLE_MS = 250
+private const val AUTO_CROSSFADE_ARTWORK_FADE_OUT_MS = 1_000
+private const val AUTO_CROSSFADE_ARTWORK_FADE_IN_MS = 1_200
 private const val ARTWORK_ROLLBACK_SETTLE_MS = 500
 private const val ARTWORK_MAX_COMMANDS = 16
 private const val ARTWORK_FRAME_HEADER = 4
@@ -68,17 +70,15 @@ private const val ARTWORK_TARGET_SIDE = 1440
 private const val ARTWORK_ALPHA_ZERO_DISTANCE = 1.0f
 private const val ARTWORK_ALPHA_FULL_DISTANCE = 0.0f
 
-// Default perspective parameters. The selected card remains centered while adjacent cards use a
-// denser horizontal step, distance-based scaling and small three-axis rotations. The absolute-axis
-// flags select whether each rotation follows signed direction or only distance from center.
+// Perspective player values applied by the AA item transform rather than a flat page translation.
 private const val PERSPECTIVE_DENSE_FACTOR = 0.75f
-private const val PERSPECTIVE_MIN_SCALE = 0.88f
-private const val PERSPECTIVE_MAX_ROTATION_X_DEGREES = 1.5f
-private const val PERSPECTIVE_MAX_ROTATION_Y_DEGREES = -4.0f
-private const val PERSPECTIVE_MAX_ROTATION_Z_DEGREES = 1.8f
-private const val PERSPECTIVE_ABS_ROTATION_X = true
-private const val PERSPECTIVE_ABS_ROTATION_Y = false
-private const val PERSPECTIVE_ABS_ROTATION_Z = false
+private const val PERSPECTIVE_MIN_SCALE = 0.75f
+private const val PERSPECTIVE_MAX_ROTATION_X_DEGREES = 5.0f
+private const val PERSPECTIVE_MAX_ROTATION_Y_DEGREES = -10.0f
+private const val PERSPECTIVE_MAX_ROTATION_Z_DEGREES = 5.5f
+private const val PERSPECTIVE_ALPHA_CUTOFF = 0.05f
+private const val PERSPECTIVE_ALPHA_NORMALIZER = 1.0526316f
+private const val ANDROID_VIEW_DEFAULT_CAMERA_DISTANCE_DP = 1280f
 
 // Optional retained carousel style.
 private const val CAROUSEL_SIDE_DISTANCE = 0.78f
@@ -131,8 +131,13 @@ private data class ArtworkVisual(
 }
 
 private data class ArtworkLoad(
-    val low: BitmapRequest?,
-    val high: BitmapRequest?
+    val job: Job
+)
+
+private data class GestureArtworkSlot(
+    val key: String,
+    val token: Int,
+    val quality: Int,
 )
 
 internal data class NativeArtworkDrawCommand(
@@ -196,14 +201,21 @@ class PlaybackArtworkTransitionState internal constructor(
     private var lastNativeFrameNs = 0L
     private var gesturePreviousKey = ""
     private var gestureNextKey = ""
+    private var gesturePreviousSlot: GestureArtworkSlot? = null
+    private var gestureNextSlot: GestureArtworkSlot? = null
     private var committedGestureKey = ""
     private var committedGestureDirection: PlayerArtworkDirection? = null
+    // Once the outgoing lane has completed its auto fade it may never become visible again, even
+    // if song binding/commit state flips for one Compose frame. This token latch is independent
+    // from automaticFadeOnly so a transient flag reset cannot resurrect the old cover.
+    private var suppressedAutomaticOutgoingToken by mutableIntStateOf(0)
 
     internal var direction by mutableStateOf(PlayerArtworkDirection.Next)
         private set
     internal var ratio by mutableFloatStateOf(0f)
         private set
     private var gestureBaseRatio = 0f
+    private var gestureOriginSignedPosition = 0f
     private var pendingGestureCommit: (() -> Unit)? = null
     internal var parity by mutableStateOf(false)
         private set
@@ -215,6 +227,17 @@ class PlaybackArtworkTransitionState internal constructor(
         private set
     internal var isSettling by mutableStateOf(false)
         private set
+    /** Natural renderer commit uses a plain alpha crossfade; gestures/buttons keep their style. */
+    internal var automaticFadeOnly by mutableStateOf(false)
+        private set
+    /** Long asymmetric artwork dissolve used only for natural Auto Crossfade commits. */
+    internal var automaticCrossfadeArtworkFade by mutableStateOf(false)
+        private set
+    private var automaticCrossfadeVisualEnabled = false
+
+    internal fun setAutomaticCrossfadeVisualEnabled(enabled: Boolean) {
+        automaticCrossfadeVisualEnabled = enabled
+    }
 
     /**
      * Button/queue preparation. Each request keeps its exact song identity. A new logical slot is
@@ -270,6 +293,38 @@ class PlaybackArtworkTransitionState internal constructor(
     internal fun setGestureTargetKeys(previousKey: String?, nextKey: String?) {
         gesturePreviousKey = previousKey.orEmpty()
         gestureNextKey = nextKey.orEmpty()
+        if (isGestureActive) {
+            gesturePreviousSlot = retainMatchingGestureSlot(
+                slot = gesturePreviousSlot,
+                key = gesturePreviousKey,
+            )
+            gestureNextSlot = retainMatchingGestureSlot(
+                slot = gestureNextSlot,
+                key = gestureNextKey,
+            )
+        } else {
+            // Neighbour tokens belong to exactly one pointer session. Queue binding can lag a
+            // committed swipe by one Compose frame, so retaining them while idle lets an old
+            // previous/next cover briefly impersonate the neighbour of the new centre item.
+            clearGestureSessionSlots()
+        }
+        releaseUnusedVisuals()
+    }
+
+    internal fun prefetchGestureTargets(previousKey: String?, nextKey: String?) {
+        sequenceOf(previousKey, nextKey)
+            .filterNotNull()
+            .filter { it.isNotBlank() && it != currentKey }
+            .distinct()
+            .forEach { key ->
+                CoilArtworkRuntime.prefetch(
+                    context = context,
+                    key = key,
+                    width = ARTWORK_TARGET_SIDE,
+                    height = ARTWORK_TARGET_SIDE,
+                    surface = ArtworkSurface.Playback
+                )
+            }
     }
 
     internal fun gestureTargetKey(direction: PlayerArtworkDirection): String? = when (direction) {
@@ -282,6 +337,11 @@ class PlaybackArtworkTransitionState internal constructor(
         val key = expectedKey?.takeIf { it.isNotBlank() } ?: return false
         if (key == currentKey) return false
         val resumesPreparedTarget = key == targetKey && targetKey.isNotBlank()
+        val resumedSignedPosition = if (resumesPreparedTarget) {
+            -this.direction.sign.toFloat() * ratio
+        } else {
+            0f
+        }
         transitionJob?.cancel()
         isSettling = false
         isGestureActive = true
@@ -290,6 +350,7 @@ class PlaybackArtworkTransitionState internal constructor(
         // An interrupted settle remains the exact same two-slot transition. Preserve its rendered
         // progress so the finger takes over the current frame instead of restarting from the cover.
         gestureBaseRatio = if (resumesPreparedTarget) ratio else 0f
+        gestureOriginSignedPosition = resumedSignedPosition
         if (!resumesPreparedTarget) setRatioFromUi(0f)
         return true
     }
@@ -298,6 +359,88 @@ class PlaybackArtworkTransitionState internal constructor(
         if (!isGestureActive || closed) return
         val nextRatio = (gestureBaseRatio + progress).coerceIn(0f, 1f)
         setRatioFromUi(nextRatio)
+    }
+
+    /**
+     * Updates the player track with one continuous signed coordinate.
+     *
+     * Positive positions expose the previous item and negative positions expose the next item,
+     * matching C0889.q. Crossing zero changes the adjacent slot while the current item is fully
+     * centred, so a B -> C drag can reverse through B and continue naturally toward A.
+     */
+    fun updateContinuousGesture(
+        signedDragPosition: Float,
+        previousKey: String? = gesturePreviousKey,
+        nextKey: String? = gestureNextKey,
+    ) {
+        if (!isGestureActive || closed) return
+        val signedPosition = (gestureOriginSignedPosition + signedDragPosition).coerceIn(-1f, 1f)
+        if (abs(signedPosition) <= 0.0015f) {
+            setRatioFromUi(0f)
+            return
+        }
+
+        val requestedDirection = if (signedPosition > 0f) {
+            PlayerArtworkDirection.Previous
+        } else {
+            PlayerArtworkDirection.Next
+        }
+        if (requestedDirection != direction) {
+            val requestedKey = when (requestedDirection) {
+                PlayerArtworkDirection.Previous -> previousKey
+                PlayerArtworkDirection.Next -> nextKey
+            }?.takeIf { it.isNotBlank() && it != currentKey } ?: run {
+                setRatioFromUi(0f)
+                return
+            }
+            switchGestureTarget(requestedDirection, requestedKey)
+        }
+        setRatioFromUi(abs(signedPosition))
+    }
+
+    /**
+     * Poweramp keeps three AA item holders alive for the complete pointer sequence. Compose only
+     * draws the centre and the currently exposed neighbour, but the hidden neighbour must retain
+     * its exact bitmap token while the finger crosses zero. Rebuilding the secondary slot here
+     * caused the visible B -> C -> B flash and prevented the same drag from continuing toward A.
+     */
+    private fun switchGestureTarget(
+        newDirection: PlayerArtworkDirection,
+        key: String,
+    ) {
+        if (closed || key.isBlank() || key == currentKey || newDirection == direction) return
+        transitionJob?.cancel()
+        isSettling = false
+        parkActiveGestureTarget()
+        NativePlayerArtworkBridge.setRatio(nativeHandle, 0f)
+
+        direction = newDirection
+        automaticFadeOnly = false
+        automaticCrossfadeArtworkFade = false
+        targetAutoSettle = false
+        pendingCommit = false
+        targetKey = key
+        targetQuality = 0
+        targetToken = takeGestureSlot(newDirection, key)?.also { slot ->
+            targetQuality = slot.quality
+        }?.token ?: 0
+        ratio = 0f
+
+        if (targetToken != 0) {
+            NativePlayerArtworkBridge.setArtwork(
+                nativeHandle,
+                targetToken,
+                primary = false,
+                requestGeneration = generation,
+                durationMs = 0,
+            )
+        } else {
+            installCachedTarget(key)
+            requestArtwork(key)
+            if (targetToken == 0) installPlaceholder(key, primary = false)
+        }
+        NativePlayerArtworkBridge.setRatio(nativeHandle, 0f)
+        publishFrame(0L)
     }
 
     /** Returns whether the gesture committed to a song change. */
@@ -322,8 +465,18 @@ class PlaybackArtworkTransitionState internal constructor(
         }
         isGestureActive = false
         pendingCommit = commit
-        pendingGestureCommit = if (commit) onCommit else null
-        settleTo(if (commit) 1f else 0f, towardTargetSpeed)
+        pendingGestureCommit = null
+        if (commit) {
+            // Commit transport ownership as soon as the pointer decision is final, while the visual
+            // lane continues settling independently. Waiting until ratio == 1 left the queue one
+            // full animation behind and let a rapid follow-up drag reuse stale neighbours.
+            committedGestureKey = targetKey
+            committedGestureDirection = direction
+            settleTo(1f, towardTargetSpeed)
+            onCommit()
+        } else {
+            settleTo(0f, towardTargetSpeed)
+        }
         return commit
     }
 
@@ -353,6 +506,12 @@ class PlaybackArtworkTransitionState internal constructor(
         isSettling = false
         pendingCommit = true
         pendingGestureCommit = onCommit
+        // Button navigation is authoritative even when shuffle traversal jumps to a physically
+        // earlier/later queue index. Keep the requested direction attached to the exact artwork
+        // key until the player confirms it; inferring from queue indexes can reverse Next/Previous.
+        directionHint = direction
+        directionHintDeadlineMs = SystemClock.uptimeMillis() + 4_000L
+        expectedHintKey = key
         expectPlayerBinding(key, expectedQueueIndex)
         beginTarget(direction, key, autoSettle = true)
         return targetKey == key
@@ -411,7 +570,13 @@ class PlaybackArtworkTransitionState internal constructor(
         // refresh or cold restore) is rebound immediately.
         val isAutomaticQueueAdvance = oldIndex >= 0 && queueIndex >= 0 && oldIndex != queueIndex && queueSize > 1
         if (isAutomaticQueueAdvance) {
-            beginTarget(resolvedDirection, key, autoSettle = true)
+            beginTarget(
+                resolvedDirection,
+                key,
+                autoSettle = true,
+                fadeOnly = hinted == null,
+                autoCrossfadeFade = hinted == null && automaticCrossfadeVisualEnabled,
+            )
         } else {
             direction = resolvedDirection
             resetToBoundSong(key)
@@ -435,7 +600,12 @@ class PlaybackArtworkTransitionState internal constructor(
         }
         target?.let {
             if (progress > 0f) {
-                add(PlaybackArtworkBackgroundLayer(targetToken, it.key, progress))
+                val targetAlpha = if (automaticCrossfadeArtworkFade) {
+                    smoothArtworkFadeProgress(progress)
+                } else {
+                    progress
+                }
+                add(PlaybackArtworkBackgroundLayer(targetToken, it.key, targetAlpha))
             }
         }
         if (isEmpty() && current != null) {
@@ -445,6 +615,8 @@ class PlaybackArtworkTransitionState internal constructor(
 
     internal fun foregroundCurrentToken(): Int = currentToken
     internal fun foregroundTargetToken(): Int = targetToken
+    internal fun isAutomaticOutgoingSuppressed(token: Int): Boolean =
+        token != 0 && token == suppressedAutomaticOutgoingToken
     /**
      * Returns the artwork currently owned by the foreground transition.
      *
@@ -482,11 +654,15 @@ class PlaybackArtworkTransitionState internal constructor(
     private fun beginTarget(
         newDirection: PlayerArtworkDirection,
         key: String,
-        autoSettle: Boolean
+        autoSettle: Boolean,
+        fadeOnly: Boolean = false,
+        autoCrossfadeFade: Boolean = false,
     ) {
         if (closed || key.isBlank() || key == currentKey) return
         if (targetKey == key) {
             direction = newDirection
+            automaticFadeOnly = automaticFadeOnly || fadeOnly
+            automaticCrossfadeArtworkFade = automaticCrossfadeArtworkFade || autoCrossfadeFade
             targetAutoSettle = targetAutoSettle || autoSettle
             requestArtwork(key)
             if (targetToken != 0 && targetAutoSettle && !isGestureActive && !isSettling) settleTo(1f, 0f)
@@ -495,12 +671,30 @@ class PlaybackArtworkTransitionState internal constructor(
 
         resolveInterruptedTargetForNewRequest()
         direction = newDirection
+        automaticFadeOnly = fadeOnly
+        automaticCrossfadeArtworkFade = autoCrossfadeFade
+        suppressedAutomaticOutgoingToken = 0
         targetKey = key
-        targetToken = 0
+        targetToken = takeGestureSlot(newDirection, key)?.also { slot ->
+            targetQuality = slot.quality
+        }?.token ?: 0
         lastNativeFrameNs = SystemClock.elapsedRealtimeNanos()
-        targetQuality = 0
+        if (targetToken == 0) targetQuality = 0
         targetAutoSettle = autoSettle
         pendingCommit = false
+        if (targetToken != 0) {
+            NativePlayerArtworkBridge.setArtwork(
+                nativeHandle,
+                targetToken,
+                primary = false,
+                requestGeneration = generation,
+                durationMs = 0,
+            )
+            NativePlayerArtworkBridge.setRatio(nativeHandle, ratio)
+            publishFrame(0L)
+        } else {
+            installCachedTarget(key)
+        }
         requestArtwork(key)
         if (targetToken == 0 && !autoSettle) {
             // Keep interactive dragging responsive. Button-driven switching waits for the exact
@@ -508,6 +702,34 @@ class PlaybackArtworkTransitionState internal constructor(
             installPlaceholder(key, primary = false)
         }
         if (targetAutoSettle && targetToken != 0 && !isGestureActive) settleTo(1f, 0f)
+    }
+
+    private fun installCachedTarget(key: String) {
+        val cached = CoilArtworkRuntime.peekBitmap(
+            context = context,
+            key = key,
+            width = ARTWORK_TARGET_SIDE,
+            height = ARTWORK_TARGET_SIDE,
+            surface = ArtworkSurface.Playback
+        )?.takeUnless(Bitmap::isRecycled) ?: return
+        targetToken = nextToken()
+        targetQuality = ArtworkDisplayResolver.QUALITY_ANY
+        visuals[targetToken] = ArtworkVisual(
+            key = key,
+            bitmap = cached,
+            quality = ArtworkDisplayResolver.QUALITY_ANY,
+            handle = null,
+            ownedBitmap = false
+        )
+        NativePlayerArtworkBridge.setArtwork(
+            nativeHandle,
+            targetToken,
+            primary = false,
+            requestGeneration = generation,
+            durationMs = 0
+        )
+        NativePlayerArtworkBridge.setRatio(nativeHandle, ratio)
+        publishFrame(0L)
     }
 
     /**
@@ -545,9 +767,87 @@ class PlaybackArtworkTransitionState internal constructor(
         targetToken = 0
         targetQuality = 0
         targetAutoSettle = false
+        automaticFadeOnly = false
+        automaticCrossfadeArtworkFade = false
         pendingCommit = false
         publishFrame(0L)
         releaseUnusedVisuals()
+    }
+
+    private fun gestureSlot(direction: PlayerArtworkDirection): GestureArtworkSlot? =
+        when (direction) {
+            PlayerArtworkDirection.Previous -> gesturePreviousSlot
+            PlayerArtworkDirection.Next -> gestureNextSlot
+        }
+
+    private fun setGestureSlot(
+        direction: PlayerArtworkDirection,
+        slot: GestureArtworkSlot?,
+    ) {
+        when (direction) {
+            PlayerArtworkDirection.Previous -> gesturePreviousSlot = slot
+            PlayerArtworkDirection.Next -> gestureNextSlot = slot
+        }
+    }
+
+    private fun retainMatchingGestureSlot(
+        slot: GestureArtworkSlot?,
+        key: String,
+    ): GestureArtworkSlot? {
+        if (slot == null) return null
+        return slot.takeIf {
+            key.isNotBlank() && it.key == key && it.key != currentKey && visuals.containsKey(it.token)
+        }
+    }
+
+    private fun takeGestureSlot(
+        direction: PlayerArtworkDirection,
+        key: String,
+    ): GestureArtworkSlot? {
+        val slot = gestureSlot(direction)?.takeIf {
+            it.key == key && visuals.containsKey(it.token)
+        } ?: return null
+        setGestureSlot(direction, null)
+        return slot
+    }
+
+    private fun parkGestureSlot(
+        direction: PlayerArtworkDirection,
+        key: String,
+        token: Int,
+        quality: Int,
+    ) {
+        if (key.isBlank() || token == 0 || token == currentToken || !visuals.containsKey(token)) return
+        setGestureSlot(direction, GestureArtworkSlot(key, token, quality))
+    }
+
+    private fun parkActiveGestureTarget() {
+        parkGestureSlot(direction, targetKey, targetToken, targetQuality)
+        targetKey = ""
+        targetToken = 0
+        targetQuality = 0
+        targetAutoSettle = false
+    }
+
+    private fun parkedGestureSlotForKey(key: String): Pair<PlayerArtworkDirection, GestureArtworkSlot>? {
+        gesturePreviousSlot?.takeIf { it.key == key }?.let {
+            return PlayerArtworkDirection.Previous to it
+        }
+        gestureNextSlot?.takeIf { it.key == key }?.let {
+            return PlayerArtworkDirection.Next to it
+        }
+        return null
+    }
+
+    private fun clearGestureSlotByToken(token: Int) {
+        if (token == 0) return
+        if (gesturePreviousSlot?.token == token) gesturePreviousSlot = null
+        if (gestureNextSlot?.token == token) gestureNextSlot = null
+    }
+
+    private fun clearGestureSessionSlots() {
+        gesturePreviousSlot = null
+        gestureNextSlot = null
     }
 
     private fun discardTarget() {
@@ -561,8 +861,11 @@ class PlaybackArtworkTransitionState internal constructor(
         targetToken = 0
         targetQuality = 0
         targetAutoSettle = false
+        automaticFadeOnly = false
+        automaticCrossfadeArtworkFade = false
         pendingCommit = false
         ratio = 0f
+        suppressedAutomaticOutgoingToken = 0
         publishFrame(0L)
         releaseUnusedVisuals()
     }
@@ -575,6 +878,8 @@ class PlaybackArtworkTransitionState internal constructor(
         isSettling = false
         isGestureActive = false
         pendingCommit = false
+        automaticFadeOnly = false
+        automaticCrossfadeArtworkFade = false
         clearExpectedPlayerBinding()
         discardTarget()
 
@@ -595,58 +900,32 @@ class PlaybackArtworkTransitionState internal constructor(
 
     private fun requestArtwork(key: String) {
         if (key.isBlank() || loads.containsKey(key) || closed) return
-        BitmapProvider.warmPlaybackArt(key)
-
-        val cached = ArtworkDisplayResolver.acquirePlayback(
-            key = key,
-            lowResSize = AlbumArtTiers.HI_RES_SIDE,
-            hiResSize = ARTWORK_TARGET_SIDE,
-            surface = ArtworkSurface.Playback
-        )
-        if (cached?.handle?.isValid == true) {
-            acceptHandle(key, cached.handle, cached.quality)
-        } else {
-            cached?.handle?.release()
-        }
-
-        val lowRequest = BitmapProvider.loadThumbnail(
-            key = key,
-            targetWidth = AlbumArtTiers.HI_RES_SIDE,
-            targetHeight = AlbumArtTiers.HI_RES_SIDE,
-            priority = BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
-            surface = ArtworkSurface.Playback
-        ) { bitmap ->
-            val handle = BitmapProvider.acquireLoaded(
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            val bitmap = CoilArtworkRuntime.executeBitmap(
+                context = context,
                 key = key,
-                bitmap = bitmap,
-                targetWidth = AlbumArtTiers.HI_RES_SIDE,
-                targetHeight = AlbumArtTiers.HI_RES_SIDE,
+                width = ARTWORK_TARGET_SIDE,
+                height = ARTWORK_TARGET_SIDE,
                 surface = ArtworkSurface.Playback
             )
-            if (handle != null) acceptHandle(key, handle, ArtworkDisplayResolver.QUALITY_LOW)
-        }
-
-        val highRequest = BitmapProvider.load(
-            key = key,
-            targetWidth = ARTWORK_TARGET_SIDE,
-            targetHeight = ARTWORK_TARGET_SIDE,
-            priority = BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
-            surface = ArtworkSurface.Playback
-        ) { bitmap ->
-            val handle = BitmapProvider.acquireLoaded(
-                key = key,
-                bitmap = bitmap,
-                targetWidth = ARTWORK_TARGET_SIDE,
-                targetHeight = ARTWORK_TARGET_SIDE,
-                surface = ArtworkSurface.Playback
-            )
-            if (handle != null) {
-                acceptHandle(key, handle, ArtworkDisplayResolver.QUALITY_HIGH)
-            } else if (shouldShowDefaultAlbumArtwork(key, ARTWORK_TARGET_SIDE, ARTWORK_TARGET_SIDE)) {
+            if (bitmap != null && !bitmap.isRecycled) {
+                acceptHandle(
+                    key = key,
+                    handle = ArtworkHandle(
+                        sourceKey = key,
+                        tier = ArtworkTier.Full,
+                        surface = ArtworkSurface.Playback,
+                        bitmap = bitmap,
+                        onRelease = {}
+                    ),
+                    quality = ArtworkDisplayResolver.QUALITY_HIGH
+                )
+            } else {
                 acceptTerminalNoArtwork(key)
             }
         }
-        loads[key] = ArtworkLoad(lowRequest, highRequest)
+        loads[key] = ArtworkLoad(job)
+        job.start()
     }
 
     private fun acceptHandle(key: String, handle: ArtworkHandle?, quality: Int) {
@@ -711,7 +990,22 @@ class PlaybackArtworkTransitionState internal constructor(
                 beginTarget(direction, key, autoSettle = true)
                 acceptHandle(key, handle, quality)
             }
-            else -> handle.release()
+            else -> {
+                val parked = parkedGestureSlotForKey(key)
+                if (parked == null || quality <= parked.second.quality) {
+                    handle.release()
+                } else {
+                    replaceVisual(
+                        parked.second.token,
+                        ArtworkVisual(key, handle.bitmap, quality, handle, false),
+                    )
+                    setGestureSlot(
+                        parked.first,
+                        parked.second.copy(quality = quality),
+                    )
+                    publishFrame(0L)
+                }
+            }
         }
     }
 
@@ -825,6 +1119,8 @@ class PlaybackArtworkTransitionState internal constructor(
         val velocityDriven = velocityDrivenSpeed > 0f
         val durationMs = if (velocityDriven) {
             ((distance / velocityDrivenSpeed) * 1000f).roundToInt().coerceAtLeast(1)
+        } else if (target >= 1f && automaticCrossfadeArtworkFade) {
+            AUTO_CROSSFADE_ARTWORK_FADE_IN_MS
         } else if (target >= 1f) {
             ARTWORK_COMMIT_SETTLE_MS
         } else {
@@ -838,7 +1134,9 @@ class PlaybackArtworkTransitionState internal constructor(
                 val now = withFrameNanos { it }
                 val linear = ((now - startNs).toDouble() /
                     (durationMs * 1_000_000.0)).toFloat().coerceIn(0f, 1f)
-                val eased = if (velocityDriven) {
+                val eased = if (velocityDriven || automaticCrossfadeArtworkFade) {
+                    // Auto Crossfade artwork owns its easing per lane below. Keep the shared ratio
+                    // as a linear 0..1 clock so 1000ms out / 1200ms in are physically accurate.
                     linear
                 } else {
                     // Android's AccelerateDecelerateInterpolator used by PowerList transitions.
@@ -873,23 +1171,31 @@ class PlaybackArtworkTransitionState internal constructor(
                 targetToken = 0
                 targetQuality = 0
                 targetAutoSettle = false
+                automaticFadeOnly = false
+                automaticCrossfadeArtworkFade = false
                 pendingCommit = false
                 pendingGestureCommit = null
                 ratio = 0f
+                suppressedAutomaticOutgoingToken = 0
                 publishFrame(0L)
                 releaseUnusedVisuals()
                 return
             }
             val committedKey = targetKey
+            val promotedToken = targetToken
             generation += 1
             NativePlayerArtworkBridge.commit(nativeHandle, generation, 0)
             currentKey = targetKey
             currentToken = targetToken
             currentQuality = targetQuality
+            clearGestureSlotByToken(promotedToken)
+            clearGestureSessionSlots()
             targetKey = ""
             targetToken = 0
             targetQuality = 0
             targetAutoSettle = false
+            automaticFadeOnly = false
+            automaticCrossfadeArtworkFade = false
             pendingCommit = false
             ratio = 0f
             val gestureCommit = pendingGestureCommit
@@ -903,15 +1209,22 @@ class PlaybackArtworkTransitionState internal constructor(
             }
         } else if (end <= 0f) {
             NativePlayerArtworkBridge.commit(nativeHandle, 0, 0)
-            targetToken.takeIf { it != 0 }?.let { visuals.remove(it)?.release() }
+            val rolledBackToken = targetToken
             clearLoad(targetKey)
             targetKey = ""
             targetToken = 0
             targetQuality = 0
             targetAutoSettle = false
+            clearGestureSessionSlots()
+            rolledBackToken.takeIf { it != 0 && it != currentToken }?.let {
+                visuals.remove(it)?.release()
+            }
+            automaticFadeOnly = false
+            automaticCrossfadeArtworkFade = false
             pendingCommit = false
             pendingGestureCommit = null
             ratio = 0f
+            suppressedAutomaticOutgoingToken = 0
             publishFrame(0L)
             releaseUnusedVisuals()
         }
@@ -919,6 +1232,13 @@ class PlaybackArtworkTransitionState internal constructor(
 
     private fun setRatioFromUi(value: Float) {
         val clamped = value.coerceIn(0f, 1f)
+        if (
+            automaticCrossfadeArtworkFade &&
+            currentToken != 0 &&
+            clamped * AUTO_CROSSFADE_ARTWORK_FADE_IN_MS >= AUTO_CROSSFADE_ARTWORK_FADE_OUT_MS
+        ) {
+            suppressedAutomaticOutgoingToken = currentToken
+        }
         NativePlayerArtworkBridge.setRatio(nativeHandle, clamped)
         val now = SystemClock.elapsedRealtimeNanos()
         val delta = if (lastNativeFrameNs == 0L) 0L else (now - lastNativeFrameNs).coerceAtLeast(0L)
@@ -975,10 +1295,7 @@ class PlaybackArtworkTransitionState internal constructor(
 
     private fun clearLoad(key: String) {
         if (key.isBlank()) return
-        loads.remove(key)?.let { load ->
-            load.low?.let { BitmapProvider.cancel(it, keepDecoding = true) }
-            load.high?.let { BitmapProvider.cancel(it, keepDecoding = true) }
-        }
+        loads.remove(key)?.job?.cancel()
     }
 
     private fun replaceVisual(token: Int, visual: ArtworkVisual) {
@@ -990,6 +1307,8 @@ class PlaybackArtworkTransitionState internal constructor(
         val retained = drawCommands.mapTo(mutableSetOf()) { it.token }
         if (currentToken != 0) retained += currentToken
         if (targetToken != 0) retained += targetToken
+        gesturePreviousSlot?.token?.takeIf { it != 0 }?.let(retained::add)
+        gestureNextSlot?.token?.takeIf { it != 0 }?.let(retained::add)
         val stale = visuals.keys.filterNot { it in retained }
         stale.forEach { token -> visuals.remove(token)?.release() }
     }
@@ -1013,13 +1332,12 @@ class PlaybackArtworkTransitionState internal constructor(
         closed = true
         transitionJob?.cancel()
         nativePumpJob?.cancel()
-        loads.values.forEach { load ->
-            load.low?.let { BitmapProvider.cancel(it, keepDecoding = true) }
-            load.high?.let { BitmapProvider.cancel(it, keepDecoding = true) }
-        }
+        loads.values.forEach { it.job.cancel() }
         loads.clear()
         visuals.values.forEach { it.release() }
         visuals.clear()
+        gesturePreviousSlot = null
+        gestureNextSlot = null
         drawCommands = emptyList()
         NativePlayerArtworkBridge.destroy(nativeHandle)
     }
@@ -1029,14 +1347,16 @@ class PlaybackArtworkTransitionState internal constructor(
 fun rememberPlaybackArtworkTransitionState(
     currentKey: String?,
     queueCurrentIndex: Int,
-    queueSize: Int
+    queueSize: Int,
+    automaticCrossfadeEnabled: Boolean = false,
 ): PlaybackArtworkTransitionState {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current.applicationContext
     val state = remember(context) { PlaybackArtworkTransitionState(scope, context) }
     val key = currentKey.orEmpty()
 
-    LaunchedEffect(key, queueCurrentIndex, queueSize) {
+    LaunchedEffect(key, queueCurrentIndex, queueSize, automaticCrossfadeEnabled) {
+        state.setAutomaticCrossfadeVisualEnabled(automaticCrossfadeEnabled)
         state.bindSong(key, queueCurrentIndex, queueSize)
     }
     DisposableEffect(Unit) {
@@ -1046,9 +1366,8 @@ fun rememberPlaybackArtworkTransitionState(
 }
 
 /**
- * Horizontal track gesture used by the immersive clear-art area.
- * The first horizontal direction locks the adjacent song for the full gesture; dragging back toward
- * the origin reverses progress without accidentally selecting the opposite neighbour.
+ * Horizontal track gesture used by the immersive clear-art area. The signed drag remains continuous
+ * across the centre item, allowing one pointer sequence to move between both adjacent songs.
  */
 @OptIn(ExperimentalFoundationApi::class)
 fun Modifier.playbackArtworkSwipeGesture(
@@ -1094,11 +1413,7 @@ fun Modifier.playbackArtworkSwipeGesture(
             var gestureStarted = false
             var velocityTracker = VelocityTracker()
 
-            fun progressForDirection(): Float = when (direction) {
-                PlayerArtworkDirection.Next -> (-dragX / widthPx).coerceIn(0f, 1f)
-                PlayerArtworkDirection.Previous -> (dragX / widthPx).coerceIn(0f, 1f)
-                null -> 0f
-            }
+            fun signedPosition(): Float = (dragX / widthPx).coerceIn(-1f, 1f)
 
             detectHorizontalDragGestures(
                 onDragStart = {
@@ -1127,20 +1442,26 @@ fun Modifier.playbackArtworkSwipeGesture(
                         }
                     }
                     if (gestureStarted) {
-                        state.updateGesture(progressForDirection())
+                        state.updateContinuousGesture(
+                            signedDragPosition = signedPosition(),
+                            previousKey = latestPreviousKey,
+                            nextKey = latestNextKey,
+                        )
+                        direction = state.direction
                         change.consume()
                     }
                 },
                 onDragEnd = {
                     if (gestureStarted) {
                         val velocityX = velocityTracker.calculateVelocity().x
+                        val commitDirection = state.direction
                         state.endGesture(
-                            progress = progressForDirection(),
+                            progress = state.ratio,
                             velocityPxPerSecond = velocityX,
                             artworkWidthPx = widthPx,
                             density = density
                         ) {
-                            when (direction) {
+                            when (commitDirection) {
                                 PlayerArtworkDirection.Previous -> latestOnPrevious()
                                 PlayerArtworkDirection.Next -> latestOnNext()
                                 null -> Unit
@@ -1158,6 +1479,19 @@ fun Modifier.playbackArtworkSwipeGesture(
 }
 
 /** Geometry for one standard-player foreground artwork item. */
+private fun plainArtworkAlphaTransform(alpha: Float) = ForegroundItemTransform(
+    translationX = 0f,
+    scaleX = 1f,
+    scaleY = 1f,
+    rotationZ = 0f,
+    rotationX = 0f,
+    rotationY = 0f,
+    alpha = alpha.coerceIn(0f, 1f),
+    cameraDistance = null,
+    pivotFractionX = 0.5f,
+    pivotFractionY = 0.5f,
+)
+
 internal data class ForegroundItemTransform(
     val translationX: Float,
     val scaleX: Float,
@@ -1217,46 +1551,48 @@ private fun inwardCarouselTransform(
 /**
  * Perspective transform for the standard player.
  *
- * `logicalDistance` is the signed item distance from the selected center: 0 for the selected item
- * and -1/+1 for adjacent slots. The transform uses a dense horizontal step, distance-based scale and
- * small X/Y/Z rotations. Each axis can use absolute distance or signed direction. Artwork, title,
- * artist and item-local controls receive the same transform.
+ * The preference name is retained for compatibility. Artwork and text use the same signed slot
+ * distance so a reversal remains one continuous perspective track rather than two flat pages.
  */
 private fun perspectiveDepthTransform(
     role: PlayerArtworkItemRole,
     direction: PlayerArtworkDirection,
     progress: Float,
-    itemExtentPx: Float
+    itemExtentPx: Float,
+    density: Float,
 ): ForegroundItemTransform {
     val p = progress.coerceIn(0f, 1f)
     val signedDistance = when (role) {
         PlayerArtworkItemRole.Current -> -direction.sign.toFloat() * p
         PlayerArtworkItemRole.Target -> direction.sign.toFloat() * (1f - p)
     }.coerceIn(-1f, 1f)
-    val absoluteDistance = abs(signedDistance)
     val extent = itemExtentPx.coerceAtLeast(1f)
-
-    fun rotationInput(useAbsoluteDistance: Boolean): Float =
-        if (useAbsoluteDistance) absoluteDistance else signedDistance
-
+    val absoluteDistance = abs(signedDistance)
     val scale = 1f - (1f - PERSPECTIVE_MIN_SCALE) * absoluteDistance
     return ForegroundItemTransform(
         translationX = signedDistance * extent * PERSPECTIVE_DENSE_FACTOR,
         scaleX = scale,
         scaleY = scale,
-        rotationZ = rotationInput(PERSPECTIVE_ABS_ROTATION_Z) *
-            PERSPECTIVE_MAX_ROTATION_Z_DEGREES,
-        rotationX = rotationInput(PERSPECTIVE_ABS_ROTATION_X) *
-            PERSPECTIVE_MAX_ROTATION_X_DEGREES,
-        rotationY = rotationInput(PERSPECTIVE_ABS_ROTATION_Y) *
-            PERSPECTIVE_MAX_ROTATION_Y_DEGREES,
-        alpha = foregroundItemAlpha(absoluteDistance),
-        // AAItemView only forces 10000px on Android <= 27. On modern Android it leaves the View
-        // camera distance untouched, so the default style must not inject a made-up distance.
-        cameraDistance = null,
+        rotationZ = signedDistance * PERSPECTIVE_MAX_ROTATION_Z_DEGREES,
+        rotationX = absoluteDistance * PERSPECTIVE_MAX_ROTATION_X_DEGREES,
+        rotationY = signedDistance * PERSPECTIVE_MAX_ROTATION_Y_DEGREES,
+        alpha = powerampPerspectiveAlpha(absoluteDistance),
+        // Android View's default camera distance is 1280dp. Compose uses a much shorter default,
+        // which exaggerates Poweramp's small rotations into a severe trapezoid on dense screens.
+        cameraDistance = ANDROID_VIEW_DEFAULT_CAMERA_DISTANCE_DP * density.coerceAtLeast(0.1f),
         pivotFractionX = 0.5f,
         pivotFractionY = 0.5f
     )
+}
+
+private fun powerampPerspectiveAlpha(distanceFromCenter: Float): Float {
+    val visibleAmount = (1f - distanceFromCenter.coerceIn(0f, 1f)).coerceIn(0f, 1f)
+    return if (visibleAmount < PERSPECTIVE_ALPHA_CUTOFF) {
+        0f
+    } else {
+        ((visibleAmount - PERSPECTIVE_ALPHA_CUTOFF) * PERSPECTIVE_ALPHA_NORMALIZER)
+            .coerceIn(0f, 1f)
+    }
 }
 
 /** Pure page translation option. No alpha, scale, or 3D transform is applied. */
@@ -1290,13 +1626,15 @@ internal fun playerArtworkForegroundTransform(
     role: PlayerArtworkItemRole,
     direction: PlayerArtworkDirection,
     progress: Float,
-    itemExtentPx: Float
+    itemExtentPx: Float,
+    density: Float,
 ): ForegroundItemTransform = when (style) {
     PlayerArtworkAnimationStyle.PerspectiveDepth -> perspectiveDepthTransform(
         role = role,
         direction = direction,
         progress = progress,
-        itemExtentPx = itemExtentPx
+        itemExtentPx = itemExtentPx,
+        density = density,
     )
     PlayerArtworkAnimationStyle.InwardCarousel -> {
         val logicalDistance = when (role) {
@@ -1312,6 +1650,23 @@ internal fun playerArtworkForegroundTransform(
         itemExtentPx = itemExtentPx
     )
 }
+
+/** Title metadata remains attached to the same transformed slot as its artwork. */
+internal fun playerArtworkTitleTransform(
+    style: PlayerArtworkAnimationStyle,
+    role: PlayerArtworkItemRole,
+    direction: PlayerArtworkDirection,
+    progress: Float,
+    itemExtentPx: Float,
+    density: Float,
+): ForegroundItemTransform = playerArtworkForegroundTransform(
+    style = style,
+    role = role,
+    direction = direction,
+    progress = progress,
+    itemExtentPx = itemExtentPx,
+    density = density,
+)
 
 internal fun foregroundItemAlpha(distanceFromCenter: Float): Float = when {
     distanceFromCenter >= ARTWORK_ALPHA_ZERO_DISTANCE -> 0f
@@ -1329,6 +1684,20 @@ internal fun foregroundItemAlpha(distanceFromCenter: Float): Float = when {
  * non-zero progress frame; native code remains responsible only for the fixed-position background
  * blend.
  */
+private fun smoothArtworkFadeProgress(value: Float): Float {
+    val t = value.coerceIn(0f, 1f)
+    return t * t * (3f - 2f * t)
+}
+
+private fun automaticCrossfadeArtworkOutAlpha(progress: Float): Float {
+    val elapsedMs = progress.coerceIn(0f, 1f) * AUTO_CROSSFADE_ARTWORK_FADE_IN_MS
+    val outProgress = (elapsedMs / AUTO_CROSSFADE_ARTWORK_FADE_OUT_MS).coerceIn(0f, 1f)
+    return 1f - smoothArtworkFadeProgress(outProgress)
+}
+
+private fun automaticCrossfadeArtworkInAlpha(progress: Float): Float =
+    smoothArtworkFadeProgress(progress)
+
 @Composable
 fun PlaybackArtworkTransition(
     state: PlaybackArtworkTransitionState,
@@ -1339,26 +1708,56 @@ fun PlaybackArtworkTransition(
 ) {
     @Suppress("UNUSED_VARIABLE")
     val redraw = state.frameVersion
-    val current = state.visual(state.foregroundCurrentToken())
+    val currentToken = state.foregroundCurrentToken()
+    val current = state.visual(currentToken)
     val target = state.visual(state.foregroundTargetToken())
     val progress = state.ratio.coerceIn(0f, 1f)
+    val outgoingSuppressed = state.isAutomaticOutgoingSuppressed(currentToken)
 
-    BoxWithConstraints(modifier = modifier.clipToBounds()) {
+    // Poweramp's player list explicitly disables child clipping. The side slot is therefore
+    // allowed to keep its full perspective silhouette while crossing the artwork bounds instead
+    // of being reduced to a narrow, page-like strip at the edge.
+    BoxWithConstraints(modifier = modifier) {
         val itemExtentPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
-        val currentTransform = playerArtworkForegroundTransform(
-            style = animationStyle,
-            role = PlayerArtworkItemRole.Current,
-            direction = state.direction,
-            progress = progress,
-            itemExtentPx = itemExtentPx
-        )
-        val targetTransform = playerArtworkForegroundTransform(
-            style = animationStyle,
-            role = PlayerArtworkItemRole.Target,
-            direction = state.direction,
-            progress = progress,
-            itemExtentPx = itemExtentPx
-        )
+        val density = LocalDensity.current.density
+        val currentTransform = if (outgoingSuppressed) {
+            // The old auto-crossfade token has already reached alpha zero. Keep it retired even
+            // if automaticFadeOnly momentarily flips during the queue/slot commit boundary.
+            plainArtworkAlphaTransform(0f)
+        } else if (state.automaticFadeOnly) {
+            val alpha = if (state.automaticCrossfadeArtworkFade) {
+                automaticCrossfadeArtworkOutAlpha(progress)
+            } else {
+                1f - progress
+            }
+            plainArtworkAlphaTransform(alpha)
+        } else {
+            playerArtworkForegroundTransform(
+                style = animationStyle,
+                role = PlayerArtworkItemRole.Current,
+                direction = state.direction,
+                progress = progress,
+                itemExtentPx = itemExtentPx,
+                density = density,
+            )
+        }
+        val targetTransform = if (state.automaticFadeOnly) {
+            val alpha = if (state.automaticCrossfadeArtworkFade) {
+                automaticCrossfadeArtworkInAlpha(progress)
+            } else {
+                progress
+            }
+            plainArtworkAlphaTransform(alpha)
+        } else {
+            playerArtworkForegroundTransform(
+                style = animationStyle,
+                role = PlayerArtworkItemRole.Target,
+                direction = state.direction,
+                progress = progress,
+                itemExtentPx = itemExtentPx,
+                density = density,
+            )
+        }
 
         if (current == null && target == null) {
             Box(
@@ -1401,14 +1800,15 @@ fun PlaybackArtworkTransition(
             }
         }
 
-        // Draw the item closer to the center last for every transition style. This avoids visible
-        // identity swaps at gesture start.
-        if (progress < 0.5f) {
-            ArtworkItem(target, targetTransform)
+        // Recycler child order is stable for the whole Poweramp transition: the higher queue index
+        // is drawn last. Do not swap Z order at 50%, because that creates a visible midpoint pop in
+        // a perspective transition even when both transforms are otherwise identical.
+        if (state.direction == PlayerArtworkDirection.Next) {
             ArtworkItem(current, currentTransform)
+            ArtworkItem(target, targetTransform)
         } else {
-            ArtworkItem(current, currentTransform)
             ArtworkItem(target, targetTransform)
+            ArtworkItem(current, currentTransform)
         }
     }
 }

@@ -11,6 +11,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -65,7 +67,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.sp
@@ -86,6 +87,14 @@ import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sin
+
+private val AM_LYRIC_BG_GEOMETRY_EASING = CubicBezierEasing(0.4f, 0.1f, 0.0f, 1.0f)
+private val AM_LYRIC_BG_ALPHA_OUT_EASING = CubicBezierEasing(0.39f, 0.575f, 0.565f, 1.0f)
+private const val AM_LYRIC_BG_HEIGHT_MS = 750
+private const val AM_LYRIC_BG_SCALE_MS = 500
+private const val AM_LYRIC_BG_ALPHA_OUT_MS = 250
+private const val AM_LYRIC_BG_ENTER_SCALE_DELAY_MS = 638 // round(750 * 0.85)
+private const val AM_LYRIC_BG_EXIT_HEIGHT_DELAY_MS = 50 // round(250 * 0.2)
 
 enum class LyricTextPosition(val value: Int) {
     Left(0),
@@ -172,6 +181,7 @@ fun ComposeLyricView(
     onLineClick: (Long) -> Unit = {},
     onDoubleTap: (() -> Unit)? = null,
     onSwipeRight: () -> Unit = {},
+    swipeRightGestureEnabled: Boolean = true,
     onSwipeRightStart: (() -> Unit)? = null,
     onSwipeRightProgress: ((Float) -> Unit)? = null,
     onSwipeRightEnd: ((Boolean, Float) -> Unit)? = null
@@ -319,12 +329,18 @@ fun ComposeLyricView(
                 .then(doubleTapObserver)
                 .graphicsLayer { translationY = compactStackOffset.value }
                 .onSizeChanged { lyricPullField.updateViewportHeight(it.height) }
-                .observeLyricSwipeRight(
-                    onSwipeRight = onSwipeRight,
-                    onSwipeRightStart = onSwipeRightStart,
-                    onSwipeRightProgress = onSwipeRightProgress,
-                    onSwipeRightEnd = onSwipeRightEnd,
-                    density = gestureDensity
+                .then(
+                    if (swipeRightGestureEnabled) {
+                        Modifier.observeLyricSwipeRight(
+                            onSwipeRight = onSwipeRight,
+                            onSwipeRightStart = onSwipeRightStart,
+                            onSwipeRightProgress = onSwipeRightProgress,
+                            onSwipeRightEnd = onSwipeRightEnd,
+                            density = gestureDensity
+                        )
+                    } else {
+                        Modifier
+                    }
                 )
         ) {
             val activeInterlude = playbackState.activeInterlude
@@ -693,12 +709,18 @@ fun ComposeLyricView(
                 listViewportHeightPx = it.height
                 lyricPullField.updateViewportHeight(it.height)
             }
-            .observeLyricSwipeRight(
-                onSwipeRight = onSwipeRight,
-                onSwipeRightStart = onSwipeRightStart,
-                onSwipeRightProgress = onSwipeRightProgress,
-                onSwipeRightEnd = onSwipeRightEnd,
-                density = gestureDensity
+            .then(
+                if (swipeRightGestureEnabled) {
+                    Modifier.observeLyricSwipeRight(
+                        onSwipeRight = onSwipeRight,
+                        onSwipeRightStart = onSwipeRightStart,
+                        onSwipeRightProgress = onSwipeRightProgress,
+                        onSwipeRightEnd = onSwipeRightEnd,
+                        density = gestureDensity
+                    )
+                } else {
+                    Modifier
+                }
             ),
         contentPadding = PaddingValues(top = topPadding, bottom = anchoredBottomPadding),
         verticalArrangement = Arrangement.spacedBy(20.dp),
@@ -750,15 +772,16 @@ fun ComposeLyricView(
                         modifier = Modifier
                             .fillMaxWidth()
                             .onSizeChanged { lyricPullField.updateRowHeight(index, it.height) }
-                            .lyricPullPlacement(
-                                if (userScrolling) 0f else lyricPullField.offsetPx(index)
-                            )
                             .lyricLineVisuals(
                                 active = active,
                                 signedDistance = index - anchorIndex,
                                 pivotFractionX = resolvedPosition.pivotFractionX,
                                 blurEnabled = blurEnabled && !userScrolling,
-                                highlightAll = highlightAll
+                                highlightAll = highlightAll,
+                                pullField = lyricPullField,
+                                pullIndex = index,
+                                pullEnabled = !userScrolling,
+                                motionActive = lyricPullField.running
                             )
                             .clickable {
                                 pendingManualSeekLineIndex = index
@@ -958,10 +981,58 @@ private fun ComposeLyricLine(
                 ?: line.end.takeIf { it > backgroundStart }
                 ?: (backgroundStart + 3_000L)
             val backgroundActive = active && positionMs in backgroundStart until backgroundEnd
+            val backgroundTransformOrigin = when (textPosition) {
+                LyricTextPosition.Left -> TransformOrigin(0f, 1f)
+                LyricTextPosition.Center -> TransformOrigin(0.5f, 1f)
+                LyricTextPosition.Right -> TransformOrigin(1f, 1f)
+            }
             AnimatedVisibility(
                 visible = backgroundActive,
-                enter = expandVertically(spring(dampingRatio = 0.72f, stiffness = 340f)) + fadeIn(),
-                exit = shrinkVertically(spring(dampingRatio = 0.90f, stiffness = 460f)) + fadeOut()
+                // AM C11983A: reveal the background-line container height over ~750 ms, then
+                // start its 0.9 -> 1 scale + alpha at 85% of that geometry animation. This is
+                // intentionally not a generic spring: the stagger is what makes backing vocals
+                // feel like they unfold underneath the lead line instead of popping into layout.
+                enter = expandVertically(
+                    animationSpec = tween(
+                        durationMillis = AM_LYRIC_BG_HEIGHT_MS,
+                        easing = AM_LYRIC_BG_GEOMETRY_EASING
+                    )
+                ) + scaleIn(
+                    initialScale = 0.9f,
+                    transformOrigin = backgroundTransformOrigin,
+                    animationSpec = tween(
+                        durationMillis = AM_LYRIC_BG_SCALE_MS,
+                        delayMillis = AM_LYRIC_BG_ENTER_SCALE_DELAY_MS,
+                        easing = AM_LYRIC_BG_GEOMETRY_EASING
+                    )
+                ) + fadeIn(
+                    animationSpec = tween(
+                        durationMillis = AM_LYRIC_BG_SCALE_MS,
+                        delayMillis = AM_LYRIC_BG_ENTER_SCALE_DELAY_MS,
+                        easing = AM_LYRIC_BG_GEOMETRY_EASING
+                    )
+                ),
+                // AM exit: scale 1 -> .9 over 500 ms, alpha 1 -> 0 over 250 ms, while height
+                // collapses over ~750 ms after a 50 ms delay. Keep those owners independent.
+                exit = shrinkVertically(
+                    animationSpec = tween(
+                        durationMillis = AM_LYRIC_BG_HEIGHT_MS,
+                        delayMillis = AM_LYRIC_BG_EXIT_HEIGHT_DELAY_MS,
+                        easing = AM_LYRIC_BG_GEOMETRY_EASING
+                    )
+                ) + scaleOut(
+                    targetScale = 0.9f,
+                    transformOrigin = backgroundTransformOrigin,
+                    animationSpec = tween(
+                        durationMillis = AM_LYRIC_BG_SCALE_MS,
+                        easing = AM_LYRIC_BG_GEOMETRY_EASING
+                    )
+                ) + fadeOut(
+                    animationSpec = tween(
+                        durationMillis = AM_LYRIC_BG_ALPHA_OUT_MS,
+                        easing = AM_LYRIC_BG_ALPHA_OUT_EASING
+                    )
+                )
             ) {
                 Column(horizontalAlignment = align) {
                     Spacer(Modifier.height(7.dp))
@@ -1054,20 +1125,16 @@ private fun InstrumentalInterlude(
 }
 
 @Composable
-private fun Modifier.lyricPullPlacement(offsetPx: Float): Modifier = layout { measurable, constraints ->
-    val placeable = measurable.measure(constraints)
-    layout(placeable.width, placeable.height) {
-        placeable.placeRelative(0, offsetPx.roundToInt())
-    }
-}
-
-@Composable
 private fun Modifier.lyricLineVisuals(
     active: Boolean,
     signedDistance: Int,
     pivotFractionX: Float,
     blurEnabled: Boolean,
-    highlightAll: Boolean
+    highlightAll: Boolean,
+    pullField: LyricPullFieldState? = null,
+    pullIndex: Int = -1,
+    pullEnabled: Boolean = false,
+    motionActive: Boolean = false
 ): Modifier {
     val distance = abs(signedDistance)
     val alpha by animateFloatAsState(
@@ -1085,22 +1152,38 @@ private fun Modifier.lyricLineVisuals(
         animationSpec = spring(dampingRatio = 0.82f, stiffness = 340f),
         label = "lyricLineScale"
     )
-    val blurRadius by animateDpAsState(
-        targetValue = when {
-            !blurEnabled || highlightAll || active || distance < 2 -> 0.dp
-            else -> (2f + distance.coerceAtMost(4)).dp
-        },
-        animationSpec = spring(dampingRatio = 0.90f, stiffness = 360f),
-        label = "lyricLineBlur"
-    )
-    // Keep the visual layer inside lyricPullPlacement. When blur owns an outer layer and pull is
-    // applied inside it, the layer's rectangular bounds clip the last translation row of
-    // Keep pronunciation, primary text, and translation inside one moving row rectangle.
+
+    // AM keeps its line-follow motion on View properties instead of relaying every animation
+    // frame through RecyclerView layout.  During RawSMusic's natural follow, keep the expensive
+    // blur effect completely out of the 550 ms pull/scroll window; alpha/scale and trailing pull
+    // remain GPU-layer properties. Manual scrolling already disables blur through blurEnabled.
+    val blurRadius = if (motionActive) {
+        0.dp
+    } else {
+        val animatedBlur by animateDpAsState(
+            targetValue = when {
+                !blurEnabled || highlightAll || active || distance < 2 -> 0.dp
+                else -> (2f + distance.coerceAtMost(4)).dp
+            },
+            animationSpec = spring(dampingRatio = 0.90f, stiffness = 360f),
+            label = "lyricLineBlur"
+        )
+        animatedBlur
+    }
+
     return graphicsLayer {
+        // Read the single revision inside the layer lambda. Snapshot invalidation therefore only
+        // re-runs layer properties; it does not recompose or remeasure every visible lyric row.
+        pullField?.frameRevision
+        val trailingOffset = if (pullEnabled && pullField != null && pullIndex >= 0) {
+            pullField.offsetPx(pullIndex)
+        } else {
+            0f
+        }
         this.alpha = alpha
         scaleX = scale
         scaleY = scale
-        translationY = signedDistance.coerceIn(-4, 4) * -2f * density
+        translationY = signedDistance.coerceIn(-4, 4) * -2f * density + trailingOffset
         transformOrigin = TransformOrigin(pivotFractionX, 0.5f)
         clip = false
     }.blur(blurRadius)

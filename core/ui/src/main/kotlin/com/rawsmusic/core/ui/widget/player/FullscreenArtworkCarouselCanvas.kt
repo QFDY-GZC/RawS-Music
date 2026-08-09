@@ -13,26 +13,19 @@ import android.graphics.RectF
 import android.graphics.Shader
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import com.rawsmusic.core.common.model.AudioFile
-import com.rawsmusic.core.ui.widget.bitmaps.ArtworkDisplayResolver
-import com.rawsmusic.core.ui.widget.bitmaps.ArtworkHandle
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
-import com.rawsmusic.core.ui.widget.bitmaps.decodeDefaultAlbumArtwork
+import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
-import com.rawsmusic.core.ui.widget.bitmaps.shouldShowDefaultAlbumArtwork
 import kotlin.math.abs
 
 private const val FullscreenReflectionHeightFraction = 0.30f
@@ -176,99 +169,16 @@ private fun rememberFullscreenCarouselBitmap(
     targetSide: Int,
 ): Bitmap? {
     val context = LocalContext.current
-    remember(context) {
-        BitmapProvider.init(context)
-        true
-    }
-
-    val initialHandle = remember(key, targetSide) {
-        ArtworkDisplayResolver.acquireBest(
+    val bitmap by produceState<Bitmap?>(initialValue = null, key1 = key, key2 = targetSide) {
+        value = CoilArtworkRuntime.executeBitmap(
+            context = context,
             key = key,
-            targetWidth = targetSide,
-            targetHeight = targetSide,
-            surface = ArtworkSurface.Fullscreen,
-            allowHiRes = targetSide >= 1024,
-        )?.handle
-    }
-    var handle by remember(key, targetSide) { mutableStateOf<ArtworkHandle?>(initialHandle) }
-    var fallback by remember(key, targetSide) {
-        mutableStateOf(
-            if (shouldShowDefaultAlbumArtwork(key, targetSide, targetSide)) {
-                decodeDefaultAlbumArtwork(context.resources, minOf(targetSide, 1024))
-            } else {
-                null
-            }
+            width = targetSide,
+            height = targetSide,
+            surface = ArtworkSurface.Fullscreen
         )
     }
-
-    DisposableEffect(key, targetSide, context) {
-        var active = true
-        val lowSide = minOf(targetSide, 512)
-
-        fun acceptLoaded(loaded: Bitmap?, requestedSide: Int) {
-            if (!active) return
-            val next = BitmapProvider.acquireLoaded(
-                key = key,
-                bitmap = loaded,
-                targetWidth = requestedSide,
-                targetHeight = requestedSide,
-                surface = ArtworkSurface.Fullscreen,
-            )
-            if (next?.isValid == true) {
-                val currentSide = handle
-                    ?.takeIf { it.isValid }
-                    ?.bitmap
-                    ?.let { maxOf(it.width, it.height) }
-                    ?: 0
-                val nextSide = maxOf(next.bitmap.width, next.bitmap.height)
-                if (nextSide >= currentSide) {
-                    handle?.release()
-                    handle = next
-                    fallback?.takeIf { !it.isRecycled }?.recycle()
-                    fallback = null
-                } else {
-                    next.release()
-                }
-            } else {
-                next?.release()
-            }
-        }
-
-        val lowRequest = if (key.isBlank()) {
-            null
-        } else {
-            BitmapProvider.loadThumbnail(
-                key = key,
-                targetWidth = lowSide,
-                targetHeight = lowSide,
-                priority = BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
-                surface = ArtworkSurface.Fullscreen,
-            ) { loaded -> acceptLoaded(loaded, lowSide) }
-        }
-        val highRequest = if (key.isBlank() || targetSide <= lowSide) {
-            null
-        } else {
-            BitmapProvider.load(
-                key = key,
-                targetWidth = targetSide,
-                targetHeight = targetSide,
-                priority = BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
-                surface = ArtworkSurface.Fullscreen,
-            ) { loaded -> acceptLoaded(loaded, targetSide) }
-        }
-
-        onDispose {
-            active = false
-            lowRequest?.let { BitmapProvider.cancel(it, keepDecoding = true) }
-            highRequest?.let { BitmapProvider.cancel(it, keepDecoding = true) }
-            handle?.release()
-            handle = null
-            fallback?.takeIf { !it.isRecycled }?.recycle()
-            fallback = null
-        }
-    }
-
-    return handle?.takeIf { it.isValid }?.bitmap ?: fallback
+    return bitmap
 }
 
 private fun drawFullscreenCanvasLane(
