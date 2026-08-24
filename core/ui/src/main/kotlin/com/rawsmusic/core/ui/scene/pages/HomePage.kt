@@ -104,7 +104,7 @@ fun HomePage(
     headerOptions: HomeHeaderOptionsState = rememberHomeHeaderOptionsState(),
     onCurrentPlayPause: () -> Unit,
     onSongClick: (AudioFile, Int) -> Unit,
-    onQueueSongClick: (List<AudioFile>, AudioFile, Int) -> Unit,
+    onQueueNavigate: (Int) -> Unit,
     onCurrentArtworkLongPress: (HomeFullCoverSourceAnchor) -> Unit = {},
     onCurrentArtworkBoundsChanged: (AudioFile, Rect) -> Unit = { _, _ -> },
     hideCenterForFullscreenTransition: Boolean = false,
@@ -115,21 +115,27 @@ fun HomePage(
     var showHeaderMenuDialog by remember { mutableStateOf(false) }
     val rawFlowMode = LocalRawFlowMode.current
     val setRawFlowMode = LocalRawFlowModeSetter.current
-    val carouselSongs = remember(queueSongs, currentSong) {
+    val carouselSongs = remember(queueSongs, currentSong, queueCurrentIndex) {
         queueSongs.ifEmpty { listOfNotNull(currentSong) }
     }
+    // The queue cursor is authoritative for the carousel. The standalone current-song flow can
+    // arrive one frame later during a manual or gapless switch and would briefly show the old
+    // cover before the queue catches up.
+    val carouselCurrentSong = carouselSongs
+        .getOrNull(queueCurrentIndex)
+        ?: currentSong
     Box(modifier = Modifier.fillMaxSize()) {
         if (renderBackdrop) {
             HomeArtworkCarouselBackdrop(
                 songs = carouselSongs,
-                currentSong = currentSong,
+                currentSong = carouselCurrentSong,
                 state = carouselState,
                 modifier = Modifier.fillMaxSize()
             )
         }
         HomePageContent(
             songs = songs,
-            currentSong = currentSong,
+            currentSong = carouselCurrentSong,
             queueSongs = carouselSongs,
             carouselState = carouselState,
             carouselStyle = headerOptions.carouselStyle,
@@ -150,7 +156,7 @@ fun HomePage(
             onSettingsClick = onSettingsClick,
             onCurrentPlayPause = onCurrentPlayPause,
             onSongClick = onSongClick,
-            onQueueSongClick = onQueueSongClick,
+            onQueueNavigate = onQueueNavigate,
             onCurrentArtworkLongPress = onCurrentArtworkLongPress,
             onCurrentArtworkBoundsChanged = onCurrentArtworkBoundsChanged,
             hideCenterForFullscreenTransition = hideCenterForFullscreenTransition,
@@ -203,7 +209,7 @@ private fun HomePageContent(
     onSettingsClick: () -> Unit,
     onCurrentPlayPause: () -> Unit,
     onSongClick: (AudioFile, Int) -> Unit,
-    onQueueSongClick: (List<AudioFile>, AudioFile, Int) -> Unit,
+    onQueueNavigate: (Int) -> Unit,
     onCurrentArtworkLongPress: (HomeFullCoverSourceAnchor) -> Unit,
     onCurrentArtworkBoundsChanged: (AudioFile, Rect) -> Unit,
     hideCenterForFullscreenTransition: Boolean,
@@ -275,7 +281,7 @@ private fun HomePageContent(
                 lyricSong = lyricSong,
                 playbackPositionMs = playbackPositionMs,
                 isPlaying = isPlaying,
-                onSelectSong = onQueueSongClick,
+                onNavigate = onQueueNavigate,
                 onCurrentArtworkLongPress = onCurrentArtworkLongPress,
                 onCurrentArtworkBoundsChanged = onCurrentArtworkBoundsChanged,
                 hideCenterForFullscreenTransition = hideCenterForFullscreenTransition,

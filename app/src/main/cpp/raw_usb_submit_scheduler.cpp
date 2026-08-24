@@ -81,8 +81,20 @@ bool RawUsbSubmitScheduler::enqueue(int index, JobReason reason) {
     return true;
 }
 
+bool RawUsbSubmitScheduler::enqueueInitial(int index) {
+    return enqueue(index, JobReason::Initial);
+}
+
+bool RawUsbSubmitScheduler::enqueueResubmit(int index) {
+    return enqueue(index, JobReason::Resubmit);
+}
+
 bool RawUsbSubmitScheduler::enqueueProgressive() {
     return enqueue(-1, JobReason::Progressive);
+}
+
+bool RawUsbSubmitScheduler::enqueueFeedback() {
+    return enqueue(-2, JobReason::Feedback);
 }
 
 bool RawUsbSubmitScheduler::isRunning() const {
@@ -107,7 +119,7 @@ size_t RawUsbSubmitScheduler::pendingJobs() const {
 }
 
 void RawUsbSubmitScheduler::runLoop(std::string threadName) {
-    const auto sched = applyUsbThreadScheduling(threadName.c_str(), -18, true);
+    const auto sched = applyUsbThreadScheduling(threadName.c_str(), -18, false);
     LOGI("USB_SUBMIT_THREAD_SCHED %s", formatUsbThreadScheduleSnapshot(sched).c_str());
 
     while (running_.load(std::memory_order_acquire)) {

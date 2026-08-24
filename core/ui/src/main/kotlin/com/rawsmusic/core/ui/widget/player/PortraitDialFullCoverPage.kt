@@ -26,6 +26,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,8 +76,12 @@ internal fun PortraitDialFullCoverPage(
     sceneInteractionEnabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val songs = remember(queueSongs, currentSong) {
-        queueSongs.ifEmpty { listOfNotNull(currentSong) }
+    val incomingSongs = queueSongs.ifEmpty { listOfNotNull(currentSong) }
+    var songs by remember { mutableStateOf(incomingSongs.toList()) }
+    SideEffect {
+        if (!samePortraitDialQueue(songs, incomingSongs)) {
+            songs = incomingSongs.toList()
+        }
     }
     val queueIdentity = remember(songs) {
         songs.joinToString(separator = "\u0001") { portraitDialSongIdentity(it) }
@@ -432,6 +437,11 @@ internal fun PortraitDialFullCoverPage(
 
 private fun portraitDialSongIdentity(song: AudioFile): String =
     "${song.path}|${song.cueOffsetMs}|${song.cueTrackIndex}"
+
+private fun samePortraitDialQueue(left: List<AudioFile>, right: List<AudioFile>): Boolean =
+    left.size == right.size && left.indices.all { index ->
+        portraitDialSongIdentity(left[index]) == portraitDialSongIdentity(right[index])
+    }
 
 private data class PortraitDialTapTarget(
     val logicalOffset: Int,

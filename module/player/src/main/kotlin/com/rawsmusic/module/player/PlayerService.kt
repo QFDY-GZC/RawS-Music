@@ -39,6 +39,9 @@ import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.AudioFocusPreferences
 import com.rawsmusic.module.data.prefs.PlaylistStore
 import com.rawsmusic.module.player.lyrics.BluetoothLyricBridge
+import com.rawsmusic.module.player.lyrics.ColorOsDirectLyricBridge
+import com.rawsmusic.module.player.lyrics.ColorOsLyricMetadata
+import com.rawsmusic.module.player.lyrics.ColorOsNonModuleLyricBridge
 import com.rawsmusic.module.player.lyrics.LiveLyricNotificationBridge
 import com.rawsmusic.module.player.lyrics.buildLiveLyricNotificationText
 import com.rawsmusic.module.player.lyrics.buildLiveLyricSecondaryText
@@ -53,8 +56,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URLDecoder
@@ -79,6 +82,7 @@ class PlayerService : LifecycleService() {
         const val ACTION_TOGGLE_SHUFFLE = "com.rawsmusic.action.TOGGLE_SHUFFLE"
         const val ACTION_TOGGLE_DESKTOP_LYRIC = "com.rawsmusic.action.TOGGLE_DESKTOP_LYRIC"
         const val ACTION_REFRESH_NOTIFICATION = "com.rawsmusic.action.REFRESH_NOTIFICATION"
+        const val ACTION_REFRESH_LYRIC_METADATA = "com.rawsmusic.action.REFRESH_LYRIC_METADATA"
         const val ACTION_SUPER_ISLAND_LYRIC = "com.rawsmusic.action.SUPER_ISLAND_LYRIC"
         const val ACTION_SUPER_ISLAND_LYRIC_CLEAR = "com.rawsmusic.action.SUPER_ISLAND_LYRIC_CLEAR"
         /** USB 独占播放前台保活 */
@@ -123,6 +127,9 @@ class PlayerService : LifecycleService() {
         /** 更新当前歌词 — 供外部（MainActivity）调用 */
         fun updateLyrics(lyricData: LyricData?, song: AudioFile? = null) {
             _currentLyrics.value = lyricData
+            _instance?.currentLyricsSongIdentity = song?.let {
+                "${it.path}|${it.cueTrackIndex}|${it.fileSize}|${it.dateModified}"
+            }
             currentRuntimeController()?.onLyricsUpdated(song, lyricData)
         }
 
@@ -369,6 +376,13 @@ class PlayerService : LifecycleService() {
     }
     private var currentSong: AudioFile? = null
     private var currentPlayState: PlayState = PlayState.IDLE
+    private var superIslandPublished = false
+    private var superIslandSongPath: String? = null
+    private var colorOsLyricRetryJob: Job? = null
+    private var currentLyricsSongIdentity: String? = null
+    private var colorOsDirectTrackIdentity: String? = null
+    private var colorOsDirectTrackGeneration: Long = 0L
+    private var colorOsDirectPayloadKey: String? = null
     private var coverBitmap: Bitmap? = null
     /** 记录当前正在加载封面的 albumArtPath，防止竞态 */
     private var loadingArtPath: String? = null
@@ -915,6 +929,7 @@ class PlayerService : LifecycleService() {
                 updateLyricsInMetadata()
             }
             ACTION_REFRESH_NOTIFICATION -> updateNotification()
+            ACTION_REFRESH_LYRIC_METADATA -> updateLyricsInMetadata()
             ACTION_ENSURE_WAKELOCK -> {
                 // 确保 WakeLock 持有（切歌期间防止被系统挂起）
                 acquireWakeLockIfNeeded()
@@ -1162,6 +1177,8 @@ class PlayerService : LifecycleService() {
      * 更新MediaSession的元数据（标题、艺术家、封面等）
      */
     private fun updateMediaSessionMetadata(title: String, artist: String, album: String, albumArtPath: String, duration: Long) {
+        colorOsLyricRetryJob?.cancel()
+        colorOsLyricRetryJob = null
         coverBitmap = null
         val songSnapshot = currentSong
         val serviceArtworkPath = albumArtPath.ifBlank { songSnapshot?.path.orEmpty() }
@@ -1184,8 +1201,10 @@ class PlayerService : LifecycleService() {
             if (!lrcText.isNullOrBlank()) {
                 putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
             }
+            putColorOsLyricMetadata(songSnapshot)
         }.build()
         mediaSessionCompat?.setMetadata(metadata)
+        publishColorOsDirectLyric(songSnapshot)
 
         // 先用无封面更新通知
         updateNotification()
@@ -1208,7 +1227,9 @@ class PlayerService : LifecycleService() {
      * 仅更新歌词到MediaSession元数据，保留已有封面（不清除coverBitmap）
      * 解决：自然切歌时歌词异步加载完成后，不清空已加载的封面
      */
-    private fun updateLyricsInMetadata() {
+    private fun updateLyricsInMetadata(retry: Boolean = true) {
+        colorOsLyricRetryJob?.cancel()
+        colorOsLyricRetryJob = null
         val song = currentSong ?: run {
             liveLyricNotificationBridge.clear()
             return
@@ -1228,9 +1249,25 @@ class PlayerService : LifecycleService() {
             if (!lrcText.isNullOrBlank()) {
                 putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
             }
+            putColorOsLyricMetadata(song)
         }.build()
         mediaSessionCompat?.setMetadata(metadata)
+        publishColorOsDirectLyric(song)
         updateNotification()
+
+        val colorOsLyricInfo = buildColorOsLyricInfo(song)
+        if (AppPreferences.Lyrics.colorOsBridgeLyricEnabled &&
+            retry &&
+            !colorOsLyricInfo.isNullOrBlank()
+        ) {
+            val expectedIdentity = colorOsLyricIdentity(song)
+            colorOsLyricRetryJob = lifecycleScope.launch(Dispatchers.Main.immediate) {
+                delay(800L)
+                if (currentSong?.let(::colorOsLyricIdentity) == expectedIdentity) {
+                    updateLyricsInMetadata(retry = false)
+                }
+            }
+        }
     }
 
     /**
@@ -1301,8 +1338,10 @@ class PlayerService : LifecycleService() {
             if (!lrcText.isNullOrBlank()) {
                 putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
             }
+            putColorOsLyricMetadata(song)
         }.build()
         mediaSessionCompat?.setMetadata(metadata)
+        publishColorOsDirectLyric(song)
         updateNotification()
     }
 
@@ -1429,6 +1468,7 @@ class PlayerService : LifecycleService() {
                         if (!lrcText.isNullOrBlank()) {
                             putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
                         }
+                        putColorOsLyricMetadata(song)
                     }.build()
                     mediaSessionCompat?.setMetadata(metadata)
                     Log.i(
@@ -1455,6 +1495,69 @@ class PlayerService : LifecycleService() {
         putBitmap(MediaMetadataCompat.METADATA_KEY_ART, bitmap)
         putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bitmap)
     }
+
+    private fun MediaMetadataCompat.Builder.putColorOsLyricMetadata(song: AudioFile?) {
+        if (!AppPreferences.Lyrics.colorOsBridgeLyricEnabled) return
+        val lyricInfo = buildColorOsLyricInfo(song)
+        if (!lyricInfo.isNullOrBlank()) {
+            putString(ColorOsLyricMetadata.METADATA_KEY, lyricInfo)
+            val hasRawLyric = lyricInfo.contains("rawLyric")
+            Log.d(
+                "ColorOsLyricMeta",
+                "published song=${song?.title} chars=${lyricInfo.length} raw=$hasRawLyric",
+            )
+        }
+    }
+
+    private fun buildColorOsLyricInfo(song: AudioFile?): String? = song
+        ?.let { currentSongValue ->
+            if (currentLyricsSongIdentity != colorOsLyricIdentity(currentSongValue)) return@let null
+            _currentLyrics.value
+                ?.takeUnless { it.isEmpty }
+                ?.let { ColorOsLyricMetadata.build(currentSongValue, it) }
+        }
+
+    private fun publishColorOsDirectLyric(song: AudioFile?) {
+        if (!AppPreferences.Lyrics.colorOsBridgeLyricEnabled || song == null) return
+        val lyricInfo = buildColorOsLyricInfo(song) ?: return
+        if (AppPreferences.Lyrics.colorOsBridgeDeliveryMode ==
+            AppPreferences.Lyrics.COLOROS_DELIVERY_MODE_NON_MODULE
+        ) {
+            val published = ColorOsNonModuleLyricBridge.publish(this, song, lyricInfo)
+            if (published) {
+                Log.i(
+                    "ColorOsLyricDirect",
+                    "published non-module compatibility payload song=${song.title}"
+                )
+            }
+            return
+        }
+        val trackIdentity = colorOsLyricIdentity(song)
+        if (trackIdentity != colorOsDirectTrackIdentity) {
+            colorOsDirectTrackIdentity = trackIdentity
+            colorOsDirectTrackGeneration += 1L
+            colorOsDirectPayloadKey = null
+        }
+        val payloadKey = "$trackIdentity|${lyricInfo.length}|${lyricInfo.hashCode()}"
+        if (payloadKey == colorOsDirectPayloadKey) return
+        if (ColorOsDirectLyricBridge.publish(
+                context = this,
+                song = song,
+                lyricInfo = lyricInfo,
+                trackGeneration = colorOsDirectTrackGeneration,
+            )
+        ) {
+            colorOsDirectPayloadKey = payloadKey
+            Log.i(
+                "ColorOsLyricDirect",
+                "published source=lyricprovider/raws-music trackGeneration=" +
+                    "$colorOsDirectTrackGeneration song=${song.title}",
+            )
+        }
+    }
+
+    private fun colorOsLyricIdentity(song: AudioFile): String =
+        "${song.path}|${song.cueTrackIndex}|${song.fileSize}|${song.dateModified}"
 
     private fun decodeDefaultServiceArtwork(targetSide: Int): Bitmap? {
         val source = BitmapFactory.decodeResource(
@@ -1717,62 +1820,85 @@ class PlayerService : LifecycleService() {
      * bounded lyric metadata; the app layer resolves artwork and owns the Xiaomi service.
      */
     private fun publishSuperIslandLyric(positionMs: Long = lastKnownPosition) {
-        val intent = if (
-            currentPlayState == PlayState.PLAYING &&
+        val shouldPublish = currentPlayState == PlayState.PLAYING &&
             AppPreferences.Lyrics.xiaomiSuperIslandLyricEnabled
-        ) {
-            val song = currentSong
-            val lyrics = _currentLyrics.value
-            val index = song?.let { lyrics?.findCurrentLine(positionMs) } ?: -1
-            val line = lyrics?.getLine(index)
-            if (song != null && line != null) {
-                Intent(ACTION_SUPER_ISLAND_LYRIC).apply {
-                    setPackage(packageName)
-                    // setPackage() still leaves this as an implicit package-scoped
-                    // broadcast. The receiver intentionally has no public filter, so
-                    // point to the app-owned bridge explicitly or HyperOS drops it.
-                    component = ComponentName(
-                        packageName,
-                        "com.rawsmusic.lyric.XiaomiSuperIslandLyricReceiver"
-                    )
-                    putExtra("title", song.title)
-                    putExtra("artist", song.artist)
-                    putExtra("album", song.album)
-                    putExtra("path", song.path)
-                    putExtra("albumArtPath", song.albumArtPath)
-                    putExtra("duration", song.duration)
-                    putExtra("position", positionMs)
-                    putExtra("lineTime", line.timeStamp)
-                    putExtra("lineEnd", line.endTime)
-                    putExtra("lineText", line.text)
-                    putExtra("lineTranslation", line.translation)
-                    putExtra("lineRomanization", line.romanization)
-                    putExtra("lineWords", encodeLyricWords(line.words))
-                    putExtra("linePronunciationWords", encodeLyricWords(line.pronunciationWords))
-                    putExtra("lineBackgroundWords", encodeLyricWords(line.backgroundWords))
-                    putExtra("lineBackgroundText", line.backgroundText.orEmpty())
-                    putExtra("lineBackgroundTranslation", line.backgroundTranslation.orEmpty())
-                    putExtra("lineBackgroundStart", line.backgroundStartTime ?: 0L)
-                    putExtra("lineBackgroundEnd", line.backgroundEndTime ?: 0L)
-                    putExtra("lineAgent", line.agent.orEmpty())
-                    putExtra("lineAgentName", line.agentName.orEmpty())
-                    putExtra("lineIsTtml", line.isTtml)
-                }
-            } else null
-        } else null
-        try {
-            val event = intent ?: Intent(ACTION_SUPER_ISLAND_LYRIC_CLEAR).apply {
-                setPackage(packageName)
-                component = ComponentName(
-                    packageName,
-                    "com.rawsmusic.lyric.XiaomiSuperIslandLyricReceiver"
-                )
+        if (!shouldPublish) {
+            clearSuperIslandLyricIfPublished()
+            return
+        }
+
+        val song = currentSong ?: run {
+            clearSuperIslandLyricIfPublished()
+            return
+        }
+        val lyrics = _currentLyrics.value
+        val index = lyrics?.findCurrentLine(positionMs) ?: -1
+        val line = lyrics?.getLine(index)
+        if (line == null) {
+            // Lyrics can arrive after playback has started. Preserve the current island during
+            // a temporary timing gap, but retire an island that belongs to the previous track.
+            if (superIslandPublished && superIslandSongPath != song.path) {
+                clearSuperIslandLyricIfPublished()
             }
-            sendBroadcast(event)
+            superIslandSongPath = song.path
+            return
+        }
+
+        val intent = Intent(ACTION_SUPER_ISLAND_LYRIC).apply {
+            setPackage(packageName)
+            component = superIslandReceiverComponent()
+            putExtra("title", song.title)
+            putExtra("artist", song.artist)
+            putExtra("album", song.album)
+            putExtra("path", song.path)
+            putExtra("albumArtPath", song.albumArtPath)
+            putExtra("duration", song.duration)
+            putExtra("position", positionMs)
+            putExtra("lineTime", line.timeStamp)
+            putExtra("lineEnd", line.endTime)
+            putExtra("lineText", line.text)
+            putExtra("lineTranslation", line.translation)
+            putExtra("lineRomanization", line.romanization)
+            putExtra("lineWords", encodeLyricWords(line.words))
+            putExtra("linePronunciationWords", encodeLyricWords(line.pronunciationWords))
+            putExtra("lineBackgroundWords", encodeLyricWords(line.backgroundWords))
+            putExtra("lineBackgroundText", line.backgroundText.orEmpty())
+            putExtra("lineBackgroundTranslation", line.backgroundTranslation.orEmpty())
+            putExtra("lineBackgroundStart", line.backgroundStartTime ?: 0L)
+            putExtra("lineBackgroundEnd", line.backgroundEndTime ?: 0L)
+            putExtra("lineAgent", line.agent.orEmpty())
+            putExtra("lineAgentName", line.agentName.orEmpty())
+            putExtra("lineIsTtml", line.isTtml)
+        }
+        try {
+            sendBroadcast(intent)
+            superIslandPublished = true
+            superIslandSongPath = song.path
         } catch (error: Exception) {
             Log.w("PlayerService", "Unable to publish Super Island lyric event", error)
         }
     }
+
+    private fun clearSuperIslandLyricIfPublished(force: Boolean = false) {
+        if (!force && !superIslandPublished) return
+        runCatching {
+            sendBroadcast(
+                Intent(ACTION_SUPER_ISLAND_LYRIC_CLEAR).apply {
+                    setPackage(packageName)
+                    component = superIslandReceiverComponent()
+                }
+            )
+        }.onFailure { error ->
+            Log.w("PlayerService", "Unable to clear Super Island lyric event", error)
+        }
+        superIslandPublished = false
+        superIslandSongPath = null
+    }
+
+    private fun superIslandReceiverComponent() = ComponentName(
+        packageName,
+        "com.rawsmusic.lyric.XiaomiSuperIslandLyricReceiver"
+    )
 
     private fun encodeLyricWords(words: List<LyricWord>): String {
         val json = JSONArray()
@@ -2211,15 +2337,16 @@ class PlayerService : LifecycleService() {
         notification.defaults = 0
         notification.sound = null
         notification.vibrate = null
+        XiaomiMediaDragShare.attach(notification, song)
 
         return notification
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        runCatching {
-            sendBroadcast(Intent(ACTION_SUPER_ISLAND_LYRIC_CLEAR).setPackage(packageName))
-        }
+        colorOsLyricRetryJob?.cancel()
+        colorOsLyricRetryJob = null
+        clearSuperIslandLyricIfPublished(force = true)
         liveLyricNotificationBridge.clear()
         stopUsbBackgroundGuardian("service_destroy")
         releaseRuntimeController("service_destroy")
@@ -2635,7 +2762,7 @@ class PlayerService : LifecycleService() {
         positionUpdateJob?.cancel()
         if (currentPlayState == PlayState.PLAYING) {
             positionUpdateJob = lifecycleScope.launch(Dispatchers.Main) {
-                while (true) {
+                while (isActive) {
                     kotlinx.coroutines.delay(
                         if (AppPreferences.Lyrics.liveUpdateLyricEnabled) 220L else 1000L
                     )

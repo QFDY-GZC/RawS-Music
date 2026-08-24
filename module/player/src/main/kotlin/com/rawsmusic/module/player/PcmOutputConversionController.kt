@@ -44,7 +44,11 @@ internal class PcmOutputConversionController(
             ditherEngine.processS32ToS16(source, length, destination)
                 .takeIf { it > 0 }
                 ?.let { return it }
+            return PcmSampleConverter.s32ToS16Pcm(source, length, destination)
         }
+        ditherEngine.processS32ToS16Rounded(source, length, destination)
+            .takeIf { it > 0 }
+            ?.let { return it }
         return PcmSampleConverter.s32ToS16Pcm(source, length, destination)
     }
 

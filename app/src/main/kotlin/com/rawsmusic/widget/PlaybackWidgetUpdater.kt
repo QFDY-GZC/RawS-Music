@@ -32,6 +32,7 @@ import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.PlayerService
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +63,9 @@ internal object PlaybackWidgetUpdater {
     private val flowAnimationExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "RawS-FlowWidget").apply { isDaemon = true }
     }
+    private val flowAnimationLock = Any()
+    @Volatile
+    private var flowAnimationTask: ScheduledFuture<*>? = null
     @Volatile
     private var flowAnimationSpec: FlowAnimationSpec? = null
     private var lastWideProgressUpdateElapsed = 0L
@@ -97,7 +101,10 @@ internal object PlaybackWidgetUpdater {
             val flowIds = manager.getAppWidgetIds(
                 ComponentName(appContext, FlowPlaybackWidgetProvider::class.java)
             )
-            if (wideIds.isEmpty() && flowIds.isEmpty()) return@execute
+            if (wideIds.isEmpty() && flowIds.isEmpty()) {
+                stopFlowAnimator()
+                return@execute
+            }
             val snapshot = currentSnapshot()
             val now = SystemClock.elapsedRealtime()
             if (wideIds.isNotEmpty() && now - lastWideProgressUpdateElapsed >= WIDE_PROGRESS_INTERVAL_MS) {
@@ -134,7 +141,7 @@ internal object PlaybackWidgetUpdater {
             ComponentName(context, FlowPlaybackWidgetProvider::class.java)
         )
         if (wideIds.isEmpty() && compactIds.isEmpty() && flowIds.isEmpty()) {
-            flowAnimationSpec = null
+            stopFlowAnimator()
             return
         }
 
@@ -234,49 +241,66 @@ internal object PlaybackWidgetUpdater {
                 colors = resolveFlowColors(sourceArtwork),
                 width = animationWidth,
                 height = animationHeight,
-                density = density
+                density = density,
+                isPlaying = snapshot.isPlaying,
             )
             ensureFlowAnimatorStarted(context)
         } else {
-            flowAnimationSpec = null
+            stopFlowAnimator()
         }
 
     }
 
     private fun ensureFlowAnimatorStarted(context: Context) {
-        if (!flowAnimatorStarted.compareAndSet(false, true)) return
         val appContext = context.applicationContext
         val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
-        flowAnimationExecutor.scheduleAtFixedRate(
-            {
-                val spec = flowAnimationSpec ?: return@scheduleAtFixedRate
-                if (!powerManager.isInteractive || spec.widgetIds.isEmpty()) {
-                    return@scheduleAtFixedRate
-                }
-                runCatching {
-                    val views = RemoteViews(appContext.packageName, R.layout.widget_playback_flow)
-                    views.setImageViewBitmap(
-                        R.id.widget_flow_background,
-                        createAnimatedFlowBackground(
-                            colors = spec.colors,
-                            width = spec.width,
-                            height = spec.height,
-                            timeSeconds = SystemClock.elapsedRealtime() / 1000f
+        synchronized(flowAnimationLock) {
+            if (flowAnimationTask?.isCancelled == false && flowAnimationTask?.isDone == false) return
+            flowAnimatorStarted.set(true)
+            flowAnimationTask = flowAnimationExecutor.scheduleAtFixedRate(
+                {
+                    val spec = flowAnimationSpec ?: run {
+                        stopFlowAnimator()
+                        return@scheduleAtFixedRate
+                    }
+                    if (!powerManager.isInteractive || spec.widgetIds.isEmpty() || !spec.isPlaying) {
+                        stopFlowAnimator()
+                        return@scheduleAtFixedRate
+                    }
+                    runCatching {
+                        val views = RemoteViews(appContext.packageName, R.layout.widget_playback_flow)
+                        views.setImageViewBitmap(
+                            R.id.widget_flow_background,
+                            createAnimatedFlowBackground(
+                                colors = spec.colors,
+                                width = spec.width,
+                                height = spec.height,
+                                timeSeconds = SystemClock.elapsedRealtime() / 1000f
+                            )
                         )
-                    )
-                    applyFlowLyricMotion(
-                        views = views,
-                        nowElapsed = SystemClock.elapsedRealtime(),
-                        density = spec.density
-                    )
-                    AppWidgetManager.getInstance(appContext)
-                        .partiallyUpdateAppWidget(spec.widgetIds, views)
-                }
-            },
-            0L,
-            FLOW_FRAME_INTERVAL_MS,
-            TimeUnit.MILLISECONDS
-        )
+                        applyFlowLyricMotion(
+                            views = views,
+                            nowElapsed = SystemClock.elapsedRealtime(),
+                            density = spec.density
+                        )
+                        AppWidgetManager.getInstance(appContext)
+                            .partiallyUpdateAppWidget(spec.widgetIds, views)
+                    }
+                },
+                0L,
+                FLOW_FRAME_INTERVAL_MS,
+                TimeUnit.MILLISECONDS
+            )
+        }
+    }
+
+    private fun stopFlowAnimator() {
+        synchronized(flowAnimationLock) {
+            flowAnimationTask?.cancel(false)
+            flowAnimationTask = null
+            flowAnimatorStarted.set(false)
+            flowAnimationSpec = null
+        }
     }
 
     private fun buildRemoteViews(
@@ -1036,7 +1060,8 @@ internal object PlaybackWidgetUpdater {
         val colors: List<Int>,
         val width: Int,
         val height: Int,
-        val density: Float
+        val density: Float,
+        val isPlaying: Boolean,
     )
 
     private data class FlowLyricAnimation(

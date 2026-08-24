@@ -26,6 +26,22 @@ class AudioPermissionHelper(
         }
     }
 
+    /**
+     * Runtime permissions for Hardware Device Control. Kept separate from startup permissions so
+     * Bluetooth scanning is requested only when the user opens/uses hardware-device discovery.
+     */
+    fun requiredBluetoothDeviceControlPermissions(includeScan: Boolean = true): Array<String> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return emptyArray()
+        return if (includeScan) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN,
+            )
+        } else {
+            arrayOf(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+    }
+
     fun isVisualizerPermissionGranted(): Boolean {
         return ContextCompat.checkSelfPermission(
             context,

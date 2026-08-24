@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -53,6 +52,7 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.shader.isRenderEffectSupported
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 private const val PROJECT_URL = "https://github.com/QFDY-GZC/RawS-Music"
 private const val LYRICO_URL = "https://github.com/Replica0110/Lyrico"
@@ -172,7 +172,7 @@ fun AboutPage(onBack: () -> Unit) {
             }
 
             item {
-                Spacer(Modifier.height(160.dp).navigationBarsPadding())
+                Spacer(Modifier.height(160.dp).rawStableNavigationBarsPadding())
             }
         }
 

@@ -54,6 +54,20 @@ class PlayerQueueControlCoordinatorTest {
     }
 
     @Test
+    fun successiveNextKeepsRemainingPriorityItemsInTheProjectedQueue() {
+        val harness = Harness()
+
+        harness.coordinator.addToPriorityQueue(audio(4, "priority-1"))
+        harness.coordinator.addToPriorityQueue(audio(5, "priority-2"))
+
+        assertEquals("priority-1", harness.coordinator.previewNextSong()?.path)
+        assertEquals("priority-1", harness.coordinator.next()?.path)
+        assertEquals("priority-2", harness.coordinator.previewNextSong()?.path)
+        assertEquals("priority-2", harness.coordinator.next()?.path)
+        assertEquals("b", harness.coordinator.previewNextSong()?.path)
+    }
+
+    @Test
     fun removingCurrentSongUsesCueIdentityAndStopsOnlyWhenQueueBecomesEmpty() {
         val harness = Harness()
         val cueOne = audio(10, "album.flac", cueOffsetMs = 0L, cueTrackIndex = 1)

@@ -5,7 +5,11 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.PlayMode
 import com.rawsmusic.core.common.model.PlayQueue
 import com.rawsmusic.core.common.model.RepeatMode
+import com.rawsmusic.module.player.withPriorityQueue
 import java.util.ArrayDeque
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Owns queue navigation, play-history and mode commands.
@@ -26,6 +30,7 @@ internal class PlayerQueueControlCoordinator(
         val previousShuffleIndex: (PlayQueue) -> Int,
         val peekNextShuffleIndex: (PlayQueue) -> Int,
         val peekPreviousShuffleIndex: (PlayQueue) -> Int,
+        val peekRelativeShuffleIndex: (PlayQueue, Int) -> Int,
         val toggleRepeatMode: () -> Unit,
         val setRepeatMode: (RepeatMode) -> Unit,
         val toggleShuffle: () -> Unit,
@@ -38,6 +43,8 @@ internal class PlayerQueueControlCoordinator(
         val isReleased: () -> Boolean,
         val currentQueue: () -> PlayQueue,
         val updateQueue: (PlayQueue) -> Unit,
+        /** Publishes one stable queue projection while base/priority state is committed. */
+        val setVisibleQueueOverride: (PlayQueue?) -> Unit = {},
         val currentSong: () -> AudioFile?,
         val clearCurrentSong: () -> Unit,
         val clearRequestedSong: () -> Unit,
@@ -53,7 +60,67 @@ internal class PlayerQueueControlCoordinator(
 
     private val playHistory = ArrayDeque<AudioFile>()
     private val priorityQueue = ArrayDeque<AudioFile>()
+    private val _priorityQueueState = MutableStateFlow<List<AudioFile>>(emptyList())
+    val priorityQueueState: StateFlow<List<AudioFile>> = _priorityQueueState.asStateFlow()
     private var previousRestartBypassUntilMs = 0L
+
+    private fun publishPriorityQueue() {
+        _priorityQueueState.value = priorityQueue.toList()
+    }
+
+    private inline fun commitVisibleQueue(
+        queue: PlayQueue,
+        crossinline commit: () -> Unit,
+    ) {
+        // Base queue, priority queue and renderer ownership commit at different times. Keep the
+        // target projection pinned until PlayerController confirms the matching rendered song;
+        // clearing it in this call stack exposes an old cursor between those asynchronous writes.
+        callbacks.setVisibleQueueOverride(queue)
+        commit()
+    }
+
+    private fun visibleQueue(): PlayQueue =
+        callbacks.currentQueue().withPriorityQueue(priorityQueue.toList())
+
+    /**
+     * Resolve the next item from the same projected queue used by the UI.
+     *
+     * A play-next item is already placed immediately after the current item by
+     * [withPriorityQueue]. It must win over shuffle and repeat-one until it has
+     * actually been consumed; asking the shuffle controller first creates a
+     * different preview from the transport target.
+     */
+    private fun nextIndex(queue: PlayQueue): Int {
+        if (priorityQueue.isNotEmpty()) {
+            return (queue.currentIndex + 1).mod(queue.songs.size)
+        }
+        return when (mode.currentPlayMode()) {
+            PlayMode.SEQUENTIAL -> (queue.currentIndex + 1) % queue.songs.size
+            PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> mode.nextShuffleIndex(queue)
+            PlayMode.REPEAT_ONE -> queue.currentIndex
+        }
+    }
+
+    private fun previewNextIndex(queue: PlayQueue): Int {
+        if (priorityQueue.isNotEmpty()) {
+            return (queue.currentIndex + 1).mod(queue.songs.size)
+        }
+        return when (mode.currentPlayMode()) {
+            PlayMode.SEQUENTIAL -> (queue.currentIndex + 1) % queue.songs.size
+            PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> mode.peekNextShuffleIndex(queue)
+            PlayMode.REPEAT_ONE -> queue.currentIndex
+        }
+    }
+
+    private fun consumePrioritySong(song: AudioFile) {
+        val iterator = priorityQueue.iterator()
+        while (iterator.hasNext()) {
+            if (iterator.next().queueIdentity() == song.queueIdentity()) {
+                iterator.remove()
+                return
+            }
+        }
+    }
 
     fun recordCurrentSongBeforePlay(current: AudioFile, next: AudioFile) {
         if (mode.isShuffleEnabled()) return
@@ -76,38 +143,29 @@ internal class PlayerQueueControlCoordinator(
 
     fun next(): AudioFile? {
         if (callbacks.isReleased()) return null
-
-        if (priorityQueue.isNotEmpty()) {
-            val nextSong = priorityQueue.removeFirst()
-            val previous = callbacks.currentQueue()
-            val songs = previous.songs.toMutableList()
-            val insertIndex = (previous.currentIndex + 1).coerceAtMost(songs.size)
-            songs.add(insertIndex, nextSong)
-            callbacks.updateQueue(previous.copy(songs = songs, currentIndex = insertIndex))
-            callbacks.savePosition()
-            callbacks.play(nextSong, songs, insertIndex)
-            return nextSong
-        }
-
-        val queue = callbacks.currentQueue()
+        val queue = visibleQueue()
         if (queue.songs.isEmpty()) return null
-        val nextIndex = when (mode.currentPlayMode()) {
-            PlayMode.SEQUENTIAL -> (queue.currentIndex + 1) % queue.songs.size
-            PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> mode.nextShuffleIndex(queue)
-            PlayMode.REPEAT_ONE -> queue.currentIndex
-        }
+        val nextIndex = nextIndex(queue)
         if (nextIndex !in queue.songs.indices) return null
 
         callbacks.savePosition()
         val nextSong = queue.songs[nextIndex]
-        callbacks.updateQueue(queue.copy(currentIndex = nextIndex))
+        val committedQueue = queue.copy(currentIndex = nextIndex)
+        commitVisibleQueue(committedQueue) {
+            callbacks.updateQueue(committedQueue)
+            // Keep later play-next items in the same projected order. Clearing the
+            // whole deque here made the next preview fall back to the base/shuffle
+            // queue after only one manual advance.
+            consumePrioritySong(nextSong)
+            publishPriorityQueue()
+        }
         callbacks.manualSwitchFromStart(nextSong, queue.songs, nextIndex, "manual_next")
         return nextSong
     }
 
     fun previous(restartCurrentAfterThreshold: Boolean): AudioFile? {
         if (callbacks.isReleased()) return null
-        val queue = callbacks.currentQueue()
+        val queue = visibleQueue()
         if (queue.songs.isEmpty()) return null
 
         val bypassRestart = restartCurrentAfterThreshold &&
@@ -127,7 +185,12 @@ internal class PlayerQueueControlCoordinator(
 
         callbacks.savePosition()
         val previousSong = queue.songs[previousIndex]
-        callbacks.updateQueue(queue.copy(currentIndex = previousIndex))
+        val committedQueue = queue.copy(currentIndex = previousIndex)
+        commitVisibleQueue(committedQueue) {
+            callbacks.updateQueue(committedQueue)
+            priorityQueue.clear()
+            publishPriorityQueue()
+        }
         callbacks.clearCurrentSong()
         callbacks.manualSwitchFromStart(previousSong, queue.songs, previousIndex, "manual_previous")
         return previousSong
@@ -141,8 +204,13 @@ internal class PlayerQueueControlCoordinator(
      * the retiring decoder cursor win, producing target -> old -> target artwork frames.
      */
     fun selectExistingQueueIndex(index: Int, reason: String): AudioFile? {
+        return selectVisibleQueueIndex(index, reason)
+    }
+
+    /** Selects from the exact queue rendered by the home carousel and playback bar. */
+    fun selectVisibleQueueIndex(index: Int, reason: String): AudioFile? {
         if (callbacks.isReleased()) return null
-        val queue = callbacks.currentQueue()
+        val queue = visibleQueue()
         if (index !in queue.songs.indices) return null
 
         val target = queue.songs[index]
@@ -151,30 +219,47 @@ internal class PlayerQueueControlCoordinator(
         }
 
         callbacks.savePosition()
-        callbacks.updateQueue(queue.copy(currentIndex = index))
+        val committedQueue = queue.copy(currentIndex = index)
+        commitVisibleQueue(committedQueue) {
+            callbacks.updateQueue(committedQueue)
+            priorityQueue.clear()
+            publishPriorityQueue()
+        }
         callbacks.manualSwitchFromStart(target, queue.songs, index, reason)
         return target
     }
 
-    fun previewNextSong(): AudioFile? {
-        priorityQueue.firstOrNull()?.let { return it }
-        val queue = callbacks.currentQueue()
+    fun previewNextSong(queue: PlayQueue = visibleQueue()): AudioFile? {
         if (queue.songs.isEmpty()) return null
-        val index = when (mode.currentPlayMode()) {
-            PlayMode.SEQUENTIAL -> (queue.currentIndex + 1) % queue.songs.size
-            PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> mode.peekNextShuffleIndex(queue)
-            PlayMode.REPEAT_ONE -> queue.currentIndex
-        }
+        val index = previewNextIndex(queue)
         return queue.songs.getOrNull(index)
     }
 
-    fun previewPreviousSong(): AudioFile? {
-        val queue = callbacks.currentQueue()
+    fun previewPreviousSong(queue: PlayQueue = visibleQueue()): AudioFile? {
         if (queue.songs.isEmpty()) return null
         val index = when (mode.currentPlayMode()) {
             PlayMode.SEQUENTIAL -> if (queue.currentIndex > 0) queue.currentIndex - 1 else queue.songs.lastIndex
             PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> mode.peekPreviousShuffleIndex(queue)
             PlayMode.REPEAT_ONE -> queue.currentIndex
+        }
+        return queue.songs.getOrNull(index)
+    }
+
+    /**
+     * Resolves every carousel lane from the same immutable traversal used by transport.
+     * Unlike repeated next/previous calls this never advances shuffle state.
+     */
+    fun previewRelativeSong(queue: PlayQueue = visibleQueue(), offset: Int): AudioFile? {
+        if (queue.songs.isEmpty()) return null
+        if (offset == 0) return queue.currentSong
+        val index = when {
+            priorityQueue.isNotEmpty() -> (queue.currentIndex + offset).floorMod(queue.songs.size)
+            mode.currentPlayMode() == PlayMode.SEQUENTIAL ->
+                (queue.currentIndex + offset).floorMod(queue.songs.size)
+            mode.currentPlayMode() == PlayMode.SHUFFLE_ALL ||
+                mode.currentPlayMode() == PlayMode.SHUFFLE_ONCE ->
+                mode.peekRelativeShuffleIndex(queue, offset)
+            else -> queue.currentIndex
         }
         return queue.songs.getOrNull(index)
     }
@@ -198,23 +283,34 @@ internal class PlayerQueueControlCoordinator(
         this.mode.setPlayMode(mode)
     }
 
+    private fun Int.floorMod(modulus: Int): Int = ((this % modulus) + modulus) % modulus
+
     fun addToPriorityQueue(song: AudioFile) {
-        if (priorityQueue.any { it.path == song.path }) return
+        val current = callbacks.currentQueue().currentSong
+        if (current?.queueIdentity() == song.queueIdentity()) return
+        if (priorityQueue.any { it.queueIdentity() == song.queueIdentity() }) return
         priorityQueue.addLast(song)
+        publishPriorityQueue()
         callbacks.saveState()
     }
 
     fun priorityQueueSnapshot(): List<AudioFile> = priorityQueue.toList()
 
+    fun restorePriorityQueue(songs: List<AudioFile>) {
+        priorityQueue.clear()
+        priorityQueue.addAll(songs)
+        publishPriorityQueue()
+    }
+
     fun clearPriorityQueue() {
         priorityQueue.clear()
+        publishPriorityQueue()
         callbacks.saveState()
     }
 
     fun adoptVisibleQueueSnapshot(songs: List<AudioFile>, currentIndex: Int) {
         if (songs.isEmpty()) return
         val safeIndex = currentIndex.coerceIn(0, songs.lastIndex)
-        priorityQueue.clear()
         playHistory.clear()
         callbacks.updateQueue(
             callbacks.currentQueue().copy(
@@ -222,17 +318,13 @@ internal class PlayerQueueControlCoordinator(
                 currentIndex = safeIndex,
             )
         )
+        priorityQueue.clear()
+        publishPriorityQueue()
         callbacks.saveState()
     }
 
     fun playNext(song: AudioFile) {
-        val previous = callbacks.currentQueue()
-        val songs = previous.songs.toMutableList()
-        songs.removeAll { it.path == song.path }
-        val insertIndex = (previous.currentIndex + 1).coerceAtMost(songs.size)
-        songs.add(insertIndex, song)
-        callbacks.updateQueue(previous.copy(songs = songs))
-        callbacks.saveState()
+        addToPriorityQueue(song)
     }
 
     fun removeFromQueue(index: Int) {
@@ -266,6 +358,7 @@ internal class PlayerQueueControlCoordinator(
         callbacks.updateQueue(previous.copy(songs = retained, currentIndex = newIndex))
         playHistory.removeAll { it.queueIdentity() in identities }
         priorityQueue.removeAll { it.queueIdentity() in identities }
+        publishPriorityQueue()
 
         if (mode.isShuffleEnabled() && retained.size > 1) {
             mode.rebuildShuffleForCurrentQueue()

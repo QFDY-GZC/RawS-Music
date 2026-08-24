@@ -8,8 +8,6 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.basicMarquee
-import androidx.compose.foundation.MarqueeAnimationMode
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -64,7 +62,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.rawsmusic.core.ui.theme.ThemeManager
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.core.ui.widget.bitmaps.NativePlayerArtworkSwitchEasing
-import com.rawsmusic.core.ui.widget.text.LongTextMotionState
+import com.rawsmusic.core.ui.widget.text.SharedMarqueeText
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -596,52 +594,22 @@ private fun MiniPlayerSlidingContent(
             contentAlignment = Alignment.CenterStart
         ) {
             androidx.compose.foundation.layout.Column {
-                Text(
+                SharedMarqueeText(
                     text = primaryText,
-                    fontSize = 14.sp,
+                    fontSizeSp = 14f,
                     fontWeight = FontWeight.Medium,
                     color = textColor,
-                    maxLines = 1,
-                    softWrap = false,
                     textAlign = if (centerLyrics) TextAlign.Center else TextAlign.Start,
-                    overflow = TextOverflow.Clip,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .then(
-                            if (LongTextMotionState.enabled) {
-                                Modifier.basicMarquee(
-                                    iterations = Int.MAX_VALUE,
-                                    animationMode = MarqueeAnimationMode.Immediately,
-                                    repeatDelayMillis = 3_000,
-                                    initialDelayMillis = 1_500,
-                                    velocity = 42.5.dp
-                                )
-                            } else Modifier
-                        )
+                    modifier = Modifier.fillMaxWidth().height(20.dp)
                 )
                 if (secondaryText.isNotBlank()) {
-                    Text(
+                    SharedMarqueeText(
                         text = secondaryText,
-                        fontSize = 11.sp,
+                        fontSizeSp = 11f,
                         fontWeight = FontWeight.Medium,
                         color = secondaryColor,
-                        maxLines = 1,
-                        softWrap = false,
                         textAlign = if (centerLyrics) TextAlign.Center else TextAlign.Start,
-                        overflow = TextOverflow.Clip,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .then(
-                                if (LongTextMotionState.enabled) {
-                                    Modifier.basicMarquee(
-                                        iterations = Int.MAX_VALUE,
-                                        animationMode = MarqueeAnimationMode.Immediately,
-                                        repeatDelayMillis = 3_000,
-                                        initialDelayMillis = 1_500,
-                                        velocity = 42.5.dp
-                                    )
-                                } else Modifier
-                            )
+                        modifier = Modifier.fillMaxWidth().height(18.dp)
                     )
                 }
             }

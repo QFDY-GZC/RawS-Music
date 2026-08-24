@@ -82,7 +82,7 @@ private val sideRailItems = listOf(
 )
 
 /**
- * Salt-style side rail: the rail and page are measured by the same Layout.
+ * Lyric-style side rail: the rail and page are measured by the same Layout.
  * Opening the rail moves both children instead of drawing a modal drawer over the page.
  */
 @Composable

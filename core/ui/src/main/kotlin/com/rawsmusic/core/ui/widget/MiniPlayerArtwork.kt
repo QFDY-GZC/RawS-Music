@@ -22,6 +22,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.isActive
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -125,7 +126,7 @@ private fun rememberMiniArtworkRotation(enabled: Boolean): Float {
             return@LaunchedEffect
         }
         var lastFrame = withFrameMillis { it }
-        while (true) {
+        while (isActive) {
             val now = withFrameMillis { it }
             val deltaMs = (now - lastFrame).coerceIn(0L, 250L)
             lastFrame = now

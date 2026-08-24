@@ -10,6 +10,8 @@ val LocalSceneBackgroundFrozen = staticCompositionLocalOf { false }
 data class SceneChromeAlpha(
     val alphabetIndex: Float = 1f,
     val topMenu: Float = 1f,
+    /** Normalized vertical motion of the persistent top action host. */
+    val topMenuTranslationProgress: Float = 0f,
     val detachAlphabetIndex: Boolean = false,
 )
 

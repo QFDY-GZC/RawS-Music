@@ -203,6 +203,20 @@ class LibraryMetadataMatchService : Service() {
 
         sources.forEach { source ->
             if ((!needLyrics || lyric != null) && (!needCover || cover != null)) return@forEach
+            val hasSongSearch = "searchSongs" in source.capabilities
+            if (!hasSongSearch) {
+                if (needCover && cover == null && "searchCovers" in source.capabilities) {
+                    cover = runCatching {
+                        engine.highestResolutionCover(engine.searchCovers(song, source.id, query))
+                    }.getOrNull()
+                }
+                if (needLyrics && lyric == null && "getLyrics" in source.capabilities) {
+                    lyric = runCatching { engine.getLyrics(song, source.id, query) }
+                        .getOrNull()
+                        ?.takeUnless { it.isEmpty }
+                }
+                return@forEach
+            }
             val candidates = engine.matchingCandidates(
                 song,
                 engine.searchSource(song, source.id, query)

@@ -23,6 +23,8 @@ import com.rawsmusic.core.ui.theme.RawSMusicTheme
 import com.rawsmusic.module.player.PlayerController
 import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import com.rawsmusic.ui.songs.PlayerHolder
+import com.rawsmusic.core.ui.widget.background.CustomMediaBackground
+import com.rawsmusic.core.ui.widget.background.CustomMediaBackgroundState
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
@@ -100,6 +102,9 @@ abstract class BaseSettingsActivity : ComponentActivity() {
     fun setContent(content: @Composable () -> Unit) {
         setComposeContent {
             RawSMusicTheme {
+                CustomMediaBackgroundState.ensureInitialized(this@BaseSettingsActivity)
+                @Suppress("UNUSED_VARIABLE")
+                val customBackgroundRevision = CustomMediaBackgroundState.revision
                 val settingsBackground = MiuixTheme.colorScheme.background
                 val isDark = settingsBackground.luminance() < 0.5f
 
@@ -121,6 +126,10 @@ abstract class BaseSettingsActivity : ComponentActivity() {
                         .fillMaxSize()
                         .background(settingsBackground)
                 ) {
+                    CustomMediaBackground(
+                        active = CustomMediaBackgroundState.showOnSettings,
+                        modifier = Modifier.fillMaxSize(),
+                    )
                     content()
                 }
             }

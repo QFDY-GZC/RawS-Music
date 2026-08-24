@@ -29,9 +29,6 @@
 
 # Kotlin Parcelize
 -keep class * implements android.os.Parcelable { *; }
--keepclassmembers class * implements android.os.Parcelable {
-    public static final android.os.Parcelable$Creator CREATOR;
-}
 
 # MMKV
 -keep class com.tencent.mmkv.** { *; }
@@ -40,8 +37,6 @@
 # SAF / ActivityResult — 防止 release 版文件夹选择器失效
 -keep class androidx.activity.result.** { *; }
 -keep class androidx.activity.result.contract.** { *; }
--keep class com.rawsmusic.ui.settings.SettingsFragment { *; }
--keep class com.rawsmusic.ui.songs.SongsFragment { *; }
 
 # JNI Native 方法
 -keepclasseswithmembernames class * {
@@ -50,9 +45,17 @@
 -keep class com.rawsmusic.module.player.dsp.NativeDSPEngine { *; }
 -keep class com.rawsmusic.core.common.ffmpeg.FFmpegBridge { *; }
 
+# AI separation callbacks are resolved by their source-level names from native code.
+-keepclassmembers,allowoptimization class com.rawsmusic.separation.AiOnnxRuntimeSession {
+    public boolean runModelFromNative();
+    public java.lang.String lastErrorForNative();
+}
+-keep interface com.rawsmusic.separation.AiNativeSeparationCallback {
+    *;
+}
+
 # Lyric module - 防止歌词视图被混淆导致崩溃
 -keep class io.github.proify.lyricon.** { *; }
--keepclassmembers class io.github.proify.lyricon.** { *; }
 
 # 保留自定义 View 类（只保留项目内的）
 -keep class com.rawsmusic.core.ui.widget.** { *; }

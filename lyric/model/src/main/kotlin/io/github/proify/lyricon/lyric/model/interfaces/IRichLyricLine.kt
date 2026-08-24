@@ -13,4 +13,5 @@ interface IRichLyricLine : ILyricLine {
     var translation: String?
     var translationWords: List<LyricWord>?
     var roma: String?
+    var backgroundTranslation: String?
 }

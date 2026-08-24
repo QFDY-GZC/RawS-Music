@@ -288,12 +288,18 @@ object RawSLyricsParser {
             val matches = lrcTimestampRegex.findAll(trimmed).toList()
             if (matches.isEmpty()) continue
 
-            val isWordByWord = matches.size >= 2 && let {
-                val afterFirst = matches.first().range.last + 1
-                afterFirst < trimmed.length && !trimmed[afterFirst].isWhitespace()
-            }
+            // Enhanced LRC uses square brackets for line begin/end and angle brackets
+            // for word timing. A line such as
+            // [00:43.001]<00:43.001>春<00:43.804>风...[00:50.494]
+            // must reach parseEnhancedText(); treating the closing [end] marker as a
+            // second square-bracket word marker leaves every <mm:ss.xxx> token visible.
+            // Keep the legacy square-bracket word-by-word fallback only for individual
+            // lines that do not contain enhanced angle markers.
+            val hasEnhancedWordMarkers = enhancedWordRegex.containsMatchIn(trimmed)
+            val isSquareBracketWordByWord =
+                !hasEnhancedWordMarkers && isWordByWordLine(trimmed, matches)
 
-            if (isWordByWord) {
+            if (isSquareBracketWordByWord) {
                 val result = parseWordByWordLine(trimmed, matches)
                 if (result != null) {
                     rawData.add(result)

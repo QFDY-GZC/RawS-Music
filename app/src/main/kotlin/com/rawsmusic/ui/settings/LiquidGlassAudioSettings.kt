@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -56,12 +57,29 @@ import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.PcmDitherMode
+import com.rawsmusic.module.player.PlayerController
+import com.rawsmusic.module.player.PlayerService
 
 @Composable
 fun LiquidGlassAudioSettingsScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    var runtimeController by remember {
+        mutableStateOf(PlayerService.currentRuntimeController() ?: PlayerController.getInstanceOrNull())
+    }
+    fun requireRuntimeController(reason: String): PlayerController {
+        val current = runtimeController
+        if (current != null) return current
+        return PlayerService.obtainRuntimeController(
+            context,
+            "audio_settings:$reason",
+            ensureService = true
+        ).also { runtimeController = it }
+    }
+    val usbExclusiveActive by (runtimeController?.usbExclusiveActive
+        ?: kotlinx.coroutines.flow.MutableStateFlow(false)).collectAsState()
+    var usbExclusiveRequested by remember { mutableStateOf(AppPreferences.Player.usbExclusiveRequested) }
 
     var outputMode by remember { mutableStateOf(AppPreferences.Player.audioOutputMode) }
     // v6f: 采样率/位深选项根据当前输出引擎过滤
@@ -135,6 +153,22 @@ fun LiquidGlassAudioSettingsScreen(
             Triple(AudioOutputMode.AAUDIO, R.drawable.ic_audio_aaudio_png, stringResource(R.string.settings_audio_engine_aaudio_hint)),
             Triple(AudioOutputMode.AUDIO_TRACK, R.drawable.ic_audio_track_png, stringResource(R.string.settings_audio_engine_audiotrack_hint)),
             Triple(AudioOutputMode.DIRECT, R.drawable.ic_audio_hires_png, stringResource(R.string.settings_audio_engine_direct_hint))
+        )
+
+        UsbExclusiveTransportCard(
+            androidOutputLabel = AudioOutputManager.getOutputModeLabel(outputMode),
+            active = usbExclusiveActive,
+            requested = usbExclusiveRequested,
+            onClick = {
+                val controller = requireRuntimeController("toggle_usb_exclusive")
+                if (usbExclusiveActive || usbExclusiveRequested || AppPreferences.Player.usbExclusiveRequested) {
+                    usbExclusiveRequested = false
+                    controller.disableUsbExclusive()
+                } else {
+                    usbExclusiveRequested = true
+                    controller.enableUsbExclusive()
+                }
+            }
         )
 
         for ((mode, iconRes, rangeHint) in engines) {
@@ -441,6 +475,91 @@ private fun DitherSettingsPreference(
 // ==========================
 // v6f: 引擎卡片 — 图标在左，可展开
 // ==========================
+
+@Composable
+private fun UsbExclusiveTransportCard(
+    androidOutputLabel: String,
+    active: Boolean,
+    requested: Boolean,
+    onClick: () -> Unit
+) {
+    val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
+    val cardColor = if (isDark) Color(0xFF1E1E1E) else Color.White
+    val statusText = when {
+        active -> stringResource(R.string.usb_dac_exclusive_active_short)
+        requested -> stringResource(R.string.usb_dac_exclusive_pending_short)
+        else -> stringResource(R.string.usb_dac_exclusive_off_short)
+    }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(cardColor)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier.width(64.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_audio_output_usb_png),
+                    contentDescription = stringResource(R.string.usb_dac_title),
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.size(52.dp)
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    stringResource(R.string.usb_dac_independent_transport_title),
+                    fontSize = 15.sp,
+                    fontWeight = if (active || requested) FontWeight.Bold else FontWeight.Medium,
+                    color = MiuixTheme.colorScheme.onBackground,
+                    fontFamily = appFontFamily()
+                )
+                Text(
+                    stringResource(R.string.usb_dac_android_output_unchanged, androidOutputLabel),
+                    fontSize = 11.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    fontFamily = appFontFamily(),
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+            Text(
+                statusText,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (active || requested) MiuixTheme.colorScheme.primary
+                    else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                fontFamily = appFontFamily()
+            )
+        }
+        AnimatedVisibility(
+            visible = active || requested,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            Text(
+                text = if (active) {
+                    stringResource(R.string.usb_dac_exclusive_independent_active_desc)
+                } else {
+                    stringResource(R.string.usb_dac_exclusive_independent_pending_desc)
+                },
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 10.dp),
+                fontFamily = appFontFamily()
+            )
+        }
+    }
+    Spacer(Modifier.height(12.dp))
+}
 
 @Composable
 private fun EngineCard(

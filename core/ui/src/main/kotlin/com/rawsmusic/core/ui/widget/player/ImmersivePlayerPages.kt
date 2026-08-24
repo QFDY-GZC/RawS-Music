@@ -7,8 +7,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.basicMarquee
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateDpAsState
@@ -46,7 +44,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -61,7 +58,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
-import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
@@ -95,6 +91,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -103,6 +100,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalWindowInfo
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.LyricTimingEditorTarget
 import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.widget.PlayerSceneController
@@ -112,8 +110,8 @@ import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.bitmaps.PlayerArtworkAnimationStyle
 import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkTransitionState
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
+import com.rawsmusic.core.ui.widget.text.SharedMarqueeText
 import com.rawsmusic.module.data.prefs.AppPreferences
-import com.rawsmusic.module.data.prefs.PlaylistStore
 import com.rawsmusic.module.data.prefs.VideoCoverMode
 import com.rawsmusic.module.data.prefs.VideoCoverPreferences
 import com.rawsmusic.module.data.prefs.VideoCoverSearchCandidate
@@ -136,6 +134,8 @@ import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
 import kotlin.math.abs
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBottomPadding
 
 private data class PlayerForegroundTone(
     val primary: Color,
@@ -237,6 +237,8 @@ fun ImmersivePlayerHorizontalStack(
     onLyricModifyAlbumArt: () -> Unit = {},
     onSearchLyrico: () -> Unit = {},
     onOpenInLyrico: () -> Unit = {},
+    onAiTimingPreview: () -> Unit = {},
+    onOpenExternalTimingEditor: (LyricTimingEditorTarget) -> Unit = {},
     onOpenLyric: () -> Unit,
     onArtworkLongPress: () -> Unit = {},
     onLyricSeek: (Long) -> Unit,
@@ -344,12 +346,14 @@ fun ImmersivePlayerHorizontalStack(
             videoCoverUri = videoCoverUri,
             pageProgress = basePage,
             artworkTransitionState = artworkTransitionState,
-            clearArtworkVisible = !(queueVisible && queueFullscreen)
+            clearArtworkVisible = !(queueVisible && queueFullscreen),
+            motionEnabled = isPlaying || isTransitioning,
         )
         ImmersiveAlbumInfoPage(
             currentSong = currentSong,
             songs = albumSongs,
             coverPath = albumCoverPath ?: coverPath,
+            motionEnabled = isPlaying || isTransitioning,
             onBack = { },
             onSongClick = onAlbumSongClick,
             pageProgress = basePage,
@@ -431,6 +435,8 @@ fun ImmersivePlayerHorizontalStack(
             onModifyAlbumArt = onLyricModifyAlbumArt,
             onSearchLyrico = onSearchLyrico,
             onOpenInLyrico = onOpenInLyrico,
+            onAiTimingPreview = onAiTimingPreview,
+            onOpenExternalTimingEditor = onOpenExternalTimingEditor,
             onModalVisibleChange = onMorePanelVisibleChange,
             onModalDismissActionChange = onModalDismissActionChange,
             onBack = { },
@@ -502,7 +508,6 @@ fun ImmersivePlayerHorizontalStack(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun ImmersivePlayerMainPage(
     currentSong: AudioFile?,
@@ -561,8 +566,15 @@ internal fun ImmersivePlayerMainPage(
     val fontScale = LocalDensity.current.fontScale
     Box(modifier = modifier.fillMaxSize()) {
         val tone = rememberPlayerForegroundTone()
+        val playerTitlePosition = LyricTextPosition.from(AppPreferences.UI.playerTitleAlignment)
+        val miniLyricPosition = LyricTextPosition.from(AppPreferences.UI.miniLyricAlignment)
+        val playerTitleTextAlign = when (playerTitlePosition) {
+            LyricTextPosition.Left -> TextAlign.Left
+            LyricTextPosition.Center -> TextAlign.Center
+            LyricTextPosition.Right -> TextAlign.Right
+        }
         val statusBarHeight = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-        val navigationBarHeight = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        val navigationBarHeight = rawStableNavigationBottomPadding()
         val contentVerticalPadding = 14.dp
         if (renderBackdrop) {
             ImmersiveBackdrop(
@@ -570,7 +582,8 @@ internal fun ImmersivePlayerMainPage(
                 videoCoverUri = videoCoverUri,
                 pageProgress = pageProgress,
                 artworkTransitionState = artworkTransitionState,
-                clearArtworkVisible = !(queueVisible && queueFullscreen)
+                clearArtworkVisible = !(queueVisible && queueFullscreen),
+                motionEnabled = isPlaying,
             )
         }
         if (audioVisualizerEnabled && audioVisualizerForeground && !queueVisible) {
@@ -587,8 +600,6 @@ internal fun ImmersivePlayerMainPage(
                         visible = true,
                         isPlaying = isPlaying,
                         layer = AudioVisualizerLayer.Foreground,
-                        showControls = true,
-                        onDismiss = onAudioVisualizerDismiss,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -598,13 +609,22 @@ internal fun ImmersivePlayerMainPage(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
-                .navigationBarsPadding()
+                .rawStableNavigationBarsPadding()
                 .padding(horizontal = 30.dp, vertical = 14.dp)
         ) {
             var titleInfoHeightPx by remember { mutableIntStateOf(0) }
             var progressPanelHeightPx by remember { mutableIntStateOf(0) }
             var transportControlsHeightPx by remember { mutableIntStateOf(0) }
+            var headerActionRailWidthPx by remember { mutableIntStateOf(0) }
             val density = LocalDensity.current
+            // The More control is an independent TopEnd rail. Keep the title, artist
+            // and mini-lyric content inside a measured safe lane instead of letting center/right
+            // alignment use the full viewport underneath that rail. The 48dp fallback prevents a
+            // one-frame overlap before the action rail reports its real width.
+            val headerActionRailWidth = with(density) {
+                if (headerActionRailWidthPx > 0) headerActionRailWidthPx.toDp() else 48.dp
+            }
+            val headerContentEndReserve = headerActionRailWidth + 8.dp
             LaunchedEffect(progressStyle) {
                 progressPanelHeightPx = 0
             }
@@ -694,13 +714,13 @@ internal fun ImmersivePlayerMainPage(
                     .fillMaxWidth()
                     .offset(y = titleTop)
             ) {
-                Row(
+                Box(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.Top
                 ) {
                     Column(
                         modifier = Modifier
-                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(end = headerContentEndReserve)
                             .pointerInput(currentSong?.path, currentSong?.title, currentSong?.artist, currentSong?.album) {
                                 detectTapGestures(
                                     onLongPress = { copySongInfoToClipboard(context, currentSong) }
@@ -712,21 +732,25 @@ internal fun ImmersivePlayerMainPage(
                                 if (titleInfoHeightPx != size.height) titleInfoHeightPx = size.height
                             }
                         ) {
-                            Text(
-                                currentSong?.displayName ?: stringResource(R.string.player_no_song),
+                            SharedMarqueeText(
+                                text = currentSong?.displayName ?: stringResource(R.string.player_no_song),
                                 color = tone.primary,
-                                fontSize = 21.sp,
+                                fontSizeSp = 21f,
                                 fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Clip,
-                                modifier = Modifier.basicMarquee(iterations = 1, repeatDelayMillis = 900)
+                                textAlign = playerTitleTextAlign,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(29.dp),
+                                visible = true
                             )
                             Text(
                                 currentSong?.artist?.ifBlank { stringResource(R.string.player_unknown_artist) } ?: "",
                                 color = tone.secondary,
                                 fontSize = 13.sp,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = playerTitleTextAlign,
+                                modifier = Modifier.fillMaxWidth()
                             )
                             Spacer(Modifier.height(12.dp))
                         }
@@ -740,32 +764,21 @@ internal fun ImmersivePlayerMainPage(
                             primaryColor = tone.primary,
                             secondaryColor = tone.secondary,
                             dimColor = tone.tertiary,
+                            textPosition = miniLyricPosition,
                             maxHeight = lyricPreviewHeight,
                             maxPrimaryRows = lyricPreviewRows
                         )
                     }
-                    Spacer(Modifier.width(16.dp))
-                    val context = LocalContext.current
-                    val playlistStore = remember(context) { PlaylistStore.getInstance(context) }
-                    val playlists by playlistStore.playlists.collectAsState()
-                    val isFavorite = currentSong?.let(playlistStore::isFavorite) == true
-                    val favoriteScope = rememberCoroutineScope()
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        IconButton(
-                            onClick = {
-                                currentSong?.let { song ->
-                                    favoriteScope.launch { playlistStore.toggleFavorite(song) }
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .onSizeChanged { size ->
+                                if (headerActionRailWidthPx != size.width) {
+                                    headerActionRailWidthPx = size.width
                                 }
                             },
-                            enabled = currentSong != null
-                        ) {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_playlist_favorite_star),
-                                contentDescription = stringResource(R.string.player_favorite),
-                                tint = if (isFavorite) tone.icon else tone.iconSoft,
-                                modifier = Modifier.size(30.dp)
-                            )
-                        }
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
                         IconCircle(
                             iconRes = R.drawable.ic_more_vert,
                             size = 44.dp,
@@ -926,12 +939,18 @@ fun ImmersiveLyricPage(
 ) {
     Box(modifier = modifier.fillMaxSize()) {
         val tone = rememberPlayerForegroundTone()
-        if (renderBackdrop) ImmersiveBackdrop(coverPath = coverPath, pageProgress = pageProgress)
+        if (renderBackdrop) {
+            ImmersiveBackdrop(
+                coverPath = coverPath,
+                pageProgress = pageProgress,
+                motionEnabled = isPlaying,
+            )
+        }
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
-                .navigationBarsPadding()
+                .rawStableNavigationBarsPadding()
                 .padding(horizontal = 24.dp, vertical = 18.dp)
         ) {
             if (renderTopBar) {
@@ -996,7 +1015,10 @@ fun ImmersiveLyricPage(
                     ),
                     onClick = onTranslationToggle
                 )
-                Spacer(Modifier.width(1.dp))
+                LyricTransportButton(
+                    isPlaying = isPlaying,
+                    onClick = onPlayPause
+                )
             }
         }
     }
@@ -1017,6 +1039,7 @@ fun ImmersiveAlbumInfoPage(
     currentSong: AudioFile?,
     songs: List<AudioFile>,
     coverPath: String?,
+    motionEnabled: Boolean = false,
     onBack: () -> Unit,
     onSongClick: (AudioFile, Int) -> Unit,
     pageProgress: Float = 0f,
@@ -1028,12 +1051,18 @@ fun ImmersiveAlbumInfoPage(
         songs.filter { it.artist == currentSong?.artist }.ifEmpty { songs.take(12) }
     }
     Box(modifier = modifier.fillMaxSize()) {
-        if (renderBackdrop) ImmersiveBackdrop(coverPath = coverPath, pageProgress = pageProgress)
+        if (renderBackdrop) {
+            ImmersiveBackdrop(
+                coverPath = coverPath,
+                pageProgress = pageProgress,
+                motionEnabled = motionEnabled,
+            )
+        }
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
-                .navigationBarsPadding()
+                .rawStableNavigationBarsPadding()
                 .padding(horizontal = 24.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
@@ -1171,6 +1200,7 @@ private fun MiniLyricPreview(
     primaryColor: Color = Color.White,
     secondaryColor: Color = Color.White.copy(alpha = 0.58f),
     dimColor: Color = Color.White.copy(alpha = 0.40f),
+    textPosition: LyricTextPosition,
     maxHeight: Dp,
     maxPrimaryRows: Int
 ) {
@@ -1192,6 +1222,8 @@ private fun MiniLyricPreview(
             dimColor = dimColor,
             secondaryColor = secondaryColor,
             fontSizeSp = 15,
+            textPosition = textPosition,
+            zoomGestureEnabled = false,
             blurEnabled = false,
             karaokeGlowEnabled = AppPreferences.UI.lyricKaraokeGlowEnabled,
             karaokeLiftEnabled = AppPreferences.UI.lyricKaraokeLiftEnabled,
@@ -1253,7 +1285,8 @@ internal fun ImmersiveProgress(
             waveformPlayedColor = waveformPlayedColor,
             waveformClimaxColor = waveformClimaxColor,
             onSeekStart = onSeekStart,
-            onSeekStop = onSeekStop
+            onSeekStop = onSeekStop,
+            horizontalExtension = 22.dp
         )
     }
 }
@@ -1306,10 +1339,11 @@ internal fun SecondSpectrumTimelineProgress(
     waveformClimaxColor: Color,
     onSeekStart: () -> Unit,
     onSeekStop: (Float) -> Unit,
+    horizontalExtension: Dp = 0.dp,
     modifier: Modifier = Modifier
 ) {
     val tone = rememberPlayerForegroundTone()
-    ImmersiveSecondProgressBar(
+        ImmersiveSecondProgressBar(
         currentSong = currentSong,
         currentPositionMs = currentPositionMs,
         totalDurationMs = totalDurationMs,
@@ -1322,10 +1356,11 @@ internal fun SecondSpectrumTimelineProgress(
             needle = Color.White.copy(alpha = 0.92f),
             time = tone.tertiary
         ),
-        onSeekStart = onSeekStart,
-        onSeekStop = onSeekStop,
-        modifier = modifier
-    )
+            onSeekStart = onSeekStart,
+            onSeekStop = onSeekStop,
+            horizontalExtension = horizontalExtension,
+            modifier = modifier
+        )
 }
 
 @Composable
@@ -1372,29 +1407,62 @@ internal fun ClassicTimelineProgress(
                             requireUnconsumed = false,
                             pass = PointerEventPass.Main
                         )
-                        if (totalDurationMs <= 0L || widthPx <= 1) {
-                            down.consume()
-                            return@awaitEachGesture
-                        }
-                        var lastFraction = (down.position.x / widthPx.toFloat()).coerceIn(0f, 1f)
-                        isDragging = true
-                        dragFraction = lastFraction
-                        onSeekStart()
-                        down.consume()
+                        if (totalDurationMs <= 0L || widthPx <= 1) return@awaitEachGesture
+
+                        val start = down.position
+                        var lastPosition = start
+                        var axis = PlayerTimelineGestureAxis.Undecided
+                        var seekStarted = false
+                        var lastFraction = (start.x / widthPx.toFloat()).coerceIn(0f, 1f)
+                        var finishedNormally = false
                         try {
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Main)
                                 val change = event.changes.firstOrNull { it.id == down.id }
                                     ?: event.changes.firstOrNull()
                                     ?: break
-                                lastFraction = (change.position.x / widthPx.toFloat()).coerceIn(0f, 1f)
-                                dragFraction = lastFraction
-                                change.consume()
-                                if (!change.pressed) break
+                                lastPosition = change.position
+                                if (axis == PlayerTimelineGestureAxis.Undecided && change.isConsumed) {
+                                    axis = PlayerTimelineGestureAxis.VerticalScene
+                                }
+                                if (axis == PlayerTimelineGestureAxis.Undecided) {
+                                    axis = resolvePlayerTimelineGestureAxis(
+                                        dx = change.position.x - start.x,
+                                        dy = change.position.y - start.y,
+                                        touchSlop = viewConfiguration.touchSlop,
+                                    )
+                                    if (axis == PlayerTimelineGestureAxis.HorizontalSeek) {
+                                        seekStarted = true
+                                        isDragging = true
+                                        onSeekStart()
+                                    }
+                                }
+                                if (axis == PlayerTimelineGestureAxis.HorizontalSeek) {
+                                    lastFraction = (change.position.x / widthPx.toFloat())
+                                        .coerceIn(0f, 1f)
+                                    dragFraction = lastFraction
+                                    change.consume()
+                                }
+                                if (!change.pressed) {
+                                    finishedNormally = true
+                                    break
+                                }
                             }
                         } finally {
-                            isDragging = false
-                            onSeekStop(lastFraction)
+                            if (seekStarted) {
+                                isDragging = false
+                                onSeekStop(lastFraction)
+                            } else if (finishedNormally &&
+                                axis == PlayerTimelineGestureAxis.Undecided
+                            ) {
+                                // Preserve tap-to-seek without claiming DOWN. Vertical drags can
+                                // now leave through the parent scene recognizer with zero seek side
+                                // effects, while a real tap still seeks on release.
+                                val tapFraction = (lastPosition.x / widthPx.toFloat())
+                                    .coerceIn(0f, 1f)
+                                onSeekStart()
+                                onSeekStop(tapFraction)
+                            }
                         }
                     }
                 },
@@ -1516,6 +1584,27 @@ private fun LyricBottomButton(text: String, onClick: () -> Unit) {
         contentAlignment = Alignment.Center
     ) {
         Text(text, color = rememberPlayerForegroundTone().secondary, fontSize = 17.sp)
+    }
+}
+
+
+@Composable
+private fun LyricTransportButton(isPlaying: Boolean, onClick: () -> Unit) {
+    val tone = rememberPlayerForegroundTone()
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(tone.controlTrack)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play),
+            contentDescription = stringResource(if (isPlaying) R.string.common_pause else R.string.common_play),
+            colorFilter = ColorFilter.tint(tone.primary),
+            modifier = Modifier.size(25.dp)
+        )
     }
 }
 
@@ -1757,15 +1846,6 @@ internal fun ImmersiveMoreSheet(
                         sharePlayerAudio(context, currentSong)
                     }
                 )
-                AudioVisualizerMoreActionButton(
-                    enabled = audioVisualizerEnabled,
-                    neutralCardColor = cardColor,
-                    neutralIconColor = actionIconColor,
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        onAudioVisualizerEnabledChange(!audioVisualizerEnabled)
-                    }
-                )
                 ImmersiveMoreActionButton(
                     iconRes = R.drawable.ic_landscape_player,
                     label = stringResource(R.string.player_more_landscape),
@@ -1775,7 +1855,7 @@ internal fun ImmersiveMoreSheet(
                     onClick = onOpenLandscapePlayer
                 )
             }
-            // Keep file spectrum analysis out of the five compact actions above. It is a
+            // Keep file spectrum analysis out of the compact actions above. It is a
             // secondary entry, so use the same sheet surface but no extra icon or cramped slot.
             Spacer(Modifier.height(14.dp))
             Text(
@@ -1924,6 +2004,14 @@ internal fun ImmersiveMoreSheet(
                 onWaveformRemainingColorChange = onWaveformRemainingColorChange,
                 onWaveformPlayedColorChange = onWaveformPlayedColorChange,
                 onWaveformClimaxColorChange = onWaveformClimaxColorChange
+            )
+            Spacer(Modifier.height(18.dp))
+            ImmersiveSettingToggleRow(
+                title = stringResource(R.string.player_more_visualizer),
+                subtitle = stringResource(R.string.audio_visualizer_menu_summary),
+                enabled = true,
+                checked = audioVisualizerEnabled,
+                onClick = { onAudioVisualizerEnabledChange(!audioVisualizerEnabled) },
             )
             Spacer(Modifier.height(18.dp))
         }
@@ -2232,10 +2320,16 @@ private fun VideoCoverSettingsCard(
             VideoCoverMode.CURRENT to stringResource(R.string.player_video_cover_current),
             VideoCoverMode.TEMPORARY to stringResource(R.string.player_video_cover_temporary)
         )
+        val modeSummaries = mapOf(
+            VideoCoverMode.PERMANENT to stringResource(R.string.player_video_cover_permanent_summary),
+            VideoCoverMode.CURRENT to stringResource(R.string.player_video_cover_current_summary),
+            VideoCoverMode.TEMPORARY to stringResource(R.string.player_video_cover_temporary_summary)
+        )
         val modeDropdown = DropdownEntry(
             items = VideoCoverMode.entries.map { mode ->
                 DropdownItem(
                     text = modeTitles.getValue(mode),
+                    summary = modeSummaries.getValue(mode),
                     selected = mode == state.mode,
                     onClick = { VideoCoverPreferences.setMode(mode) }
                 )
@@ -2244,12 +2338,8 @@ private fun VideoCoverSettingsCard(
         RawWindowDropdownPreference(
             entry = modeDropdown,
             title = stringResource(R.string.player_video_cover_mode),
-            summary = when (state.mode) {
-                VideoCoverMode.PERMANENT -> stringResource(R.string.player_video_cover_permanent_summary)
-                VideoCoverMode.CURRENT -> stringResource(R.string.player_video_cover_current_summary)
-                VideoCoverMode.TEMPORARY -> stringResource(R.string.player_video_cover_temporary_summary)
-            },
-            showValue = false,
+            summary = stringResource(R.string.player_video_cover_mode_summary),
+            showValue = true,
             maxHeight = 360.dp,
             collapseOnSelection = true
         )
@@ -2982,57 +3072,6 @@ private fun ImmersiveMoreActionButton(
 
 
 
-@Composable
-private fun AudioVisualizerMoreActionButton(
-    enabled: Boolean,
-    neutralCardColor: Color,
-    neutralIconColor: Color,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    val scheme = MiuixTheme.colorScheme
-    val cardColor by androidx.compose.animation.animateColorAsState(
-        targetValue = if (enabled) scheme.primary.copy(alpha = 0.30f) else neutralCardColor,
-        animationSpec = tween(260),
-        label = "visualizer-menu-card"
-    )
-    val iconColor by androidx.compose.animation.animateColorAsState(
-        targetValue = if (enabled) scheme.primary else neutralIconColor,
-        animationSpec = tween(260),
-        label = "visualizer-menu-icon"
-    )
-    val labelColor by androidx.compose.animation.animateColorAsState(
-        targetValue = if (enabled) scheme.primary else scheme.onSurface,
-        animationSpec = tween(260),
-        label = "visualizer-menu-label"
-    )
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = modifier.clickable(onClick = onClick)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(58.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(cardColor),
-            contentAlignment = Alignment.Center
-        ) {
-            AudioVisualizerToggleGlyph(
-                locked = enabled,
-                tint = iconColor,
-                animateOnEnter = true,
-                modifier = Modifier.size(29.dp)
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = stringResource(R.string.player_more_visualizer),
-            color = labelColor,
-            fontSize = 13.sp,
-            maxLines = 1
-        )
-    }
-}
 
 private fun scenePageIndex(scene: PlayerSceneController.Scene): Int = when (scene) {
     PlayerSceneController.Scene.ALBUM_DETAIL -> 0

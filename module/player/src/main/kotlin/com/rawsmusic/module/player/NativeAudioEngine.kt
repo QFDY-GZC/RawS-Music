@@ -4,6 +4,8 @@ import android.media.AudioFormat
 import android.os.Build
 import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.core.common.utils.AppLogger
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantReadWriteLock
 
 class NativeAudioEngine private constructor(
     @Volatile private var handle: Long,
@@ -26,6 +28,9 @@ class NativeAudioEngine private constructor(
         private const val FORMAT_PCM_I16 = 1
         private const val FORMAT_PCM_FLOAT = 2
         private const val FORMAT_PCM_I32 = 3
+
+        /** Native sink paused before this PCM block was accepted; caller must retry the same block. */
+        internal const val WRITE_PAUSED = -2
 
         private val nativeAvailable: Boolean by lazy {
             try {
@@ -174,51 +179,77 @@ class NativeAudioEngine private constructor(
         @JvmStatic private external fun nativeClose(handle: Long)
     }
 
-    private val nativeLock = Any()
+    // nativeWrite() is intentionally blocking: OpenSL waits for a free queue slot and AAudio can
+    // wait inside AAudioStream_write(). A single synchronized monitor around write/start/pause used
+    // to let the render thread hold the lifecycle lock while blocked in native code, preventing the
+    // control thread from reaching nativePause()/nativeStart(). Use a read/write lifetime gate
+    // instead: ordinary native calls may overlap, while close is the only exclusive operation.
+    // The native backends own their own mutex/state machine and are responsible for coordinating
+    // write vs pause/start.
+    private val lifecycleLock = ReentrantReadWriteLock()
+    private val closing = AtomicBoolean(false)
 
-    fun start(): Boolean = synchronized(nativeLock) {
-        val h = handle
-        h != 0L && nativeStart(h)
+    private fun <T> withLiveHandle(default: T, block: (Long) -> T): T {
+        if (closing.get()) return default
+        val read = lifecycleLock.readLock()
+        read.lock()
+        return try {
+            if (closing.get()) return default
+            val h = handle
+            if (h != 0L) block(h) else default
+        } finally {
+            read.unlock()
+        }
     }
 
-    fun pause() = synchronized(nativeLock) {
-        val h = handle
-        if (h != 0L) nativePause(h)
+    private fun withLiveHandle(block: (Long) -> Unit) {
+        withLiveHandle(Unit, block)
     }
 
-    fun stop() = synchronized(nativeLock) {
-        val h = handle
-        if (h != 0L) nativeStop(h)
+    fun start(): Boolean = withLiveHandle(false) { nativeStart(it) }
+
+    fun pause() = withLiveHandle { nativePause(it) }
+
+    fun stop() = withLiveHandle { nativeStop(it) }
+
+    fun flush() = withLiveHandle { nativeFlush(it) }
+
+    fun write(buffer: ByteArray, offset: Int, length: Int): Int =
+        withLiveHandle(-1) { nativeWrite(it, buffer, offset, length) }
+
+    fun setVolume(volume: Float) = withLiveHandle {
+        nativeSetVolume(it, volume.coerceIn(0f, 1f))
     }
 
-    fun flush() = synchronized(nativeLock) {
-        val h = handle
-        if (h != 0L) nativeFlush(h)
-    }
+    fun setOutputDevice(deviceId: Int): Boolean =
+        withLiveHandle(false) { nativeSetOutputDevice(it, deviceId.coerceAtLeast(0)) }
 
-    fun write(buffer: ByteArray, offset: Int, length: Int): Int = synchronized(nativeLock) {
-        val h = handle
-        if (h != 0L) nativeWrite(h, buffer, offset, length) else -1
-    }
+    fun getFramesWritten(): Long = withLiveHandle(0L) { nativeGetFramesWritten(it) }
 
-    fun setVolume(volume: Float) = synchronized(nativeLock) {
-        val h = handle
-        if (h != 0L) nativeSetVolume(h, volume.coerceIn(0f, 1f))
-    }
+    fun close() {
+        if (!closing.compareAndSet(false, true)) return
 
-    fun setOutputDevice(deviceId: Int): Boolean = synchronized(nativeLock) {
-        val h = handle
-        if (h != 0L) nativeSetOutputDevice(h, deviceId.coerceAtLeast(0)) else false
-    }
-
-    fun getFramesWritten(): Long = synchronized(nativeLock) {
-        val h = handle
-        if (h != 0L) nativeGetFramesWritten(h) else 0L
-    }
-
-    fun close() = synchronized(nativeLock) {
-        val h = handle
-        handle = 0L
-        if (h != 0L) nativeClose(h)
+        val write = lifecycleLock.writeLock()
+        // The normal owner already calls stop() before close(), so avoid an unnecessary second
+        // native stop when no call is in flight. If a writer is still holding a read lease, wake it
+        // first; otherwise waiting for the exclusive lease could deadlock on a full native queue.
+        if (!write.tryLock()) {
+            val read = lifecycleLock.readLock()
+            read.lock()
+            try {
+                val h = handle
+                if (h != 0L) nativeStop(h)
+            } finally {
+                read.unlock()
+            }
+            write.lock()
+        }
+        try {
+            val h = handle
+            handle = 0L
+            if (h != 0L) nativeClose(h)
+        } finally {
+            write.unlock()
+        }
     }
 }

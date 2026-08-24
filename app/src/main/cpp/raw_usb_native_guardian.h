@@ -27,6 +27,7 @@ struct UsbGuardianRuntimeSnapshot {
 struct UsbGuardianHooks {
     bool (*snapshot)(void* opaque, UsbGuardianRuntimeSnapshot* out) = nullptr;
     int (*pumpEventsOnce)(void* opaque, const char* reason, bool* obtainedEventLock) = nullptr;
+    int (*recoverTransfers)(void* opaque, const char* reason) = nullptr;
 };
 
 class UsbNativeBackgroundGuardian {

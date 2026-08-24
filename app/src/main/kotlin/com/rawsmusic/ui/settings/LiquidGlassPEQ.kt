@@ -64,6 +64,7 @@ import com.rawsmusic.module.player.dsp.AutoEqSearchResult
 import com.rawsmusic.module.player.dsp.FilterType
 import com.rawsmusic.module.player.dsp.PEQFilter
 import com.rawsmusic.module.player.dsp.ParametricEQController
+import com.rawsmusic.module.player.dsp.sanitizePeqPreamp
 import kotlinx.coroutines.launch
 
 /**
@@ -232,10 +233,11 @@ fun LiquidGlassPEQScreen(
                 fontSize = 13.sp,
                 modifier = Modifier.width(60.dp)
             )
+            val preampRange = peqPreampSliderRange(preamp)
             Slider(
-                value = preamp,
+                value = preamp.coerceIn(preampRange.start, preampRange.endInclusive),
                 onValueChange = { peqController.setPreamp(it) },
-                valueRange = -12f..12f,
+                valueRange = preampRange,
                 modifier = Modifier.weight(1f).height(24.dp),
                 colors = SliderDefaults.colors(
                     thumbColor = PEQUiColors.Accent,
@@ -377,11 +379,9 @@ fun LiquidGlassPEQScreen(
             peqController = peqController,
             onDismiss = { showImportDialog = false },
             onImportFromFile = onImportFromFile,
-            initialImportText = importedFileContent ?: ""
+            initialImportText = importedFileContent ?: "",
+            onInitialImportTextConsumed = onImportedFileContentConsumed,
         )
-        if (importedFileContent != null) {
-            onImportedFileContentConsumed()
-        }
     }
 }
 
@@ -493,7 +493,8 @@ private fun ImportPresetDialog(
     peqController: ParametricEQController,
     onDismiss: () -> Unit,
     onImportFromFile: () -> Unit = {},
-    initialImportText: String = ""
+    initialImportText: String = "",
+    onInitialImportTextConsumed: () -> Unit = {},
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var importText by remember { mutableStateOf(initialImportText) }
@@ -501,13 +502,16 @@ private fun ImportPresetDialog(
     val currentBandCount by peqController.bandCount.collectAsState()
 
     // 段数选择弹窗状态
-    var pendingPreset by remember { mutableStateOf<PEQPreset?>(null) }
+    var pendingPreset by remember { mutableStateOf<ParsedPeqImport?>(null) }
     var showBandChoiceDialog by remember { mutableStateOf(false) }
 
     androidx.compose.runtime.LaunchedEffect(initialImportText) {
         if (initialImportText.isNotEmpty()) {
+            // Copy the SAF payload into dialog-owned state before clearing the parent hand-off.
+            // Clearing it during composition could cancel this effect and leave the dialog empty.
             importText = initialImportText
             errorMessage = null
+            onInitialImportTextConsumed()
         }
     }
 
@@ -520,7 +524,7 @@ private fun ImportPresetDialog(
         text = {
             Column {
                 Text(
-                    stringResource(R.string.settings_peq_import_desc),
+                    stringResource(R.string.settings_peq_import_formats),
                     color = PEQUiColors.TextSecondary,
                     fontSize = 14.sp
                 )
@@ -576,7 +580,11 @@ private fun ImportPresetDialog(
                     }
 
                     try {
-                        val preset = PEQPreset.fromJson(importText)
+                        if (parseAutoEqGraphicEq(importText) != null) {
+                            errorMessage = context.getString(R.string.settings_peq_error_graphic_eq_target)
+                            return@TextButton
+                        }
+                        val preset = parsePeqImport(importText, context)
                         if (preset == null) {
                             errorMessage = context.getString(R.string.settings_peq_error_invalid_preset)
                             return@TextButton
@@ -587,19 +595,21 @@ private fun ImportPresetDialog(
                             return@TextButton
                         }
 
-                        val presetBandCount = preset.bandCount.coerceIn(
+                        val presetBandCount = preset.sourceBandCount.coerceIn(
                             PEQFilter.MIN_FILTERS,
                             PEQFilter.MAX_FILTERS
                         )
 
                         if (presetBandCount != currentBandCount) {
-                            // 段数不同，弹选择框
                             pendingPreset = preset
                             showBandChoiceDialog = true
                         } else {
-                            // 段数相同，直接导入
-                            peqController.setPreamp(preset.preamp)
-                            peqController.importFilters(preset.filters, preset.name)
+                            peqController.importPreset(
+                                preampDb = preset.preamp,
+                                filters = preset.filters,
+                                presetName = preset.name,
+                                preferOriginalOrder = preset.preferOriginalOrder,
+                            )
 
                             android.widget.Toast.makeText(
                                 context,
@@ -627,7 +637,7 @@ private fun ImportPresetDialog(
     // 段数选择弹窗
     if (showBandChoiceDialog && pendingPreset != null) {
         val preset = pendingPreset!!
-        val presetBandCount = preset.bandCount.coerceIn(
+        val presetBandCount = preset.sourceBandCount.coerceIn(
             PEQFilter.MIN_FILTERS,
             PEQFilter.MAX_FILTERS
         )
@@ -667,8 +677,12 @@ private fun ImportPresetDialog(
                     TextButton(
                         onClick = {
                             // 方案 A：保持当前段数，转换导入
-                            peqController.setPreamp(preset.preamp)
-                            peqController.importFilters(preset.filters, preset.name)
+                            peqController.importPreset(
+                                preampDb = preset.preamp,
+                                filters = preset.filters,
+                                presetName = preset.name,
+                                preferOriginalOrder = preset.preferOriginalOrder,
+                            )
 
                             android.widget.Toast.makeText(
                                 context,
@@ -691,8 +705,12 @@ private fun ImportPresetDialog(
                         onClick = {
                             // 方案 B：切换到预设段数再导入（必须先 setBandCount 再 import）
                             peqController.setBandCount(presetBandCount)
-                            peqController.setPreamp(preset.preamp)
-                            peqController.importFilters(preset.filters, preset.name)
+                            peqController.importPreset(
+                                preampDb = preset.preamp,
+                                filters = preset.filters,
+                                presetName = preset.name,
+                                preferOriginalOrder = preset.preferOriginalOrder,
+                            )
 
                             android.widget.Toast.makeText(
                                 context,
@@ -1213,8 +1231,8 @@ fun AutoEqDialog(
                     ) {
                         items(searchResults.size) { index ->
                             val result = searchResults[index]
-                            val isCached = cacheManager.exists(result.headphoneName)
-                            val isDownloading = downloadingPreset == result.headphoneName
+                            val isCached = cacheManager.exists(result)
+                            val isDownloading = downloadingPreset == result.path
                             
                             Row(
                                 Modifier
@@ -1224,14 +1242,14 @@ fun AutoEqDialog(
                                     .clickable {
                                         if (isCached) {
                                             // 从缓存加载
-                                            val preset = cacheManager.load(result.headphoneName)
+                                            val preset = cacheManager.load(result)
                                             if (preset != null) {
                                                 applyAutoEqPreset(preset)
                                             }
                                         } else {
                                             // 下载
                                             scope.launch {
-                                                downloadingPreset = result.headphoneName
+                                                downloadingPreset = result.path
                                                 errorMessage = null
                                                 try {
                                                     val preset = repository.download(result)
@@ -1319,7 +1337,12 @@ fun AutoEqDialog(
                                     )
                                     Text(
                                         stringResource(R.string.settings_peq_filter_count, preset.filters.size) +
-                                            if (preset.source.isNotBlank()) stringResource(R.string.settings_source_suffix, preset.source) else "",
+                                            listOf(preset.source, preset.deviceType)
+                                                .filter { it.isNotBlank() }
+                                                .joinToString(" \u2022 ")
+                                                .takeIf { it.isNotBlank() }
+                                                ?.let { stringResource(R.string.settings_source_suffix, it) }
+                                                .orEmpty(),
                                         color = PEQUiColors.TextSecondary,
                                         fontSize = 11.sp
                                     )
@@ -1327,7 +1350,7 @@ fun AutoEqDialog(
                                 
                                 IconButton(
                                     onClick = {
-                                        cacheManager.delete(preset.name)
+                                        cacheManager.delete(preset)
                                         cachedPresets = cacheManager.loadAll()
                                     },
                                     modifier = Modifier.size(24.dp)
@@ -1391,7 +1414,7 @@ data class PEQPreset(
                     )
 
                 raw.copy(
-                    preamp = raw.preamp.coerceIn(-12f, 12f),
+                    preamp = sanitizePeqPreamp(raw.preamp),
                     filters = raw.filters.map { it.sanitized() },
                     bandCount = resolvedBandCount
                 )

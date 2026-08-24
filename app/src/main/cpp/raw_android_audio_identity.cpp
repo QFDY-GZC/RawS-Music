@@ -75,12 +75,17 @@ static std::string jstringToString(JNIEnv* env, jstring text) {
 }
 
 static void setIdentityThreadPriority() {
-    // 尽力提高身份轨线程优先级；普通 app 可能没有 CAP_SYS_NICE，失败不影响播放。
+    // The identity writer is not a USB event owner. Keep it in SCHED_OTHER and
+    // rely on AudioTrack/AudioFlinger for realtime consumption. Direct FIFO from
+    // an app-owned helper thread can starve the decoder or system UI on OEM
+    // kernels that incorrectly grant the request.
     errno = 0;
-    setpriority(PRIO_PROCESS, 0, -16);
-    sched_param sp{};
-    sp.sched_priority = 2;
-    pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+    (void) setpriority(PRIO_PROCESS, 0, -10);
+    int policy = SCHED_OTHER;
+    sched_param actual{};
+    const int rc = pthread_getschedparam(pthread_self(), &policy, &actual);
+    LOGI("identity worker scheduling directRtRequest=0 queryRc=%d policy=%d prio=%d",
+         rc, policy, actual.sched_priority);
 }
 
 static jmethodID getRequiredMethod(JNIEnv* env, jclass cls, const char* name, const char* sig) {
@@ -152,7 +157,9 @@ static bool resolveMethods(JNIEnv* env, jobject callback) {
 static bool callCreateAndStart(JNIEnv* env, jobject callback, int sampleRate, int channels, int bits, int framesPerTick) {
     const int bytesPerFrame = std::max(1, channels * (bits / 8));
     const int bytesPerTick = std::max(bytesPerFrame, framesPerTick * bytesPerFrame);
-    const int requestedBufferBytes = std::max(64 * 1024, sampleRate * bytesPerFrame / 2);
+    // The platform silence writer creates an AudioTrack with the platform minimum
+    // buffer and writes exactly one such block at a time.
+    const int requestedBufferBytes = bytesPerTick;
 
     jboolean created = env->CallBooleanMethod(
         callback,
@@ -246,7 +253,6 @@ static void workerMain(uint64_t generation) {
 
     const int bytesPerFrame = std::max(1, channels * (bits / 8));
     const int bytesPerTick = std::max(bytesPerFrame, framesPerTick * bytesPerFrame);
-    const int sleepUs = std::max(2000, (framesPerTick * 1000000) / std::max(1, sampleRate));
     int consecutiveWriteErrors = 0;
     int64_t heartbeatCounter = 0;
 
@@ -281,10 +287,14 @@ static void workerMain(uint64_t generation) {
                         " repairs=" + std::to_string(gState.repairs.load()));
         }
 
-        std::unique_lock<std::mutex> lk(gState.mutex);
-        gState.cv.wait_for(lk, std::chrono::microseconds(sleepUs), [] {
-            return gState.stopRequested.load(std::memory_order_acquire);
-        });
+        // Blocking AudioTrack.write() is the clock for this silence loop. Only back
+        // off after a failed/zero write to avoid a repair spin.
+        if (written <= 0) {
+            std::unique_lock<std::mutex> lk(gState.mutex);
+            gState.cv.wait_for(lk, std::chrono::milliseconds(20), [] {
+                return gState.stopRequested.load(std::memory_order_acquire);
+            });
+        }
     }
 
     callbackLog(env, callback, gState.log, ANDROID_LOG_INFO, "Android audio identity native worker exit");
@@ -299,14 +309,27 @@ static void stopInternal(JNIEnv* env, const std::string& reason) {
     jobject callbackToRelease = nullptr;
     jmethodID destroyMethod = nullptr;
     jmethodID logMethod = nullptr;
+    bool trackDestroyedBeforeJoin = false;
 
     {
         std::lock_guard<std::mutex> lk(gState.mutex);
         gState.stopRequested.store(true, std::memory_order_release);
         gState.cv.notify_all();
+        callbackToRelease = gState.callback;
+        destroyMethod = gState.destroyTrack;
+        logMethod = gState.log;
         if (gState.worker.joinable()) {
             workerToJoin = std::move(gState.worker);
         }
+    }
+
+    // A blocking AudioTrack.write is intentional. Stop/release the Java track
+    // before join so an OEM-paused sink cannot strand the identity worker.
+    if (callbackToRelease && destroyMethod && env) {
+        clearException(env, "stop.before_prejoin_destroyTrack");
+        env->CallVoidMethod(callbackToRelease, destroyMethod);
+        clearException(env, "stop.prejoin_destroyTrack");
+        trackDestroyedBeforeJoin = true;
     }
 
     if (workerToJoin.joinable()) {
@@ -315,9 +338,6 @@ static void stopInternal(JNIEnv* env, const std::string& reason) {
 
     {
         std::lock_guard<std::mutex> lk(gState.mutex);
-        callbackToRelease = gState.callback;
-        destroyMethod = gState.destroyTrack;
-        logMethod = gState.log;
         gState.callback = nullptr;
         gState.createTrack = nullptr;
         gState.startTrack = nullptr;
@@ -330,7 +350,7 @@ static void stopInternal(JNIEnv* env, const std::string& reason) {
     }
 
     if (callbackToRelease && env) {
-        if (destroyMethod) {
+        if (destroyMethod && !trackDestroyedBeforeJoin) {
             clearException(env, "stop.before_destroyTrack");
             env->CallVoidMethod(callbackToRelease, destroyMethod);
             clearException(env, "stop.destroyTrack");

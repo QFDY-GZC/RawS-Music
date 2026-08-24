@@ -80,9 +80,10 @@ internal fun FullCoverLyricPreview(
     )
     val lines = remember(song) { song?.lyrics.orEmpty() }
     val interludes = remember(lines) { calculateLyricInterludes(lines) }
+    val lyricTimeline = remember(lines, interludes) { LyricTimelineIndex(lines, interludes) }
     val visibleIndices = remember(lines) { visibleLyricLineIndices(lines) }
-    val playback = remember(lines, interludes, smoothPositionMs) {
-        calculateLyricPlaybackState(lines, smoothPositionMs, interludes)
+    val playback = remember(lyricTimeline, smoothPositionMs) {
+        calculateLyricPlaybackState(lyricTimeline, smoothPositionMs)
     }
     // Do not keep the previous line alive during a real timing gap. The next
     // line becomes active only when the player position reaches its timestamp.

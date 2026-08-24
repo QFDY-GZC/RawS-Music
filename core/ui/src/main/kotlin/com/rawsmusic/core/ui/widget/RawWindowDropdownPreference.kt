@@ -16,6 +16,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import top.yukonga.miuix.kmp.basic.BasicComponent
@@ -55,6 +56,7 @@ fun RawWindowDropdownPreference(
     showValue: Boolean = true,
     collapseOnSelection: Boolean = true,
     onExpandedChange: ((Boolean) -> Unit)? = null,
+    valueOverride: String? = null,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     var expanded by remember { mutableStateOf(false) }
@@ -99,7 +101,10 @@ fun RawWindowDropdownPreference(
         startAction = startAction,
         endActions = {
             if (showValue && itemsNotEmpty) {
-                entry.items.firstOrNull { it.selected }?.text?.takeIf { it.isNotBlank() }?.let { value ->
+                val selectedText = valueOverride
+                    ?.takeIf { it.isNotBlank() }
+                    ?: entry.items.firstOrNull { it.selected }?.text?.takeIf { it.isNotBlank() }
+                selectedText?.let { value ->
                     Text(
                         text = value,
                         modifier = Modifier
@@ -109,6 +114,8 @@ fun RawWindowDropdownPreference(
                         fontSize = MiuixTheme.textStyles.body2.fontSize,
                         color = actionColor,
                         textAlign = TextAlign.End,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }

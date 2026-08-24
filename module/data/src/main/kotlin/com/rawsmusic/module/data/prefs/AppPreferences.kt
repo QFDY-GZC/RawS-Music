@@ -72,9 +72,9 @@ object AppPreferences {
         var usbExclusiveRequested: Boolean
             get() = kv.decodeBool(
                 "player_usb_exclusive_requested",
-                // No DAC is affected by this default. Once Android grants a DAC permission,
-                // the controller enters the serialized exclusive route automatically.
-                true
+                // USB exclusive is an explicit transport choice. A connected/authorized DAC
+                // must stay on Android USB Audio until the user enables exclusive mode.
+                false
             )
             set(value) { kv.encode("player_usb_exclusive_requested", value) }
 
@@ -153,6 +153,11 @@ object AppPreferences {
         var playQueueSongsJson: String
             get() = kv.decodeString("player_queue_songs_json", "") ?: ""
             set(value) { kv.encode("player_queue_songs_json", value) }
+
+        /** Songs queued with "play next", persisted with the canonical playback snapshot. */
+        var priorityQueueSongsJson: String
+            get() = kv.decodeString("player_priority_queue_songs_json", "") ?: ""
+            set(value) { kv.encode("player_priority_queue_songs_json", value) }
 
         /**
          * Lyrics-first automatic crossfade master switch.
@@ -299,6 +304,10 @@ object AppPreferences {
             get() = kv.decodeInt("player_sleep_timer_minutes", 30)
             set(value) { kv.encode("player_sleep_timer_minutes", value) }
 
+        var sleepTimerDeadlineEpochMs: Long
+            get() = kv.decodeLong("player_sleep_timer_deadline_epoch_ms", 0L)
+            set(value) { kv.encode("player_sleep_timer_deadline_epoch_ms", value) }
+
         var sleepTimerSongs: Int
             get() = kv.decodeInt("player_sleep_timer_songs", 3).coerceIn(1, 99)
             set(value) { kv.encode("player_sleep_timer_songs", value.coerceIn(1, 99)) }
@@ -307,10 +316,32 @@ object AppPreferences {
             get() = kv.decodeBool("player_stop_after_current", false)
             set(value) { kv.encode("player_stop_after_current", value) }
 
-        /** USB DAC Bit-perfect 模式：不改 PCM，不做软件音量，不碰 Feature Unit */
+        /**
+         * USB DAC Bit-perfect policy. New installs default to OFF.
+         *
+         * Migration: the legacy boolean `player_bit_perfect=true` means the user
+         * previously asked for bit-perfect, but that old setting did not distinguish
+         * strict failure from UAPP-style graceful fallback. Preserve intent by
+         * migrating it to WHEN_POSSIBLE rather than STRICT.
+         */
+        var usbBitPerfectMode: UsbBitPerfectMode
+            get() = if (kv.containsKey("player_usb_bit_perfect_mode")) {
+                UsbBitPerfectMode.fromId(kv.decodeInt("player_usb_bit_perfect_mode", UsbBitPerfectMode.OFF.id))
+            } else if (kv.decodeBool("player_bit_perfect", false)) {
+                UsbBitPerfectMode.WHEN_POSSIBLE
+            } else {
+                UsbBitPerfectMode.OFF
+            }
+            set(value) {
+                kv.encode("player_usb_bit_perfect_mode", value.id)
+                // Keep the old key coherent for older code/builds that may read it.
+                kv.encode("player_bit_perfect", value.requestsBitPerfect)
+            }
+
+        /** Compatibility facade. `true` now means UAPP-style WHEN_POSSIBLE. */
         var bitPerfectEnabled: Boolean
-            get() = kv.decodeBool("player_bit_perfect", false)
-            set(value) { kv.encode("player_bit_perfect", value) }
+            get() = usbBitPerfectMode.requestsBitPerfect
+            set(value) { usbBitPerfectMode = if (value) UsbBitPerfectMode.WHEN_POSSIBLE else UsbBitPerfectMode.OFF }
 
         /** USB DAC 硬件 Feature Unit 控制（实验性）：默认关闭，避免某些 DAC 左右声道硬件音量异常 */
         var hardwareFeatureUnitEnabled: Boolean
@@ -596,6 +627,35 @@ object AppPreferences {
             get() = kv.decodeBool("ui_play_page_memory_enabled", true)
             set(value) { kv.encode("ui_play_page_memory_enabled", value) }
 
+        /** 播放页标题信息水平位置：0=靠左，1=居中，2=靠右。 */
+        var playerTitleAlignment: Int
+            get() = if (kv.containsKey("ui_player_title_alignment")) {
+                kv.decodeInt("ui_player_title_alignment", 0).coerceIn(0, 2)
+            } else {
+                kv.decodeInt("ui_player_info_alignment", 0).coerceIn(0, 2)
+            }
+            set(value) { kv.encode("ui_player_title_alignment", value.coerceIn(0, 2)) }
+
+        /** 播放页迷你歌词水平位置：0=靠左，1=居中，2=靠右。 */
+        var miniLyricAlignment: Int
+            get() = if (kv.containsKey("ui_mini_lyric_alignment")) {
+                kv.decodeInt("ui_mini_lyric_alignment", 0).coerceIn(0, 2)
+            } else {
+                kv.decodeInt("ui_player_info_alignment", 0).coerceIn(0, 2)
+            }
+            set(value) { kv.encode("ui_mini_lyric_alignment", value.coerceIn(0, 2)) }
+
+        /** v7 compatibility bridge. New UI writes the two independent alignment keys above. */
+        @Deprecated("Use playerTitleAlignment and miniLyricAlignment")
+        var playerInfoAlignment: Int
+            get() = playerTitleAlignment
+            set(value) {
+                val normalized = value.coerceIn(0, 2)
+                kv.encode("ui_player_info_alignment", normalized)
+                playerTitleAlignment = normalized
+                miniLyricAlignment = normalized
+            }
+
         /** 音频可视化：播放界面底部显示音频频谱动画 */
         var isAudioVisualizerEnabled: Boolean
             get() = kv.decodeBool("ui_audio_visualizer_enabled", true)
@@ -714,6 +774,34 @@ object AppPreferences {
         var cardColorSongPath: String
             get() = kv.decodeString("ui_card_color_song_path", "") ?: ""
             set(value) { kv.encode("ui_card_color_song_path", value) }
+    }
+
+    /** 分类名称拆分规则。规则按行保存，最长保护名称会优先于分隔符。 */
+    object Library {
+        const val DEFAULT_ARTIST_SEPARATORS = "/\nfeat.\n&\n,"
+        const val DEFAULT_GENRE_SEPARATORS = ";"
+
+        var artistSeparators: String
+            get() = kv.decodeString("library_artist_separators", DEFAULT_ARTIST_SEPARATORS)
+                ?: DEFAULT_ARTIST_SEPARATORS
+            set(value) { kv.encode("library_artist_separators", value) }
+
+        var artistProtectedNames: String
+            get() = kv.decodeString("library_artist_protected_names", "") ?: ""
+            set(value) { kv.encode("library_artist_protected_names", value) }
+
+        var genreSeparators: String
+            get() = kv.decodeString("library_genre_separators", DEFAULT_GENRE_SEPARATORS)
+                ?: DEFAULT_GENRE_SEPARATORS
+            set(value) { kv.encode("library_genre_separators", value) }
+
+        var genreProtectedNames: String
+            get() = kv.decodeString("library_genre_protected_names", "") ?: ""
+            set(value) { kv.encode("library_genre_protected_names", value) }
+
+        var tagIgnoreCase: Boolean
+            get() = kv.decodeBool("library_tag_ignore_case", false)
+            set(value) { kv.encode("library_tag_ignore_case", value) }
     }
 
     /** 媒体库扫描与统计偏好 */
@@ -887,6 +975,8 @@ object AppPreferences {
     object Lyrics {
         private const val FLYME_DEFAULT_OFF_MIGRATION = "lyrics_flyme_default_off_v1"
 
+        const val COLOROS_DELIVERY_MODE_MODULE = 0
+        const val COLOROS_DELIVERY_MODE_NON_MODULE = 1
         const val LIVE_UPDATE_LYRIC_MODE_ORIGINAL = 0
         const val LIVE_UPDATE_LYRIC_MODE_TRANSLATION = 1
         const val LIVE_UPDATE_LYRIC_MODE_PRONUNCIATION = 2
@@ -947,6 +1037,24 @@ object AppPreferences {
         var liveUpdateLyricEnabled: Boolean
             get() = kv.decodeBool("lyrics_live_update_enabled", false)
             set(value) { kv.encode("lyrics_live_update_enabled", value) }
+
+        /** Publish the standard MediaSession lyricInfo payload for ColorOS lyric bridges. */
+        var colorOsBridgeLyricEnabled: Boolean
+            get() = kv.decodeBool("lyrics_coloros_bridge_enabled", true)
+            set(value) { kv.encode("lyrics_coloros_bridge_enabled", value) }
+
+        /** Select the module v4 transport or the standard/non-module MediaSession route. */
+        var colorOsBridgeDeliveryMode: Int
+            get() = kv.decodeInt(
+                "lyrics_coloros_bridge_delivery_mode",
+                COLOROS_DELIVERY_MODE_MODULE
+            ).coerceIn(COLOROS_DELIVERY_MODE_MODULE, COLOROS_DELIVERY_MODE_NON_MODULE)
+            set(value) {
+                kv.encode(
+                    "lyrics_coloros_bridge_delivery_mode",
+                    value.coerceIn(COLOROS_DELIVERY_MODE_MODULE, COLOROS_DELIVERY_MODE_NON_MODULE)
+                )
+            }
 
         var liveUpdateLyricMode: Int
             get() = kv.decodeInt("lyrics_live_update_mode", LIVE_UPDATE_LYRIC_MODE_ORIGINAL)
@@ -1156,6 +1264,15 @@ object AppPreferences {
         var displayRoma: Boolean
             get() = kv.decodeBool("lyricon_display_roma", false)
             set(value) { kv.encode("lyricon_display_roma", value) }
+
+        /**
+         * Lyricon 当前逐字渲染路径不会使用 normal/primary 颜色绘制原文。
+         * 开启后仅对外部 Lyricon 传输去掉主行逐字时间，保留 RawSMusic 内部逐字歌词，
+         * 让 Lyricon 的“普通/原文颜色”设置重新生效。
+         */
+        var originalTextColorCompatibility: Boolean
+            get() = kv.decodeBool("lyricon_original_text_color_compat", true)
+            set(value) { kv.encode("lyricon_original_text_color_compat", value) }
     }
 
     object LyricFont {
@@ -1186,8 +1303,8 @@ object AppPreferences {
             set(value) { kv.encode("peq_filters_json", value) }
 
         var preamp: Float
-            get() = kv.decodeFloat("peq_preamp", 0f).coerceIn(-12f, 12f)
-            set(value) { kv.encode("peq_preamp", value.coerceIn(-12f, 12f)) }
+            get() = kv.decodeFloat("peq_preamp", 0f).coerceIn(-96f, 12f)
+            set(value) { kv.encode("peq_preamp", value.coerceIn(-96f, 12f)) }
 
         var presetName: String
             get() = kv.decodeString("peq_preset_name", "自定义") ?: "自定义"

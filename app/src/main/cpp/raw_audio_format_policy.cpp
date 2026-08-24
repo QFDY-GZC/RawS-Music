@@ -45,7 +45,10 @@ RawPcmAdapterDecision chooseRawPcmAdapter(
         d.reason = "invalid-format";
         return d;
     }
-    if (sourceChannels != deviceChannels) {
+    const bool simpleChannelRemix =
+            (sourceChannels == 1 && deviceChannels == 2) ||
+            (sourceChannels == 2 && deviceChannels == 1);
+    if (sourceChannels != deviceChannels && !simpleChannelRemix) {
         d.reason = "channel-remix-required";
         return d;
     }

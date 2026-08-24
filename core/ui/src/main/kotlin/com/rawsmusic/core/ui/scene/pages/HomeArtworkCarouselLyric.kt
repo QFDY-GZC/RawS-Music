@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -34,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.ui.widget.player.KaraokeLyricLine
+import com.rawsmusic.core.ui.widget.player.LyricTimelineIndex
 import com.rawsmusic.core.ui.widget.player.calculateLyricInterludes
 import com.rawsmusic.core.ui.widget.player.calculateLyricPlaybackState
 import com.rawsmusic.core.ui.widget.player.visibleLyricLineIndices
@@ -63,6 +65,8 @@ internal fun HomeHorizontalCarouselLyric(
         fallbackPrimary = fallbackPrimary,
         fallbackTranslation = fallbackTranslation
     )
+    val fontScale = LocalDensity.current.fontScale
+    val lyricLaneHeight = 88.dp + (24.dp * (fontScale - 1f).coerceIn(0f, 0.5f))
     AnimatedContent(
         targetState = current,
         transitionSpec = {
@@ -77,7 +81,7 @@ internal fun HomeHorizontalCarouselLyric(
         },
         contentAlignment = Alignment.TopCenter,
         label = "home-horizontal-carousel-lyric",
-        modifier = modifier.height(88.dp)
+        modifier = modifier.height(lyricLaneHeight)
     ) { lyric ->
         Box(
             modifier = Modifier
@@ -267,8 +271,9 @@ private fun rememberHomeCarouselLyricLine(
 ): HomeCarouselLyricLine? {
     val lines = remember(song) { song?.lyrics.orEmpty() }
     val interludes = remember(lines) { calculateLyricInterludes(lines) }
-    val playbackState = remember(lines, interludes, positionMs) {
-        calculateLyricPlaybackState(lines, positionMs, interludes)
+    val lyricTimeline = remember(lines, interludes) { LyricTimelineIndex(lines, interludes) }
+    val playbackState = remember(lyricTimeline, positionMs) {
+        calculateLyricPlaybackState(lyricTimeline, positionMs)
     }
     val visibleIndices = remember(lines) { visibleLyricLineIndices(lines) }
     val resolvedIndex = when {

@@ -91,6 +91,20 @@ internal class ShuffleQueueController(
         }
     }
 
+    /** Returns a stable relative item without advancing or rebuilding the playback cursor. */
+    fun peekRelativeIndex(queue: PlayQueue, offset: Int): Int {
+        ensureTraversal(queue)
+        if (traversal.isEmpty()) return -1
+        val currentPosition = traversal.indexOf(queue.currentIndex).takeIf { it >= 0 } ?: cursor
+        val targetPosition = currentPosition + offset
+        return when {
+            targetPosition in traversal.indices -> traversal[targetPosition]
+            AppPreferences.Player.playMode == com.rawsmusic.core.common.model.PlayMode.SHUFFLE_ALL ->
+                traversal[targetPosition.floorMod(traversal.size)]
+            else -> -1
+        }
+    }
+
     fun nextIndexForGapless(currentIndex: Int, size: Int, wrap: Boolean): Int {
         if (size <= 0) return -1
         val position = traversal.indexOf(currentIndex)
@@ -156,4 +170,6 @@ internal class ShuffleQueueController(
         AppPreferences.Player.shuffleTraversalOrder = traversal.joinToString(",")
         AppPreferences.Player.shuffleTraversalCursor = cursor
     }
+
+    private fun Int.floorMod(modulus: Int): Int = ((this % modulus) + modulus) % modulus
 }

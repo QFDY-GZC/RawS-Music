@@ -35,6 +35,9 @@ class AiSeparationPluginStore private constructor(context: Context) {
     private val catalogSignatureFile = File(root, "catalog.sig")
     private val downloadDir = File(root, "downloads").apply { mkdirs() }
     private val modelsDir = File(root, "models").apply { mkdirs() }
+    private val lyricAlignmentDownloadDir = File(root, "lyric_alignment/downloads").apply { mkdirs() }
+    private val lyricAlignmentModelsDir = File(root, "lyric_alignment/models").apply { mkdirs() }
+    private val fastVocalAlignmentDir = File(root, "fast_vocal_alignment").apply { mkdirs() }
     private val runtimesDir = AiOnnxRuntimeLoader.runtimeRoot(appContext)
     private val preferences = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val mutationMutex = Mutex()
@@ -65,6 +68,29 @@ class AiSeparationPluginStore private constructor(context: Context) {
         }.onFailure { error -> publishError(error) }
     }
 
+    /**
+     * Imports a repository descriptor from a HTTPS endpoint.
+     *
+     * The descriptor is only a bootstrap document. The catalog and every model artifact still
+     * have to pass the repository signature and SHA-256 checks below before they are accepted.
+     */
+    suspend fun importRepositoryFromUrl(url: String): Result<AiModelRepositoryDescriptor> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val normalizedUrl = url.trim()
+                require(normalizedUrl.startsWith("https://")) { "仓库地址必须使用 HTTPS" }
+                val bytes = fetchSmall(normalizedUrl, MAX_REPOSITORY_BYTES)
+                val descriptor = AiSeparationJson.parseRepository(bytes.toString(Charsets.UTF_8))
+                mutationMutex.withLock {
+                    atomicWrite(repositoryFile, bytes)
+                    catalogFile.delete()
+                    catalogSignatureFile.delete()
+                    mutableState.value = loadState().copy(lastError = "")
+                }
+                descriptor
+            }.onFailure { error -> publishError(error) }
+        }
+
     suspend fun removeRepository(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             mutationMutex.withLock {
@@ -78,7 +104,7 @@ class AiSeparationPluginStore private constructor(context: Context) {
 
     suspend fun refreshCatalog(): Result<List<AiSeparationCatalogEntry>> = withContext(Dispatchers.IO) {
         runCatching {
-            val repository = readRepository() ?: error("请先导入可信模型仓库")
+            val repository = ensureDefaultRepository().getOrThrow()
             val indexBytes = fetchSmall(repository.indexUrl, MAX_CATALOG_BYTES)
             val signatureBytes = decodeDetachedSignature(
                 fetchSmall(repository.signatureUrl, MAX_SIGNATURE_BYTES)
@@ -96,6 +122,42 @@ class AiSeparationPluginStore private constructor(context: Context) {
             catalog
         }.onFailure { error -> publishError(error) }
     }
+
+    /** Refreshes the signed index and returns the separately declared CTC lyric models. */
+    suspend fun refreshLyricAlignmentCatalog(): Result<List<AiLyricAlignmentCatalogEntry>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                refreshCatalog().getOrThrow()
+                readVerifiedCachedLyricAlignmentCatalog()
+            }.onFailure { error -> publishError(error) }
+        }
+
+    /**
+     * Installs the signed RawSMusic model repository descriptor on first use.
+     *
+     * The APK contains only this HTTPS bootstrap URL. The descriptor still carries the
+     * repository public key, and every catalog/model artifact is verified before use.
+     */
+    suspend fun ensureDefaultRepository(): Result<AiModelRepositoryDescriptor> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                readRepository()?.let { return@runCatching it }
+                val bytes = fetchSmall(DEFAULT_REPOSITORY_URL, MAX_REPOSITORY_BYTES)
+                val descriptor = AiSeparationJson.parseRepository(bytes.toString(Charsets.UTF_8))
+                mutationMutex.withLock {
+                    if (readRepository() == null) {
+                        atomicWrite(repositoryFile, bytes)
+                        catalogFile.delete()
+                        catalogSignatureFile.delete()
+                        mutableState.value = loadState().copy(lastError = "")
+                    }
+                }
+                readRepository() ?: descriptor
+            }.onFailure { error -> publishError(error) }
+        }
+
+    /** The signed repository descriptor URL bundled as the model download entry point. */
+    fun defaultRepositoryUrl(): String = DEFAULT_REPOSITORY_URL
 
     suspend fun importModelPackage(uri: Uri): Result<AiSeparationInstalledModel> = withContext(Dispatchers.IO) {
         runCatching {
@@ -211,6 +273,146 @@ class AiSeparationPluginStore private constructor(context: Context) {
         }
     }
 
+    /** Downloads and atomically extracts the standalone two-stem FP16 alignment bundle. */
+    suspend fun downloadAndInstallFastVocalAlignmentBundle(
+        onProgress: (downloaded: Long, total: Long) -> Unit,
+        onPhase: (AiSeparationDownloadPhase) -> Unit,
+        isCancelled: () -> Boolean,
+    ): Long = withContext(Dispatchers.IO) {
+        ensureFreeSpace(
+            AiFastVocalAlignmentBundle.ARCHIVE_SIZE_BYTES * 2L + EXTRA_FREE_SPACE_BYTES,
+        )
+        val part = File(
+            downloadDir,
+            "${AiFastVocalAlignmentBundle.ID}-${AiFastVocalAlignmentBundle.VERSION}.zip.part",
+        )
+        try {
+            downloadWithResume(
+                sourceUrl = AiFastVocalAlignmentBundle.DOWNLOAD_URL,
+                target = part,
+                expectedBytes = AiFastVocalAlignmentBundle.ARCHIVE_SIZE_BYTES,
+                onProgress = onProgress,
+                isCancelled = isCancelled,
+            )
+            onPhase(AiSeparationDownloadPhase.VERIFYING)
+            require(part.length() == AiFastVocalAlignmentBundle.ARCHIVE_SIZE_BYTES) {
+                "快速对齐模型包大小校验失败：${part.length()}/" +
+                    AiFastVocalAlignmentBundle.ARCHIVE_SIZE_BYTES
+            }
+            require(sha256(part) == AiFastVocalAlignmentBundle.ARCHIVE_SHA256) {
+                "快速对齐模型包 SHA-256 校验失败"
+            }
+            onPhase(AiSeparationDownloadPhase.INSTALLING)
+            installFastVocalAlignmentBundle(part)
+            AiFastVocalAlignmentBundle.ARCHIVE_SIZE_BYTES
+        } finally {
+            part.delete()
+        }
+    }
+
+    /** Downloads a CTC model and its vocabulary from the signed repository, never from APK assets. */
+    suspend fun downloadAndInstallLyricAlignment(
+        modelId: String,
+        modelVersion: String,
+        onProgress: (downloaded: Long, total: Long) -> Unit,
+        onPhase: (AiSeparationDownloadPhase) -> Unit,
+        isCancelled: () -> Boolean,
+    ): AiLyricAlignmentInstalledModel = withContext(Dispatchers.IO) {
+        // The foreground service can outlive the Compose process state. Resolve from the
+        // signed disk cache first, then refresh the signed catalog once when the cache is stale.
+        val entry = resolveLyricAlignmentEntry(modelId, modelVersion)
+            ?: error("歌词对齐模型不存在或仓库索引尚未刷新")
+        require(isAppVersionCompatible(entry.minimumAppVersion)) {
+            "当前 RawSMusic 版本低于歌词对齐模型要求 ${entry.minimumAppVersion}"
+        }
+        val totalBytes = entry.modelSizeBytes + entry.vocabularySizeBytes
+        ensureFreeSpace(totalBytes * 2L + EXTRA_FREE_SPACE_BYTES)
+        val modelPart = File(
+            lyricAlignmentDownloadDir,
+            "${entry.id}-${entry.version}-${entry.modelFile}.part",
+        )
+        val vocabularyPart = File(
+            lyricAlignmentDownloadDir,
+            "${entry.id}-${entry.version}-${entry.vocabularyFile}.part",
+        )
+        try {
+            onPhase(AiSeparationDownloadPhase.DOWNLOADING)
+            downloadLyricArtifact(
+                urls = entry.modelDownloadUrls,
+                target = modelPart,
+                expectedBytes = entry.modelSizeBytes,
+                expectedSha256 = entry.modelSha256,
+                completedBytes = 0L,
+                totalBytes = totalBytes,
+                onProgress = onProgress,
+                isCancelled = isCancelled,
+            )
+            downloadLyricArtifact(
+                urls = entry.vocabularyDownloadUrls,
+                target = vocabularyPart,
+                expectedBytes = entry.vocabularySizeBytes,
+                expectedSha256 = entry.vocabularySha256,
+                completedBytes = entry.modelSizeBytes,
+                totalBytes = totalBytes,
+                onProgress = onProgress,
+                isCancelled = isCancelled,
+            )
+            onPhase(AiSeparationDownloadPhase.INSTALLING)
+            installVerifiedLyricAlignment(modelPart, vocabularyPart, entry)
+        } finally {
+            modelPart.delete()
+            vocabularyPart.delete()
+        }
+    }
+
+    /** Resolves a lyric model without trusting the service's potentially stale in-memory state. */
+    suspend fun resolveLyricAlignmentEntry(
+        modelId: String,
+        modelVersion: String,
+    ): AiLyricAlignmentCatalogEntry? = withContext(Dispatchers.IO) {
+        readVerifiedCachedLyricAlignmentCatalog()
+            .firstOrNull { it.id == modelId && it.version == modelVersion }
+            ?: refreshLyricAlignmentCatalog().getOrNull()
+                ?.firstOrNull { it.id == modelId && it.version == modelVersion }
+    }
+
+    /** Synchronous disk-cache lookup used only to populate the foreground notification. */
+    fun cachedLyricAlignmentEntry(
+        modelId: String,
+        modelVersion: String,
+    ): AiLyricAlignmentCatalogEntry? = runCatching {
+        readVerifiedCachedLyricAlignmentCatalog()
+            .firstOrNull { it.id == modelId && it.version == modelVersion }
+    }.getOrNull()
+
+    suspend fun selectLyricAlignmentModel(id: String, version: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                mutationMutex.withLock {
+                    require(scanInstalledLyricAlignmentModels().any {
+                        it.catalog.id == id && it.catalog.version == version
+                    }) { "歌词对齐模型尚未安装" }
+                    preferences.edit()
+                        .putString(KEY_SELECTED_LYRIC_ID, id)
+                        .putString(KEY_SELECTED_LYRIC_VERSION, version)
+                        .apply()
+                    mutableState.value = loadState().copy(lastError = "")
+                }
+            }.onFailure { error -> publishError(error) }
+        }
+
+    fun selectedLyricAlignmentModel(): AiLyricAlignmentInstalledModel? {
+        val current = mutableState.value
+        return current.installedLyricAlignmentModels.firstOrNull {
+            it.catalog.id == current.selectedLyricAlignmentId &&
+                it.catalog.version == current.selectedLyricAlignmentVersion
+        }?.takeIf { it.modelFile.isFile && it.vocabularyFile.isFile }
+    }
+
+    fun selectedLyricAlignmentModelFile(): File? = selectedLyricAlignmentModel()?.modelFile
+
+    fun selectedLyricAlignmentVocabularyFile(): File? = selectedLyricAlignmentModel()?.vocabularyFile
+
     suspend fun downloadAndInstallRuntime(
         onProgress: (downloaded: Long, total: Long) -> Unit,
         onPhase: (AiSeparationDownloadPhase) -> Unit,
@@ -298,6 +500,115 @@ class AiSeparationPluginStore private constructor(context: Context) {
         } finally {
             part.delete()
             extracted.delete()
+        }
+    }
+
+    private fun downloadLyricArtifact(
+        urls: List<String>,
+        target: File,
+        expectedBytes: Long,
+        expectedSha256: String,
+        completedBytes: Long,
+        totalBytes: Long,
+        onProgress: (Long, Long) -> Unit,
+        isCancelled: () -> Boolean,
+    ) {
+        var lastError: Throwable? = null
+        for (url in urls) {
+            if (isCancelled()) throw CancellationException("下载已取消")
+            try {
+                Log.i(
+                    TAG,
+                    "AI_LYRIC_ARTIFACT_START file=${target.name} host=${runCatching { URL(url).host }.getOrDefault("invalid")} " +
+                        "expectedBytes=$expectedBytes expectedSha256=$expectedSha256",
+                )
+                downloadWithResume(
+                    sourceUrl = url,
+                    target = target,
+                    expectedBytes = expectedBytes,
+                    onProgress = { downloaded, _ ->
+                        onProgress(completedBytes + downloaded, totalBytes)
+                    },
+                    isCancelled = isCancelled,
+                )
+                require(target.length() == expectedBytes) {
+                    "歌词对齐文件大小不匹配：${target.length()}/$expectedBytes"
+                }
+                val actualSha256 = sha256(target)
+                Log.i(
+                    TAG,
+                    "AI_LYRIC_ARTIFACT_VERIFY file=${target.name} bytes=${target.length()} sha256=$actualSha256",
+                )
+                require(actualSha256 == expectedSha256) {
+                    "歌词对齐文件 SHA-256 校验失败"
+                }
+                return
+            } catch (error: Throwable) {
+                lastError = error
+                Log.e(TAG, "AI_LYRIC_ARTIFACT_FAILED file=${target.name}", error)
+                AppLogger.e(TAG, "Lyric alignment artifact mirror failed: $url", error)
+                if (error is CancellationException) throw error
+                target.delete()
+            }
+        }
+        throw lastError ?: IllegalStateException("所有歌词对齐文件下载地址均失败")
+    }
+
+    private suspend fun installVerifiedLyricAlignment(
+        model: File,
+        vocabulary: File,
+        expected: AiLyricAlignmentCatalogEntry,
+    ): AiLyricAlignmentInstalledModel = mutationMutex.withLock {
+        require(model.length() == expected.modelSizeBytes)
+        require(vocabulary.length() == expected.vocabularySizeBytes)
+        require(sha256(model) == expected.modelSha256) { "歌词对齐模型校验失败" }
+        require(sha256(vocabulary) == expected.vocabularySha256) { "歌词对齐词表校验失败" }
+        val staging = File(lyricAlignmentModelsDir, ".staging_${expected.id}_${System.nanoTime()}")
+        staging.deleteRecursively()
+        require(staging.mkdirs()) { "无法创建歌词对齐模型暂存目录" }
+        try {
+            copyAndSync(model, File(staging, expected.modelFile))
+            copyAndSync(vocabulary, File(staging, expected.vocabularyFile))
+            require(File(staging, expected.modelFile).length() == expected.modelSizeBytes)
+            require(File(staging, expected.vocabularyFile).length() == expected.vocabularySizeBytes)
+            val installedAt = System.currentTimeMillis()
+            atomicWrite(
+                File(staging, LYRIC_ALIGNMENT_MANIFEST),
+                AiSeparationJson.lyricAlignmentManifestJson(expected, installedAt)
+                    .toByteArray(Charsets.UTF_8),
+            )
+            val target = lyricAlignmentVersionDir(expected.id, expected.version)
+            target.parentFile?.mkdirs()
+            val backup = File(target.parentFile, ".backup_${target.name}_${System.nanoTime()}")
+            if (target.exists()) require(target.renameTo(backup)) { "无法备份旧歌词对齐模型" }
+            if (!staging.renameTo(target)) {
+                backup.renameTo(target)
+                error("无法安装歌词对齐模型")
+            }
+            backup.deleteRecursively()
+            val selection = preferences.edit()
+            if (preferences.getString(KEY_SELECTED_LYRIC_ID, "").isNullOrBlank()) {
+                selection
+                    .putString(KEY_SELECTED_LYRIC_ID, expected.id)
+                    .putString(KEY_SELECTED_LYRIC_VERSION, expected.version)
+            }
+            selection.apply()
+            val installed = AiLyricAlignmentInstalledModel(expected, target.absolutePath, installedAt)
+            mutableState.value = loadState().copy(lastError = "")
+            installed
+        } catch (error: Throwable) {
+            staging.deleteRecursively()
+            throw error
+        }
+    }
+
+    private fun copyAndSync(source: File, target: File) {
+        target.parentFile?.mkdirs()
+        source.inputStream().buffered().use { input ->
+            FileOutputStream(target).use { output ->
+                input.copyTo(output, COPY_BUFFER_SIZE)
+                output.fd.sync()
+            }
         }
     }
 
@@ -609,6 +920,8 @@ class AiSeparationPluginStore private constructor(context: Context) {
             require(!AiSeparationJobProgressBus.hasActiveTask()) { "AI 分离运行期间不能清空模型" }
             mutationMutex.withLock {
                 modelsDir.listFiles().orEmpty().forEach { it.deleteRecursively() }
+                fastVocalAlignmentDir.deleteRecursively()
+                fastVocalAlignmentDir.mkdirs()
                 downloadDir.listFiles().orEmpty().forEach { it.delete() }
                 preferences.edit()
                     .remove(KEY_SELECTED_ID)
@@ -647,6 +960,98 @@ class AiSeparationPluginStore private constructor(context: Context) {
 
     fun selectedRealtimeModelFile(): File? = selectedRealtimeInstalledModel()?.let { installed ->
         File(installed.directory, installed.catalog.modelFile).takeIf(File::isFile)
+    }
+
+    /** Resolves the small model used by lyric activity analysis, never the offline RoFormer. */
+    fun selectedFastVocalAlignmentModel(): AiSeparationInstalledModel? =
+        AiFastVocalAlignmentModel.resolve(mutableState.value.installed)
+
+    fun fastVocalAlignmentBundleDirectory(): File? =
+        fastVocalAlignmentDir.takeIf { mutableState.value.fastVocalAlignmentBundleInstalled }
+
+    private suspend fun installFastVocalAlignmentBundle(archive: File) {
+        mutationMutex.withLock {
+            val staging = File(root, ".staging_fast_vocal_alignment_${System.nanoTime()}")
+            staging.deleteRecursively()
+            require(staging.mkdirs()) { "无法创建快速对齐模型暂存目录" }
+            try {
+                val allowed = setOf(
+                    AiFastVocalAlignmentBundle.VOCALS_FILE,
+                    AiFastVocalAlignmentBundle.ACCOMPANIMENT_FILE,
+                    "MODEL_CARD.md",
+                    "LICENSE.sherpa-onnx.txt",
+                    "LICENSE.spleeter.txt",
+                )
+                val extractedNames = linkedSetOf<String>()
+                var extractedBytes = 0L
+                ZipFile(archive).use { zip ->
+                    val entries = buildList {
+                        val enumeration = zip.entries()
+                        while (enumeration.hasMoreElements()) add(enumeration.nextElement())
+                    }
+                    require(entries.size in 2..MAX_FAST_BUNDLE_ENTRIES) {
+                        "快速对齐模型包条目数量无效"
+                    }
+                    entries.forEach { entry ->
+                        val name = entry.name
+                        require(!entry.isDirectory && name in allowed && name == File(name).name) {
+                            "快速对齐模型包包含不允许的文件：$name"
+                        }
+                        require(extractedNames.add(name)) { "快速对齐模型包包含重复文件：$name" }
+                        require(entry.size in 1..MAX_FAST_BUNDLE_ENTRY_BYTES) {
+                            "快速对齐模型包文件大小无效：$name"
+                        }
+                        val target = File(staging, name)
+                        var entryBytes = 0L
+                        zip.getInputStream(entry).buffered().use { input ->
+                            FileOutputStream(target).use { output ->
+                                val buffer = ByteArray(COPY_BUFFER_SIZE)
+                                while (true) {
+                                    val read = input.read(buffer)
+                                    if (read < 0) break
+                                    entryBytes += read
+                                    extractedBytes += read
+                                    require(entryBytes <= MAX_FAST_BUNDLE_ENTRY_BYTES) {
+                                        "快速对齐模型包条目解压后过大：$name"
+                                    }
+                                    require(extractedBytes <= MAX_FAST_BUNDLE_EXTRACTED_BYTES) {
+                                        "快速对齐模型包解压后过大"
+                                    }
+                                    output.write(buffer, 0, read)
+                                }
+                                output.fd.sync()
+                            }
+                        }
+                        require(entryBytes == entry.size) { "快速对齐模型包条目大小不一致：$name" }
+                    }
+                }
+                require(
+                    File(staging, AiFastVocalAlignmentBundle.VOCALS_FILE).isFile &&
+                        File(staging, AiFastVocalAlignmentBundle.ACCOMPANIMENT_FILE).isFile,
+                ) { "快速对齐模型包缺少两个 ONNX 文件" }
+                atomicWrite(
+                    File(staging, FAST_BUNDLE_MANIFEST),
+                    ("id=${AiFastVocalAlignmentBundle.ID}\n" +
+                        "version=${AiFastVocalAlignmentBundle.VERSION}\n" +
+                        "archiveSha256=${AiFastVocalAlignmentBundle.ARCHIVE_SHA256}\n" +
+                        "installedAt=${System.currentTimeMillis()}\n")
+                        .toByteArray(Charsets.UTF_8),
+                )
+                val backup = File(root, ".backup_fast_vocal_alignment_${System.nanoTime()}")
+                if (fastVocalAlignmentDir.exists()) {
+                    require(fastVocalAlignmentDir.renameTo(backup)) { "无法备份旧快速对齐模型" }
+                }
+                if (!staging.renameTo(fastVocalAlignmentDir)) {
+                    backup.renameTo(fastVocalAlignmentDir)
+                    error("无法安装快速对齐模型")
+                }
+                backup.deleteRecursively()
+                mutableState.value = loadState().copy(lastError = "")
+            } catch (error: Throwable) {
+                staging.deleteRecursively()
+                throw error
+            }
+        }
     }
 
     private suspend fun installVerifiedArchive(
@@ -791,7 +1196,12 @@ class AiSeparationPluginStore private constructor(context: Context) {
         val runtimeCatalog = runCatching {
             readVerifiedCachedRuntimes(repository)
         }.getOrDefault(emptyList())
+        val lyricAlignmentCatalog = runCatching {
+            readVerifiedCachedLyricAlignmentCatalog(repository)
+        }.getOrDefault(emptyList())
         val installed = scanInstalledModels()
+        val installedLyricAlignmentModels = scanInstalledLyricAlignmentModels()
+        val fastVocalAlignmentBundleInstalled = isFastVocalAlignmentBundleInstalled()
         val selectedId = preferences.getString(KEY_SELECTED_ID, "").orEmpty()
         val selectedVersion = preferences.getString(KEY_SELECTED_VERSION, "").orEmpty()
         val validSelection = installed.any {
@@ -816,17 +1226,32 @@ class AiSeparationPluginStore private constructor(context: Context) {
                 it.catalog.version == realtimeVersion &&
                 AiRecommendedModels.isRealtime(it.catalog)
         }
+        val selectedLyricId = preferences.getString(KEY_SELECTED_LYRIC_ID, "").orEmpty()
+        val selectedLyricVersion = preferences.getString(KEY_SELECTED_LYRIC_VERSION, "").orEmpty()
+        val validLyricSelection = installedLyricAlignmentModels.any {
+            it.catalog.id == selectedLyricId && it.catalog.version == selectedLyricVersion
+        }
         return AiSeparationStoreState(
             repository = repository,
             catalog = catalog,
             runtimeCatalog = runtimeCatalog,
+            lyricAlignmentCatalog = lyricAlignmentCatalog,
             installed = installed,
+            installedLyricAlignmentModels = installedLyricAlignmentModels,
+            fastVocalAlignmentBundleInstalled = fastVocalAlignmentBundleInstalled,
             selectedModelId = if (validSelection) selectedId else "",
             selectedModelVersion = if (validSelection) selectedVersion else "",
             selectedRealtimeModelId = if (validRealtimeSelection) realtimeId else "",
             selectedRealtimeModelVersion = if (validRealtimeSelection) realtimeVersion else "",
+            selectedLyricAlignmentId = if (validLyricSelection) selectedLyricId else "",
+            selectedLyricAlignmentVersion = if (validLyricSelection) selectedLyricVersion else "",
         )
     }
+
+    private fun isFastVocalAlignmentBundleInstalled(): Boolean =
+        File(fastVocalAlignmentDir, FAST_BUNDLE_MANIFEST).isFile &&
+            File(fastVocalAlignmentDir, AiFastVocalAlignmentBundle.VOCALS_FILE).isFile &&
+            File(fastVocalAlignmentDir, AiFastVocalAlignmentBundle.ACCOMPANIMENT_FILE).isFile
 
     private fun readRepository(): AiModelRepositoryDescriptor? {
         if (!repositoryFile.isFile) return null
@@ -851,6 +1276,15 @@ class AiSeparationPluginStore private constructor(context: Context) {
         return AiSeparationJson.parseRuntimeCatalog(bytes.toString(Charsets.UTF_8), repository.id)
     }
 
+    private fun readVerifiedCachedLyricAlignmentCatalog(
+        repository: AiModelRepositoryDescriptor? = readRepository(),
+    ): List<AiLyricAlignmentCatalogEntry> {
+        if (repository == null || !catalogFile.isFile || !catalogSignatureFile.isFile) return emptyList()
+        val bytes = catalogFile.readBytes()
+        verifySignature(repository, bytes, catalogSignatureFile.readBytes())
+        return AiSeparationJson.parseLyricAlignmentCatalog(bytes.toString(Charsets.UTF_8), repository.id)
+    }
+
     private fun scanInstalledModels(): List<AiSeparationInstalledModel> = modelsDir
         .walkTopDown()
         .maxDepth(3)
@@ -867,6 +1301,28 @@ class AiSeparationPluginStore private constructor(context: Context) {
         .filterNotNull()
         .sortedBy { it.catalog.name }
         .toList()
+
+    private fun scanInstalledLyricAlignmentModels(): List<AiLyricAlignmentInstalledModel> =
+        lyricAlignmentModelsDir
+            .walkTopDown()
+            .maxDepth(3)
+            .filter { it.isFile && it.name == LYRIC_ALIGNMENT_MANIFEST }
+            .mapNotNull { manifest ->
+                runCatching {
+                    val (catalog, installedAt) = AiSeparationJson.parseLyricAlignmentInstalled(
+                        manifest.readText(),
+                    )
+                    val dir = manifest.parentFile ?: return@runCatching null
+                    val model = File(dir, catalog.modelFile)
+                    val vocabulary = File(dir, catalog.vocabularyFile)
+                    require(model.isFile && model.length() == catalog.modelSizeBytes)
+                    require(vocabulary.isFile && vocabulary.length() == catalog.vocabularySizeBytes)
+                    AiLyricAlignmentInstalledModel(catalog, dir.absolutePath, installedAt)
+                }.getOrNull()
+            }
+            .filterNotNull()
+            .sortedBy { it.catalog.name }
+            .toList()
 
     private fun verifySignature(
         repository: AiModelRepositoryDescriptor,
@@ -900,17 +1356,24 @@ class AiSeparationPluginStore private constructor(context: Context) {
                 readTimeout = READ_TIMEOUT_MS
                 requestMethod = "GET"
                 setRequestProperty("Accept", "application/json, application/octet-stream")
+                setRequestProperty("Accept-Encoding", "identity")
+                setRequestProperty("Cache-Control", "no-cache")
                 setRequestProperty("User-Agent", USER_AGENT)
             }
             try {
                 val code = connection.responseCode
+                Log.i(TAG, "AI_STORE_HTTP phase=small code=$code host=${runCatching { URL(current).host }.getOrDefault("invalid")}")
                 if (code in REDIRECT_CODES) {
                     require(redirectCount < MAX_REDIRECTS) { "下载重定向过多" }
-                    current = URL(URL(current), connection.getHeaderField("Location")).toString()
+                    val location = connection.getHeaderField("Location")
+                        ?.trim()
+                        ?.takeIf { it.isNotEmpty() }
+                        ?: error("下载重定向缺少目标地址")
+                    current = URL(URL(current), location).toString()
                     require(current.startsWith("https://")) { "下载重定向必须使用 HTTPS" }
                     return@repeat
                 }
-                require(code in 200..299) { "HTTP $code" }
+                require(code in 200..299) { "HTTP $code${readHttpErrorSuffix(connection)}" }
                 return connection.inputStream.use { readLimited(it, limit) }
             } finally {
                 connection.disconnect()
@@ -936,14 +1399,27 @@ class AiSeparationPluginStore private constructor(context: Context) {
                 readTimeout = MODEL_READ_TIMEOUT_MS
                 requestMethod = "GET"
                 setRequestProperty("Accept", "application/octet-stream")
+                // Do not allow transparent gzip: it changes the byte stream and invalidates
+                // Range offsets, Content-Length and the signed SHA-256 check.
+                setRequestProperty("Accept-Encoding", "identity")
+                setRequestProperty("Cache-Control", "no-cache")
                 setRequestProperty("User-Agent", USER_AGENT)
                 if (existing > 0L) setRequestProperty("Range", "bytes=$existing-")
             }
             try {
                 val code = connection.responseCode
+                Log.i(
+                    TAG,
+                    "AI_STORE_HTTP phase=artifact code=$code host=${runCatching { URL(current).host }.getOrDefault("invalid")} " +
+                        "existing=$existing expected=$expectedBytes",
+                )
                 if (code in REDIRECT_CODES) {
                     require(redirectCount < MAX_REDIRECTS) { "下载重定向过多" }
-                    current = URL(URL(current), connection.getHeaderField("Location")).toString()
+                    val location = connection.getHeaderField("Location")
+                        ?.trim()
+                        ?.takeIf { it.isNotEmpty() }
+                        ?: error("下载重定向缺少目标地址")
+                    current = URL(URL(current), location).toString()
                     require(current.startsWith("https://")) { "下载重定向必须使用 HTTPS" }
                     return@repeat
                 }
@@ -951,8 +1427,15 @@ class AiSeparationPluginStore private constructor(context: Context) {
                     onProgress(existing, expectedBytes)
                     return
                 }
+                if (code == 416 && existing > 0L) {
+                    // A stale CDN range can survive a failed previous install. Restart once
+                    // from byte zero instead of surfacing a misleading HTTP 416 error.
+                    target.delete()
+                    current = sourceUrl
+                    return@repeat
+                }
                 require(code == HttpURLConnection.HTTP_OK || code == HttpURLConnection.HTTP_PARTIAL) {
-                    "HTTP $code"
+                    "HTTP $code${readHttpErrorSuffix(connection)}"
                 }
                 val append = code == HttpURLConnection.HTTP_PARTIAL && existing > 0L
                 if (!append && target.exists()) target.delete()
@@ -986,6 +1469,15 @@ class AiSeparationPluginStore private constructor(context: Context) {
         error("下载重定向失败")
     }
 
+    private fun readHttpErrorSuffix(connection: HttpURLConnection): String {
+        val body = runCatching {
+            (connection.errorStream ?: connection.inputStream).bufferedReader().use { reader ->
+                reader.readText().take(512).replace(Regex("\\s+"), " ").trim()
+            }
+        }.getOrDefault("")
+        return if (body.isBlank()) "" else ": $body"
+    }
+
     private fun ensureFreeSpace(requiredBytes: Long) {
         val available = StatFs(root.absolutePath).availableBytes
         require(available >= requiredBytes) {
@@ -1014,6 +1506,9 @@ class AiSeparationPluginStore private constructor(context: Context) {
     }
 
     private fun modelVersionDir(id: String, version: String): File = File(File(modelsDir, id), version)
+
+    private fun lyricAlignmentVersionDir(id: String, version: String): File =
+        File(File(lyricAlignmentModelsDir, id), version)
 
     private fun removeRetiredWaveformModel() {
         File(modelsDir, RETIRED_MEL_ROFORMER_ID).deleteRecursively()
@@ -1099,10 +1594,14 @@ class AiSeparationPluginStore private constructor(context: Context) {
         private const val KEY_SELECTED_VERSION = "selected_model_version"
         private const val KEY_REALTIME_SELECTED_ID = "selected_realtime_model_id"
         private const val KEY_REALTIME_SELECTED_VERSION = "selected_realtime_model_version"
+        private const val KEY_SELECTED_LYRIC_ID = "selected_lyric_alignment_id"
+        private const val KEY_SELECTED_LYRIC_VERSION = "selected_lyric_alignment_version"
         private const val RETIRED_MEL_ROFORMER_ID = "melband.roformer.kim.vocals"
         private const val PACKAGE_MANIFEST = "manifest.json"
         private const val INSTALLED_MANIFEST = "installed.json"
         private const val RUNTIME_MANIFEST = "installed.json"
+        private const val LYRIC_ALIGNMENT_MANIFEST = "installed.json"
+        private const val FAST_BUNDLE_MANIFEST = "installed.properties"
         private const val MAX_REPOSITORY_BYTES = 256 * 1024
         private const val MAX_CATALOG_BYTES = 2 * 1024 * 1024
         private const val MAX_SIGNATURE_BYTES = 16 * 1024
@@ -1111,13 +1610,19 @@ class AiSeparationPluginStore private constructor(context: Context) {
         private const val MAX_MODEL_ARCHIVE_BYTES = 2L * 1024L * 1024L * 1024L
         private const val EXTRA_FREE_SPACE_BYTES = 128L * 1024L * 1024L
         private const val MAX_ZIP_ENTRIES = 16
+        private const val MAX_FAST_BUNDLE_ENTRIES = 5
+        private const val MAX_FAST_BUNDLE_ENTRY_BYTES = 64L * 1024L * 1024L
+        private const val MAX_FAST_BUNDLE_EXTRACTED_BYTES = 100L * 1024L * 1024L
         private const val COPY_BUFFER_SIZE = 256 * 1024
         private const val CONNECT_TIMEOUT_MS = 20_000
         private const val READ_TIMEOUT_MS = 30_000
         private const val MODEL_READ_TIMEOUT_MS = 90_000
         private const val PROGRESS_INTERVAL_MS = 200L
         private const val MAX_REDIRECTS = 5
-        private const val USER_AGENT = "RawSMusic/0.9.61beta AI-Model-Manager"
+        private const val USER_AGENT = "RawSMusic/0.9.86beta AI-Model-Manager"
+        private const val DEFAULT_REPOSITORY_URL =
+            "https://github.com/QFDY-GZC/RawS-Music/releases/download/" +
+                "rawsmusic-ai-models-v1.0.0/repository.json"
         private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
         private val BASE64_SIGNATURE = Regex("[A-Za-z0-9+/]+={0,2}")
 

@@ -24,12 +24,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalContext
@@ -93,6 +96,8 @@ fun NormalBottomChrome(
     playerSceneProgressState: State<Float>? = null,
     onCoverBoundsChanged: (android.graphics.RectF?) -> Unit = {},
     onCoverTargetChanged: (CoverTransitionTarget?) -> Unit = {},
+    onMiniPlayerBoundsChanged: (Rect?) -> Unit = {},
+    onNavigationBoundsChanged: (Rect?) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
@@ -116,17 +121,19 @@ fun NormalBottomChrome(
     val latestExpandDragEnd by rememberUpdatedState(onExpandDragEnd)
     val miniPlayerHeight = 66.dp
     val navigationHeight = 56.dp
-    // AppMainLayout lifts NORMAL chrome by the same reduced gesture-navigation inset. Include
-    // that inset in both the bottom-sheet peek height and the stacked navigation exit distance.
+    // Keep the NORMAL chrome substrate edge-to-edge. The gesture-navigation safe inset belongs
+    // *inside* the navigation background, not outside the whole chrome as transparent padding.
+    // This preserves the old content position while making the visual surface reach the screen edge.
     val reducedNavigationBottomPadding = rawReducedNavigationBottomPadding(reduceBy = 12.dp)
+    val navigationContainerHeight = navigationHeight + reducedNavigationBottomPadding
     val miniPlayerHeightPx = with(density) { miniPlayerHeight.toPx() }
     val navigationHeightPx = with(density) { navigationHeight.toPx() }
     val reducedNavigationBottomPaddingPx = with(density) { reducedNavigationBottomPadding.toPx() }
+    val navigationContainerHeightPx = navigationHeightPx + reducedNavigationBottomPaddingPx
     val expandedDistancePx = (
         windowInfo.containerSize.height.toFloat() -
             miniPlayerHeightPx -
-            navigationHeightPx -
-            reducedNavigationBottomPaddingPx
+            navigationContainerHeightPx
     ).coerceAtLeast(1f)
     fun currentExpansion(): Float = if (drivePlayerScene && playerSceneProgressState != null) {
         playerSceneProgressState.value.coerceIn(0f, 1f)
@@ -234,7 +241,10 @@ fun NormalBottomChrome(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(miniPlayerHeight)
-                .background(Brush.horizontalGradient(backgroundColors)),
+                .background(Brush.horizontalGradient(backgroundColors))
+                .onGloballyPositioned { coordinates ->
+                    onMiniPlayerBoundsChanged(coordinates.boundsInRoot())
+                },
         ) {
             Box(
                 modifier = Modifier
@@ -287,28 +297,38 @@ fun NormalBottomChrome(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(navigationHeight)
+                .height(navigationContainerHeight)
                 .background(Brush.horizontalGradient(backgroundColors))
                 .graphicsLayer {
-                    // This is a translation, not a fade or a scale. It mirrors
-                    // PlayerActivity.StackedBottomNavigationHolder.c(float).
-                    translationY = (navigationHeightPx + reducedNavigationBottomPaddingPx) *
+                    // Translate the visible navigation plus its internal safe-area substrate as one
+                    // sibling. The content remains 56dp high; only the background extends to bottom.
+                    translationY = navigationContainerHeightPx *
                         (1f - exp(-20f * currentExpansion()))
                 },
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(1.dp)
-                    .background(dividerColor),
-            )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
                     .height(navigationHeight)
-                    .padding(horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .onGloballyPositioned { coordinates ->
+                        // Gesture/navigation hit geometry remains the actual 56dp control region,
+                        // not the decorative system-gesture substrate below it.
+                        onNavigationBoundsChanged(coordinates.boundsInRoot())
+                    },
             ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(dividerColor),
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(navigationHeight)
+                        .padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                 tabScenes.forEachIndexed { index, scene ->
                     val selected = index == selectedTabIndex
                     val tint = if (selected) selectedColor else unselectedColor
@@ -335,6 +355,7 @@ fun NormalBottomChrome(
                     }
                 }
             }
+        }
         }
     }
 }

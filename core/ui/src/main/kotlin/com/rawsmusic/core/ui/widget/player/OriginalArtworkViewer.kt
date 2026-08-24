@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -78,6 +77,7 @@ import java.io.File
 import java.io.InputStream
 import kotlin.math.max
 import kotlin.math.min
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 private const val MIN_ARTWORK_BYTES = 1024L
 private const val MAX_ARTWORK_SCALE = 8f
@@ -146,7 +146,7 @@ internal fun OriginalArtworkViewerDialog(
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = 0.96f))
                 .statusBarsPadding()
-                .navigationBarsPadding()
+                .rawStableNavigationBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {

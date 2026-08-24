@@ -17,6 +17,16 @@ data class AiNativeSeparationStats(
     val elapsedMs: Long,
 )
 
+data class AiVocalActivityOptions(
+    val windowMs: Int = 40,
+    val hopMs: Int = 10,
+    val startHangMs: Int = 80,
+    val stopHangMs: Int = 220,
+    val mergeGapMs: Int = 140,
+    val preRollMs: Int = 80,
+    val postRollMs: Int = 180,
+)
+
 interface AiNativeSeparationCallback {
     fun isCancelled(): Boolean
     fun onProgress(processedFrames: Long, totalFrames: Long, segmentIndex: Int, segmentCount: Int)
@@ -52,6 +62,72 @@ object AiSeparationRuntimeBridge {
     ): Result<Unit> {
         if (!bridgeLoaded) return Result.failure(IllegalStateException("AI native bridge unavailable"))
         return AiOnnxRuntimeSession.probeModel(context, model, contract)
+    }
+
+    /**
+     * Runs the inexpensive native VAD pass over a separated vocal WAV.
+     *
+     * This method is intentionally not called by real-time playback. The caller should run it
+     * on an IO dispatcher and persist the returned versioned map alongside the separation result.
+     */
+    fun analyzeVocalActivity(
+        vocalWav: File,
+        sourceIdentity: String,
+        analyzerVersion: String = "v1",
+        options: AiVocalActivityOptions = AiVocalActivityOptions(),
+    ): Result<com.rawsmusic.core.common.model.VoiceActivityMap> {
+        if (!bridgeLoaded) return Result.failure(IllegalStateException("AI native bridge unavailable"))
+        if (!vocalWav.isFile) return Result.failure(IllegalArgumentException("人声 WAV 输入不存在"))
+        if (sourceIdentity.isBlank()) {
+            return Result.failure(IllegalArgumentException("人声活动分析需要 source identity"))
+        }
+        if (analyzerVersion.isBlank()) {
+            return Result.failure(IllegalArgumentException("人声活动分析需要 analyzer version"))
+        }
+        return runCatching {
+            val raw = nativeAnalyzeVocalActivity(
+                vocalPath = vocalWav.absolutePath,
+                sourceIdentity = sourceIdentity,
+                analyzerVersion = analyzerVersion,
+                windowMs = options.windowMs,
+                hopMs = options.hopMs,
+                startHangMs = options.startHangMs,
+                stopHangMs = options.stopHangMs,
+                mergeGapMs = options.mergeGapMs,
+                preRollMs = options.preRollMs,
+                postRollMs = options.postRollMs,
+            )
+            if (raw.startsWith("ERROR:")) {
+                error(raw.removePrefix("ERROR:"))
+            }
+            AiVocalActivityMapParser.parse(raw, sourceIdentity, analyzerVersion)
+        }
+    }
+
+    /**
+     * Runs the standalone Spleeter graph over temporary decoded PCM and returns a compact vocal
+     * activity envelope. No stem is written. The caller owns the versioned disk cache.
+     */
+    fun analyzeSpleeterVocalActivity(
+        pcmFile: File,
+        sampleRate: Int,
+        runtimeSession: AiOnnxRuntimeSession,
+        callback: AiNativeSeparationCallback,
+    ): Result<String> {
+        if (!bridgeLoaded) return Result.failure(IllegalStateException("AI native bridge unavailable"))
+        if (!pcmFile.isFile) return Result.failure(IllegalArgumentException("Spleeter PCM 输入不存在"))
+        return runCatching {
+            nativeAnalyzeSpleeterVocalActivity(
+                pcmPath = pcmFile.absolutePath,
+                sampleRate = sampleRate,
+                inputBuffer = runtimeSession.inputBuffer,
+                outputBuffer = runtimeSession.outputBuffer,
+                runner = runtimeSession,
+                callback = callback,
+            ).also { raw ->
+                if (raw.startsWith("ERROR:")) error(raw.removePrefix("ERROR:"))
+            }
+        }
     }
 
     fun separatePcm(
@@ -161,6 +237,30 @@ object AiSeparationRuntimeBridge {
     }
 
     @JvmStatic private external fun nativeBridgeAbiVersion(): Int
+
+    @JvmStatic
+    private external fun nativeAnalyzeVocalActivity(
+        vocalPath: String,
+        sourceIdentity: String,
+        analyzerVersion: String,
+        windowMs: Int,
+        hopMs: Int,
+        startHangMs: Int,
+        stopHangMs: Int,
+        mergeGapMs: Int,
+        preRollMs: Int,
+        postRollMs: Int,
+    ): String
+
+    @JvmStatic
+    private external fun nativeAnalyzeSpleeterVocalActivity(
+        pcmPath: String,
+        sampleRate: Int,
+        inputBuffer: ByteBuffer,
+        outputBuffer: ByteBuffer,
+        runner: Any,
+        callback: AiNativeSeparationCallback,
+    ): String
 
     @JvmStatic
     private external fun nativeSeparateSegment(

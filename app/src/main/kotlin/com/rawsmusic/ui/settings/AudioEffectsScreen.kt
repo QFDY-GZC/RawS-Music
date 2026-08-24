@@ -19,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.rawsmusic.R
@@ -70,6 +71,8 @@ fun LiquidGlassAudioEffectsScreen(
     val dimensions = AudioEffectDimension.entries
     val pagerState = rememberPagerState(pageCount = { dimensions.size })
     val pagerScope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val importedGraphicEqName = stringResource(R.string.settings_graphic_eq_imported_autoeq_name)
 
     val parametricListState = rememberLazyListState()
     val graphicListState = rememberLazyListState()
@@ -110,6 +113,30 @@ fun LiquidGlassAudioEffectsScreen(
                                 onImportFromFile = onImportPeqFromFile,
                                 importedFileContent = importedPeqFileContent,
                                 onImportedFileContentConsumed = onImportedPeqFileContentConsumed,
+                                onImportGraphicEq = graphicEqController?.let { graphicController ->
+                                    { parsedGraphicEq ->
+                                        val targetBands = graphicController.bandCount.value
+                                        graphicController.applyPreset(
+                                            parsedGraphicEq.toGraphicEqPreset(
+                                                bandCount = targetBands,
+                                                name = importedGraphicEqName,
+                                            )
+                                        )
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            context.getString(
+                                                R.string.settings_graphic_eq_autoeq_import_success,
+                                                parsedGraphicEq.points.size,
+                                                targetBands
+                                            ),
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                        val graphicPage = dimensions.indexOf(AudioEffectDimension.GRAPHIC_EQ)
+                                        if (graphicPage >= 0 && graphicPage != pagerState.currentPage) {
+                                            pagerScope.launch { pagerState.animateScrollToPage(graphicPage) }
+                                        }
+                                    }
+                                },
                                 showSectionHeader = false
                             )
                         } else {

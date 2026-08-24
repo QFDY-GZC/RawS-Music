@@ -31,4 +31,27 @@ class UsbRuntimeStatsParserTest {
             UsbRuntimeStatsParser.buildAudibleDiagnostics(""),
         )
     }
+    @Test
+    fun parsesCachedPcmInputDiagnosticsForInAppExport() {
+        val stats = requireNotNull(
+            UsbRuntimeStatsParser.parseStats(
+                "app=384000 usb=288000 expected=288000 pcmDiag=1 pcmProto=1 " +
+                    "pcmSrcFrame=8 pcmDstFrame=6 pcmAdapter=S32_TO_S24 pcmResample=0 " +
+                    "pcmSamples=256 pcmNonSilent=250 pcmLowZero=248 pcmSignTop=12 " +
+                    "pcmFirst16=00112233445566778899AABBCCDDEEFF"
+            )
+        )
+        assertTrue(stats.pcmInputDiagReady)
+        assertEquals(1, stats.pcmProtocol)
+        assertEquals(8, stats.pcmSourceFrameBytes)
+        assertEquals(6, stats.pcmDeviceFrameBytes)
+        assertEquals("S32_TO_S24", stats.pcmAdapter)
+        assertFalse(stats.pcmNeedsResample)
+        assertEquals(256, stats.pcmSamples)
+        assertEquals(250, stats.pcmNonSilent)
+        assertEquals(248, stats.pcmLowZero)
+        assertEquals(12, stats.pcmSignExtendedTop)
+        assertEquals("00112233445566778899AABBCCDDEEFF", stats.pcmFirst16Hex)
+    }
+
 }

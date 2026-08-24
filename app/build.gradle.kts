@@ -14,8 +14,8 @@ android {
         applicationId = "com.rawsmusic"
         minSdk = 24
         targetSdk = 37
-        versionCode = 80
-        versionName = "0.9.80 beta"
+        versionCode = 86
+        versionName = "0.9.86 beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -111,6 +111,8 @@ configurations.all {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+
     implementation(project(":core:common"))
     implementation(project(":core:ui"))
     implementation(project(":module:player"))

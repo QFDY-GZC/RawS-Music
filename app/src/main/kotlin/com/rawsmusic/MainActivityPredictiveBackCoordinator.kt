@@ -35,7 +35,13 @@ internal class MainActivityPredictiveBackCoordinator(
     private val hidePlayModePopup: () -> Unit,
     private val onActivityBackFallback: () -> Unit,
 ) {
-    private enum class BackDragType { NONE, COVER, CONTAINER, HOME_FULL_COVER }
+    private enum class BackDragType {
+        NONE,
+        COVER,
+        MAIN_PLAYER_SHEET,
+        CONTAINER,
+        HOME_FULL_COVER,
+    }
 
     private var callback: OnBackPressedCallback? = null
     private var dragType = BackDragType.NONE
@@ -76,6 +82,13 @@ internal class MainActivityPredictiveBackCoordinator(
                 val sceneController = playerSceneController() ?: return
                 val swipeRight = backEvent.swipeEdge == BackEventCompat.EDGE_LEFT
                 when {
+                    sceneController.hasMainPlayerSheetBackTarget() -> {
+                        dragType = if (sceneController.startMainPlayerPredictiveBack()) {
+                            BackDragType.MAIN_PLAYER_SHEET
+                        } else {
+                            BackDragType.NONE
+                        }
+                    }
                     audioInfoSharedWindowActive() && mainNavigation.canNavigateBack() -> {
                         val direction = if (swipeRight) 1f else -1f
                         dragType = if (mainNavigation.startBackDrag(direction)) {
@@ -116,6 +129,8 @@ internal class MainActivityPredictiveBackCoordinator(
                 if (!PersonalizationPreferences.predictiveBackAnimationEnabled) return
                 when (dragType) {
                     BackDragType.COVER -> playerSceneController()?.updateCoverDragProgress(backEvent.progress)
+                    BackDragType.MAIN_PLAYER_SHEET ->
+                        playerSceneController()?.updateMainPlayerPredictiveBack(backEvent.progress)
                     BackDragType.CONTAINER -> mainNavigation.updateBackDrag(backEvent.progress)
                     BackDragType.HOME_FULL_COVER -> HomeFullCoverBackRuntime.progress(backEvent.progress)
                     BackDragType.NONE -> Unit
@@ -126,6 +141,10 @@ internal class MainActivityPredictiveBackCoordinator(
                 when (dragType) {
                     BackDragType.COVER -> {
                         playerSceneController()?.releaseCoverDrag(true, 0f)
+                        dragType = BackDragType.NONE
+                    }
+                    BackDragType.MAIN_PLAYER_SHEET -> {
+                        playerSceneController()?.finishMainPlayerPredictiveBack(commit = true)
                         dragType = BackDragType.NONE
                     }
                     BackDragType.CONTAINER -> {
@@ -169,6 +188,8 @@ internal class MainActivityPredictiveBackCoordinator(
             override fun handleOnBackCancelled() {
                 when (dragType) {
                     BackDragType.COVER -> playerSceneController()?.releaseCoverDrag(false, 0f)
+                    BackDragType.MAIN_PLAYER_SHEET ->
+                        playerSceneController()?.finishMainPlayerPredictiveBack(commit = false)
                     BackDragType.CONTAINER -> mainNavigation.releaseBackDrag(commit = false)
                     BackDragType.HOME_FULL_COVER -> HomeFullCoverBackRuntime.cancel()
                     BackDragType.NONE -> Unit
@@ -191,6 +212,8 @@ internal class MainActivityPredictiveBackCoordinator(
     fun resetGestureOwnership(reason: String) {
         when (dragType) {
             BackDragType.COVER -> playerSceneController()?.releaseCoverDrag(false, 0f)
+            BackDragType.MAIN_PLAYER_SHEET ->
+                playerSceneController()?.finishMainPlayerPredictiveBack(commit = false)
             BackDragType.CONTAINER -> mainNavigation.releaseBackDrag(commit = false)
             BackDragType.HOME_FULL_COVER -> HomeFullCoverBackRuntime.cancel()
             BackDragType.NONE -> Unit
@@ -238,7 +261,8 @@ internal class MainActivityPredictiveBackCoordinator(
             return
         }
         mainHandler.removeCallbacks(handoffRelease)
-        val isAtAppRoot = sceneController.currentScene == PlayerSceneController.Scene.MAIN &&
+        val isAtAppRoot = !sceneController.hasMainPlayerSheetBackTarget() &&
+            sceneController.currentScene == PlayerSceneController.Scene.MAIN &&
             mainNavigation.isAtHome()
         currentCallback.isEnabled = activeMiuixOverlayCount == 0 &&
             activeSourcePortalBackCount == 0 &&

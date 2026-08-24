@@ -105,13 +105,22 @@ internal fun HomeArtworkCarouselCanvas(
                 }.joinToString("|")
         )
     }
+    val artworkKeys = laneSongs.map { song ->
+        song?.resolvePlaybackArtworkKey(null).orEmpty()
+    }
     val laneBitmaps = laneSongs.mapIndexed { laneIndex, song ->
         val artworkKey = song?.resolvePlaybackArtworkKey(null).orEmpty()
         val logicalOffset = laneIndex - CanvasLaneRadius
-        // The lane is the physical holder. Only its source key changes as the queue moves; using
-        // the song identity here destroys the holder on every commit and briefly releases the old
-        // bitmap before the next source callback arrives.
-        key("home-canvas-lane-$logicalOffset") {
+        val occurrence = artworkKeys.take(laneIndex).count { it == artworkKey }
+        // Keep the decoded holder attached to the artwork rather than to a physical rail. After a
+        // gesture commit the selected cover moves from a side rail to the new centre rail; a rail
+        // key would clear that holder for one frame while the confirmed queue is rebound.
+        val holderKey = if (artworkKey.isNotBlank()) {
+            "home-canvas-artwork:$artworkKey:$occurrence"
+        } else {
+            "home-canvas-empty-lane:$logicalOffset"
+        }
+        key(holderKey) {
             rememberHomeCarouselBitmap(artworkKey)
         }
     }

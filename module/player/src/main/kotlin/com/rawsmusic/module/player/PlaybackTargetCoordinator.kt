@@ -4,6 +4,8 @@ import android.os.SystemClock
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.utils.OnlinePlaybackDiagnostics
 import com.rawsmusic.module.data.source.playback.MusicSourceResolvedStreamRegistry
+import com.rawsmusic.module.data.prefs.UsbBitPerfectMode
+import com.rawsmusic.module.player.usb.UsbDeviceAudioCapabilities
 
 /** Chooses the already-defined USB or Android output target for one playback session. */
 internal class PlaybackTargetCoordinator(
@@ -19,13 +21,15 @@ internal class PlaybackTargetCoordinator(
     fun resolve(
         sourcePath: String,
         usbExclusive: Boolean,
-        usbBitPerfectMode: Boolean,
+        usbBitPerfectPolicyMode: UsbBitPerfectMode,
+        usbCapabilities: UsbDeviceAudioCapabilities? = null,
     ): Target {
         if (usbExclusive) {
             return Target(
                 usb = usbResolver.resolve(
                     sourcePath = sourcePath,
-                    usbBitPerfectMode = usbBitPerfectMode,
+                    usbBitPerfectPolicyMode = usbBitPerfectPolicyMode,
+                    capabilities = usbCapabilities,
                 ),
             )
         }

@@ -69,6 +69,24 @@ class ComposePowerListState internal constructor(
     var boundaryElasticScale by mutableFloatStateOf(1f)
         private set
 
+    /**
+     * Vertical list-edge presentation is separate from logical scrollY. Top pull can use the old
+     * local stretch lane; bottom/upward pull mirrors Reference SharedItemGesture by moving the
+     * already-attached holder group a small resisted distance instead of stretching it in place.
+     */
+    var verticalBoundaryScaleY by mutableFloatStateOf(1f)
+        private set
+    var verticalBoundaryOriginY by mutableFloatStateOf(0.5f)
+        private set
+    var verticalBoundaryTranslationY by mutableFloatStateOf(0f)
+        private set
+    private var verticalBoundaryRawPullPx by mutableFloatStateOf(0f)
+
+    internal val isVerticalBoundaryStretchActive: Boolean
+        get() = abs(verticalBoundaryRawPullPx) >= 0.5f ||
+            abs(verticalBoundaryScaleY - 1f) >= 0.0005f ||
+            abs(verticalBoundaryTranslationY) >= 0.5f
+
     var isTransitioning by mutableStateOf(false)
         private set
 
@@ -126,6 +144,10 @@ class ComposePowerListState internal constructor(
     internal val currentMode: ComposePowerListDisplayMode
         get() = displayModeForColumns(currentColumns, currentLevel)
 
+    /** Same zoom direction used by PowerList transition geometry and persistent AA/header holders. */
+    internal val transitionZoomIn: Boolean
+        get() = modeOrder(targetMode) > modeOrder(sourceMode)
+
     internal val renderMode: ComposePowerListDisplayMode
         get() = currentMode
 
@@ -157,9 +179,9 @@ class ComposePowerListState internal constructor(
             beginTransition(target)
         }
 
-        val signedDelta = if (isZoomIn == isZoomInTransition()) abs(rawDelta) else -abs(rawDelta)
+        val signedDelta = if (isZoomIn == transitionZoomIn) abs(rawDelta) else -abs(rawDelta)
         transitionProgress = signedDelta.coerceIn(0f, 1f)
-        transitionScaleFactor = elasticScale(signedDelta, isZoomInTransition())
+        transitionScaleFactor = elasticScale(signedDelta, transitionZoomIn)
         if (velocityDp != 0f) {
             boundaryRawOverPull = 0f
             boundaryElasticScale = 1f
@@ -173,7 +195,7 @@ class ComposePowerListState internal constructor(
             return
         }
         val confirm = if (abs(velocityDp) >= VELOCITY_THRESHOLD_DP) {
-            (velocityDp > 0f) == isZoomInTransition()
+            (velocityDp > 0f) == transitionZoomIn
         } else {
             transitionProgress > POSITION_THRESHOLD
         }
@@ -195,6 +217,7 @@ class ComposePowerListState internal constructor(
         animateTransition(confirm = true, releaseVelocityDp = 0f)
     }
 
+    /** Moves one step toward the denser PowerList layout using the normal transition path. */
     private fun beginTransition(target: ComposePowerListDisplayMode) {
         sourceMode = currentMode
         targetMode = target
@@ -307,6 +330,102 @@ class ComposePowerListState internal constructor(
         }
     }
 
+    /**
+     * Converts only the scroll remainder beyond a real list edge into a bounded stretch. Positive
+     * remainder is a pull below the top edge; negative remainder is a pull beyond the bottom edge.
+     * At the top, once the local stretch threshold is full, excess is left unconsumed so the parent
+     * back/shared-item owner can still capture a deliberate larger pull. At the bottom the list keeps
+     * ownership of the remainder, matching PowerList's terminal under-filled correction.
+     */
+    internal fun consumeVerticalBoundaryRemainder(
+        remainderPx: Float,
+        maxPullPx: Float,
+        moveUpExtentPx: Float,
+    ): Float {
+        if (abs(remainderPx) < 0.001f || maxPullPx <= 1f) return 0f
+        val sign = if (remainderPx > 0f) 1f else -1f
+        if (verticalBoundaryRawPullPx != 0f && verticalBoundaryRawPullPx * sign < 0f) {
+            clearVerticalBoundaryStretch()
+        }
+        val currentAbs = abs(verticalBoundaryRawPullPx)
+        val capacity = (maxPullPx - currentAbs).coerceAtLeast(0f)
+        val requestedAbs = abs(remainderPx)
+        val visualAcceptedAbs = minOf(requestedAbs, capacity)
+        if (visualAcceptedAbs > 0f) {
+            verticalBoundaryRawPullPx = sign * (currentAbs + visualAcceptedAbs)
+            if (sign < 0f) {
+                // Reference has two cooperating owners here, not one: SharedItemGesture writes the
+                // resisted MoveUp amount into C0889.u/T, while AAItemView.y() installs its own
+                // maxStretchOvershoot/i5 owner. Keep logical scroll clamped, move the attached
+                // detail holders upward, and add a bottom-anchored stretch on the same pixels.
+                // The exact runtime skin maxStretchOvershoot is not recovered, so reuse Raw's
+                // existing conservative local scale cap rather than inventing a global edge law.
+                verticalBoundaryTranslationY = shortDetailSharedMoveTranslationY(
+                    rawPullPx = verticalBoundaryRawPullPx,
+                    gestureRangePx = maxPullPx,
+                    moveUpExtentPx = moveUpExtentPx,
+                )
+                verticalBoundaryScaleY = shortDetailBoundaryScaleY(
+                    rawPullPx = verticalBoundaryRawPullPx,
+                    maxPullPx = maxPullPx,
+                )
+                verticalBoundaryOriginY = 1f
+            } else {
+                // Keep the existing top/down pull behavior unchanged.
+                verticalBoundaryTranslationY = 0f
+                verticalBoundaryOriginY = 0f
+                verticalBoundaryScaleY = shortDetailBoundaryScaleY(
+                    rawPullPx = verticalBoundaryRawPullPx,
+                    maxPullPx = maxPullPx,
+                )
+            }
+        }
+        // Bottom is always list-owned; top releases only the amount beyond maxStretchOvershoot-like cap.
+        val consumedAbs = if (sign < 0f) requestedAbs else visualAcceptedAbs
+        return sign * consumedAbs
+    }
+
+    internal fun clearVerticalBoundaryStretch() {
+        verticalBoundaryRawPullPx = 0f
+        verticalBoundaryScaleY = 1f
+        verticalBoundaryOriginY = 0.5f
+        verticalBoundaryTranslationY = 0f
+    }
+
+    internal suspend fun animateVerticalBoundaryBack(
+        maxPullPx: Float,
+        moveUpExtentPx: Float,
+    ) {
+        val startPull = verticalBoundaryRawPullPx
+        val startScale = verticalBoundaryScaleY
+        val startTranslationY = verticalBoundaryTranslationY
+        if (abs(startPull) < 0.5f || maxPullPx <= 1f) {
+            clearVerticalBoundaryStretch()
+            return
+        }
+        // Reference r1.B(over, 0.35, 2.0, true): minimum 350 ms, otherwise |over| / 2.0.
+        val durationMs = if (startPull < 0f) {
+            shortDetailSharedMoveReboundDurationMs(
+                rawPullPx = startPull,
+                gestureRangePx = maxPullPx,
+                moveUpExtentPx = moveUpExtentPx,
+            )
+        } else {
+            shortDetailBoundaryReboundDurationMs(startPull, maxPullPx)
+        }
+        animate(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = durationMs, easing = LinearEasing),
+        ) { fraction, _ ->
+            val eased = cubicEaseOut(fraction)
+            verticalBoundaryRawPullPx = lerp(startPull, 0f, eased)
+            verticalBoundaryScaleY = lerp(startScale, 1f, eased)
+            verticalBoundaryTranslationY = lerp(startTranslationY, 0f, eased)
+        }
+        clearVerticalBoundaryStretch()
+    }
+
     private fun nextMode(isZoomIn: Boolean): ComposePowerListDisplayMode? {
         return if (currentColumns <= 1) {
             val nextLevel = adjacentLevel(currentLevel, isZoomIn)
@@ -329,10 +448,6 @@ class ComposePowerListState internal constructor(
                 else -> null
             }
         }
-    }
-
-    private fun isZoomInTransition(): Boolean {
-        return modeOrder(targetMode) > modeOrder(sourceMode)
     }
 
     companion object {

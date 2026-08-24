@@ -17,6 +17,7 @@ class SettingsActivity : BaseSettingsActivity() {
                 onNavigateToTransitionSettings = { navigateToSettings(TransitionSettingsActivity::class.java) },
                 onNavigateToPlayerInterface = { navigateToSettings(PlayerInterfaceActivity::class.java) },
                 onNavigateToUsbDac = { navigateToSettings(UsbDacSettingsActivity::class.java) },
+                onNavigateToHardwareDeviceControl = { navigateToSettings(HardwareDeviceControlActivity::class.java) },
                 onNavigateToGlobalFont = { navigateToSettings(GlobalFontSettingsActivity::class.java) },
                 onNavigateToAlbumArt = { navigateToSettings(AlbumArtActivity::class.java) },
                 onWebDavBackup = { navigateToSettings(WebDavBackupActivity::class.java) },

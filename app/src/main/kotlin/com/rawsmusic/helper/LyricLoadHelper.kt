@@ -45,13 +45,14 @@ class LyricLoadHelper(
         clearCurrentLyricText()
 
         scope.launch(Dispatchers.IO) {
-            val lyricData = LyricReader.readLyrics(song)
+            // Parsing and animation-flag decoration both walk the full lyric structure. Keep that
+            // immutable preparation off Main so a freshly written Lyrico sidecar cannot contend
+            // with an immediate PLAYER <-> LYRIC shared transition.
+            val styledLyricData = LyricReader.readLyrics(song).withAnimationFlags()
             launch(Dispatchers.Main) {
                 if (loadGeneration.get() != generation) return@launch
                 val current = getCurrentSong()
                 if (current == null || current.lyricRequestKey() != requestKey) return@launch
-
-                val styledLyricData = lyricData.withAnimationFlags()
 
                 setComposeLyricData(song, styledLyricData)
                 setMiniLyricData(styledLyricData)

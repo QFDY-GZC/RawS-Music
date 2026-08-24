@@ -85,6 +85,19 @@ data class UsbStatsSnapshot(
     val clockValidKnown: Boolean = false,
     val clockValid: Boolean = false,
 
+    // First normal PCM container diagnostic cached by native and exported in-app.
+    val pcmInputDiagReady: Boolean = false,
+    val pcmProtocol: Int = 0,
+    val pcmSourceFrameBytes: Int = 0,
+    val pcmDeviceFrameBytes: Int = 0,
+    val pcmAdapter: String = "",
+    val pcmNeedsResample: Boolean = false,
+    val pcmSamples: Int = 0,
+    val pcmNonSilent: Int = 0,
+    val pcmLowZero: Int = 0,
+    val pcmSignExtendedTop: Int = 0,
+    val pcmFirst16Hex: String = "",
+
     val featureUnitPolicy: String = "",
     val featureUnitPath: String = "",
     val featureUnitResult: Int = 0,
@@ -189,6 +202,44 @@ object UsbLearnedPolicyStore {
             updatedAt = System.currentTimeMillis()
         )
         write(deviceKey, reset)
+        return true
+    }
+
+    fun invalidateLastGoodIfMatches(
+        deviceKey: String,
+        alt: Int,
+        sampleRate: Int,
+        bitDepth: Int,
+        subslot: Int,
+        feedbackEndpoint: Int,
+    ): Boolean {
+        val old = read(deviceKey) ?: return false
+        val matches = old.lastGoodAlt == alt &&
+            old.lastGoodSampleRate == sampleRate &&
+            old.lastGoodBitDepth == bitDepth &&
+            old.lastGoodSubslot == subslot &&
+            old.lastGoodFeedbackEndpoint == feedbackEndpoint
+        if (!matches) return false
+
+        // Older builds recorded last-good as soon as the producer accepted its first PCM block.
+        // That says nothing about completed ISO traffic and can make recovery select the same
+        // non-draining alternate setting forever. A stable self-test will repopulate these fields.
+        write(
+            deviceKey,
+            old.copy(
+                lastGoodAlt = 0,
+                lastGoodSampleRate = 0,
+                lastGoodBitDepth = 0,
+                lastGoodSubslot = 0,
+                lastGoodFeedbackEndpoint = 0,
+                lastGoodNoFeedback = false,
+                lastGoodNoClockSet = false,
+                lastGoodNoFeatureUnit = false,
+                lastGoodPreferSafeAlt = false,
+                successCount = 0,
+                updatedAt = System.currentTimeMillis(),
+            ),
+        )
         return true
     }
 

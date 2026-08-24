@@ -78,6 +78,7 @@ fun AudioSpectrumAnalysisScreen(
 ) {
     val context = LocalContext.current
     val scheme = MiuixTheme.colorScheme
+    val unknownAnalysisError = stringResource(R.string.audio_spectrum_unknown_error)
     val pagerState = rememberPagerState(pageCount = { 2 })
     var screenState by remember(song.path) { mutableStateOf<SpectrumScreenState>(SpectrumScreenState.Loading) }
     var progress by remember(song.path) { mutableStateOf(AudioSpectrumAnalysisProgress(0f, -120f, -120f)) }
@@ -94,7 +95,7 @@ fun AudioSpectrumAnalysisScreen(
         }.onSuccess { analysis ->
             screenState = SpectrumScreenState.Ready(analysis)
         }.onFailure { error ->
-            screenState = SpectrumScreenState.Failed(error.message ?: "Unknown analysis error")
+            screenState = SpectrumScreenState.Failed(error.message ?: unknownAnalysisError)
         }
     }
 
@@ -443,8 +444,8 @@ private fun StereoVolumeMeters(
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        HorizontalVolumeMeter(label = "L", db = leftDb)
-        HorizontalVolumeMeter(label = "R", db = rightDb)
+        HorizontalVolumeMeter(label = stringResource(R.string.audio_spectrum_left_short), db = leftDb)
+        HorizontalVolumeMeter(label = stringResource(R.string.audio_spectrum_right_short), db = rightDb)
     }
 }
 

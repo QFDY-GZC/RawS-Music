@@ -14,8 +14,12 @@ object LyricOverrideStore {
         rootDirectory = root
     }
 
-    fun write(song: AudioFile, content: String): File {
-        val target = fileFor(song) ?: error("The private lyric override store is unavailable")
+    fun write(
+        song: AudioFile,
+        content: String,
+        suffix: String = ".raws.ttml",
+    ): File {
+        val target = fileFor(song, suffix) ?: error("The private lyric override store is unavailable")
         target.parentFile?.mkdirs()
         val temporary = File(target.parentFile, target.name + ".tmp-${System.nanoTime()}")
         temporary.writeText(content, Charsets.UTF_8)
@@ -35,27 +39,35 @@ object LyricOverrideStore {
         val root = rootDirectory ?: return emptyList()
         val base = pathHash(song.path)
         return buildList {
+            val formats = listOf(".raws.ttml", ".raws.enhanced.lrc", ".raws.lrc")
             if (song.cueTrackIndex > 0 || song.cueOffsetMs > 0L) {
-                add(File(root, "$base.track${song.cueTrackIndex}.raws.ttml"))
+                formats.forEach { suffix ->
+                    add(File(root, "$base.track${song.cueTrackIndex}$suffix"))
+                }
             }
-            add(File(root, "$base.raws.ttml"))
+            formats.forEach { suffix -> add(File(root, "$base$suffix")) }
         }
     }
 
     fun filesFor(songPath: String): List<File> {
         val root = rootDirectory ?: return emptyList()
-        return listOf(File(root, "${pathHash(songPath)}.raws.ttml"))
+        val base = pathHash(songPath)
+        return listOf(
+            File(root, "$base.raws.ttml"),
+            File(root, "$base.raws.enhanced.lrc"),
+            File(root, "$base.raws.lrc"),
+        )
     }
 
-    private fun fileFor(song: AudioFile): File? {
+    private fun fileFor(song: AudioFile, suffix: String): File? {
         val root = rootDirectory ?: return null
         val base = pathHash(song.path)
-        val suffix = if (song.cueTrackIndex > 0 || song.cueOffsetMs > 0L) {
-            ".track${song.cueTrackIndex}.raws.ttml"
+        val trackSuffix = if (song.cueTrackIndex > 0 || song.cueOffsetMs > 0L) {
+            ".track${song.cueTrackIndex}$suffix"
         } else {
-            ".raws.ttml"
+            suffix
         }
-        return File(root, base + suffix)
+        return File(root, base + trackSuffix)
     }
 
     private fun pathHash(path: String): String {

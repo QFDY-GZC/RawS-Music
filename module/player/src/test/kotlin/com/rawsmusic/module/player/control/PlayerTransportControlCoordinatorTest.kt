@@ -23,6 +23,15 @@ class PlayerTransportControlCoordinatorTest {
     }
 
     @Test
+    fun manualSwitchReceivesLiveLatestRequestGuard() {
+        val harness = Harness()
+
+        harness.coordinator.play(harness.manual)
+
+        assertEquals(listOf(true, false), harness.manualLatestChecks)
+    }
+
+    @Test
     fun pauseKeepsUsbWarmButPublishesSystemPauseImmediately() {
         val harness = Harness()
         harness.backendState = PlayerTransportControlCoordinator.BackendState.PLAYING
@@ -81,6 +90,8 @@ class PlayerTransportControlCoordinatorTest {
         var stopCount = 0
         val primedTitles = mutableListOf<String>()
         val backendCalls = mutableListOf<String>()
+        val manualLatestChecks = mutableListOf<Boolean>()
+        private val latestToken = AtomicLong(0L)
 
         private val eventSink = object : PlayerTransportEventQueue {
             override fun submitPlay(
@@ -108,7 +119,7 @@ class PlayerTransportControlCoordinatorTest {
         val coordinator = PlayerTransportControlCoordinator(
             eventQueue = eventSink,
             transportMutex = Mutex(),
-            latestPlayRequestToken = AtomicLong(0L),
+            latestPlayRequestToken = latestToken,
             callbacks = PlayerTransportControlCoordinator.Callbacks(
                 isReleased = { false },
                 clearAutomaticFocusResume = {},
@@ -118,7 +129,12 @@ class PlayerTransportControlCoordinatorTest {
                 },
                 primeSongSelectionForUi = { primedTitles += it.title },
                 shouldRouteExplicitPlayThroughManualSwitch = { it.path == "manual" },
-                playManualSwitchFromStartLocked = { song, _, _, reason ->
+                playManualSwitchFromStartLocked = { song, _, _, reason, isStillLatest ->
+                    manualLatestChecks += isStillLatest()
+                    if (song.path == "manual") {
+                        latestToken.incrementAndGet()
+                        manualLatestChecks += isStillLatest()
+                    }
                     backendCalls += "manual:$reason:${song.path}"
                 },
                 playInternal = { song, _, _ -> backendCalls += "play:${song.path}" },

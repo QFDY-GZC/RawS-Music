@@ -104,8 +104,14 @@ class LyricoSearchActivity : BaseSettingsActivity() {
                 song = song,
                 onBack = ::finish,
                 requestCoverWriteAccess = ::requestCoverWriteAccess,
-                onApplied = {
-                    setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_SONG_PATH, song.path))
+                onApplied = { lyricsChanged, artworkChanged ->
+                    setResult(
+                        Activity.RESULT_OK,
+                        Intent()
+                            .putExtra(EXTRA_SONG_PATH, song.path)
+                            .putExtra(EXTRA_CHANGED_LYRICS, lyricsChanged)
+                            .putExtra(EXTRA_CHANGED_ARTWORK, artworkChanged)
+                    )
                     finish()
                 }
             )
@@ -166,6 +172,8 @@ class LyricoSearchActivity : BaseSettingsActivity() {
     companion object {
         const val EXTRA_SONG = "lyrico_song"
         const val EXTRA_SONG_PATH = "lyrico_song_path"
+        const val EXTRA_CHANGED_LYRICS = "lyrico_changed_lyrics"
+        const val EXTRA_CHANGED_ARTWORK = "lyrico_changed_artwork"
     }
 }
 
@@ -174,7 +182,7 @@ private fun LyricoSearchScreen(
     song: AudioFile,
     onBack: () -> Unit,
     requestCoverWriteAccess: suspend (AudioFile) -> Boolean,
-    onApplied: () -> Unit
+    onApplied: (lyricsChanged: Boolean, artworkChanged: Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -206,7 +214,34 @@ private fun LyricoSearchScreen(
         scope.launch {
             searching = true
             status = context.getString(R.string.lyrico_search_searching)
-            results = withContext(Dispatchers.IO) { engine.search(song, query.trim()) }
+            results = withContext(Dispatchers.IO) {
+                val songResults = engine.search(song, query.trim())
+                val directSources = store.listInstalled()
+                    .asSequence()
+                    .filter { it.enabled }
+                    .filter { plugin ->
+                        !engine.sourceSupports(plugin.manifest.id, "searchSongs") &&
+                            (engine.sourceSupports(plugin.manifest.id, "getLyrics") ||
+                                engine.sourceSupports(plugin.manifest.id, "searchCovers"))
+                    }
+                    .map { plugin ->
+                        LyricoSongCandidate(
+                            pluginId = plugin.manifest.id,
+                            pluginName = plugin.manifest.name.ifBlank { plugin.manifest.id },
+                            id = "local:${song.id}",
+                            title = song.title,
+                            artist = song.artist,
+                            album = song.album,
+                            durationMs = song.duration,
+                            coverUrl = "",
+                            supportsCoverSearch = engine.sourceSupports(plugin.manifest.id, "searchCovers"),
+                            fields = emptyMap(),
+                            internal = emptyMap()
+                        )
+                    }
+                    .toList()
+                songResults + directSources
+            }
             status = if (results.isEmpty()) {
                 context.getString(R.string.lyrico_search_empty)
             } else {
@@ -220,6 +255,11 @@ private fun LyricoSearchScreen(
         availableSources = withContext(Dispatchers.IO) {
             store.listInstalled()
                 .filter { it.enabled }
+                .filter { plugin ->
+                    engine.sourceSupports(plugin.manifest.id, "searchSongs") ||
+                        engine.sourceSupports(plugin.manifest.id, "getLyrics") ||
+                        engine.sourceSupports(plugin.manifest.id, "searchCovers")
+                }
                 .map { plugin ->
                     LyricoSourceFilter(
                         id = plugin.manifest.id,
@@ -344,6 +384,8 @@ private fun LyricoSearchScreen(
             scope.launch {
                 val failures = mutableListOf<String>()
                 var appliedParts = 0
+                var lyricsApplied = false
+                var artworkApplied = false
 
                 if (shouldWriteLyrics && loadedLyrics != null) {
                     val prepared = engine.prepareLyrics(
@@ -356,6 +398,7 @@ private fun LyricoSearchScreen(
                         runCatching { engine.writeOverride(song, prepared) }
                     }.onSuccess {
                         appliedParts++
+                        lyricsApplied = true
                     }.onFailure { error ->
                         failures += context.getString(
                             R.string.lyrico_search_lyrics_failed,
@@ -375,6 +418,7 @@ private fun LyricoSearchScreen(
                             }
                         }.onSuccess {
                             appliedParts++
+                            artworkApplied = true
                         }.onFailure { error ->
                             failures += context.getString(
                                 R.string.lyrico_search_cover_failed,
@@ -396,7 +440,7 @@ private fun LyricoSearchScreen(
                     }
                     Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                     previewCandidate = null
-                    onApplied()
+                    onApplied(lyricsApplied, artworkApplied)
                 } else {
                     Toast.makeText(
                         context,

@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-0.9.01--beta1-4c8bf5?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.9.86--beta-4c8bf5?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Android-3ddc84?style=flat-square)
 ![MinSDK](https://img.shields.io/badge/minSdk-23-ff9800?style=flat-square)
 ![Stack](https://img.shields.io/badge/stack-Kotlin%20%2B%20C%2B%2B-7b61ff?style=flat-square)

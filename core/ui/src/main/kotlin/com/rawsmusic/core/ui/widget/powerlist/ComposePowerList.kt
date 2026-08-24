@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapShader
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Rect as AndroidRect
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.util.Log
@@ -22,7 +23,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.ui.composed
+import androidx.compose.foundation.gestures.FlingBehavior
 import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.ScrollScope
+import androidx.compose.foundation.gestures.ScrollableDefaults
 import androidx.compose.foundation.gestures.rememberScrollableState
 import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Box
@@ -41,12 +45,10 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -64,6 +66,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -91,10 +94,10 @@ import com.rawsmusic.core.ui.widget.bitmaps.SizeSlotCache
 import com.rawsmusic.core.ui.widget.player.copySongInfoToClipboard
 import com.rawsmusic.module.data.prefs.FontManager
 import com.rawsmusic.core.ui.widget.text.LongTextMotionState
-import coil.compose.AsyncImagePainter
-import coil.compose.rememberAsyncImagePainter
+import com.rawsmusic.core.ui.widget.text.resolveNativeTextVerticalLayout
 import java.util.concurrent.atomic.AtomicLong
 import coil.request.ImageRequest
+import coil.request.SuccessResult
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Ok
@@ -128,8 +131,9 @@ fun ComposePowerList(
     contentTopPadding: Dp = 0.dp,
     persistentHeaderHeight: Dp = 0.dp,
     persistentHeaderVisibilityHeight: Dp = persistentHeaderHeight,
+    persistentHeaderSceneItemVisibilityHeight: Dp = persistentHeaderVisibilityHeight,
     persistentHeaderSceneItemId: String = "",
-    persistentHeaderContent: @Composable (visible: Boolean) -> Unit = {},
+    persistentHeaderContent: @Composable (headerVisible: Boolean, sceneItemVisible: Boolean) -> Unit = { _, _ -> },
     contentBottomPadding: Dp = 200.dp,
     sectionHeaders: List<PowerListSectionHeader> = emptyList(),
     sectionHeaderHeight: Dp = 54.dp,
@@ -140,6 +144,7 @@ fun ComposePowerList(
     onPlayingCoverBoundsChanged: (RectF?) -> Unit = {},
     onPlayingCoverTargetChanged: (CoverTransitionTarget?) -> Unit = {},
     onRevealCoverTargetResolved: (CoverTransitionTarget?) -> Unit = {},
+    onScrollActiveChanged: (Boolean) -> Unit = {},
     onSongClick: (AudioFile, Int) -> Unit = { _, _ -> },
     onSongLongClick: (AudioFile, Int) -> Unit = { _, _ -> }
 ) {
@@ -189,15 +194,53 @@ fun ComposePowerList(
         }
 
         val heightPx = with(density) { maxHeight.roundToPx() }
-        val bottomPaddingPx = with(density) { contentBottomPadding.roundToPx() }
+        val requestedBottomPaddingPx = with(density) { contentBottomPadding.roundToPx() }
+        // This list is often already constrained above the bottom chrome. Only reserve the part
+        // that actually overlaps this viewport; using the screen-level chrome height here would
+        // count that space twice and leave a large blank runway below compact rows.
+        val bottomPaddingPx = if (
+            state.currentMode == ComposePowerListDisplayMode.LIST_SMALL && !state.isTransitioning
+        ) {
+            val breathingRoomPx = with(density) { 8.dp.roundToPx() }
+            val chromeTopInRootPx = bottomChromeScrollState
+                ?.topInRootPx
+                ?.takeIf { it > 0f }
+            val actualOverlapPx = if (chromeTopInRootPx != null) {
+                ((listRootBounds?.bottom ?: chromeTopInRootPx) - chromeTopInRootPx)
+                    .coerceAtLeast(0f)
+                    .roundToInt()
+            } else {
+                0
+            }
+            minOf(
+                requestedBottomPaddingPx,
+                actualOverlapPx + breathingRoomPx,
+            )
+        } else {
+            requestedBottomPaddingPx
+        }
         val staticTopPaddingPx = with(density) { contentTopPadding.roundToPx() }
         val persistentHeaderHeightPx = with(density) { persistentHeaderHeight.roundToPx() }
         val persistentHeaderVisibilityHeightPx = with(density) {
             persistentHeaderVisibilityHeight.roundToPx()
         }
+        val persistentHeaderSceneItemVisibilityHeightPx = with(density) {
+            persistentHeaderSceneItemVisibilityHeight.roundToPx()
+        }
         val contentTopPaddingPx = staticTopPaddingPx + persistentHeaderHeightPx
+        // The exact Reference theme value behind maxStretchOvershoot is skin-dependent. Keep Raw's
+        // physical cap bounded to the persistent hero instead of allowing an unbounded parent
+        // translation: 28..64dp, normally ~12% of the hero height.
+        val underfilledDetailStretchLimitPx = (persistentHeaderHeightPx * 0.12f).coerceIn(
+            with(density) { 28.dp.toPx() },
+            with(density) { 64.dp.toPx() },
+        )
+        // Reference PowerListSharedMoveItemTransitionBase uses -layoutHeight/2 as the vertical
+        // MoveUp target. Keep the small Raw gesture capture range above, but map its resisted
+        // progress onto the same half-layout extent so the attached header+body lift is visible.
+        val underfilledDetailMoveUpExtentPx = heightPx * 0.5f
         val sectionHeaderHeightPx = with(density) { sectionHeaderHeight.roundToPx() }
-        val maxScrollY = maxScrollForContent(
+        val naturalMaxScrollY = maxScrollForContent(
             itemCount = songs.size,
             metrics = metrics,
             viewportHeightPx = heightPx,
@@ -205,7 +248,11 @@ fun ComposePowerList(
             topPaddingPx = contentTopPaddingPx,
             sectionHeaders = sectionHeaders,
             sectionHeaderHeightPx = sectionHeaderHeightPx
-        ).toFloat()
+        )
+        // Reference keeps the category header inside the PowerList layout owner. Do not invent a
+        // hero-height scroll runway when the detail body is under-filled: real scroll stops when real
+        // content is exhausted, then the local boundary owner handles any continued drag.
+        val maxScrollY = maxScrollForPersistentHeaderContent(naturalMaxScrollY).toFloat()
         val geometry = remember(metrics, bottomPaddingPx, contentTopPaddingPx, songs.size, sectionHeaders, sectionHeaderHeightPx) {
             listGeometryFor(
                 metrics = metrics,
@@ -335,19 +382,130 @@ fun ComposePowerList(
             }
             updateSettledBaseScroll(state.viewportScrollY.toInt())
         }
+        val underfilledPersistentHeaderLane = usesUnderfilledPersistentHeaderLane(
+            naturalMaxScrollPx = naturalMaxScrollY,
+            persistentHeaderHeightPx = persistentHeaderHeightPx,
+            itemCount = songs.size,
+        )
         val scrollableState = rememberScrollableState { delta ->
             if (state.isTransitioning || state.isPinching || state.isBoundaryElasticActive) {
                 delta
             } else {
                 val old = state.viewportScrollY
+                // Reversing away from an edge immediately returns geometry ownership to real scroll.
+                if (state.isVerticalBoundaryStretchActive && (
+                        (old <= 0.5f && delta < 0f) ||
+                            (old >= maxScrollY - 0.5f && delta > 0f)
+                        )
+                ) {
+                    state.clearVerticalBoundaryStretch()
+                }
                 val newValue = (old - delta).coerceIn(0f, maxScrollY)
                 if (newValue != old) {
                     bottomChromeScrollState?.onContentScroll(newValue - old)
                 }
                 state.viewportScrollY = newValue
                 updateSettledBaseScroll(newValue.toInt())
-                old - newValue
+
+                if (underfilledPersistentHeaderLane) {
+                    // Geometry consumes only the distance to the real endpoint. The remainder is
+                    // a separate boundary presentation owner. At the under-filled bottom edge it
+                    // becomes Reference-like resisted MoveUp holder motion; logical scroll stays put.
+                    val geometryConsumed = old - newValue
+                    val edgeRemainder = delta - geometryConsumed
+                    val elasticConsumed = state.consumeVerticalBoundaryRemainder(
+                        remainderPx = edgeRemainder,
+                        maxPullPx = underfilledDetailStretchLimitPx,
+                        moveUpExtentPx = underfilledDetailMoveUpExtentPx,
+                    )
+                    geometryConsumed + elasticConsumed
+                } else {
+                    consumedScrollDeltaWithTerminalPersistentHeader(
+                        deltaPx = delta,
+                        oldScrollPx = old,
+                        newScrollPx = newValue,
+                        maxScrollPx = maxScrollY,
+                        persistentHeaderHeightPx = persistentHeaderHeightPx,
+                        itemCount = songs.size,
+                        columns = metrics.columns,
+                    )
+                }
             }
+        }
+        val defaultFlingBehavior = ScrollableDefaults.flingBehavior()
+        val powerListFlingBehavior = remember(
+            defaultFlingBehavior,
+            maxScrollY,
+            persistentHeaderHeightPx,
+            songs.size,
+            metrics.columns,
+            underfilledPersistentHeaderLane,
+            underfilledDetailStretchLimitPx,
+            underfilledDetailMoveUpExtentPx,
+        ) {
+            object : FlingBehavior {
+                override suspend fun ScrollScope.performFling(initialVelocity: Float): Float {
+                    if (underfilledPersistentHeaderLane && state.isVerticalBoundaryStretchActive) {
+                        state.animateVerticalBoundaryBack(
+                            maxPullPx = underfilledDetailStretchLimitPx,
+                            moveUpExtentPx = underfilledDetailMoveUpExtentPx,
+                        )
+                        return 0f
+                    }
+                    val scrollScope = this
+                    val remainingVelocity = with(defaultFlingBehavior) {
+                        scrollScope.performFling(initialVelocity)
+                    }
+                    if (underfilledPersistentHeaderLane && state.isVerticalBoundaryStretchActive) {
+                        // A fling can reach the real short-content edge after performFling() starts.
+                        // Keep that residual velocity inside the same local edge owner and settle it
+                        // with the recovered Reference r1 return law instead of handing it to a parent.
+                        state.animateVerticalBoundaryBack(
+                            maxPullPx = underfilledDetailStretchLimitPx,
+                            moveUpExtentPx = underfilledDetailMoveUpExtentPx,
+                        )
+                        return 0f
+                    }
+                    return if (
+                        shouldConsumeTerminalPersistentHeaderFling(
+                            initialVelocityPxPerSecond = initialVelocity,
+                            currentScrollPx = state.viewportScrollY,
+                            maxScrollPx = maxScrollY,
+                            persistentHeaderHeightPx = persistentHeaderHeightPx,
+                            itemCount = songs.size,
+                            columns = metrics.columns,
+                        )
+                    ) {
+                        // Reference corrects an under-filled terminal layout inside the list engine
+                        // before the residual gesture reaches an outer/stretch owner. Returning no
+                        // velocity here is the Compose equivalent: the one-row anchor stays put
+                        // instead of springing down after the user's upward swipe.
+                        0f
+                    } else {
+                        remainingVelocity
+                    }
+                }
+            }
+        }
+
+        val currentScrollActiveChanged by rememberUpdatedState(onScrollActiveChanged)
+        LaunchedEffect(
+            scrollableState.isScrollInProgress,
+            state.isTransitioning,
+            state.isPinching,
+            state.isBoundaryElasticActive,
+            state.isVerticalBoundaryStretchActive
+        ) {
+            currentScrollActiveChanged(
+                scrollableState.isScrollInProgress ||
+                    state.isTransitioning ||
+                    state.isPinching ||
+                    state.isBoundaryElasticActive ||
+                    state.isVerticalBoundaryStretchActive
+            )
+        }
+        DisposableEffect(Unit) {
+            onDispose { currentScrollActiveChanged(false) }
         }
         // Temporary diagnostics only. This observes frame gaps while scrolling/transitioning;
         // it does not drive layout, animation, or artwork state.
@@ -379,9 +537,16 @@ fun ComposePowerList(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .graphicsLayer {
+                    translationY = state.verticalBoundaryTranslationY
+                    scaleY = state.verticalBoundaryScaleY
+                    transformOrigin = TransformOrigin(0.5f, state.verticalBoundaryOriginY)
+                    clip = true
+                }
                 .scrollable(
                     orientation = Orientation.Vertical,
-                    state = scrollableState
+                    state = scrollableState,
+                    flingBehavior = powerListFlingBehavior,
                 )
         ) {
             if (state.isTransitioning) {
@@ -416,24 +581,47 @@ fun ComposePowerList(
                 val pendingSettledScroll = pendingTransitionScroll.value?.let {
                     if (state.currentMode == it.targetMode) it.target else it.source
                 }
-                val settledBaseScrollY = if (pendingSettledScroll != null) {
-                    val raw = pendingSettledScroll.coerceIn(0, maxScrollY.roundToInt())
-                    (raw / scrollBucketHeight) * scrollBucketHeight
-                } else {
-                    settledBaseScrollYState.value
+                // Under-filled collection details are tiny enough to bypass the row-banded retained
+                // scroll optimization. Keep header and rows on the same exact viewport offset so the
+                // whole attached layout reaches its real content edge together before the boundary
+                // owner takes over. This covers a few list rows as well as one dense-grid row.
+                val exactShortPersistentHeaderLane = usesExactPersistentHeaderScrollLane(
+                    persistentHeaderHeightPx = persistentHeaderHeightPx,
+                    itemCount = songs.size,
+                    naturalMaxScrollPx = naturalMaxScrollY,
+                )
+                val settledBaseScrollY = when {
+                    pendingSettledScroll != null -> {
+                        val raw = pendingSettledScroll.coerceIn(0, maxScrollY.roundToInt())
+                        if (exactShortPersistentHeaderLane) raw
+                        else (raw / scrollBucketHeight) * scrollBucketHeight
+                    }
+                    exactShortPersistentHeaderLane ->
+                        state.viewportScrollY.roundToInt().coerceIn(0, maxScrollY.roundToInt())
+                    else -> settledBaseScrollYState.value
                 }
                 ComposePowerListSettledContent(
                     songs = songs,
                     state = state,
                     metrics = metrics,
                     scrollYPx = settledBaseScrollY,
+                    scrollRemainderProvider = {
+                        when {
+                            exactShortPersistentHeaderLane -> 0
+                            pendingSettledScroll != null ->
+                                pendingSettledScroll.coerceIn(0, maxScrollY.roundToInt()) - settledBaseScrollY
+                            else -> settledScrollOffsetPx.intValue
+                        }
+                    },
                     viewportHeightPx = heightPx,
                     playingSongId = playingSongId,
                     currentPlayingIndex = currentPlayingIndex,
                     selectedPositions = selectedPositions,
                     hidePlayingCover = hidePlayingCover,
                     boundaryScale = state.boundaryElasticScale,
-                    interactionActive = scrollableState.isScrollInProgress || state.isPinching || state.isBoundaryElasticActive,
+                    exactPixelScrollLane = exactShortPersistentHeaderLane,
+                    interactionActive = scrollableState.isScrollInProgress || state.isPinching ||
+                        state.isBoundaryElasticActive || state.isVerticalBoundaryStretchActive,
                     topPaddingPx = contentTopPaddingPx,
                     sectionHeaders = sectionHeaders,
                     sectionHeaderHeightPx = sectionHeaderHeightPx,
@@ -446,17 +634,6 @@ fun ComposePowerList(
                     onSongLongClick = onSongLongClick,
                     modifier = Modifier
                         .fillMaxSize()
-                        .offset {
-                            // Keep the child tree in stable content coordinates. A row-boundary
-                            // update must not reset the inner layer and then apply the remainder
-                            // in a second layout pass, otherwise visible covers flash for one frame.
-                            val offset = if (pendingSettledScroll != null) {
-                                pendingSettledScroll.coerceIn(0, maxScrollY.roundToInt())
-                            } else {
-                                settledBaseScrollY + settledScrollOffsetPx.intValue
-                            }
-                            androidx.compose.ui.unit.IntOffset(0, -offset)
-                        }
                 )
             }
 
@@ -470,6 +647,7 @@ fun ComposePowerList(
                     staticTopPaddingPx = staticTopPaddingPx,
                     persistentHeaderHeight = persistentHeaderHeight,
                     persistentHeaderVisibilityHeightPx = persistentHeaderVisibilityHeightPx,
+                    persistentHeaderSceneItemVisibilityHeightPx = persistentHeaderSceneItemVisibilityHeightPx,
                     widthPx = widthPx,
                     heightPx = heightPx,
                     sharedCoverSceneId = sharedCoverSceneId,
@@ -492,11 +670,12 @@ private fun ComposePowerListPersistentHeader(
     staticTopPaddingPx: Int,
     persistentHeaderHeight: Dp,
     persistentHeaderVisibilityHeightPx: Int,
+    persistentHeaderSceneItemVisibilityHeightPx: Int,
     widthPx: Int,
     heightPx: Int,
     sharedCoverSceneId: String,
     persistentHeaderSceneItemId: String,
-    persistentHeaderContent: @Composable (visible: Boolean) -> Unit
+    persistentHeaderContent: @Composable (headerVisible: Boolean, sceneItemVisible: Boolean) -> Unit
 ) {
     val density = LocalDensity.current
     val pending = pendingTransitionScroll.value
@@ -516,6 +695,8 @@ private fun ComposePowerListPersistentHeader(
     val headerTopPx = staticTopPaddingPx - headerScrollYPx
     val headerVisible = headerTopPx < heightPx &&
         headerTopPx + persistentHeaderVisibilityHeightPx > 0
+    val sceneItemVisible = headerTopPx < heightPx &&
+        headerTopPx + persistentHeaderSceneItemVisibilityHeightPx > 0
 
     Box(
         modifier = Modifier
@@ -531,10 +712,10 @@ private fun ComposePowerListPersistentHeader(
             }
             .powerListSceneTransitionItem(
                 sceneId = sharedCoverSceneId,
-                itemId = persistentHeaderSceneItemId.takeIf { headerVisible }.orEmpty()
+                itemId = persistentHeaderSceneItemId.takeIf { sceneItemVisible }.orEmpty()
             )
     ) {
-        persistentHeaderContent(headerVisible)
+        persistentHeaderContent(headerVisible, sceneItemVisible)
     }
 }
 
@@ -545,12 +726,14 @@ private fun ComposePowerListSettledContent(
     state: ComposePowerListState,
     metrics: ComposePowerListMetrics,
     scrollYPx: Int,
+    scrollRemainderProvider: () -> Int,
     viewportHeightPx: Int,
     playingSongId: Long,
     currentPlayingIndex: Int,
     selectedPositions: Set<Int>,
     hidePlayingCover: Boolean,
     boundaryScale: Float,
+    exactPixelScrollLane: Boolean,
     interactionActive: Boolean,
     topPaddingPx: Int,
     sectionHeaders: List<PowerListSectionHeader>,
@@ -571,12 +754,14 @@ private fun ComposePowerListSettledContent(
         params = state.currentParams,
         metrics = metrics,
         scrollYPx = scrollYPx,
+        scrollRemainderProvider = scrollRemainderProvider,
         viewportHeightPx = viewportHeightPx,
         playingSongId = playingSongId,
         currentPlayingIndex = currentPlayingIndex,
         selectedPositions = selectedPositions,
         hidePlayingCover = hidePlayingCover,
         boundaryScale = boundaryScale,
+        exactPixelScrollLane = exactPixelScrollLane,
         interactionActive = interactionActive,
         topPaddingPx = topPaddingPx,
         sectionHeaders = sectionHeaders,
@@ -601,12 +786,14 @@ private fun ComposePowerListViewportLayer(
     params: ListZoomParams,
     metrics: ComposePowerListMetrics,
     scrollYPx: Int,
+    scrollRemainderProvider: () -> Int,
     viewportHeightPx: Int,
     playingSongId: Long,
     currentPlayingIndex: Int,
     selectedPositions: Set<Int>,
     hidePlayingCover: Boolean,
     boundaryScale: Float,
+    exactPixelScrollLane: Boolean,
     interactionActive: Boolean,
     topPaddingPx: Int,
     sectionHeaders: List<PowerListSectionHeader>,
@@ -635,8 +822,18 @@ private fun ComposePowerListViewportLayer(
     // exact scrollY into every item makes every Canvas/text/click target recompute on every touch
     // frame, which is the main source of the dense-grid hitch.
     val rowStridePx = geometry.rowStridePx.coerceAtLeast(1)
-    val layoutScrollRow = scrollYPx.coerceAtLeast(0) / rowStridePx
-    val layoutScrollYPx = layoutScrollRow * rowStridePx
+    val safeScrollYPx = scrollYPx.coerceAtLeast(0)
+    // The retained large-list path deliberately buckets holder layout by whole rows and applies the
+    // fractional remainder once at the viewport layer. Under-filled persistent-header details are
+    // different: there are only a few holders, and the Reference MoveUp path keeps the header and
+    // attached body items in one continuously updated layout. Do not silently re-bucket the body
+    // here after ComposePowerList selected its exact lane; doing so leaves the hero moving while
+    // the lone/few body items appear pinned until a whole-row boundary is crossed.
+    val layoutScrollYPx = persistentHeaderBodyLayoutScrollYPx(
+        scrollYPx = safeScrollYPx,
+        rowStridePx = rowStridePx,
+        exactPixelLane = exactPixelScrollLane,
+    )
     // Project-style album-art binding is split in two:
     // 1) renderRange keeps every actually visible item composed so covers never blink out at
     //    the bottom edge during a drag;
@@ -646,7 +843,7 @@ private fun ComposePowerListViewportLayer(
         songs.size,
         mode,
         geometry,
-        layoutScrollRow,
+        layoutScrollYPx,
         viewportHeightPx
     ) {
         visibleRangeForScroll(
@@ -718,25 +915,29 @@ private fun ComposePowerListViewportLayer(
     Box(
         // The parent modifier owns the exact scroll offset. Keeping this subtree in world
         // coordinates means a row-window change cannot race a fractional translation update.
-        modifier = modifier
+        modifier = modifier.graphicsLayer {
+            // Apply partial-row motion once at the retained viewport layer instead of
+            // recalculating every visible holder on each pointer frame.
+            translationY = -scrollRemainderProvider().toFloat()
+        }
     ) {
         ComposePowerListSectionHeaders(
             headers = sectionHeaders,
             geometry = geometry,
-            scrollYPx = 0,
+            scrollYPx = layoutScrollYPx,
             viewportHeightPx = viewportHeightPx,
             boundaryScale = boundaryScale,
             content = sectionHeaderContent
         )
         if (range.isEmpty()) return@Box
-        val positionByIndex = remember(range, geometry, mode) {
+        val positionByIndex = remember(range, geometry, mode, layoutScrollYPx) {
             HashMap<Int, ComposeItemPosition>(range.last - range.first + 1).apply {
                 for (itemIndex in range.first..range.last) {
                     val itemPosition = positionFor(
                         index = itemIndex,
                         geometry = geometry,
                         mode = mode,
-                        scrollYPx = 0
+                        scrollYPx = layoutScrollYPx
                     )
                     if (!itemPosition.isEmpty()) put(itemIndex, itemPosition)
                 }
@@ -824,6 +1025,7 @@ private fun ComposePowerListViewportLayer(
                     hideCover = hideCover,
                     interactionActive = interactionActive,
                     artworkPriority = artworkPriority,
+                    marqueeVisible = index in rawRenderRange,
                     sharedCoverSceneId = sharedCoverSceneId,
                     sharedCoverElementId = sharedCoverElementId,
                     onCoverBoundsChanged = coverBoundsChanged,
@@ -1067,6 +1269,7 @@ private fun ComposePowerListTransitionItem(
     hideCover: Boolean = false,
     interactionActive: Boolean = false,
     artworkPriority: BitmapRequest.Priority = BitmapRequest.Priority.LOADING_LIST,
+    marqueeVisible: Boolean = true,
     sharedCoverSceneId: String = "",
     sharedCoverElementId: String = "",
     onCoverBoundsChanged: (RectF?) -> Unit,
@@ -1111,10 +1314,24 @@ private fun ComposePowerListTransitionItem(
                 Modifier
             }
         )
-        .graphicsLayer { alpha = position.alpha.coerceIn(0f, 1f) }
+        .then(
+            if (position.alpha < 0.999f) {
+                Modifier.graphicsLayer { alpha = position.alpha.coerceIn(0f, 1f) }
+            } else {
+                Modifier
+            }
+        )
 
     key(compositionSlot) {
-        Box(modifier = itemModifier.graphicsLayer { alpha = contentAlpha.coerceIn(0f, 1f) }) {
+        Box(
+            modifier = itemModifier.then(
+                if (contentAlpha < 0.999f) {
+                    Modifier.graphicsLayer { alpha = contentAlpha.coerceIn(0f, 1f) }
+                } else {
+                    Modifier
+                }
+            )
+        ) {
             ComposePowerListDrawnItem(
                 song = song,
                 index = index,
@@ -1129,6 +1346,7 @@ private fun ComposePowerListTransitionItem(
                 hideCover = hideCover,
                 interactionActive = interactionActive,
                 artworkPriority = artworkPriority,
+                marqueeVisible = marqueeVisible,
                 sharedCoverSceneId = sharedCoverSceneId,
                 sharedCoverElementId = sharedCoverElementId,
                 onCoverBoundsChanged = onCoverBoundsChanged,
@@ -1157,6 +1375,7 @@ private fun ComposePowerListInterpolatedItem(
     isSelected: Boolean,
     selectionActive: Boolean = false,
     boundaryScale: Float = 1f,
+    marqueeVisible: Boolean = true,
     onCoverBoundsChanged: (RectF?) -> Unit,
     onCoverTargetChanged: (CoverTransitionTarget?) -> Unit,
     onClick: (CoverTransitionTarget?) -> Unit,
@@ -1226,6 +1445,7 @@ private fun ComposePowerListOneSlotItem(
     isSelected: Boolean,
     selectionActive: Boolean = false,
     boundaryScale: Float = 1f,
+    marqueeVisible: Boolean = true,
     onCoverBoundsChanged: (RectF?) -> Unit,
     onCoverTargetChanged: (CoverTransitionTarget?) -> Unit,
     onClick: (CoverTransitionTarget?) -> Unit,
@@ -1279,6 +1499,7 @@ private fun ComposePowerListOneSlotItem(
                 isSelected = isSelected,
                 selectionActive = selectionActive,
                 boundaryScale = boundaryScale,
+                marqueeVisible = marqueeVisible,
                 onCoverBoundsChanged = onCoverBoundsChanged,
                 onCoverTargetChanged = onCoverTargetChanged,
                 onClick = onClick,
@@ -1305,6 +1526,7 @@ private fun ComposePowerListDrawnItem(
     hideCover: Boolean = false,
     interactionActive: Boolean = false,
     artworkPriority: BitmapRequest.Priority = BitmapRequest.Priority.LOADING_LIST,
+    marqueeVisible: Boolean = true,
     sharedCoverSceneId: String = "",
     sharedCoverElementId: String = "",
     onCoverBoundsChanged: (RectF?) -> Unit,
@@ -1414,6 +1636,7 @@ private fun ComposePowerListDrawnItem(
     val metaColor = colors.meta
     val configuredTypeface = FontManager.typeface
     val animateListText = LongTextMotionState.enabled && LongTextMotionState.enabledEverywhere
+    val listMarqueeVisible = LongTextMotionState.LocalListMarqueeVisibility.current
     val titleText = rememberPowerListPreparedText(
         text = title,
         rect = rects.title,
@@ -1439,18 +1662,24 @@ private fun ComposePowerListDrawnItem(
         animate = animateListText,
         configuredTypeface = configuredTypeface
     )
-    val listMarqueeEnabled = animateListText && !interactionActive
-    var marqueeElapsedMs by remember(title, subtitle, meta) { mutableLongStateOf(0L) }
-    LaunchedEffect(listMarqueeEnabled, title, subtitle, meta) {
-        marqueeElapsedMs = 0L
-        if (!listMarqueeEnabled) return@LaunchedEffect
-        var startNanos = 0L
-        while (true) {
-            withFrameNanos { frameNanos ->
-                if (startNanos == 0L) startNanos = frameNanos
-                marqueeElapsedMs = (frameNanos - startNanos) / 1_000_000L
-            }
+    val hasMarqueeOverflow = titleText.overflowPx > 0.5f ||
+        subtitleText.overflowPx > 0.5f ||
+        metaText.overflowPx > 0.5f
+    val listMarqueeEnabled =
+        animateListText && listMarqueeVisible && marqueeVisible &&
+            hasMarqueeOverflow
+    DisposableEffect(listMarqueeEnabled) {
+        if (listMarqueeEnabled) LongTextMotionState.acquireMarquee()
+        onDispose {
+            if (listMarqueeEnabled) LongTextMotionState.releaseMarquee()
         }
+    }
+    // Do not subscribe every visible row to the frame clock. A row only needs the phase when
+    // its own text can actually move; this keeps a covered list out of the per-frame snapshot.
+    val marqueeElapsedMs = if (listMarqueeEnabled) {
+        LongTextMotionState.marqueeElapsedMs
+    } else {
+        0L
     }
 
     // The bounds are only read when this physical holder is clicked. Keeping them in a stable
@@ -1539,10 +1768,10 @@ private fun ComposePowerListDrawnItem(
                 // shader over it. This keeps source content separate from its transition overlay.
                 // AAImageView, with its normal 200 ms artwork transition.
                 val fade = artworkState.fadeProgress.coerceIn(0f, 1f)
-                if (drawableShader == null && previousShader == null) {
+                if (!useCoilArtwork && drawableShader == null && previousShader == null) {
                     powerListPaint.color = colors.secondary.copy(alpha = 0.085f).toArgb()
                     canvas.drawRoundRect(coverLeft, coverTop, coverRight, coverBottom, radius, radius, powerListPaint)
-                } else {
+                } else if (!useCoilArtwork) {
                     fun drawArtworkLayer(shader: BitmapShader, bitmap: Bitmap, alpha: Int) {
                         powerListBitmapMatrix.reset()
                         configureCenterCropMatrix(
@@ -1742,11 +1971,12 @@ private fun PowerListCoilCover(
     // A physical PowerList holder survives row movement. Keep its requested decode tier stable
     // while scrolling/pinching; otherwise a zoom frame changes the Coil model, clears the
     // painter for one frame, and then fades the same cover back in.
-    val stableDecodeSide = remember(coverKey) { mutableIntStateOf(decodeSide) }
-    val previousDecodeSide = remember(coverKey) { mutableIntStateOf(decodeSide) }
+    // Keep decode state with the physical holder, not with the song identity. A PowerList slot is
+    // intentionally rebound as rows move; keying these states by coverKey clears the retained
+    // frame exactly when Coil enters Loading for the new song.
+    val stableDecodeSide = remember { mutableIntStateOf(decodeSide) }
     LaunchedEffect(coverKey, decodeSide, freezeDuringInteraction) {
         if (!freezeDuringInteraction && stableDecodeSide.intValue != decodeSide) {
-            previousDecodeSide.intValue = stableDecodeSide.intValue
             stableDecodeSide.intValue = decodeSide
         }
     }
@@ -1761,34 +1991,15 @@ private fun PowerListCoilCover(
             defaultArtworkEnabled = DefaultAlbumArtworkPolicy.enabled
         )
     }
-    val previousMemoryCacheKey = remember(
-        coverKey,
-        activeDecodeSide,
-        previousDecodeSide.intValue,
-        defaultArtworkEnabled
-    ) {
-        previousDecodeSide.intValue
-            .takeIf { it > 0 && it != activeDecodeSide }
-            ?.let { side ->
-            PowerListCoilArtworkModel(
-                coverKey = coverKey,
-                targetSide = side,
-                modeLabel = "LIST_STABLE",
-                defaultArtworkEnabled = defaultArtworkEnabled
-            ).cacheKey
-        }
-    }
-    val retainedRequest = remember(context, model, previousMemoryCacheKey) {
+    // The physical holder already owns the previous bitmap below. Do not put a previous-song
+    // cache key into the active request: changing it on every slot rebind restarts Coil even when
+    // the current artwork key is unchanged. Reference keeps this fallback at holder level too.
+    val retainedRequest = remember(context, model) {
         ImageRequest.Builder(context)
             .data(model)
             .size(model.side, model.side)
             .memoryCacheKey(model.cacheKey)
             .diskCacheKey(model.cacheKey)
-            .apply {
-                if (!previousMemoryCacheKey.isNullOrBlank()) {
-                    placeholderMemoryCacheKey(previousMemoryCacheKey)
-                }
-            }
             .allowHardware(true)
             .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
             .diskCachePolicy(coil.request.CachePolicy.ENABLED)
@@ -1798,10 +2009,6 @@ private fun PowerListCoilCover(
             .crossfade(0)
             .build()
     }
-    val painter = rememberAsyncImagePainter(
-        model = retainedRequest,
-        imageLoader = imageLoader
-    )
     // The settled and transition renderers are separate compositions. Seed every new holder from
     // the already-decoded source tier synchronously, so entering or leaving pinch never exposes
     // Coil's transient Empty/Loading state, including for non-interpolated items.
@@ -1816,20 +2023,45 @@ private fun PowerListCoilCover(
                 height = activeDecodeSide
             )
     }
-    val lastAcceptedBitmap = remember(coverKey) { mutableStateOf(cachedBitmap) }
-    val painterState = painter.state
-    val currentBitmap = (painterState as? AsyncImagePainter.State.Success)
-        ?.result
-        ?.drawable
-        ?.let { it as? android.graphics.drawable.BitmapDrawable }
-        ?.bitmap
-        ?.takeIf { !it.isRecycled }
-    LaunchedEffect(painterState) {
-        if (currentBitmap != null && !currentBitmap.isRecycled) {
-            lastAcceptedBitmap.value = currentBitmap
+    // This is a holder-level last frame. It must survive a coverKey change so the row does not
+    // flash empty while the new request is decoding. The request identity check below prevents an
+    // old Success state from being accepted as the new song's artwork.
+    val lastAcceptedBitmap = remember { mutableStateOf<Bitmap?>(null) }
+    val lastAcceptedKey = remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(coverKey, cachedBitmap) {
+        val bitmap = cachedBitmap?.takeIf { !it.isRecycled } ?: return@LaunchedEffect
+        lastAcceptedBitmap.value = bitmap
+        lastAcceptedKey.value = coverKey
+    }
+    // Do not subscribe each holder to AsyncImagePainter.state. During a fling that state emits
+    // Empty/Loading/Success/Error transitions and adds a second composition tree to the Canvas
+    // renderer. Execute the same Coil request once per holder binding instead; only an accepted
+    // bitmap (or a completed failure) updates the holder state.
+    val loadedBitmap = remember { mutableStateOf<Bitmap?>(null) }
+    val loadedKey = remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(retainedRequest, coverKey) {
+        val result = imageLoader.execute(retainedRequest) as? SuccessResult
+        val bitmap = (result?.drawable as? android.graphics.drawable.BitmapDrawable)
+            ?.bitmap
+            ?.takeIf { !it.isRecycled }
+        if (bitmap != null) {
+            loadedBitmap.value = bitmap
+            loadedKey.value = coverKey
+            lastAcceptedBitmap.value = bitmap
+            lastAcceptedKey.value = coverKey
+        } else if (lastAcceptedKey.value != coverKey) {
+            // A cancelled effect leaves the previous frame intact. Only a completed failed
+            // request may retire it for the newly bound song.
+            loadedBitmap.value = null
+            loadedKey.value = coverKey
+            lastAcceptedBitmap.value = null
+            lastAcceptedKey.value = coverKey
         }
     }
-    val retainedSlotBitmap = lastAcceptedBitmap.value?.takeIf { !it.isRecycled }
+    val currentBitmap = loadedBitmap.value
+        ?.takeIf { loadedKey.value == coverKey && !it.isRecycled }
+    val retainedSlotBitmap = (lastAcceptedBitmap.value ?: cachedBitmap)
+        ?.takeIf { !it.isRecycled }
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(radiusDp.dp))
@@ -2412,9 +2644,9 @@ private fun shouldHideSharedCover(
     val registry = LocalSharedCoverRegistry.current
     val spec = LocalSharedTransitionSpec.current
     if (!spec.active || !spec.shouldTrackScene(sceneId)) return false
-    return registry.hasPair(
-        fromSceneId = spec.fromSceneId,
-        toSceneId = spec.toSceneId,
+    return registry.isPreparedElement(
+        transitionKey = spec.transitionKey,
+        sceneId = sceneId,
         elementId = elementId
     )
 }
@@ -2431,26 +2663,42 @@ private fun Modifier.trackSharedCoverSlot(
     return composed {
         val registry = LocalSharedCoverRegistry.current
         val spec = LocalSharedTransitionSpec.current
+        val hostView = LocalView.current
         val shouldTrack = spec.shouldTrackScene(sceneId)
+        val registrationOwner = remember(sceneId, elementId) { Any() }
 
-        DisposableEffect(sceneId, elementId, shouldTrack) {
-            if (!shouldTrack) registry.unregister(sceneId, elementId)
+        DisposableEffect(sceneId, elementId, shouldTrack, registrationOwner) {
+            if (!shouldTrack) registry.unregister(sceneId, elementId, registrationOwner)
             onDispose {
-                registry.unregister(sceneId, elementId)
+                registry.unregister(sceneId, elementId, registrationOwner)
             }
         }
 
-        val lastSnapshot = remember { arrayOfNulls<SharedCoverSnapshot>(1) }
+        // A physical Compose slot can be reused for another list item. Scope the cached
+        // measurement to the logical holder so an equal-sized replacement is still registered.
+        val lastSnapshot = remember(sceneId, elementId) {
+            arrayOfNulls<SharedCoverSnapshot>(1)
+        }
         onGloballyPositioned { coordinates ->
             if (!shouldTrack) return@onGloballyPositioned
             val pos = coordinates.positionInWindow()
+            val left = pos.x + cover.left
+            val right = left + cover.width
+            // Retained scenes are kept measured two viewports to the side. Their layout is
+            // useful for warm-up, but those translated coordinates must never become a shared
+            // element endpoint. PowerList only promotes a holder from the active viewport.
+            if (right <= 0f || left >= hostView.width.toFloat()) {
+                registry.unregister(sceneId, elementId, registrationOwner)
+                lastSnapshot[0] = null
+                return@onGloballyPositioned
+            }
             val snapshot = SharedCoverSnapshot(
                 sceneId = sceneId,
                 elementId = elementId,
                 boundsInWindow = Rect(
-                    left = pos.x + cover.left,
+                    left = left,
                     top = pos.y + cover.top,
-                    right = pos.x + cover.left + cover.width,
+                    right = right,
                     bottom = pos.y + cover.top + cover.height
                 ),
                 coverKey = coverKey,
@@ -2463,7 +2711,12 @@ private fun Modifier.trackSharedCoverSlot(
                 !rectNearlyEquals(previous.boundsInWindow, snapshot.boundsInWindow)
             ) {
                 lastSnapshot[0] = snapshot
-                registry.register(sceneId = sceneId, elementId = elementId, snapshot = snapshot)
+                registry.register(
+                    sceneId = sceneId,
+                    elementId = elementId,
+                    owner = registrationOwner,
+                    snapshot = snapshot
+                )
             }
         }
     }
@@ -2542,17 +2795,35 @@ private fun drawPowerListText(
             TextUtils.TruncateAt.END
         )
     }
+    val displayString = display.toString()
     val fontMetrics = powerListTextPaint.fontMetrics
-    val baseline = rect.top + (rect.height - fontMetrics.ascent - fontMetrics.descent) * 0.5f
+    val textInkBounds = AndroidRect().also { bounds ->
+        if (displayString.isNotEmpty()) {
+            powerListTextPaint.getTextBounds(displayString, 0, displayString.length, bounds)
+        }
+    }
+    val verticalLayout = resolveNativeTextVerticalLayout(
+        containerTop = rect.top.toFloat(),
+        containerBottom = rect.top + rect.height.toFloat(),
+        canvasTop = 0f,
+        canvasBottom = canvas.height.toFloat(),
+        ascent = fontMetrics.ascent,
+        descent = fontMetrics.descent,
+        fontTop = fontMetrics.top,
+        fontBottom = fontMetrics.bottom,
+        inkTop = textInkBounds.top.toFloat(),
+        inkBottom = textInkBounds.bottom.toFloat(),
+    )
+    val baseline = verticalLayout.baseline
     canvas.save()
     canvas.clipRect(
         rect.left.toFloat() + leftInsetPx,
-        rect.top.toFloat(),
+        verticalLayout.clipTop,
         rect.left + rect.width.toFloat(),
-        rect.top + rect.height.toFloat()
+        verticalLayout.clipBottom
     )
     canvas.drawText(
-        display.toString(),
+        displayString,
         rect.left.toFloat() + leftInsetPx - horizontalOffsetPx,
         baseline,
         powerListTextPaint
@@ -2571,24 +2842,12 @@ private fun PreparedPowerListText.marqueeOffset(
     speedPxPerSecond: Float,
     enabled: Boolean
 ): Float {
-    if (!enabled || overflowPx <= 10f || speedPxPerSecond <= 0f) return 0f
-    val travelMs = (overflowPx / speedPxPerSecond * 1_000f).toLong().coerceAtLeast(1_000L)
-    val initialDelay = 1_500L
-    val endpointDelay = 3_000L
-    val cycle = initialDelay + travelMs + endpointDelay + travelMs + endpointDelay
-    val phase = elapsedMs % cycle
-    return when {
-        phase < initialDelay -> 0f
-        phase < initialDelay + travelMs -> {
-            overflowPx * ((phase - initialDelay).toFloat() / travelMs)
-        }
-        phase < initialDelay + travelMs + endpointDelay -> overflowPx
-        phase < initialDelay + travelMs + endpointDelay + travelMs -> {
-            val returning = phase - initialDelay - travelMs - endpointDelay
-            overflowPx * (1f - returning.toFloat() / travelMs)
-        }
-        else -> 0f
-    }
+    return LongTextMotionState.marqueeOffset(
+        elapsedMs = elapsedMs,
+        overflowPx = overflowPx,
+        speedPxPerSecond = speedPxPerSecond,
+        enabled = enabled
+    )
 }
 
 @Composable
@@ -2622,7 +2881,9 @@ private fun rememberPowerListPreparedText(
         val availableWidth = (rect.width.toFloat() - leftInsetPx).coerceAtLeast(1f)
         val measuredWidth = paint.measureText(text)
         PreparedPowerListText(
-            display = if (animate && measuredWidth - availableWidth > 10f) {
+            display = if (animate) {
+                // When list marquee is enabled, never pre-ellipsize settled rows. The old
+                // 10 px dead-zone left small overflows as a permanent ellipsis with no motion.
                 text
             } else {
                 TextUtils.ellipsize(
@@ -3149,11 +3410,11 @@ private fun powerListMaxRenderItems(
     val safeStride = rowStridePx.coerceAtLeast(1)
     val visibleRows = ((viewportHeightPx.coerceAtLeast(1) + safeStride - 1) / safeStride)
         .coerceAtLeast(1)
-    // Keep one row ahead of the viewport. This is the same small prefetch window used by the
-    // reference FastLayout: fractional scrolling moves the existing children, while only a row
-    // crossing the boundary needs a new holder. The cap is intentionally row-aligned so a dense
-    // grid never creates a partially rendered edge row.
-    val bufferedRows = (visibleRows + 1).coerceAtMost(12)
+    // Keep one row ahead of the entire measured viewport. Compact rows can exceed 12 visible
+    // rows on tall screens after the top chrome scrolls away; capping by row count truncated the
+    // holder window and exposed a large blank area above the MiniPlayer. The global item cap still
+    // bounds allocation for dense grids without clipping any legitimately visible row.
+    val bufferedRows = visibleRows + 1
     return (bufferedRows * safeColumns).coerceIn(safeColumns, POWER_LIST_MAX_RENDER_ITEMS)
 }
 
@@ -3242,7 +3503,12 @@ private fun ComposePowerListSectionHeaders(
         key("power-list-header-${header.stableKey}") {
             Box(
                 modifier = Modifier
-                    .offset { androidx.compose.ui.unit.IntOffset(rawBounds.left, top) }
+                    .offset {
+                        androidx.compose.ui.unit.IntOffset(
+                            rawBounds.left,
+                            top
+                        )
+                    }
                     .requiredSize(
                         width = with(density) { rawBounds.width.toDp() },
                         height = with(density) { rawBounds.height.toDp() }

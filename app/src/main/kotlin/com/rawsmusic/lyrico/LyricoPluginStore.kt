@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.annotation.Keep
 import com.google.gson.Gson
+import com.google.gson.JsonElement
 import com.rawsmusic.lyrico.runtime.HostApiRegistry
 import com.rawsmusic.lyrico.runtime.QuickJsHostApi
 import com.rawsmusic.lyrico.runtime.QuickJsRuntime
@@ -24,7 +25,21 @@ data class LyricoPluginManifest(
     val entry: String = "source.js",
     val includeDirs: List<String>? = emptyList(),
     val icon: String? = null,
-    val capabilities: Set<String>? = emptySet()
+    val capabilities: Set<String>? = emptySet(),
+    val configFields: List<LyricoPluginConfigField> = emptyList()
+)
+
+@Keep
+data class LyricoPluginConfigField(
+    val key: String = "",
+    val title: String = "",
+    val summary: String = "",
+    val group: String = "",
+    val type: String = "text",
+    val required: Boolean = false,
+    val defaultValue: Any? = null,
+    val options: List<String> = emptyList(),
+    val dependency: JsonElement? = null
 )
 
 data class InstalledLyricoPlugin(
@@ -270,12 +285,13 @@ class LyricoPluginStore private constructor(private val context: Context) {
             "Unsupported plugin API ${manifest.apiVersion}; supported versions are " +
                 "${HostApiRegistry.SUPPORTED_PLUGIN_API_VERSIONS}"
         }
-        require(manifest.minHostApiVersion <= HostApiRegistry.HOST_API_VERSION) {
+        require(manifest.minHostApiVersion in 1..HostApiRegistry.HOST_API_VERSION) {
             "Plugin requires a newer host API"
         }
-        val capabilities = manifest.capabilities.orEmpty()
-        require(capabilities.isEmpty() || "searchSongs" in capabilities) {
-            "A source plugin must support searchSongs"
+        val capabilities = manifest.capabilities.orEmpty().ifEmpty { setOf("searchSongs") }
+        val supportedCapabilities = setOf("searchSongs", "getLyrics", "searchCovers")
+        require(capabilities.any { it in supportedCapabilities }) {
+            "Plugin must declare searchSongs, getLyrics, or searchCovers"
         }
         val entry = safeChild(directory, manifest.entry)
         require(entry.isFile && entry.extension.equals("js", ignoreCase = true)) {

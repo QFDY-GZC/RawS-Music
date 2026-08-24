@@ -17,7 +17,7 @@
     <string name="settings_lyrico_import_plugin">Import source plugin</string>
     <string name="settings_lyrico_import_plugin_summary">Select a Lyrico plugin ZIP; files are validated before installation</string>
     <string name="settings_lyrico_no_plugins">No source plugins</string>
-    <string name="settings_lyrico_no_plugins_summary">Import a Lyrico API v3 source plugin to search online lyrics</string>
+    <string name="settings_lyrico_no_plugins_summary">Import a Lyrico API v4 source plugin to search online lyrics (v1-v3 are also supported)</string>
     <string name="settings_lyrico_plugin_label">%1$s · %2$s</string>
     <string name="settings_lyrico_plugin_imported">Imported %1$s</string>
     <string name="settings_lyrico_plugins_imported">Imported %1$d lyric sources</string>
@@ -145,12 +145,14 @@
     <string name="transition_manual_summary">Choose how previous, next, and tapped tracks switch while music is playing.</string>
     <string name="transition_manual_none_title">No fade</string>
     <string name="transition_manual_none_desc">Switch tracks immediately. Use this for the lowest latency or strict bit-perfect tests.</string>
-    <string name="transition_manual_short_title">Short cross fade-out</string>
-    <string name="transition_manual_short_desc">Fade the current track down first, then start the next track with a short fade-in.</string>
+    <string name="transition_manual_short_title">Short crossfade</string>
+    <string name="transition_manual_short_desc">Briefly overlap the current and next tracks; incompatible formats automatically fall back to sequential fade-out/fade-in.</string>
     <string name="transition_manual_crossfade_title">Crossfade</string>
     <string name="transition_manual_crossfade_desc">Overlap the current and next track when their decoded output format is compatible.</string>
-    <string name="transition_manual_duration_title">Manual transition length</string>
-    <string name="transition_manual_duration_desc">Used by short manual fade-out and manual crossfade. Default is 400 ms.</string>
+    <string name="transition_manual_short_duration_title">Short crossfade length</string>
+    <string name="transition_manual_short_duration_desc">Short manual overlap. Default is 400 ms; range is 10–1000 ms.</string>
+    <string name="transition_manual_full_duration_title">Crossfade length</string>
+    <string name="transition_manual_full_duration_desc">Full manual crossfade. Default is 5000 ms; range is 100–15000 ms.</string>
     <string name="transition_transport_title">Play, pause, and stop</string>
     <string name="transition_transport_summary">Smooth the start and end of user playback actions.</string>
     <string name="transition_transport_enable_title">Enable transport fade</string>
@@ -333,6 +335,7 @@
     <string name="settings_lyricon_enable">Enable Lyricon push</string>
     <string name="settings_lyricon_show_translation">Show translation</string>
     <string name="settings_lyricon_show_roma">Show romanization</string>
+    <string name="settings_lyricon_original_color_compat">Use “Normal color” for original line (disables Lyricon word highlighting)</string>
     <string name="settings_lyric_font_entry_title">Lyric font</string>
     <string name="settings_lyric_font_entry_desc">Font, weight, scale, and display style</string>
     <string name="settings_status_bar_flyme_desc">Push lyrics through the Flyme system status bar</string>
@@ -365,7 +368,7 @@
     <string name="settings_webdav_auth_mode">Authentication</string>
     <string name="settings_not_configured">Not configured</string>
     <string name="settings_auto">Auto</string>
-    <string name="settings_audio_hires_summary">Hi-Res output · 16–32(8.24) bit · 44.1–384 kHz</string>
+    <string name="settings_audio_hires_summary">Hi-Res output · 16–32(8.24) bit · 44.1–768 kHz</string>
     <string name="settings_audio_sample_rate">Sample rate</string>
     <string name="settings_audio_bit_depth">Bit depth</string>
     <string name="settings_audio_internal_precision_section">Internal processing</string>
@@ -399,7 +402,7 @@
     <string name="settings_audio_dither_high_shibata_desc">Most aggressive ultrasonic shaping; use only with a suitable DAC.</string>
     <string name="settings_audio_playback_options">Playback options</string>
     <string name="settings_audio_focus_title">Audio focus</string>
-    <string name="settings_audio_focus_summary">Calls, temporary interruptions, ducking, and automatic playback recovery</string>
+    <string name="settings_audio_focus_summary">Calls, temporary interruptions, ducking, and automatic recovery for normal Android output; USB exclusive keeps its existing focus policy</string>
     <string name="settings_audio_focus_resume_section">Playback recovery</string>
     <string name="settings_audio_focus_changes_section">Focus changes</string>
     <string name="settings_audio_focus_resume_after_call">Resume after a call ends</string>
@@ -459,7 +462,7 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_audio_output_unavailable">%1$s is currently unavailable</string>
     <string name="settings_audio_engine_opensl_hint">OpenSL ES · 16 bit · 44.1–96 kHz</string>
     <string name="settings_audio_engine_aaudio_hint">AAudio · 16–32 bit · 44.1–384 kHz</string>
-    <string name="settings_audio_engine_direct_hint">Hi-Res output · 16–32(8.24) bit · 44.1–384 kHz</string>
+    <string name="settings_audio_engine_direct_hint">Hi-Res output · 16–32(8.24) bit · 44.1–768 kHz</string>
     <string name="settings_info_icon">ⓘ</string>
     <string name="settings_lyric_import_font_file">Import font file +</string>
     <string name="settings_delete">Delete</string>
@@ -508,8 +511,8 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_peq_export_desc">The preset has been generated. Copy the JSON below:</string>
     <string name="settings_peq_export_summary">Contains %1$d filters, Preamp: %2$.1f dB</string>
     <string name="settings_peq_default_preset_name">PEQ preset_%1$d</string>
-    <string name="settings_peq_import_desc">Paste PEQ preset JSON:</string>
-    <string name="settings_peq_error_empty_json">Enter preset JSON first</string>
+    <string name="settings_peq_import_desc">Paste RawSMusic JSON or AutoEq ParametricEQ / GraphicEQ text</string>
+    <string name="settings_peq_error_empty_json">Enter preset text first</string>
     <string name="settings_peq_error_invalid_preset">Invalid preset format</string>
     <string name="settings_peq_error_no_filters">The preset contains no filters</string>
     <string name="settings_peq_error_parse_failed">Parse failed: %1$s</string>
@@ -546,6 +549,7 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_speaker_output_enable">Speaker output</string>
     <string name="settings_speaker_output_unavailable">The playback DSP controller is not connected yet.</string>
     <string name="settings_speaker_output_mode">Effect mode</string>
+    <string name="settings_speaker_output_mode_summary">Choose the speaker output character.</string>
     <string name="settings_speaker_output_mode_elasticity">Elasticity</string>
     <string name="settings_speaker_output_mode_elasticity_summary">Sharper low/mid attacks, brief body collection and a quick rebound.</string>
     <string name="settings_speaker_output_mode_powerful">Powerful</string>
@@ -705,7 +709,13 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="usb_dac_title">USB DAC</string>
     <string name="usb_dac_not_connected">No USB DAC connected</string>
     <string name="usb_dac_output_mode">Output mode</string>
+    <string name="usb_dac_output_mode_summary">Choose the USB PCM output policy.</string>
     <string name="usb_dac_bit_perfect">Bit-perfect</string>
+    <string name="usb_dac_bit_perfect_when_possible">Bit-perfect when possible</string>
+    <string name="usb_dac_bit_perfect_when_possible_short">Conditional bit-perfect</string>
+    <string name="usb_dac_bit_perfect_when_possible_desc">Use bit-perfect output when the current track exactly matches a device format; otherwise keep USB exclusive playback and allow required resampling or format adaptation.</string>
+    <string name="usb_dac_bit_perfect_strict">Strict bit-perfect</string>
+    <string name="usb_dac_bit_perfect_strict_desc">Require an exact source-format path. If the device cannot represent the current track exactly, playback is refused instead of silently resampling.</string>
     <string name="usb_dac_general_output">General output</string>
     <string name="usb_dac_bit_perfect_desc">Keep the source format and bypass resampling and software processing.</string>
     <string name="usb_dac_general_output_desc">Allow resampling, volume control, and format adaptation.</string>
@@ -718,6 +728,7 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="usb_dac_bit_depth_desc">Choose the output bit depth according to DAC capability.</string>
     <string name="usb_dac_volume_short">VOL</string>
     <string name="usb_dac_volume_mode">Volume mode</string>
+    <string name="usb_dac_volume_mode_summary">Choose the USB volume-control path.</string>
     <string name="usb_dac_device_chain">Device chain</string>
     <string name="usb_dac_outputting">Outputting</string>
     <string name="usb_dac_connected">Connected</string>
@@ -754,6 +765,17 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="usb_dac_exclusive_pending_desc">Exclusive output requested; waiting for device initialization or playback cutover.</string>
     <string name="usb_dac_exclusive_waiting_note">If the switch stays on without activation, check USB permission and the USB DAC log.</string>
     <string name="usb_dac_current_output_sample_rate">Current output sample rate</string>
+    <string name="usb_dac_independent_transport_title">USB DAC exclusive transport</string>
+    <string name="usb_dac_android_output_unchanged">Android output: %1$s · Kept when USB exclusive is turned off</string>
+    <string name="usb_dac_exclusive_active_short">Active</string>
+    <string name="usb_dac_exclusive_pending_short">Starting</string>
+    <string name="usb_dac_exclusive_off_short">Off</string>
+    <string name="usb_dac_exclusive_independent_active_desc">USB exclusive transport is active. The selected Android output protocol is kept unchanged and will be used again when exclusive mode exits.</string>
+    <string name="usb_dac_exclusive_independent_pending_desc">USB exclusive transport is being prepared. The selected Android output protocol is not changed.</string>
+    <string name="usb_dac_buffer_explanation">Buffer describes how much playable audio is already queued in the native USB ring. More buffer tolerates short scheduling jitter better, while excessive buffer increases pause, seek, and track-change latency.\n\nCurrent value: %1$s</string>
+    <string name="usb_dac_stability_explanation">Stability describes whether host-to-DAC delivery is keeping a steady cadence. It considers completed throughput, callback rhythm, underruns, and transfer/submit errors. A value near 100%% means transport timing is steady.\n\nCurrent value: %1$s</string>
+    <string name="usb_dac_health_explanation">Health is an overall USB-link status score covering device connection, exclusive ownership, real output activity, buffer level, errors, and recovery state. A lower value means the detailed device chain should be checked.\n\nCurrent value: %1$s</string>
+    <string name="usb_dac_metric_explanation_fallback">This item describes the current USB DAC transport state.\n\nCurrent value: %1$s</string>
     <string name="usb_dac_buffer">Buffer</string>
     <string name="usb_dac_stability">Stability</string>
     <string name="usb_dac_health">Health</string>
@@ -813,6 +835,16 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_predictive_back_summary">Preview the destination while swiping back</string>
     <string name="settings_performance_mode_title">Performance mode</string>
     <string name="settings_performance_mode_summary">Disable liquid-glass refraction and use Gaussian blur to reduce GPU load.</string>
+    <string name="settings_top_chrome_style_title">Top menu style</string>
+    <string name="settings_top_chrome_style_summary">Choose how the top controls are rendered above collection lists.</string>
+    <string name="settings_top_chrome_style_haze">Gradient blur</string>
+    <string name="settings_top_chrome_style_haze_summary">Use the current liquid-glass sampling and gradient blur.</string>
+    <string name="settings_top_chrome_style_transparent">Transparent layer</string>
+    <string name="settings_top_chrome_style_transparent_summary">Keep the top controls and interactions without a gradient or blur; the list remains visible underneath.</string>
+    <string name="settings_top_chrome_style_floating">Floating icons</string>
+    <string name="settings_top_chrome_style_floating_summary">Hide the top action bar and keep stable collection actions above the player bar.</string>
+    <string name="settings_top_chrome_style_floating_vertical">Vertical floating icons</string>
+    <string name="settings_top_chrome_style_floating_vertical_summary">Stack the collection actions vertically on the right and anchor them to the player bar.</string>
     <string name="playlist_import">Import playlist</string>
     <string name="playlist_create">New playlist</string>
     <string name="playlist_song_count">%1$d songs</string>
@@ -848,18 +880,35 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="scan_complete_no_changes">Scan complete: no changes, %1$d tracks total, %2$.1f s</string>
     <string name="scan_complete_summary">Scan complete: %1$d added, %2$d updated, %3$d removed; %4$d unchanged, %5$d total, %6$.1f s</string>
     <string name="update_dialog_title">RawS Music v%1$s</string>
-    <string name="update_dialog_time">Updated: August 9, 2026</string>
+    <string name="update_dialog_time">Updated: August 24, 2026</string>
     <string name="update_developer_message_title">A word from the developer</string>
     <string name="update_join_qq_group">点击链接加入群聊【RawS Music交流群】：https://qm.qq.com/q/bOvqTQPABi</string>
     <string name="update_close">Close</string>
     <string-array name="update_notes">
-        <item>V0.9.80 beta</item>
-        <item>Fixed some lyric formats causing lyrics to advance too early.</item>
-        <item>Fixed several issues in USB exclusive mode.</item>
-        <item>Fixed screen jitter when swiping right from the right half of the lyrics page, including the same gesture issue in blank areas of the player page.</item>
-        <item>Added a swipe-up animation for entering the player. It currently supports the standard player; immersive mode support will follow.</item>
-        <item>Added automatic crossfade.</item>
-        <item>Added the standard bottom bar style.</item>
+        <item>V0.9.86 beta</item>
+        <item>Improved album-art presentation.</item>
+        <item>Fixed lyric-format parsing issues.</item>
+        <item>Fixed layout issues in immersive mode.</item>
+        <item>Fixed several issues with OpenSL ES output.</item>
+        <item>Fixed stuttering when opening the player after a cold start.</item>
+        <item>Fixed the progress bar seeking during the player expansion animation when the gesture started over the timeline.</item>
+        <item>Fixed two lyric lines remaining highlighted after a manual line seek.</item>
+        <item>Fixed empty space appearing above scrolled category-detail and search results.</item>
+        <item>Fixed background noise during DSD playback.</item>
+        <item>Fixed album-art carousel switching.</item>
+        <item>Improved album-art stability during track changes.</item>
+        <item>Refined player-title alignment.</item>
+        <item>Improved track-change handoff and smoothness.</item>
+        <item>Improved audio fade behavior; natural crossfade is managed separately.</item>
+        <item>Added more sorting options.</item>
+        <item>Added ColorOS lock-screen island lyrics. Use the companion module on devices where direct delivery is unavailable.</item>
+        <item>Added AI-powered lyric timing.</item>
+        <item>Added LunaBeat and Halcyon timing-tool entry points.</item>
+        <item>Added a floating list-toolbar style.</item>
+        <item>Added experimental hardware DSP controls for headphones with DSP chips. Device declarations, values, and addresses vary, so support is being expanded from public technical data over time. Initial support covers selected OPPO-family and MOONDROP devices; diagnostic feedback is welcome.</item>
+        <item>Added “Bit-perfect when possible” and clarified the existing option as “Strict bit-perfect.” The former keeps USB exclusive routing and falls back to PCM resampling when the DAC cannot represent the source format. Strict mode refuses playback unless source and DAC capabilities match exactly.</item>
+        <item>Updated support for the latest Lyrico plugin version.</item>
+        <item>Updated lyric-overlay descriptions.</item>
     </string-array>
     <string-array name="update_developer_quotes">
         <item>“永远快乐”这句话，不但渺茫得不能实现，并且荒谬得不能成立。快过的决不会永久；我们说永远快乐，正好像说四方的圆形、静止的动作，同样地自相矛盾。在高兴的时候，我们空对瞬息即逝的时间喊着说：“逗留一会儿吧！你太美了！”那有什么用？你要永久，你该向痛苦里去找。不讲别的，只要一个失眠的晚上，或者有约不来的下午，或者一课沉闷的听讲，这许多比一切宗教信仰更有效力，能使你尝到什么叫做“永生”的滋味。人生的刺就在这里：留恋着不肯快走的，偏是你所不留恋的东西。</item>
@@ -992,6 +1041,7 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_moog_title">Moog four-pole ladder filter</string>
     <string name="settings_moog_summary">Zero-delay-feedback four-stage ladder with resonance and analog drive</string>
     <string name="settings_moog_variant">Filter variant</string>
+    <string name="settings_moog_variant_summary">Choose the filter response type.</string>
     <string name="settings_moog_mode_lp24">Low-pass 24 dB/oct</string>
     <string name="settings_moog_mode_lp12">Low-pass 12 dB/oct</string>
     <string name="settings_moog_mode_hp24">High-pass 24 dB/oct</string>
@@ -1073,12 +1123,19 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_ai_runtime_imported">%1$s %2$s installed</string>
     <string name="settings_ai_runtime_import_failed">Runtime import failed</string>
     <string name="settings_ai_repository_section">Trusted model repository</string>
-    <string name="settings_ai_repository_none">No repository imported</string>
-    <string name="settings_ai_repository_none_summary">Import a local repository descriptor containing the HTTPS index URLs and signing public key. Remote keys are never trusted automatically.</string>
+    <string name="settings_ai_repository_none">Model catalog not loaded</string>
+    <string name="settings_ai_repository_none_summary">The APK contains the signed RawS Music catalog address. The first model download fetches and verifies it automatically; manual import remains available for a custom repository.</string>
     <string name="settings_ai_repository_status">Repository ID: %1$s · %2$d catalog models</string>
     <string name="settings_ai_repository_import">Import repository descriptor</string>
     <string name="settings_ai_repository_import_summary">Choose a locally obtained JSON descriptor containing the repository public key</string>
+    <string name="settings_ai_repository_import_url">Import repository from HTTPS</string>
+    <string name="settings_ai_repository_import_url_title">Import trusted repository URL</string>
+    <string name="settings_ai_repository_import_url_summary">Enter an HTTPS URL for repository.json. The descriptor must contain the signing public key; the catalog is verified locally after import.</string>
+    <string name="settings_ai_repository_import_url_label">Repository URL</string>
+    <string name="settings_ai_repository_import_url_hint">https://example.com/repository.json</string>
+    <string name="settings_ai_repository_import_url_confirm">Import and refresh</string>
     <string name="settings_ai_repository_imported">Trusted repository imported: %1$s</string>
+    <string name="settings_ai_repository_imported_and_refreshed">Trusted repository imported: %1$s. Catalog verified: %2$d models.</string>
     <string name="settings_ai_repository_import_failed">Repository import failed</string>
     <string name="settings_ai_repository_refresh">Refresh signed catalog</string>
     <string name="settings_ai_repository_refresh_summary">Download the index and detached signature, then verify them locally</string>
@@ -1089,7 +1146,7 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_ai_repository_removed">Repository removed</string>
     <string name="settings_ai_models_section">Separation models</string>
     <string name="settings_ai_models_empty">No verified models</string>
-    <string name="settings_ai_models_empty_summary">Import a repository descriptor and refresh its signed catalog first</string>
+    <string name="settings_ai_models_empty_summary">Tap a model download entry to fetch the built-in signed catalog automatically</string>
     <string name="settings_ai_model_summary">%1$s · package %2$s · estimated RAM %3$d MB
 %4$s</string>
     <string name="settings_ai_model_selected">Selected</string>
@@ -1110,6 +1167,86 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_ai_model_import_local_summary">Install a package only when its SHA-256 matches the verified catalog</string>
     <string name="settings_ai_model_imported">Model installed: %1$s</string>
     <string name="settings_ai_model_import_failed">Model package import failed</string>
+    <string name="settings_ai_fast_alignment_section">Fast Vocal Alignment</string>
+    <string name="settings_ai_fast_alignment_empty">No fast vocal activity model found</string>
+    <string name="settings_ai_fast_alignment_empty_summary">The official Spleeter 2-stem FP16 bundle can be downloaded and extracted directly; signed repository models remain available as optional alternatives. Model bytes are not bundled in the APK.</string>
+    <string name="settings_ai_fast_alignment_manage_catalog">Refresh model catalog</string>
+    <string name="settings_ai_fast_alignment_manage_catalog_summary">The first refresh uses the signed RawS Music repository address built into the APK. Download entries appear here after verification.</string>
+    <string name="settings_ai_fast_alignment_summary">%1$s · package %2$s · estimated memory %3$d MB · %4$s
+%5$s</string>
+    <string name="settings_ai_fast_alignment_preferred">Preferred: Spleeter 2-stem FP16</string>
+    <string name="settings_ai_fast_alignment_compatible">Compatible lightweight two-stem model</string>
+    <string name="settings_ai_fast_alignment_selected">Automatically selected for fast lyric alignment</string>
+    <string name="settings_ai_fast_alignment_installed">Installed, pending automatic selection</string>
+    <string name="settings_ai_fast_alignment_not_installed">Not downloaded</string>
+    <string name="settings_ai_fast_alignment_downloading">Downloading fast alignment model in background</string>
+    <string name="settings_ai_fast_alignment_download">Download fast alignment model</string>
+    <string name="settings_ai_fast_alignment_download_summary">Download and verify the package from the signed catalog; only vocal activity is calculated, with no WAV/FLAC output.</string>
+    <string name="settings_ai_fast_alignment_download_one_click">Download fast alignment model</string>
+    <string name="settings_ai_fast_alignment_download_one_click_summary">Refresh the signed catalog and download the preferred lightweight model. The model is not bundled in the APK; the built-in repository address is used automatically.</string>
+    <string name="settings_ai_fast_alignment_download_started">Fast alignment download started: %1$s</string>
+    <string name="settings_ai_fast_alignment_no_downloadable_model">No downloadable fast alignment model was found in the trusted catalog</string>
+    <string name="settings_ai_fast_alignment_direct_title">Spleeter 2-stem FP16</string>
+    <string name="settings_ai_fast_alignment_direct_summary">%1$s · ZIP %2$s · download, SHA-256 verify, and extract automatically. The package contains vocal and accompaniment ONNX models.</string>
+    <string name="settings_ai_fast_alignment_direct_installed">Downloaded and extracted</string>
+    <string name="settings_ai_fast_alignment_direct_not_installed">Not downloaded</string>
+    <string name="settings_ai_fast_alignment_direct_download">Download and extract Spleeter</string>
+    <string name="settings_ai_fast_alignment_direct_download_summary">Uses the RawS Music Release address with resume support and fixed SHA-256 verification.</string>
+    <string name="settings_ai_lyric_alignment_section">Lyric alignment models</string>
+    <string name="settings_ai_lyric_alignment_empty">No lyric alignment model</string>
+    <string name="settings_ai_lyric_alignment_empty_summary">Refresh a trusted repository whose signed catalog declares a CTC alignment model. Model bytes are downloaded only after verification and are not included in the APK.</string>
+    <string name="settings_ai_lyric_alignment_download_one_click">Download lyric alignment model</string>
+    <string name="settings_ai_lyric_alignment_download_one_click_summary">Refresh the signed catalog and download the smallest compatible alignment model. The APK fetches repository.json automatically; model bytes stay outside the APK.</string>
+    <string name="settings_ai_lyric_alignment_download_started">Lyric alignment download started: %1$s</string>
+    <string name="settings_ai_lyric_alignment_no_downloadable_model">No downloadable lyric alignment model was found in the trusted catalog</string>
+    <string name="settings_ai_lyric_alignment_summary">%1$s · model and vocabulary %2$s · estimated RAM %3$d MB
+%4$s</string>
+    <string name="settings_ai_lyric_alignment_selected">Selected for lyric timing</string>
+    <string name="settings_ai_lyric_alignment_installed">Installed</string>
+    <string name="settings_ai_lyric_alignment_not_installed">Not installed</string>
+    <string name="settings_ai_lyric_alignment_downloading">Downloading in background</string>
+    <string name="settings_ai_lyric_alignment_download">Download lyric alignment model</string>
+    <string name="settings_ai_lyric_alignment_download_summary">Download the ONNX model and vocabulary from the signed HTTPS catalog, verify both SHA-256 values, then install atomically.</string>
+    <string name="settings_ai_lyric_alignment_select">Use this lyric alignment model</string>
+    <string name="settings_ai_lyric_alignment_select_summary">Use it for future CTC lyric timing correction. Existing lyrics are unchanged.</string>
+    <string name="settings_ai_lyric_alignment_selected_toast">Lyric alignment model selected</string>
+    <string name="ai_download_prepare_runtime">Preparing inference runtime download</string>
+    <string name="ai_download_prepare_lyric_alignment">Preparing lyric alignment model download</string>
+    <string name="ai_download_prepare_model">Preparing model download</string>
+    <string name="ai_download_running_runtime">Downloading inference runtime</string>
+    <string name="ai_download_running_lyric_alignment">Downloading lyric alignment model</string>
+    <string name="ai_download_running_model">Downloading model</string>
+    <string name="ai_download_verifying_runtime">Verifying inference runtime</string>
+    <string name="ai_download_verifying_lyric_alignment">Verifying lyric alignment model</string>
+    <string name="ai_download_verifying_model">Verifying model package</string>
+    <string name="ai_download_installing_runtime">Installing inference runtime</string>
+    <string name="ai_download_installing_lyric_alignment">Installing lyric alignment model</string>
+    <string name="ai_download_installing_model">Installing model</string>
+    <string name="ai_download_processing_runtime">Processing inference runtime</string>
+    <string name="ai_download_processing_lyric_alignment">Processing lyric alignment model</string>
+    <string name="ai_download_processing_model">Processing model</string>
+    <string name="ai_download_completed_runtime">Inference runtime installed</string>
+    <string name="ai_download_completed_lyric_alignment">Lyric alignment model installed</string>
+    <string name="ai_download_completed_model">Model installed</string>
+    <string name="ai_download_notification_runtime">Inference runtime installed</string>
+    <string name="ai_download_notification_lyric_alignment">Lyric alignment model installed</string>
+    <string name="ai_download_notification_model">AI separation model installed</string>
+    <string name="ai_fast_alignment_bundle_name">Spleeter 2-stem FP16</string>
+    <string name="ai_download_prepare_fast_alignment">Preparing fast alignment bundle download</string>
+    <string name="ai_download_running_fast_alignment">Downloading fast alignment bundle</string>
+    <string name="ai_download_verifying_fast_alignment">Verifying fast alignment bundle</string>
+    <string name="ai_download_installing_fast_alignment">Extracting fast alignment bundle</string>
+    <string name="ai_download_processing_fast_alignment">Processing fast alignment bundle</string>
+    <string name="ai_download_completed_fast_alignment">Fast alignment bundle downloaded and extracted</string>
+    <string name="ai_download_notification_fast_alignment">Fast alignment bundle ready</string>
+    <string name="ai_download_cancelled_fast_alignment">Fast alignment bundle download cancelled</string>
+    <string name="ai_fast_alignment_download_failed">Fast alignment bundle download failed</string>
+    <string name="ai_fast_alignment_install_failed">Fast alignment bundle installation failed</string>
+    <string name="ai_download_cancelled_runtime">Inference runtime download cancelled</string>
+    <string name="ai_download_cancelled_lyric_alignment">Lyric alignment model download cancelled</string>
+    <string name="ai_download_cancelled_model">Model download cancelled</string>
+    <string name="ai_download_preparing">Preparing model</string>
+    <string name="ai_download_channel_name">AI model downloads</string>
     <string name="settings_ai_storage_section">Model storage</string>
     <string name="settings_ai_storage_used">Installed model data: %1$s</string>
     <string name="settings_ai_storage_summary">%1$d installed versions. Temporary downloads are cleaned after successful installation.</string>
@@ -1155,6 +1292,7 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_ai_recommended_section">Recommended model</string>
     <string name="settings_ai_recommended_summary">%1$s · model %2$s · estimated RAM %3$d MB\nPinned SHA-256, exact UVR MDX center-trim pipeline, data-only download</string>
     <string name="settings_ai_recommended_download">Download recommended model</string>
+    <string name="settings_ai_recommended_redownload">Download recommended model again</string>
     <string name="settings_ai_recommended_download_summary">Try GitHub release mirrors first, then Hugging Face; verify the fixed size and SHA-256, warm up the real graph, then select it automatically</string>
     <string name="settings_ai_recommended_import">Import downloaded model</string>
     <string name="settings_ai_recommended_import_summary">Use a UVR_MDXNET_9482.onnx file downloaded on another device; the same fixed size, SHA-256 and ONNX graph checks still apply</string>
@@ -1270,11 +1408,14 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="audio_spectrum_waterfall">Waterfall spectrum</string>
     <string name="audio_spectrum_loading">Analyzing the local audio file</string>
     <string name="audio_spectrum_error">Spectrum analysis failed</string>
+    <string name="audio_spectrum_unknown_error">Unknown analysis error</string>
     <string name="audio_spectrum_peak">Peak</string>
     <string name="audio_spectrum_average_level">Average</string>
     <string name="audio_spectrum_cutoff">Cutoff</string>
     <string name="audio_spectrum_left">L</string>
     <string name="audio_spectrum_right">R</string>
+    <string name="audio_spectrum_left_short">L</string>
+    <string name="audio_spectrum_right_short">R</string>
     <string name="audio_spectrum_dbfs">dBFS</string>
     <string name="playlist_create_failed">无法创建歌单，请稍后重试</string>
     <string name="preset_saved">Preset saved</string>
@@ -1418,6 +1559,9 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="ui_geq_band_count">Bands</string>
     <string name="ui_geq_range">Range</string>
     <string name="ui_geq_gain">Gain</string>
+    <string name="ui_geq_minus_12_db">-12 dB</string>
+    <string name="ui_geq_zero_db">0 dB</string>
+    <string name="ui_geq_plus_12_db">+12 dB</string>
     <string name="ui_geq_frequency">Frequency</string>
     <string name="ui_geq_reset">Reset</string>
     <string name="ui_geq_save_preset">Save preset</string>
@@ -1491,6 +1635,13 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_media_notification_buttons_playback_desktop">Playback mode + desktop lyrics</string>
     <string name="settings_media_notification_buttons_playback_favorite">Playback mode + favorite</string>
     <string name="settings_media_notification_buttons_desktop_favorite">Desktop lyrics + favorite</string>
+    <string name="settings_coloros_bridge_section">ColorOS lock-screen lyrics</string>
+    <string name="settings_coloros_bridge_enabled">Publish ColorOS module lyrics</string>
+    <string name="settings_coloros_bridge_enabled_summary">Publishes standard MediaSession lyricInfo first, and adds the RawS-specific v4 channel when the compatible module is installed. It never impersonates another player.</string>
+    <string name="settings_coloros_bridge_mode">Delivery mode</string>
+    <string name="settings_coloros_bridge_mode_module">Module-level</string>
+    <string name="settings_coloros_bridge_mode_non_module">Non-module</string>
+    <string name="settings_coloros_bridge_mode_summary">Module-level uses the external module v4 channel. Non-module uses standard MediaSession and can optionally hand off to the test compatibility shell.</string>
     <string name="settings_xiaomi_super_island_title">Xiaomi Super Island lyrics</string>
     <string name="settings_xiaomi_super_island_summary">Live lyrics for Xiaomi HyperOS Super Island surfaces</string>
     <string name="settings_xiaomi_super_island_enable">Enable Xiaomi Super Island lyrics</string>
@@ -1593,14 +1744,101 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="song_delete_failed">Deletion failed</string>
     <string name="ai_runtime_download_failed">Runtime download failed</string>
     <string name="ai_model_download_failed">Model download failed</string>
+    <string name="ai_lyric_alignment_download_failed">Lyric alignment model download failed</string>
     <string name="ai_runtime_install_failed">AI runtime installation failed</string>
     <string name="ai_model_install_failed">AI model installation failed</string>
+    <string name="ai_lyric_alignment_install_failed">Lyric alignment model installation failed</string>
     <string name="ai_download_check_source">Check the trusted repository and network connection</string>
     <string name="ai_model_download_title">Downloading AI separation model</string>
     <string name="ai_separation_notification_title">AI separation · %1$s</string>
     <string name="common_cancel">Cancel</string>
+    <string name="ai_lyric_timing_title">AI lyric timing preview</string>
+    <string name="ai_lyric_timing_ctc_action">CTC timing</string>
+    <string name="ai_lyric_timing_loading">Analyzing vocal activity…</string>
+    <string name="ai_lyric_timing_progress">Vocal activity analysis · %1$d%%</string>
+    <string name="ai_lyric_timing_ctc_progress">CTC lyric alignment · %1$d%%</string>
+    <string name="ai_lyric_timing_ctc_analyzing">Decoding the current song and aligning lyrics with CTC</string>
+    <string name="ai_lyric_timing_mode_line">Line (fast vocal activity)</string>
+    <string name="ai_lyric_timing_mode_word">Word (CTC/HSMM)</string>
+    <string name="ai_lyric_timing_detected_format">Current lyric format: %1$s</string>
+    <string name="ai_lyric_timing_format_line">Line</string>
+    <string name="ai_lyric_timing_format_word">Word</string>
+    <string name="ai_lyric_timing_format_ttml">TTML</string>
+    <string name="ai_lyric_timing_output_title">Choose write format</string>
+    <string name="ai_lyric_timing_output_keep">Keep current format</string>
+    <string name="ai_lyric_timing_output_line">Line lyrics</string>
+    <string name="ai_lyric_timing_output_word">Enhanced word lyrics</string>
+    <string name="ai_lyric_timing_output_ttml">TTML lyrics</string>
+    <string name="ai_lyric_timing_changes">%1$d lyric lines can be adjusted</string>
+    <string name="ai_lyric_timing_summary_changed">Full-track audio analysis finished (%1$s): %2$d lyric lines, %3$d timing changes</string>
+    <string name="ai_lyric_timing_summary_unchanged">Full-track audio analysis finished (%1$s): %2$d lyric lines, no safe timing changes</string>
+    <string name="ai_lyric_timing_line_only_for_word_lyrics">Word timestamps detected. Only line boundaries can be applied; existing word timing is preserved.</string>
+    <string name="ai_lyric_timing_applied">Applied timing to %1$d lyric lines</string>
+    <string name="ai_lyric_timing_no_changes">No safe timing changes were found</string>
+    <string name="ai_lyric_timing_no_lyrics">The current song has no parsed lyrics</string>
+    <string name="ai_lyric_timing_no_result">No separation result matches the current song. Select a cached result below to preview only.</string>
+    <string name="ai_lyric_timing_analyzing_source">Analyzing selected result: %1$s</string>
+    <string name="ai_lyric_timing_select_result">Select a cached separation result for preview</string>
+    <string name="ai_lyric_timing_preview_only">Preview only: the selected result is not an exact match, so writeback is disabled.</string>
+    <string name="ai_lyric_timing_unavailable">No cached vocal activity map is available</string>
+    <string name="ai_lyric_timing_reject">Reject</string>
+    <string name="ai_lyric_timing_accept">Accept and write</string>
+    <string name="ai_lyric_timing_confirm">Confirm</string>
+    <string name="ai_lyric_timing_confirmed_no_changes">Analysis confirmed: the original lyric timing was kept</string>
+    <string name="ai_lyric_timing_write_failed">Could not write the lyric timing override</string>
+    <string name="ai_lyric_timing_word_requires_ctc">Enhanced word lyrics require CTC alignment first</string>
+    <string name="ai_lyric_timing_word_incomplete">CTC did not cover every lyric line, so a mixed word/line file was blocked</string>
+    <string name="ai_lyric_timing_content_mismatch">The aligned character sequence does not match the original lyrics. No changes were made.</string>
+    <string name="ai_lyric_timing_word_preview_count">%1$d character timestamps</string>
+    <string name="ai_lyric_timing_word_time_change">%1$s → %2$s</string>
+    <string name="ai_lyric_timing_word_new_time">New %1$s</string>
+    <string name="ai_lyric_timing_word_confidence">Confidence %1$d%%</string>
     <string name="metadata_match_notification_title">RawS Music is matching lyrics and artwork</string>
     <string name="webdav_empty_directory">This folder is empty</string>
     <string name="webdav_load_failed">Failed to load: %1$s</string>
     <string name="webdav_remote_album">WebDAV remote music</string>
+    <string name="settings_custom_background_title">Custom background</string>
+    <string name="settings_custom_background_summary">Use a local image, animated image, or video as the persistent app background.</string>
+    <string name="settings_custom_background_select">Choose image or video</string>
+    <string name="settings_custom_background_replace">Replace background</string>
+    <string name="settings_custom_background_enabled">Use custom background</string>
+    <string name="settings_custom_background_enabled_summary">Shown on the home and library pages when enabled.</string>
+    <string name="settings_custom_background_player">Show on player pages</string>
+    <string name="settings_custom_background_player_summary">Replace the album-derived background on standard and immersive player pages.</string>
+    <string name="settings_custom_background_settings">Show on settings pages</string>
+    <string name="settings_custom_background_settings_summary">Keep the selected media behind all settings pages.</string>
+    <string name="settings_custom_background_clear">Remove custom background</string>
+    <string name="usb_dac_header_route_android">Current output: Android USB Audio · %1$s</string>
+    <string name="usb_dac_header_route_exclusive">Current output: USB exclusive · After exclusive: %1$s</string>
+    <string name="usb_dac_header_route_starting">Enabling USB exclusive · After exclusive: %1$s</string>
+    <string name="usb_dac_capability_max_sample_rate">Max sample rate</string>
+    <string name="usb_dac_capability_max_bit_depth">Max bit depth</string>
+    <string name="usb_dac_capability_max_channels">Max channels</string>
+    <string name="usb_dac_channel_count">%1$d ch</string>
+    <string name="settings_player_title_alignment">Playback title alignment</string>
+    <string name="settings_player_title_alignment_desc">Choose left, center, or right alignment for the title, artist, and album information.</string>
+    <string name="settings_mini_lyric_alignment">Mini lyric alignment</string>
+    <string name="settings_mini_lyric_alignment_desc">Choose left, center, or right alignment for the mini lyrics independently of the title information.</string>
+
+    <string name="hardware_device_control_title">Current device · Hardware DSP</string>
+    <string name="hardware_device_control_summary">Dynamically show controls exposed by the current USB or Bluetooth audio device.</string>
+    <string name="hardware_device_control_keywords">hardware dsp device eq equalizer bluetooth usb dac anc filter</string>
+    <string name="hardware_device_control_no_device">No controllable audio device</string>
+    <string name="hardware_device_control_waiting_route">Waiting for current audio route</string>
+    <string name="hardware_device_control_usb">USB audio device</string>
+    <string name="hardware_device_control_bluetooth">Bluetooth audio device</string>
+    <string name="hardware_device_control_refresh">Refresh</string>
+    <string name="hardware_device_control_probing">Reading hardware capabilities…</string>
+    <string name="hardware_device_control_unsupported">The current device does not expose a supported hardware control interface.</string>
+    <string name="hardware_device_control_error">Hardware capability probe failed.</string>
+    <string name="hardware_device_control_read_only">Read only</string>
+    <string name="hardware_device_control_peq_band">Band %1$d</string>
+    <string name="hardware_device_control_write_rejected">Hardware rejected the control: %1$s</string>
+    <string name="hardware_device_control_reconnecting">Bluetooth hardware control disconnected. Reconnecting…</string>
+    <string name="hardware_device_control_disconnected">Hardware control connection is disconnected.</string>
+    <string name="hardware_device_control_permission_required">Nearby devices permission is required to read and control the current Bluetooth device.</string>
+    <string name="hardware_device_control_grant_permission">Grant</string>
+    <string name="hardware_device_control_copy_diagnostics">Diagnostics</string>
+    <string name="hardware_device_control_diagnostics_copied">Hardware DSP diagnostics copied</string>
+    <string name="hardware_device_control_write_failed">Hardware control failed: %1$s</string>
 </resources>

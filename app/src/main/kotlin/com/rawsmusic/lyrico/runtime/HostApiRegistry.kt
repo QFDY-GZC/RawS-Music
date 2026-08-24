@@ -1,7 +1,9 @@
 package com.rawsmusic.lyrico.runtime
 
 object HostApiRegistry {
-    const val PLUGIN_API_VERSION = 3
+    /** Plugin callback protocol. API v4 adds array-based lyric results and independent sources. */
+    const val PLUGIN_API_VERSION = 4
+    /** Platform bridge API. This is intentionally still v3; plugin and platform versions differ. */
     const val HOST_API_VERSION = 3
     val SUPPORTED_PLUGIN_API_VERSIONS = 1..PLUGIN_API_VERSION
 

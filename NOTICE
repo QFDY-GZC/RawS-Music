@@ -9,3 +9,8 @@ Open-source scope note:
 - That USB exclusive core is planned to be extracted into a separate repository and released under GPLv3.
 
 Third-party libraries and referenced components remain under their own original licenses.
+
+Meteocons animated weather artwork
+Copyright (c) Bas Milius
+Licensed under the MIT License
+https://github.com/basmilius/meteocons

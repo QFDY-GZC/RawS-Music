@@ -1,53 +1,28 @@
 package com.rawsmusic.core.ui.widget.player
 
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.invalidateDraw
+import androidx.compose.ui.platform.InspectorInfo
+import android.view.Choreographer
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.rawsmusic.core.ui.R
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlin.math.ceil
 import kotlin.math.exp
 import kotlin.math.floor
@@ -95,6 +70,102 @@ private class DisplaySpectrumMotion {
     fun hasVisibleEnergy(): Boolean = levels.any { it > 0.002f }
 }
 
+/**
+ * Direct draw-frame owner for one visualizer surface. The old path incremented Snapshot state every
+ * display frame just to invalidate Canvas, forcing Recomposer work at 90/120 Hz. Keep spectrum
+ * motion as plain render data and invalidate only this DrawModifierNode from Choreographer.
+ */
+private class AudioVisualizerFrameNode(
+    var motion: DisplaySpectrumMotion,
+    var spectrum: FloatArray,
+    var visible: Boolean,
+    var playing: Boolean,
+) : Modifier.Node(), DrawModifierNode, Choreographer.FrameCallback {
+    override val shouldAutoInvalidate: Boolean
+        get() = false
+
+    private var choreographer: Choreographer? = null
+    private var callbackPosted = false
+    private var lastFrameNs = 0L
+
+    override fun onAttach() {
+        super.onAttach()
+        motion.updateTarget(spectrum, enabled = visible && playing)
+        invalidateDraw()
+        ensureFrameCallback()
+    }
+
+    override fun onDetach() {
+        cancelFrameCallback()
+        super.onDetach()
+    }
+
+    fun update(motion: DisplaySpectrumMotion, spectrum: FloatArray, visible: Boolean, playing: Boolean) {
+        this.motion = motion
+        this.spectrum = spectrum
+        this.visible = visible
+        this.playing = playing
+        motion.updateTarget(spectrum, enabled = visible && playing)
+        invalidateDraw()
+        if (shouldRun()) ensureFrameCallback() else cancelFrameCallback()
+    }
+
+    override fun ContentDrawScope.draw() = drawContent()
+
+    override fun doFrame(frameTimeNanos: Long) {
+        callbackPosted = false
+        if (!isAttached || !shouldRun()) return
+        val deltaSeconds = if (lastFrameNs == 0L) {
+            1f / 60f
+        } else {
+            ((frameTimeNanos - lastFrameNs) / 1_000_000_000f).coerceIn(1f / 240f, 1f / 20f)
+        }
+        lastFrameNs = frameTimeNanos
+        // The FFT buffer is intentionally plain mutable render data. Re-sample it on the
+        // Choreographer clock so a stable FloatArray reference does not require a Snapshot write.
+        // A paused stream targets zero and releases to rest instead of keeping a 120 Hz loop alive.
+        motion.updateTarget(spectrum, enabled = visible && playing)
+        motion.advance(deltaSeconds, playing)
+        invalidateDraw()
+        ensureFrameCallback()
+    }
+
+    private fun shouldRun(): Boolean = (visible && playing) || motion.hasVisibleEnergy()
+
+    private fun ensureFrameCallback() {
+        if (!isAttached || callbackPosted || !shouldRun()) return
+        val scheduler = choreographer ?: Choreographer.getInstance().also { choreographer = it }
+        callbackPosted = true
+        scheduler.postFrameCallback(this)
+    }
+
+    private fun cancelFrameCallback() {
+        if (callbackPosted) {
+            choreographer?.removeFrameCallback(this)
+            callbackPosted = false
+        }
+        lastFrameNs = 0L
+    }
+}
+
+private data class AudioVisualizerFrameElement(
+    val motion: DisplaySpectrumMotion,
+    val spectrum: FloatArray,
+    val visible: Boolean,
+    val playing: Boolean,
+) : ModifierNodeElement<AudioVisualizerFrameNode>() {
+    override fun create() = AudioVisualizerFrameNode(motion, spectrum, visible, playing)
+    override fun update(node: AudioVisualizerFrameNode) = node.update(motion, spectrum, visible, playing)
+    override fun InspectorInfo.inspectableProperties() { name = "audioVisualizerFrame" }
+}
+
+private fun Modifier.audioVisualizerFrame(
+    motion: DisplaySpectrumMotion,
+    spectrum: FloatArray,
+    visible: Boolean,
+    playing: Boolean,
+): Modifier = this then AudioVisualizerFrameElement(motion, spectrum, visible, playing)
+
 enum class AudioVisualizerLayer {
     BehindArtwork,
     Foreground
@@ -113,8 +184,6 @@ fun AlbumArtworkSpectrumOverlay(
     visible: Boolean,
     isPlaying: Boolean,
     layer: AudioVisualizerLayer,
-    showControls: Boolean = false,
-    onDismiss: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val reveal by animateFloatAsState(
@@ -126,43 +195,22 @@ fun AlbumArtworkSpectrumOverlay(
         label = "album-spectrum-layer"
     )
     val motion = remember { DisplaySpectrumMotion() }
-    val latestPlaying by rememberUpdatedState(isPlaying)
-    val latestVisible by rememberUpdatedState(visible)
-    var frameSerial by remember { mutableStateOf(0L) }
-
-    SideEffect {
-        motion.updateTarget(spectrum, enabled = visible)
-    }
-
-    LaunchedEffect(visible) {
-        var previousFrameNs = 0L
-        while (isActive) {
-            withFrameNanos { frameNs ->
-                val deltaSeconds = if (previousFrameNs == 0L) {
-                    1f / 60f
-                } else {
-                    ((frameNs - previousFrameNs) / 1_000_000_000f)
-                        .coerceIn(1f / 240f, 1f / 20f)
-                }
-                previousFrameNs = frameNs
-                motion.advance(deltaSeconds, latestPlaying)
-                frameSerial++
-            }
-            if (!latestVisible && !motion.hasVisibleEnergy()) break
-        }
-    }
 
     if (reveal <= 0.001f && !visible && !motion.hasVisibleEnergy()) return
 
     Box(
-        modifier = modifier.graphicsLayer {
-            alpha = reveal
-        }
+        modifier = modifier.graphicsLayer { alpha = reveal }
     ) {
-        val drawFrameSerial = frameSerial
-        Canvas(modifier = Modifier.matchParentSize()) {
-            @Suppress("UNUSED_VARIABLE")
-            val frameInvalidationToken = drawFrameSerial
+        Canvas(
+            modifier = Modifier
+                .matchParentSize()
+                .audioVisualizerFrame(
+                    motion = motion,
+                    spectrum = spectrum,
+                    visible = visible,
+                    playing = isPlaying,
+                )
+        ) {
             if (size.width <= 0f || size.height <= 0f) return@Canvas
 
             val foreground = layer == AudioVisualizerLayer.Foreground
@@ -258,192 +306,5 @@ fun AlbumArtworkSpectrumOverlay(
             )
         }
 
-        if (showControls && layer == AudioVisualizerLayer.Foreground && visible) {
-            AudioVisualizerLockControls(
-                onDismiss = onDismiss,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(12.dp)
-            )
-        }
     }
-}
-
-/** Animated open/closed lock used by the player menu and the foreground overlay. */
-@Composable
-fun AudioVisualizerToggleGlyph(
-    locked: Boolean,
-    tint: Color,
-    modifier: Modifier = Modifier,
-    animateOnEnter: Boolean = false
-) {
-    val entered = remember { Animatable(if (animateOnEnter) 0f else if (locked) 1f else 0f) }
-    LaunchedEffect(locked, animateOnEnter) {
-        val target = if (locked) 1f else 0f
-        if (animateOnEnter && locked && entered.value == 0f) {
-            entered.animateTo(target, tween(430, easing = FastOutSlowInEasing))
-        } else {
-            entered.animateTo(target, tween(330, easing = FastOutSlowInEasing))
-        }
-    }
-    val progress = entered.value.coerceIn(0f, 1f)
-
-    Canvas(modifier = modifier) {
-        val width = size.width
-        val height = size.height
-        val stroke = max(1.7f * density, width * 0.075f)
-        val bodyTop = height * 0.47f
-        val bodyLeft = width * 0.18f
-        val bodyWidth = width * 0.64f
-        val bodyHeight = height * 0.40f
-
-        drawRoundRect(
-            color = tint,
-            topLeft = Offset(bodyLeft, bodyTop),
-            size = Size(bodyWidth, bodyHeight),
-            cornerRadius = CornerRadius(width * 0.12f, width * 0.12f)
-        )
-
-        // Three tiny spectrum columns keep the lock recognisable as the visualizer switch.
-        val innerColor = Color.Black.copy(alpha = if (tint.luminanceCompat() > 0.55f) 0.56f else 0.32f)
-        val columnWidth = width * 0.065f
-        val gap = width * 0.055f
-        val centerX = width * 0.5f
-        val columnBottom = bodyTop + bodyHeight * 0.72f
-        val heights = floatArrayOf(0.18f, 0.31f, 0.23f)
-        for (index in heights.indices) {
-            val x = centerX + (index - 1) * (columnWidth + gap) - columnWidth * 0.5f
-            val columnHeight = bodyHeight * heights[index] * (0.72f + 0.28f * progress)
-            drawRoundRect(
-                color = innerColor,
-                topLeft = Offset(x, columnBottom - columnHeight),
-                size = Size(columnWidth, columnHeight),
-                cornerRadius = CornerRadius(columnWidth * 0.5f, columnWidth * 0.5f)
-            )
-        }
-
-        val shackleLeft = width * 0.31f
-        val shackleTop = height * 0.14f
-        val shackleSize = width * 0.38f
-        val unlockRotation = -34f * (1f - progress)
-        val unlockShiftX = -width * 0.055f * (1f - progress)
-        val unlockShiftY = -height * 0.045f * (1f - progress)
-
-        withTransform({
-            rotate(
-                degrees = unlockRotation,
-                pivot = Offset(width * 0.67f, bodyTop + stroke * 0.5f)
-            )
-            translate(left = unlockShiftX, top = unlockShiftY)
-        }) {
-            drawArc(
-                color = tint,
-                startAngle = 180f,
-                sweepAngle = 180f,
-                useCenter = false,
-                topLeft = Offset(shackleLeft, shackleTop),
-                size = Size(shackleSize, shackleSize),
-                style = Stroke(width = stroke, cap = StrokeCap.Round)
-            )
-            drawLine(
-                color = tint,
-                start = Offset(shackleLeft, shackleTop + shackleSize * 0.5f),
-                end = Offset(shackleLeft, bodyTop + stroke * 0.2f),
-                strokeWidth = stroke,
-                cap = StrokeCap.Round
-            )
-            drawLine(
-                color = tint,
-                start = Offset(shackleLeft + shackleSize, shackleTop + shackleSize * 0.5f),
-                end = Offset(shackleLeft + shackleSize, bodyTop + stroke * 0.2f),
-                strokeWidth = stroke,
-                cap = StrokeCap.Round
-            )
-        }
-    }
-}
-
-@Composable
-fun AudioVisualizerLockControls(
-    onDismiss: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val eyePulse = remember { Animatable(0f) }
-    val lockPulse = remember { Animatable(0f) }
-    var showHint by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) {
-        eyePulse.animateTo(1f, tween(220, easing = FastOutSlowInEasing))
-        eyePulse.animateTo(0f, tween(420, easing = FastOutSlowInEasing))
-        delay(90)
-        lockPulse.animateTo(1f, tween(220, easing = FastOutSlowInEasing))
-        lockPulse.animateTo(0f, tween(420, easing = FastOutSlowInEasing))
-        delay(1900)
-        showHint = false
-    }
-
-    Column(modifier = modifier, horizontalAlignment = Alignment.End) {
-        AnimatedVisibility(
-            visible = showHint,
-            enter = fadeIn(tween(220)),
-            exit = fadeOut(tween(280))
-        ) {
-            Text(
-                text = stringResource(R.string.audio_visualizer_controls_hint),
-                color = Color.White.copy(alpha = 0.96f),
-                fontSize = 11.sp,
-                modifier = Modifier
-                    .padding(bottom = 6.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.58f))
-                    .padding(horizontal = 10.dp, vertical = 5.dp)
-            )
-        }
-        Row(
-            modifier = Modifier
-                .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.42f))
-                .padding(horizontal = 5.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-        val interactionSource = remember { MutableInteractionSource() }
-        Box(
-            modifier = Modifier
-                .size(34.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.22f * eyePulse.value))
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    onClick = onDismiss
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Image(
-                painter = painterResource(R.drawable.ic_audio_visualizer_visibility),
-                contentDescription = stringResource(R.string.audio_visualizer_close),
-                colorFilter = ColorFilter.tint(Color.White.copy(alpha = 0.96f)),
-                modifier = Modifier.size(20.dp)
-            )
-        }
-        Box(
-            modifier = Modifier
-                .size(34.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.22f * lockPulse.value)),
-            contentAlignment = Alignment.Center
-        ) {
-            AudioVisualizerToggleGlyph(
-                locked = true,
-                tint = Color.White.copy(alpha = 0.94f),
-                animateOnEnter = true,
-                modifier = Modifier.size(20.dp)
-            )
-        }
-        }
-    }
-}
-
-private fun Color.luminanceCompat(): Float {
-    fun channel(value: Float): Float = if (value <= 0.03928f) value / 12.92f else ((value + 0.055f) / 1.055f).pow(2.4f)
-    return channel(red) * 0.2126f + channel(green) * 0.7152f + channel(blue) * 0.0722f
 }

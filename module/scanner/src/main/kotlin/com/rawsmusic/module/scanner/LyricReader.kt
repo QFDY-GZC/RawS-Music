@@ -56,34 +56,33 @@ object LyricReader {
     private fun readRawSOverride(song: AudioFile): LyricData {
         val audio = File(song.path)
         val privateFiles = LyricOverrideStore.filesFor(song)
+        val formats = listOf(".raws.ttml", ".raws.enhanced.lrc", ".raws.lrc")
         val groups = buildList<List<File>> {
             var privateIndex = 0
             if (song.isCueTrack()) {
-                add(
-                    listOfNotNull(
-                        audio.parentFile?.let { File(it, audio.nameWithoutExtension + ".track${song.cueTrackIndex}.raws.ttml") },
-                        privateFiles.getOrNull(privateIndex++)
-                    )
-                )
+                add(formats.mapNotNull { suffix ->
+                    audio.parentFile?.let {
+                        File(it, audio.nameWithoutExtension + ".track${song.cueTrackIndex}$suffix")
+                    }
+                } + privateFiles.drop(privateIndex).take(formats.size).also {
+                    privateIndex += formats.size
+                })
             }
-            add(
-                listOfNotNull(
-                    audio.parentFile?.let { File(it, audio.nameWithoutExtension + ".raws.ttml") },
-                    privateFiles.getOrNull(privateIndex)
-                )
-            )
+            add(formats.mapNotNull { suffix ->
+                audio.parentFile?.let { File(it, audio.nameWithoutExtension + suffix) }
+            } + privateFiles.drop(privateIndex).take(formats.size))
         }
         return readRawSOverrideGroups(groups)
     }
 
     private fun readRawSOverride(songPath: String): LyricData {
         val audio = File(songPath)
+        val formats = listOf(".raws.ttml", ".raws.enhanced.lrc", ".raws.lrc")
         return readRawSOverrideGroups(
             listOf(
-                listOfNotNull(
-                    audio.parentFile?.let { File(it, audio.nameWithoutExtension + ".raws.ttml") },
-                    LyricOverrideStore.filesFor(songPath).firstOrNull()
-                )
+                formats.mapNotNull { suffix ->
+                    audio.parentFile?.let { File(it, audio.nameWithoutExtension + suffix) }
+                } + LyricOverrideStore.filesFor(songPath)
             )
         )
     }

@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -40,6 +39,7 @@ import com.rawsmusic.core.common.model.PlayMode
 import com.rawsmusic.core.ui.widget.predictiveDialogMotion
 import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 import com.rawsmusic.module.player.PlayerController
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 class PlayModePopupHelper(
     private val context: Context,
@@ -95,7 +95,7 @@ fun PlayModePopupOverlay(
                     }
                 }
                 .padding(horizontal = 24.dp)
-                .navigationBarsPadding(),
+                .rawStableNavigationBarsPadding(),
             contentAlignment = Alignment.BottomCenter
         ) {
             Column(

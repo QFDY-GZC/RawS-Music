@@ -3,8 +3,6 @@ package com.rawsmusic.core.ui.scene
 import android.os.Build
 import android.view.ViewConfiguration
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -33,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.key
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
@@ -49,6 +48,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
 import com.rawsmusic.core.ui.R
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.backdrops.layerBackdrop
@@ -65,6 +65,7 @@ import com.rawsmusic.core.ui.widget.bottombar.LiquidBottomTab
 import com.rawsmusic.core.ui.widget.bottombar.LiquidBottomTabs
 import com.rawsmusic.core.ui.widget.bottombar.NormalBottomChrome
 import com.rawsmusic.core.ui.widget.player.rememberBottomAccentColor
+import com.rawsmusic.core.ui.widget.text.LongTextMotionState
 import com.rawsmusic.module.data.prefs.BottomBarStyle
 import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import com.rawsmusic.core.ui.systemui.rawNavigationBarsPadding
@@ -72,8 +73,10 @@ import com.rawsmusic.core.ui.systemui.rawReducedNavigationBottomPadding
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.isActive
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.exp
+import kotlin.math.roundToInt
 
 internal val LocalAppHazeState = staticCompositionLocalOf<HazeState?> { null }
 
@@ -100,12 +103,31 @@ fun AppMainLayout(
     onHomeFullCoverActiveChange: (Boolean) -> Unit = {},
     onHomeFullCoverLaunchRequest: (Rect) -> Boolean = { false },
     onMiniPlayerGestureBoundsChanged: (Rect?) -> Unit = {},
+    onBottomNavigationGestureBoundsChanged: (Rect?) -> Unit = {},
     playerSceneProgressState: State<Float>? = null,
 ) {
     NavigationPersistenceEffect(navState)
 
     val isLightTheme = !isSystemInDarkTheme()
     val contentColor = if (isLightTheme) Color.Black else Color.White
+
+    // Reference keeps one marquee clock for the visible text clients and removes its frame
+    // callback when no client needs motion. Do the same at the app root so list rows, the mini
+    // player and the player title share one phase instead of starting independent loops.
+    val marqueeClockActive =
+            LongTextMotionState.enabled &&
+            LongTextMotionState.enabledEverywhere &&
+            LongTextMotionState.hasActiveMarqueeUsers
+    LaunchedEffect(marqueeClockActive) {
+        if (!marqueeClockActive) {
+            LongTextMotionState.pauseMarqueeClock()
+            return@LaunchedEffect
+        }
+        while (isActive) {
+            val frameNanos = withFrameNanos { it }
+            LongTextMotionState.advanceMarqueeClock(frameNanos)
+        }
+    }
 
     val bottomNavigationEnabled by PersonalizationPreferences.bottomNavigationEnabled.collectAsState()
     val bottomBarStyle by PersonalizationPreferences.bottomBarStyle.collectAsState()
@@ -160,13 +182,20 @@ fun AppMainLayout(
     // alive in the background. Rebind every source/effect pair on foreground entry.
     val appHazeState = remember(navData.uiForeground) { HazeState() }
     val rawFlowModeState = rememberRawFlowModeState()
-    val homeCarouselSongs = remember(navData.queueSongs, navData.currentSong) {
-        navData.queueSongs.ifEmpty { listOfNotNull(navData.currentSong) }
+    val homeCarouselSongs = remember(
+        navData.homeCarouselSongs,
+        navData.currentSong,
+        navData.homeCarouselCurrentIndex,
+    ) {
+        navData.homeCarouselSongs.ifEmpty { listOfNotNull(navData.currentSong) }
     }
+    val homeCarouselCurrentSong = homeCarouselSongs
+        .getOrNull(navData.homeCarouselCurrentIndex)
+        ?: navData.currentSong
     val homeCarouselState = rememberHomeArtworkCarouselState(
         songs = homeCarouselSongs,
-        currentSong = navData.currentSong,
-        reportedQueueIndex = navData.queueCurrentIndex,
+        currentSong = homeCarouselCurrentSong,
+        reportedQueueIndex = navData.homeCarouselCurrentIndex,
     )
     val homeHeaderOptions = rememberHomeHeaderOptionsState()
     val sceneTransitionFrame = remember {
@@ -198,6 +227,10 @@ fun AppMainLayout(
                 (navState.isDraggingBack || navState.isAnimatingBack)
         }
     }
+    // This edge changes only when the player sheet takes ownership of the bottom
+    // chrome. Keeping it as a binary state prevents the hidden list scene from
+    // driving its decorative background while the player is on top.
+    var playerSheetOwnsBottomChrome by remember { mutableStateOf(false) }
     val rawFlowLayerActive by remember {
         derivedStateOf {
             rawFlowSceneActive || rawFlowPreviousSceneActive || rawFlowTransitionSceneActive
@@ -206,6 +239,7 @@ fun AppMainLayout(
     val rawFlowMotionActive by remember {
         derivedStateOf {
             navData.uiForeground &&
+                !playerSheetOwnsBottomChrome &&
                 (
                     ((rawFlowSceneActive || navState.currentScene == NavScene.HOME) &&
                         !navState.isTransitioning &&
@@ -217,12 +251,19 @@ fun AppMainLayout(
     }
     val bottomChromeScrollState = remember { BottomChromeScrollState() }
     var miniPlayerGestureBounds by remember { mutableStateOf<Rect?>(null) }
+    var bottomNavigationGestureBounds by remember { mutableStateOf<Rect?>(null) }
+    LaunchedEffect(bottomChromeScrollState, density) {
+        // Match the larger navigation displacement so both stacked chrome layers share one
+        // normalized gesture range. The actual layers still use their own visual travel.
+        bottomChromeScrollState.updateScrollRangePx(with(density) { 96.dp.toPx() })
+        bottomChromeScrollState.updateMiniPlayerScrollRangePx(with(density) { 64.dp.toPx() })
+    }
     // Do NOT read playerSceneProgressState.value in the AppMainLayout composition body. Doing so
     // recomposes the entire MAIN navigation tree on every pointer frame and makes the sheet feel
     // one frame behind the finger. Observe only the binary ownership edge with snapshotFlow; this
     // state changes once when p leaves 0 and once when it returns to 0, while the actual p value is
     // still consumed inside graphicsLayer lambdas in the player/mini-player subtree.
-    var playerSheetOwnsBottomChrome by remember { mutableStateOf(false) }
+    var listMarqueeSceneVisible by remember { mutableStateOf(true) }
     LaunchedEffect(playerSceneProgressState, bottomChromeScrollState) {
         snapshotFlow {
             (playerSceneProgressState?.value?.coerceIn(0f, 1f) ?: 0f) > 0f
@@ -233,8 +274,33 @@ fun AppMainLayout(
                 bottomChromeScrollState.setInteractionLocked(ownsSheet)
             }
     }
+    LaunchedEffect(playerSceneProgressState) {
+        snapshotFlow {
+            val playerSheetVisible =
+                (playerSceneProgressState?.value?.coerceIn(0f, 1f) ?: 0f) > 0.001f
+            val sceneTransitionActive =
+                navState.isTransitioning || navState.isDraggingBack || navState.isAnimatingBack
+            !playerSheetVisible && !sceneTransitionActive
+        }
+            .distinctUntilChanged()
+            .collect { listMarqueeSceneVisible = it }
+    }
     LaunchedEffect(navState.currentScene) {
         bottomChromeScrollState.reset()
+    }
+    LaunchedEffect(navState.currentScene, bottomNavigationEnabled, bottomBarStyle) {
+        bottomChromeScrollState.resetGeometryAnchor()
+    }
+
+    fun updateBottomChromeGeometry() {
+        val chromeTop = listOfNotNull(
+            miniPlayerGestureBounds?.top,
+            bottomNavigationGestureBounds?.top,
+        ).minOrNull()
+        // AnimatedVisibility clears the bounds while chrome is leaving. Keep the
+        // last valid anchor so floating actions follow the transition instead of
+        // snapping back to the origin for one frame.
+        chromeTop?.let(bottomChromeScrollState::updateTopInRootPx)
     }
 
     val sideRailEnabled =
@@ -282,7 +348,7 @@ fun AppMainLayout(
                                 transitionFrame = sceneTransitionFrame,
                                 rawFlowMode = rawFlowModeState.value,
                                 homeCarouselSongs = homeCarouselSongs,
-                                currentSong = navData.currentSong,
+                                currentSong = homeCarouselCurrentSong,
                                 homeCarouselState = homeCarouselState,
                                 homeCarouselBackdropTransitionActive =
                                     homeCarouselBackdropTransitionActive,
@@ -296,8 +362,8 @@ fun AppMainLayout(
                 ) {
                     HomeFullCoverTransitionHost(
                         songs = homeCarouselSongs,
-                        currentSong = navData.currentSong,
-                        queueCurrentIndex = navData.queueCurrentIndex,
+                        currentSong = homeCarouselCurrentSong,
+                        queueCurrentIndex = navData.homeCarouselCurrentIndex,
                         onSelectSong = navCallbacks.onHomeCarouselSongClick,
                         onActiveChange = onHomeFullCoverActiveChange,
                         onExternalOpen = onHomeFullCoverLaunchRequest,
@@ -311,6 +377,10 @@ fun AppMainLayout(
                             onCurrentArtworkBoundsChanged,
                         ->
                         Box(modifier = foregroundModifier) {
+                            CompositionLocalProvider(
+                                LongTextMotionState.LocalListMarqueeVisibility provides
+                                    listMarqueeSceneVisible
+                            ) {
                                 ComposeNavHost(
                                 state = navState,
                                 callbacks = navCallbacks,
@@ -339,35 +409,34 @@ fun AppMainLayout(
                                 onSceneTransitionFrameChanged = { frame ->
                                     sceneTransitionFrame.update(frame)
                                 },
-                            )
+                                )
+                            }
 
                             // 设置页由独立 Activity 承载；若旧路径误把主导航切到设置场景，也不显示底部栏。
                             if (!isSettingsScene && !isIndependentSourceScene) {
                                 val showBottomChrome = !navData.bottomChromeHidden
-                                val chromeHidden = bottomChromeScrollState.hidden
-                                val animatedMiniPlayerOffsetY by animateDpAsState(
-                                    targetValue = if (chromeHidden || !bottomNavigationEnabled) (-4).dp else (-68).dp,
-                                    animationSpec = tween(durationMillis = 240),
-                                    label = "mini-player-chrome-offset"
-                                )
-                                val animatedBottomTabsOffsetY by animateDpAsState(
-                                    targetValue = if (chromeHidden) 92.dp else (-4).dp,
-                                    animationSpec = tween(durationMillis = 240),
-                                    label = "bottom-tabs-scroll-offset"
-                                )
-                                // Stacked chrome is a stable sibling while the sheet is being
-                                // dragged. Freezing only BottomChromeScrollState.hidden is not
-                                // enough: animateDpAsState may already be mid-flight when PLAYER
-                                // captures the sheet. Snapshot the actually rendered offsets at
-                                // session start and hold those exact pixels until p returns to 0.
-                                val sheetSessionMiniPlayerOffsetY = remember(playerSheetOwnsBottomChrome) {
-                                    if (playerSheetOwnsBottomChrome) animatedMiniPlayerOffsetY else null
+                                // Read the shared progress inside placement lambdas. The list can
+                                // update it every frame without recomposing ComposeNavHost or
+                                // recreating any artwork/list item.
+                                val miniPlayerScrollModifier = Modifier.offset {
+                                    val progress = bottomChromeScrollState.renderVisibilityProgress
+                                    val offsetDp = if (!bottomNavigationEnabled) {
+                                        (-4).dp
+                                    } else {
+                                        (-68f + 64f * progress).dp
+                                    }
+                                    IntOffset(0, offsetDp.roundToPx())
                                 }
-                                val sheetSessionBottomTabsOffsetY = remember(playerSheetOwnsBottomChrome) {
-                                    if (playerSheetOwnsBottomChrome) animatedBottomTabsOffsetY else null
+                                val bottomTabsScrollModifier = Modifier.offset {
+                                    val progress = bottomChromeScrollState.renderVisibilityProgress
+                                    IntOffset(0, (-4f + 96f * progress).dp.roundToPx())
                                 }
-                                val miniPlayerOffsetY = sheetSessionMiniPlayerOffsetY ?: animatedMiniPlayerOffsetY
-                                val bottomTabsOffsetY = sheetSessionBottomTabsOffsetY ?: animatedBottomTabsOffsetY
+                                val normalBottomChromeScrollModifier = Modifier.offset {
+                                    IntOffset(
+                                        0,
+                                        bottomChromeScrollState.renderChromeOffsetPx.roundToInt(),
+                                    )
+                                }
                                 // MiniPlayer：在导航栏上方，所有页面可见
                                 val emptyPlayerTitle = stringResource(R.string.player_no_music)
                                 val hasSong = navData.miniPlayerTitle.isNotBlank() &&
@@ -375,7 +444,15 @@ fun AppMainLayout(
                                 LaunchedEffect(hasSong, showBottomChrome) {
                                     if (!hasSong || !showBottomChrome) {
                                         miniPlayerGestureBounds = null
+                                        updateBottomChromeGeometry()
                                         onMiniPlayerGestureBoundsChanged(null)
+                                    }
+                                }
+                                LaunchedEffect(bottomNavigationEnabled, showBottomChrome) {
+                                    if (!bottomNavigationEnabled || !showBottomChrome) {
+                                        bottomNavigationGestureBounds = null
+                                        updateBottomChromeGeometry()
+                                        onBottomNavigationGestureBoundsChanged(null)
                                     }
                                 }
                                 val miniCoverPath = navData.currentSong.resolvePlaybackArtworkKey(
@@ -503,15 +580,20 @@ fun AppMainLayout(
                                             playerSceneProgressState = playerSceneProgressState,
                                             onCoverBoundsChanged = navCallbacks.onMiniPlayerCoverBoundsChanged,
                                             onCoverTargetChanged = navCallbacks.onMiniPlayerCoverTargetChanged,
+                                            onMiniPlayerBoundsChanged = { bounds ->
+                                                miniPlayerGestureBounds = bounds
+                                                updateBottomChromeGeometry()
+                                                onMiniPlayerGestureBoundsChanged(bounds)
+                                            },
+                                            onNavigationBoundsChanged = { bounds ->
+                                                bottomNavigationGestureBounds = bounds
+                                                updateBottomChromeGeometry()
+                                                onBottomNavigationGestureBoundsChanged(bounds)
+                                            },
                                             modifier = Modifier
                                                 .align(Alignment.BottomCenter)
                                                 .fillMaxWidth()
-                                                .rawNavigationBarsPadding(reduceBy = 12.dp)
-                                                .onGloballyPositioned { coordinates ->
-                                                    val bounds = coordinates.boundsInRoot()
-                                                    miniPlayerGestureBounds = bounds
-                                                    onMiniPlayerGestureBoundsChanged(bounds)
-                                                },
+                                                .then(normalBottomChromeScrollModifier),
                                         )
                                     }
                                 } else {
@@ -546,7 +628,7 @@ fun AppMainLayout(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .padding(horizontal = 24.dp)
-                                                .offset(y = miniPlayerOffsetY)
+                                                .then(miniPlayerScrollModifier)
                                                 .rawNavigationBarsPadding(reduceBy = 12.dp)
                                                 // Keep the gesture owner on the *placed* floating
                                                 // mini-player. When stacked navigation is visible
@@ -564,6 +646,7 @@ fun AppMainLayout(
                                                 .onGloballyPositioned { coordinates ->
                                                     val bounds = coordinates.boundsInRoot()
                                                     miniPlayerGestureBounds = bounds
+                                                    updateBottomChromeGeometry()
                                                     onMiniPlayerGestureBoundsChanged(bounds)
                                                 },
                                         )
@@ -584,8 +667,14 @@ fun AppMainLayout(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
                                                     .padding(horizontal = 24.dp)
-                                                    .offset(y = bottomTabsOffsetY)
-                                                    .rawNavigationBarsPadding(reduceBy = 12.dp),
+                                                    .then(bottomTabsScrollModifier)
+                                                    .rawNavigationBarsPadding(reduceBy = 12.dp)
+                                                    .onGloballyPositioned { coordinates ->
+                                                        val bounds = coordinates.boundsInRoot()
+                                                        bottomNavigationGestureBounds = bounds
+                                                        updateBottomChromeGeometry()
+                                                        onBottomNavigationGestureBoundsChanged(bounds)
+                                                    },
                                             ) {
                                                 tabScenes.forEach { scene ->
                                                     LiquidBottomTab(

@@ -15,8 +15,6 @@ internal data class ReplayGainDecision(
 
 /** Pure playback-volume calculations; hardware and decoder writes remain in PlayerController. */
 internal object PlaybackVolumePlanner {
-    private const val USB_SOFTWARE_VOLUME_TAPER = 3.0
-
     fun replayGain(
         song: AudioFile,
         normalizationEnabled: Boolean,
@@ -70,9 +68,10 @@ internal object PlaybackVolumePlanner {
         val volume = uiVolume.coerceIn(0f, 1f)
         if (volume <= 0.0001f) return 0f
         if (volume >= 0.9999f) return 1f
-        return Math.pow(volume.toDouble(), USB_SOFTWARE_VOLUME_TAPER)
-            .toFloat()
-            .coerceIn(0f, 1f)
+        // The UI value already represents a linear PCM gain. Applying a cubic
+        // taper here made 22% volume become roughly 1.1% (-39 dB), which both
+        // sounded abnormally quiet and discarded most useful S16 resolution.
+        return volume
     }
 
     fun usbVolumePlan(

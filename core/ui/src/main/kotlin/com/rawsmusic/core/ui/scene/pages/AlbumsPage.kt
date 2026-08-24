@@ -131,7 +131,8 @@ private fun AlbumListPage(
             stringResource(com.rawsmusic.core.ui.R.string.sort_by_name) to SortOrder.TITLE_ASC,
             stringResource(com.rawsmusic.core.ui.R.string.sort_by_artist) to SortOrder.ARTIST_ASC,
             stringResource(com.rawsmusic.core.ui.R.string.sort_by_year) to SortOrder.YEAR_ASC,
-            stringResource(com.rawsmusic.core.ui.R.string.sort_by_modified) to SortOrder.DATE_ADDED_ASC,
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_added) to SortOrder.DATE_ADDED_ASC,
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_modified) to SortOrder.DATE_MODIFIED_ASC,
             stringResource(com.rawsmusic.core.ui.R.string.sort_by_duration) to SortOrder.DURATION_ASC,
             stringResource(com.rawsmusic.core.ui.R.string.sort_by_song_count) to SortOrder.PLAYBACK_INFO
         ),
@@ -248,14 +249,15 @@ internal fun List<AudioFile>.toAlbumGroups(): List<AlbumGroupUi> {
 private fun List<AlbumGroupUi>.sortedFor(order: SortOrder): List<AlbumGroupUi> {
     val descending = order in setOf(
         SortOrder.TITLE_DESC, SortOrder.ARTIST_DESC, SortOrder.ALBUM_DESC,
-        SortOrder.DATE_ADDED_DESC, SortOrder.DURATION_DESC, SortOrder.YEAR_DESC,
+        SortOrder.DATE_ADDED_DESC, SortOrder.DATE_MODIFIED_DESC, SortOrder.DURATION_DESC, SortOrder.YEAR_DESC,
         SortOrder.FILE_NAME_DESC, SortOrder.PATH_DESC, SortOrder.PLAYBACK_INFO_DESC
     )
     val comparator = when (order) {
         SortOrder.ARTIST_ASC, SortOrder.ARTIST_DESC -> compareBy<AlbumGroupUi> { it.artist.lowercase() }.thenBy { it.name.lowercase() }
         SortOrder.YEAR_ASC, SortOrder.YEAR_DESC -> compareBy { group -> group.songs.map { it.year }.filter { it > 0 }.minOrNull() ?: 0 }
         SortOrder.DURATION_ASC, SortOrder.DURATION_DESC -> compareBy { it.totalDurationMs }
-        SortOrder.DATE_ADDED_ASC, SortOrder.DATE_ADDED_DESC -> compareBy { group -> group.songs.maxOfOrNull { it.dateModified } ?: 0L }
+        SortOrder.DATE_ADDED_ASC, SortOrder.DATE_ADDED_DESC -> compareBy { group -> group.songs.maxOfOrNull { it.dateAdded } ?: 0L }
+        SortOrder.DATE_MODIFIED_ASC, SortOrder.DATE_MODIFIED_DESC -> compareBy { group -> group.songs.maxOfOrNull { it.dateModified } ?: 0L }
         SortOrder.PLAYBACK_INFO, SortOrder.PLAYBACK_INFO_DESC -> compareBy { it.songCount }
         else -> compareBy<AlbumGroupUi> { it.name.lowercase() }.thenBy { it.artist.lowercase() }
     }

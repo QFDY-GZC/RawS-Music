@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.LyricTimingEditorTarget
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.widget.PlayerLyricsArtworkAnchor
 import com.rawsmusic.core.ui.widget.PlayerLyricsArtworkSource
@@ -78,6 +79,8 @@ import com.rawsmusic.core.ui.widget.PlayerLyricsTransitionCoordinator
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.bitmaps.CrossfadeAlbumArt
 import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkTransitionState
+import com.rawsmusic.core.ui.widget.text.LongTextMotionState
+import com.rawsmusic.core.ui.widget.text.SharedMarqueeText
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.LyricLayoutPreferences
 import com.rawsmusic.module.data.prefs.LyricTopLayoutStyle
@@ -110,6 +113,8 @@ fun LyricPage(
     onRomaToggle: () -> Unit = {},
     onSearchLyrico: () -> Unit = {},
     onOpenInLyrico: () -> Unit = {},
+    onAiTimingPreview: () -> Unit = {},
+    onOpenExternalTimingEditor: (LyricTimingEditorTarget) -> Unit = {},
     onModifyAlbumArt: () -> Unit = {},
     onBack: () -> Unit = {},
     interactiveHorizontalSwipe: Boolean = false,
@@ -564,6 +569,20 @@ fun LyricPage(
                     delay(160L)
                     onOpenInLyrico()
                 }
+            },
+            onAiTimingPreview = {
+                closeLyricMore()
+                actionScope.launch {
+                    delay(160L)
+                    onAiTimingPreview()
+                }
+            },
+            onOpenExternalTimingEditor = { target ->
+                closeLyricMore()
+                actionScope.launch {
+                    delay(160L)
+                    onOpenExternalTimingEditor(target)
+                }
             }
         )
     }
@@ -596,7 +615,9 @@ fun LyricMoreOverlayDialog(
     onLandscapeLockEnabledChange: ((Boolean) -> Unit)? = null,
     onModifyAlbumArt: (() -> Unit)? = null,
     onSearchLyrico: (() -> Unit)? = null,
-    onOpenInLyrico: (() -> Unit)? = null
+    onOpenInLyrico: (() -> Unit)? = null,
+    onAiTimingPreview: (() -> Unit)? = null,
+    onOpenExternalTimingEditor: ((LyricTimingEditorTarget) -> Unit)? = null
 ) {
     val canShareArtwork = artworkTransitionState != null &&
         sourceArtworkBounds?.isUsableForLyricMore == true
@@ -632,6 +653,8 @@ fun LyricMoreOverlayDialog(
                 onModifyAlbumArt = onModifyAlbumArt,
                 onSearchLyrico = onSearchLyrico,
                 onOpenInLyrico = onOpenInLyrico,
+                onAiTimingPreview = onAiTimingPreview,
+                onOpenExternalTimingEditor = onOpenExternalTimingEditor,
                 artworkAlpha = artworkAlpha,
                 onArtworkBoundsChanged = onArtworkBoundsChanged
             )
@@ -663,7 +686,9 @@ fun LyricMoreOverlayDialog(
                 onLandscapeLockEnabledChange = onLandscapeLockEnabledChange,
                 onModifyAlbumArt = onModifyAlbumArt,
                 onSearchLyrico = onSearchLyrico,
-                onOpenInLyrico = onOpenInLyrico
+                onOpenInLyrico = onOpenInLyrico,
+                onAiTimingPreview = onAiTimingPreview,
+                onOpenExternalTimingEditor = onOpenExternalTimingEditor
             )
         }
     }
@@ -692,6 +717,8 @@ private fun LyricMoreSheet(
     onModifyAlbumArt: (() -> Unit)?,
     onSearchLyrico: (() -> Unit)?,
     onOpenInLyrico: (() -> Unit)?,
+    onAiTimingPreview: (() -> Unit)?,
+    onOpenExternalTimingEditor: ((LyricTimingEditorTarget) -> Unit)?,
     artworkAlpha: Float = 1f,
     onArtworkBoundsChanged: (Rect) -> Unit = {}
 ) {
@@ -775,6 +802,24 @@ private fun LyricMoreSheet(
                 ),
                 selected = blurEnabled,
                 onClick = { onBlurEnabledChange(!blurEnabled) }
+            )
+        )
+    )
+    val externalTimingEntry = DropdownEntry(
+        items = listOf(
+            DropdownItem(
+                text = stringResource(R.string.lyric_more_timing_lunabeat),
+                summary = stringResource(R.string.lyric_more_timing_lunabeat_summary),
+                onClick = {
+                    onOpenExternalTimingEditor?.invoke(LyricTimingEditorTarget.LUNABEAT)
+                }
+            ),
+            DropdownItem(
+                text = stringResource(R.string.lyric_more_timing_halcyon),
+                summary = stringResource(R.string.lyric_more_timing_halcyon_summary),
+                onClick = {
+                    onOpenExternalTimingEditor?.invoke(LyricTimingEditorTarget.HALCYON)
+                }
             )
         )
     )
@@ -993,6 +1038,57 @@ private fun LyricMoreSheet(
                 }
             }
 
+            onAiTimingPreview?.let { action ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(cardColor)
+                        .clickable(enabled = currentSong != null, onClick = action)
+                        .padding(horizontal = 18.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Image(
+                        painter = painterResource(R.drawable.ic_equalizer_line),
+                        contentDescription = null,
+                        colorFilter = ColorFilter.tint(scheme.primary),
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    Column {
+                        Text(
+                            text = stringResource(R.string.lyric_more_ai_timing_title),
+                            color = scheme.onSurface,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = stringResource(R.string.lyric_more_ai_timing_summary),
+                            color = scheme.onSurfaceVariantSummary,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+            }
+
+            onOpenExternalTimingEditor?.let {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(cardColor)
+                ) {
+                    RawWindowDropdownPreference(
+                        entry = externalTimingEntry,
+                        title = stringResource(R.string.lyric_more_timing_editor_title),
+                        summary = stringResource(R.string.lyric_more_timing_editor_summary),
+                        showValue = false,
+                        maxHeight = 300.dp,
+                        collapseOnSelection = true
+                    )
+                }
+            }
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1064,6 +1160,7 @@ private fun LyricHeader(
     onCoverBoundsChanged: (PlayerLyricsRect?) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val animateLongText = LongTextMotionState.enabled && LongTextMotionState.enabledEverywhere
     val latestOnCoverBoundsChanged by rememberUpdatedState(onCoverBoundsChanged)
     DisposableEffect(Unit) {
         onDispose { latestOnCoverBoundsChanged(null) }
@@ -1092,21 +1189,25 @@ private fun LyricHeader(
         )
         Spacer(Modifier.width(18.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
+            SharedMarqueeText(
                 text = currentSong?.displayName ?: stringResource(R.string.player_no_song),
                 color = primaryColor,
-                fontSize = 25.sp,
+                fontSizeSp = 25f,
                 fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(34.dp),
+                visible = animateLongText
             )
-            Text(
+            SharedMarqueeText(
                 text = artistLine(currentSong),
                 color = secondaryColor,
-                fontSize = 17.sp,
+                fontSizeSp = 17f,
                 fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(25.dp),
+                visible = animateLongText
             )
         }
         Spacer(Modifier.width(12.dp))
@@ -1135,6 +1236,7 @@ private fun LyricTitleOnlyHeader(
     onMore: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val animateLongText = LongTextMotionState.enabled && LongTextMotionState.enabledEverywhere
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -1142,21 +1244,25 @@ private fun LyricTitleOnlyHeader(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(
+            SharedMarqueeText(
                 text = currentSong?.displayName ?: stringResource(R.string.player_no_song),
                 color = primaryColor,
-                fontSize = 21.sp,
+                fontSizeSp = 21f,
                 fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(29.dp),
+                visible = animateLongText
             )
-            Text(
+            SharedMarqueeText(
                 text = artistLine(currentSong),
                 color = secondaryColor,
-                fontSize = 15.sp,
+                fontSizeSp = 15f,
                 fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(23.dp),
+                visible = animateLongText
             )
         }
         Spacer(Modifier.width(12.dp))

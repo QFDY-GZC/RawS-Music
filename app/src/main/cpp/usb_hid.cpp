@@ -1,8 +1,12 @@
+#include <sched.h>
+#include <pthread.h>
+#include <sys/resource.h>
+#include <cerrno>
 /**
- * USB HID Remote Control Implementation for RawSMusic
+ * USB HID remote control implementation for RawSMusic.
  * 
- * Based on reverse-engineering of Kugou Music's libkugouplayer.so
- * Implements HID interface discovery, reading, and media key event parsing
+ * Discovers compatible HID interfaces, reads reports, and maps media-key events.
+ * Supports interrupt and bulk IN endpoints exposed by compatible devices.
  */
 
 #include "usb_hid.h"
@@ -101,7 +105,7 @@ bool UsbHidManager::findHidInterface(libusb_device_handle* devHandle) {
                     }
                 }
                 
-                // If no interrupt endpoint, try bulk transfer (like Kugou does)
+                // If no interrupt endpoint is available, try a bulk IN endpoint.
                 if (!found) {
                     for (int k = 0; k < altsetting.bNumEndpoints; k++) {
                         const struct libusb_endpoint_descriptor& ep = altsetting.endpoint[k];
@@ -219,10 +223,17 @@ void UsbHidManager::stopListening() {
 void UsbHidManager::hidReadThreadFunc() {
     LOGI("HID read thread started");
     
-    // Set thread priority for real-time response
-    struct sched_param param;
-    param.sched_priority = 10; // Lower than audio thread but still high
-    pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
+    // HID is not an audio deadline owner. Auxiliary control
+    // threads in the normal scheduler; an app-owned FIFO HID thread can starve
+    // SurfaceFlinger/InputDispatcher on permissive OEM kernels immediately after
+    // USB permission/claim. Keep best-effort nice only.
+    errno = 0;
+    (void)setpriority(PRIO_PROCESS, 0, -4);
+    int policy = SCHED_OTHER;
+    sched_param actual{};
+    const int schedRc = pthread_getschedparam(pthread_self(), &policy, &actual);
+    LOGI("HID scheduling directRtRequest=0 queryRc=%d policy=%d prio=%d niceErrno=%d",
+         schedRc, policy, actual.sched_priority, errno);
     
     uint8_t buffer[64]; // HID reports are typically small
     int transferred = 0;

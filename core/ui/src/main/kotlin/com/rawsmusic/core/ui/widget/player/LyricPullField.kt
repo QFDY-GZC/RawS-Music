@@ -15,6 +15,7 @@ internal class LyricPullFieldState {
     private val engine = LyricPullEngine()
     private val rowHeightsPx = mutableMapOf<Int, Int>()
     private val visibleIndices = linkedSetOf<Int>()
+    private var orderedVisibleIndices: List<Int> = emptyList()
     // Keep per-row offsets out of snapshot state. Natural line changes already animate the
     // LazyColumn itself; publishing every trailing-row offset as mutableStateMap entries forced
     // N row recompositions + relayouts on every vsync.  Only a single frame revision is observable,
@@ -35,13 +36,19 @@ internal class LyricPullFieldState {
         if (heightPx > 0) viewportHeightPx = heightPx
     }
 
-    fun updateRowHeight(index: Int, heightPx: Int) {
-        if (heightPx > 0) rowHeightsPx[index] = heightPx
+    fun updateRowHeight(index: Int, heightPx: Int): Boolean {
+        if (heightPx <= 0 || rowHeightsPx[index] == heightPx) return false
+        rowHeightsPx[index] = heightPx
+        return true
     }
 
     fun setVisibleIndices(indices: Collection<Int>) {
+        val nextOrderedIndices = indices.distinct().sorted()
+        if (nextOrderedIndices == orderedVisibleIndices) return
+
+        orderedVisibleIndices = nextOrderedIndices
         visibleIndices.clear()
-        visibleIndices.addAll(indices)
+        visibleIndices.addAll(nextOrderedIndices)
         var changed = false
         val iterator = offsetsPx.keys.iterator()
         while (iterator.hasNext()) {
@@ -108,13 +115,13 @@ internal class LyricPullFieldState {
             anchorIndex = anchorIndex,
             pullDistancePx = pullDistancePx,
             viewportHeightPx = viewportHeightPx.toFloat(),
-            visibleIndices = visibleIndices,
+            visibleIndices = orderedVisibleIndices,
             frameTimeMs = frameTimeMs
         )
         if (started) {
             running = true
             generation++
-            applyFrame(engine.advance(frameTimeMs, visibleIndices))
+            applyFrame(engine.advance(frameTimeMs, orderedVisibleIndices))
         } else {
             cancel()
         }
@@ -129,8 +136,19 @@ internal class LyricPullFieldState {
 
     fun offsetPx(index: Int): Float = offsetsPx[index] ?: 0f
 
+    fun knownRowHeightPx(index: Int): Float? = rowHeightsPx[index]?.toFloat()
+
+    fun fallbackRowHeightPx(): Float {
+        val knownHeights = rowHeightsPx.values.filter { it > 0 }
+        return if (knownHeights.isEmpty()) {
+            (viewportHeightPx / 5f).coerceAtLeast(1f)
+        } else {
+            knownHeights.sorted()[knownHeights.size / 2].toFloat()
+        }
+    }
+
     fun advance(frameTimeMs: Long) {
-        applyFrame(engine.advance(frameTimeMs, visibleIndices))
+        applyFrame(engine.advance(frameTimeMs, orderedVisibleIndices))
     }
 
     private fun applyFrame(frame: LyricPullFrame) {

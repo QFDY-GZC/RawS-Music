@@ -59,6 +59,8 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkKeyContinuity
+import com.rawsmusic.core.ui.widget.bitmaps.fileArtworkKeyOrNull
 import com.rawsmusic.module.data.repository.MusicRepository
 import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.PlayerController
@@ -542,6 +544,14 @@ class MetadataEditorHelper(
                 val committedSong = updatedSong.copy(
                     fileSize = originalFile.length(),
                     dateModified = originalFile.lastModified()
+                )
+                // Text-tag writes replace the file and therefore change the versioned artwork key
+                // even though this save path never writes embedded/folder artwork. Publish the
+                // exact continuity proof before repository/current-song StateFlows so the player
+                // can retain its already-uploaded AA holder instead of invalidating/redecoding it.
+                PlaybackArtworkKeyContinuity.markMetadataOnlyRewrite(
+                    previousKey = updatedSong.fileArtworkKeyOrNull(),
+                    committedKey = committedSong.fileArtworkKeyOrNull(),
                 )
                 MusicRepository.updateSong(committedSong)
                 getPlayerController()?.updateCurrentSongIfSamePath(committedSong)

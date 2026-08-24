@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -38,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -70,6 +70,7 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.icon.extended.Sort
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 private const val ALBUM_KEY_SEPARATOR = "␟"
 
@@ -391,7 +392,9 @@ fun GlobalSearchScreen(
                     historyStore.clear()
                     history = emptyList()
                 },
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .clipToBounds()
             )
         } else if (visibleDimensions.isEmpty()) {
             Box(
@@ -417,6 +420,10 @@ fun GlobalSearchScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
+                    // PowerList foreground holders intentionally allow transforms outside each
+                    // cell, so the owning screen must define the viewport boundary. Keep search
+                    // results below the fixed search/filter chrome instead of drawing through it.
+                    .clipToBounds()
                     .padding(horizontal = 14.dp),
                 onItemClick = { item, _, _ ->
                     val entry = (item as? SearchPowerListItem)?.entry ?: return@ComposeGenericPowerList
@@ -486,7 +493,7 @@ private fun SearchHistory(
 ) {
     val scheme = MiuixTheme.colorScheme
     LazyColumn(
-        modifier = modifier.fillMaxWidth().navigationBarsPadding(),
+        modifier = modifier.fillMaxWidth().rawStableNavigationBarsPadding(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 8.dp)
     ) {
         item {

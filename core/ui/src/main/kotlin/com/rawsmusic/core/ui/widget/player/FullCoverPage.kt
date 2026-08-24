@@ -36,6 +36,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -105,8 +106,12 @@ fun FullCoverPage(
     renderBackdrop: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
-    val songs = remember(queueSongs, currentSong) {
-        if (queueSongs.isNotEmpty()) queueSongs else listOfNotNull(currentSong)
+    val incomingSongs = if (queueSongs.isNotEmpty()) queueSongs else listOfNotNull(currentSong)
+    var songs by remember { mutableStateOf(incomingSongs.toList()) }
+    SideEffect {
+        if (!sameFullscreenCarouselQueue(songs, incomingSongs)) {
+            songs = incomingSongs.toList()
+        }
     }
     fun resolveCurrentIndex(): Int {
         if (queueCurrentIndex in songs.indices) return queueCurrentIndex
@@ -145,6 +150,7 @@ fun FullCoverPage(
         targetValue: Float,
         commitDirection: Int,
         durationMillis: Int,
+        dispatchPlayback: Boolean = true,
     ) {
         val generation = settleGeneration + 1
         settleGeneration = generation
@@ -167,7 +173,7 @@ fun FullCoverPage(
                     val selected = latestSongs[nextIndex]
                     visualCenterIndex = nextIndex
                     carouselProgress = 0f
-                    latestOnQueueSongClick(selected, nextIndex)
+                    if (dispatchPlayback) latestOnQueueSongClick(selected, nextIndex)
                 } else {
                     carouselProgress = targetValue
                 }
@@ -236,8 +242,25 @@ fun FullCoverPage(
 
     LaunchedEffect(queueCurrentIndex, currentSong, songs) {
         if (!gestureActive && !settling && songs.isNotEmpty()) {
-            visualCenterIndex = resolveCurrentIndex().coerceIn(0, songs.lastIndex)
-            carouselProgress = 0f
+            val resolvedIndex = resolveCurrentIndex().coerceIn(0, songs.lastIndex)
+            val direction = resolveFullscreenCarouselDirection(
+                oldIndex = visualCenterIndex,
+                newIndex = resolvedIndex,
+                size = songs.size,
+            )
+            when {
+                direction == 0 -> carouselProgress = 0f
+                direction == Int.MIN_VALUE -> {
+                    visualCenterIndex = resolvedIndex
+                    carouselProgress = 0f
+                }
+                else -> launchCarouselSettle(
+                    targetValue = direction.toFloat(),
+                    commitDirection = direction,
+                    durationMillis = 220,
+                    dispatchPlayback = false,
+                )
+            }
         }
     }
 
@@ -618,4 +641,25 @@ private fun FullCoverQueuePosition(
             .background(Color.Black.copy(alpha = 0.42f), RoundedCornerShape(14.dp))
             .padding(horizontal = 12.dp, vertical = 7.dp),
     )
+}
+
+private fun sameFullscreenCarouselQueue(
+    left: List<AudioFile>,
+    right: List<AudioFile>,
+): Boolean = left.size == right.size && left.indices.all { index ->
+    fullscreenCarouselSongIdentity(left[index]) == fullscreenCarouselSongIdentity(right[index])
+}
+
+private fun fullscreenCarouselSongIdentity(song: AudioFile): String =
+    "${song.path}|${song.cueOffsetMs}|${song.cueTrackIndex}"
+
+private fun resolveFullscreenCarouselDirection(
+    oldIndex: Int,
+    newIndex: Int,
+    size: Int,
+): Int {
+    if (size <= 1 || oldIndex == newIndex) return 0
+    if ((oldIndex + 1) % size == newIndex) return 1
+    if ((oldIndex - 1 + size) % size == newIndex) return -1
+    return Int.MIN_VALUE
 }

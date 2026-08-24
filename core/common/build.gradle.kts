@@ -38,4 +38,6 @@ dependencies {
     implementation(libs.mmkv)
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.26.0")
     api(libs.dexter)
+
+    testImplementation("junit:junit:4.13.2")
 }

@@ -19,8 +19,11 @@ internal class MainActivityVisualizerCoordinator(
     private val setSpectrum: (FloatArray) -> Unit,
 ) {
     private fun emptySpectrum() = FloatArray(NativeStereoSpectrumAnalyzer.OUTPUT_SIZE)
+    private var boundController: PlayerController? = null
 
     fun bind(controller: PlayerController) {
+        boundController = controller
+        controller.ffmpegPlayerRef.setWaveformConsumerActive(false)
         controller.onPcmWaveformFrame = waveform@{
                 buffer, read, channels, sampleRate, validBitsPerSample, sampleEncoding ->
             if (!isEnabled() || !isActivityForeground() || !isUiRequested()) {
@@ -59,6 +62,7 @@ internal class MainActivityVisualizerCoordinator(
 
     fun updateRuntime(reason: String) {
         val active = isEnabled() && isActivityForeground() && isUiRequested()
+        boundController?.ffmpegPlayerRef?.setWaveformConsumerActive(active)
         pipeline.setPlaying(isPlaying())
         pipeline.setActive(active)
         if (!active) {
@@ -68,6 +72,7 @@ internal class MainActivityVisualizerCoordinator(
     }
 
     fun stopAndReset() {
+        boundController?.ffmpegPlayerRef?.setWaveformConsumerActive(false)
         pipeline.setActive(false)
         setSpectrum(emptySpectrum())
     }

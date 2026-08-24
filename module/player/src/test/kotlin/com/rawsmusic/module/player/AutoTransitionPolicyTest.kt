@@ -34,7 +34,7 @@ class AutoTransitionPolicyTest {
     )
 
     @Test
-    fun `lyrics recipe starts formal fade only as final word approaches end`() {
+    fun `lyrics recipe starts formal fade after final word ends`() {
         val current = song("/a.flac")
         val next = song("/b.flac", album = "Other")
         val lyrics = LyricData(
@@ -61,7 +61,7 @@ class AutoTransitionPolicyTest {
         assertEquals(AutoTransitionPolicy.Source.LYRICS, recipe?.source)
         val handoverStart = recipe?.handoverPositionMs ?: 0L
         val handoverMs = recipe?.handoverDurationMs ?: 0
-        assertEquals(223_500L, handoverStart)
+        assertEquals(224_000L, handoverStart)
         assertEquals(AutoTransitionPolicy.LEAD_FADE_WINDOW_MS, handoverMs)
         assertEquals(220_000L, recipe?.triggerPositionMs)
         assertEquals(1.0f, recipe?.confidence ?: 0f, 0.0001f)
@@ -132,7 +132,7 @@ class AutoTransitionPolicyTest {
         val recipe = AutoTransitionPolicy.build(current, next, lyrics).recipe
         assertNotNull(recipe)
         val handover = recipe?.handoverPositionMs ?: 0L
-        assertEquals(224_500L, handover)
+        assertEquals(225_000L, handover)
         assertTrue(handover > 210_000L)
         assertEquals(AutoTransitionPolicy.LEAD_FADE_WINDOW_MS, recipe?.handoverDurationMs)
     }
@@ -184,22 +184,31 @@ class AutoTransitionPolicyTest {
         val recipe = AutoTransitionPolicy.build(current, next, lyrics).recipe
         assertNotNull(recipe)
         assertEquals(AutoTransitionPolicy.Source.LYRICS, recipe?.source)
-        assertEquals(237_500L, recipe?.handoverPositionMs)
-        // Only 2.5 s of physical PCM remains after the requested lyric-end anchor. Do not pull the
+        assertEquals(238_000L, recipe?.handoverPositionMs)
+        // Only 2 s of physical PCM remains after the requested lyric-end anchor. Do not pull the
         // fade eight seconds earlier just to satisfy the nominal window.
-        assertEquals(2_500, recipe?.handoverDurationMs)
+        assertEquals(2_000, recipe?.handoverDurationMs)
 
         val runtime = AutoTransitionRuntime("test")
         runtime.updateRecipe(recipe)
-        val plan = runtime.resolveStartPlan(recipe?.triggerPositionMs ?: 0L, current.duration)
+        assertNull(runtime.resolveStartPlan(recipe?.triggerPositionMs ?: 0L, current.duration))
+        val plan = runtime.resolveStartPlan(recipe?.handoverPositionMs ?: 0L, current.duration)
         assertNotNull(plan)
-        assertEquals(2_500, plan?.handoverMs)
+        assertEquals(0, plan?.preRollMs)
+        assertEquals(2_000, plan?.handoverMs)
     }
 
     @Test
-    fun `automatic follow starts at minus fifty db and lead fade owns final eight seconds`() {
+    fun `manual compatibility midpoint uses complementary linear amplitude`() {
+        assertEquals(0.5f, PcmCrossfadeMixer.gainOut(0.5f), 0.0001f)
+        assertEquals(0.5f, PcmCrossfadeMixer.gainIn(0.5f), 0.0001f)
+    }
+
+    @Test
+    fun `automatic follow uses an audible subordinate floor and lead fade owns final eight seconds`() {
         assertEquals(-50f, AutoTransitionPolicy.INCOMING_START_DB, 0.0001f)
-        assertEquals(-36f, AutoTransitionPolicy.INCOMING_UNDERLAY_CEILING_DB, 0.0001f)
+        assertEquals(-20f, AutoTransitionPolicy.INCOMING_UNDERLAY_CEILING_DB, 0.0001f)
+        assertEquals(-26f, AutoTransitionPolicy.DEFAULT_INCOMING_FLOOR_DB, 0.0001f)
         assertEquals(8_000, AutoTransitionPolicy.LEAD_FADE_WINDOW_MS)
         assertEquals(1_000, AutoTransitionPolicy.POST_DOMINANCE_TAIL_MS)
         assertEquals(-36f, AutoTransitionPolicy.LEAD_DB_AT_DOMINANCE, 0.0001f)

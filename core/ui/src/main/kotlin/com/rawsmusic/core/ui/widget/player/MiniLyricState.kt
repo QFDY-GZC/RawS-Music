@@ -26,20 +26,25 @@ internal data class MiniLyricPresentation(
 internal data class MiniLyricSource(
     val timingLines: List<IRichLyricLine>,
     val displayLines: List<MiniLyricLineState>,
-    val interludes: List<LyricInterlude>
+    val interludes: List<LyricInterlude>,
+    val timeline: LyricTimelineIndex,
 )
 
 internal fun prepareMiniLyricSource(
     lines: List<IRichLyricLine>,
     displayTranslation: Boolean,
     displayRoma: Boolean
-): MiniLyricSource = MiniLyricSource(
-    timingLines = lines,
-    displayLines = lines.mapIndexedNotNull { index, line ->
-        line.toMiniLyricDisplay(index, displayTranslation, displayRoma)
-    },
-    interludes = calculateLyricInterludes(lines)
-)
+): MiniLyricSource {
+    val interludes = calculateLyricInterludes(lines)
+    return MiniLyricSource(
+        timingLines = lines,
+        displayLines = lines.mapIndexedNotNull { index, line ->
+            line.toMiniLyricDisplay(index, displayTranslation, displayRoma)
+        },
+        interludes = interludes,
+        timeline = LyricTimelineIndex(lines, interludes),
+    )
+}
 
 internal fun resolveMiniLyricPresentation(
     lines: List<IRichLyricLine>,
@@ -54,7 +59,8 @@ internal fun resolveMiniLyricPresentation(
         displayLines = lines.mapIndexedNotNull { index, line ->
             line.toMiniLyricDisplay(index, displayTranslation, displayRoma)
         },
-        interludes = interludes
+        interludes = interludes,
+        timeline = LyricTimelineIndex(lines, interludes),
     ),
     positionMs = positionMs,
     maxPrimaryRows = maxPrimaryRows
@@ -70,11 +76,7 @@ internal fun resolveMiniLyricPresentation(
     }
 
     val displayLines = source.displayLines
-    val playback = calculateLyricPlaybackState(
-        source.timingLines,
-        positionMs,
-        source.interludes
-    )
+    val playback = calculateLyricPlaybackState(source.timeline, positionMs)
     val activeIndex = playback.currentLineIndex.takeIf { current ->
         displayLines.any { it.index == current }
     } ?: -1

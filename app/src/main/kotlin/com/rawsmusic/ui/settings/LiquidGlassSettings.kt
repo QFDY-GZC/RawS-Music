@@ -66,6 +66,7 @@ import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.rawsmusic.core.ui.widget.background.CustomMediaBackgroundState
 
 @Composable
 internal fun themeColors(): ThemeColors {
@@ -127,14 +128,21 @@ internal fun SettingsPage(
 ) {
     val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
     val pageBackground = if (isDark) Color(0xFF101014) else Color(0xFFF4F4F7)
+    val context = LocalContext.current
+    CustomMediaBackgroundState.ensureInitialized(context)
+    @Suppress("UNUSED_VARIABLE")
+    val customBackgroundRevision = CustomMediaBackgroundState.revision
+    val customSettingsBackground = CustomMediaBackgroundState.enabled &&
+        CustomMediaBackgroundState.showOnSettings
+    val resolvedPageBackground = if (customSettingsBackground) Color.Transparent else pageBackground
     Column(
         Modifier
             .fillMaxSize()
-            .background(pageBackground)
+            .background(resolvedPageBackground)
     ) {
         SmallTopAppBar(
             title = title,
-            color = pageBackground,
+            color = resolvedPageBackground,
             titleColor = MiuixTheme.colorScheme.onBackground,
             navigationIcon = {
                 if (onBack != null) {
@@ -190,6 +198,7 @@ fun LiquidGlassSettingsScreen(
     onNavigateToTransitionSettings: () -> Unit,
     onNavigateToPlayerInterface: () -> Unit,
     onNavigateToUsbDac: () -> Unit,
+    onNavigateToHardwareDeviceControl: () -> Unit,
     onNavigateToGlobalFont: () -> Unit,
     onNavigateToAlbumArt: () -> Unit,
     onWebDavBackup: () -> Unit,
@@ -199,6 +208,13 @@ fun LiquidGlassSettingsScreen(
 ) {
     val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
     val pageBackground = if (isDark) Color(0xFF101014) else Color(0xFFF4F4F7)
+    val context = LocalContext.current
+    CustomMediaBackgroundState.ensureInitialized(context)
+    @Suppress("UNUSED_VARIABLE")
+    val customBackgroundRevision = CustomMediaBackgroundState.revision
+    val customSettingsBackground = CustomMediaBackgroundState.enabled &&
+        CustomMediaBackgroundState.showOnSettings
+    val resolvedPageBackground = if (customSettingsBackground) Color.Transparent else pageBackground
     var searchQuery by remember { mutableStateOf("") }
 
     // Root sections and search use the same model. This prevents entries from
@@ -236,6 +252,12 @@ fun LiquidGlassSettingsScreen(
                     summary = stringResource(R.string.settings_usb_dac_summary),
                     keywords = stringResource(R.string.settings_usb_dac_keywords),
                     onClick = onNavigateToUsbDac
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.hardware_device_control_title),
+                    summary = stringResource(R.string.hardware_device_control_summary),
+                    keywords = stringResource(R.string.hardware_device_control_keywords),
+                    onClick = onNavigateToHardwareDeviceControl
                 )
             )
         ),
@@ -337,11 +359,11 @@ fun LiquidGlassSettingsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(pageBackground)
+            .background(resolvedPageBackground)
     ) {
         SmallTopAppBar(
             title = stringResource(R.string.settings_main_title),
-            color = pageBackground,
+            color = resolvedPageBackground,
             titleColor = MiuixTheme.colorScheme.onBackground,
             navigationIcon = {}
         )

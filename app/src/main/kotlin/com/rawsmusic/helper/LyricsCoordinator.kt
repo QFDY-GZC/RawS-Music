@@ -17,6 +17,9 @@ import com.rawsmusic.module.player.lyrics.LyricGetterBridge
 import com.rawsmusic.module.player.lyrics.TickerBridge
 import io.github.proify.lyricon.lyric.model.Song
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 歌词状态协调器。
@@ -61,7 +64,9 @@ class LyricsCoordinator(
     private var currentLyricData by mutableStateOf(LyricData())
     private var lyricsNeedSeekTo = false
     private var lastSongKey: String? = null
+    private var displayedLyricSongKey: String? = null
     private var lastSong: AudioFile? = null
+    private var lyricBuildGeneration: Int = 0
 
     private fun AudioFile.lyricKey(): String = "${path}|${id}|${duration}"
 
@@ -94,11 +99,16 @@ class LyricsCoordinator(
         lastSong = song
 
         if (isNewSong) {
+            // Do not let the previous song's lyric tree remain visible while the new file is
+            // being parsed. A brief empty state is safer than showing a perfectly valid lyric
+            // line for the wrong audio, especially when the user opens the lyric page immediately
+            // after a manual switch.
+            lyricSong = null
+            displayedLyricSongKey = null
             lyricPositionMs = 0L
             currentLyricText = ""
             currentLyricTranslation = ""
             currentLyricData = LyricData()
-            lyricSong = null
             clearExternalLyrics()
             onLyricEnabledChanged(false)
             publisher.beginSong(song)
@@ -127,27 +137,62 @@ class LyricsCoordinator(
         }
 
         val song = currentSong ?: return
-        currentLyricData = data
-
-        lyricSong = if (!data.isEmpty) {
-            data.toLyriconSong(
-                name = song.title.ifBlank { song.displayName },
-                artist = song.artist,
-                durationMs = song.duration
+        val generation = ++lyricBuildGeneration
+        if (data.isEmpty) {
+            publishPreparedLyrics(
+                requestSong = requestSong,
+                data = data,
+                preparedSong = null,
+                generation = generation,
             )
-        } else {
-            null
+            return
         }
+
+        // Converting LyricData into Lyricon's immutable row/word tree is pure but allocation-heavy.
+        // After a lyric write this used to happen on Main exactly when the user could swipe back to
+        // the lyric page. Build the replacement tree on Default and perform one small state swap on
+        // Main, keeping the previously displayed tree alive until the new one is fully prepared.
+        val title = song.title.ifBlank { song.displayName }
+        val artist = song.artist
+        val duration = song.duration
+        lifecycleScope.launch(Dispatchers.Default) {
+            val prepared = data.toLyriconSong(
+                name = title,
+                artist = artist,
+                durationMs = duration,
+            )
+            withContext(Dispatchers.Main.immediate) {
+                publishPreparedLyrics(
+                    requestSong = requestSong,
+                    data = data,
+                    preparedSong = prepared,
+                    generation = generation,
+                )
+            }
+        }
+    }
+
+    private fun publishPreparedLyrics(
+        requestSong: AudioFile,
+        data: LyricData,
+        preparedSong: Song?,
+        generation: Int,
+    ) {
+        if (generation != lyricBuildGeneration) return
+        val expectedKey = lastSongKey ?: return
+        val requestKey = requestSong.lyricKey()
+        val currentSong = getController()?.currentSong?.value ?: return
+        if (requestKey != expectedKey || currentSong.lyricKey() != expectedKey) return
+
+        currentLyricData = data
+        lyricSong = preparedSong
+        displayedLyricSongKey = requestKey
 
         displayTranslation = AppPreferences.Lyricon.displayTranslation
         displayRoma = AppPreferences.Lyricon.displayRoma
-
-        // 发布到所有出口（PlayerService + Lyricon）
-        publisher.publish(song, data)
-
+        publisher.publish(currentSong, data)
         onApplyLyricColors()
 
-        // 立即用当前播放位置推一次当前行，不等下一个 position tick
         val pos = getController()?.position?.value ?: 0L
         onPositionChanged(pos)
     }
@@ -157,7 +202,8 @@ class LyricsCoordinator(
      */
     fun onPositionChanged(positionMs: Long, updateUiPosition: Boolean = true) {
         val lyricPos = playbackToLyricPosition(positionMs)
-        if (updateUiPosition) {
+        val waitingForCurrentLyrics = lyricSong != null && displayedLyricSongKey != lastSongKey
+        if (updateUiPosition && !waitingForCurrentLyrics) {
             lyricPositionMs = lyricPos
         }
         updateExternalCurrentLine(lyricPos)

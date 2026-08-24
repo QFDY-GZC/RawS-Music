@@ -8,7 +8,7 @@ internal object PlaybackTransitionRuntime {
         get() = TransitionPreferences.manualTrackTransitionMode
 
     val manualFadeMs: Int
-        get() = TransitionPreferences.manualTrackFadeMs
+        get() = TransitionPreferences.manualTransitionDurationOrZero()
 
     val transportFadeMs: Int
         get() = TransitionPreferences.transportDurationOrZero()

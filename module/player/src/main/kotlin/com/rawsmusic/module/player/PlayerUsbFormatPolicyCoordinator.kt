@@ -126,10 +126,16 @@ internal class PlayerUsbFormatPolicyCoordinator(
     fun refreshCapabilities(reason: String) {
         val capabilities = usbEngine.getDeviceCapabilities()
         setCapabilities(capabilities)
+        val exactClockRates = capabilities?.pcmFormats
+            ?.filter { it.exactRateProvable }
+            ?.map { it.sampleRate }
+            ?.filter { it > 0 }
+            ?.distinct()
+            ?.sorted()
         AppLogger.i(
             TAG,
             "USB capabilities refreshed: reason=$reason rates=${capabilities?.supportedSampleRates} " +
-                "modes=${capabilities?.supportedPcmModes}",
+                "exactClockRates=$exactClockRates modes=${capabilities?.supportedPcmModes}",
         )
         reconcileOutputSettingsForOwner(capabilities)
     }

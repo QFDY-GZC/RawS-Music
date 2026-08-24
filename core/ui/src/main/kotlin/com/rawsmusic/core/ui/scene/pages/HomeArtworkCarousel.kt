@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -61,6 +62,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.isActive
 import androidx.compose.ui.zIndex
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.scene.HomeFullCoverSourceAnchor
@@ -131,9 +133,18 @@ internal fun rememberHomeArtworkCarouselState(
     currentSong: AudioFile?,
     reportedQueueIndex: Int
 ): HomeArtworkCarouselState {
-    val hostSongs = songs.ifEmpty { listOfNotNull(currentSong) }
-    val resolvedIndex = resolveCarouselCenterIndex(hostSongs, currentSong, reportedQueueIndex)
-    val currentSongIdentity = carouselSongIdentity(currentSong)
+    // The queue cursor and its song are one snapshot. Do not let the independently
+    // published currentSong flow win for one frame while the queue has already
+    // committed the target, otherwise the carousel renders target -> previous -> target.
+    val queueCurrentSong = songs.getOrNull(reportedQueueIndex)
+    val snapshotCurrentSong = queueCurrentSong ?: currentSong
+    val hostSongs = songs.ifEmpty { listOfNotNull(snapshotCurrentSong) }
+    val resolvedIndex = resolveCarouselCenterIndex(
+        hostSongs,
+        snapshotCurrentSong,
+        reportedQueueIndex,
+    )
+    val currentSongIdentity = carouselSongIdentity(snapshotCurrentSong)
     val state = remember { HomeArtworkCarouselState(hostSongs, resolvedIndex) }
     LaunchedEffect(
         resolvedIndex,
@@ -152,9 +163,11 @@ internal fun rememberHomeArtworkCarouselState(
         val awaiting = state.awaitingQueueIndex
         val awaitingIdentity = state.awaitingSongIdentity
         if (awaiting >= 0 && awaitingIdentity != null) {
-            val confirmedIndex = hostSongs.indexOfFirst {
-                    carouselSongIdentity(it) == awaitingIdentity
-                }
+            val confirmedIndex = reportedQueueIndex.takeIf { index ->
+                carouselSongIdentity(hostSongs.getOrNull(index)) == awaitingIdentity
+            } ?: hostSongs.indexOfFirst {
+                carouselSongIdentity(it) == awaitingIdentity
+            }
             val hostPointsAtConfirmedSong =
                 confirmedIndex >= 0 &&
                     resolvedIndex == confirmedIndex &&
@@ -209,7 +222,9 @@ internal fun rememberHomeArtworkCarouselState(
                             state.awaitingQueueIndex = -1
                             state.awaitingSongIdentity = null
                             state.hostIndexGuardUntilMs = 0L
-                            state.renderSongs = hostSongs
+                            if (!sameCarouselQueue(state.renderSongs, hostSongs)) {
+                                state.renderSongs = hostSongs
+                            }
                             state.centerIndex = resolvedIndex.coerceIn(
                                 0,
                                 hostSongs.lastIndex.coerceAtLeast(0)
@@ -230,75 +245,18 @@ internal fun rememberHomeArtworkCarouselState(
             }
         }
         if (!state.interactionActive) {
-            val previousIdentity = carouselSongIdentity(
-                state.renderSongs.getOrNull(
-                    state.centerIndex.coerceIn(0, state.renderSongs.lastIndex.coerceAtLeast(0))
-                )
-            )
-            val previousIndexInHost = hostSongs.indexOfFirst {
-                carouselSongIdentity(it) == previousIdentity
-            }
             val targetIndex = resolvedIndex.coerceIn(0, hostSongs.lastIndex.coerceAtLeast(0))
-            if (state.fullCoverTransitionActive) {
-                // The home scene remains alive below the portrait dial. Keep its hidden centre lane
-                // atomically aligned to the selected full-cover song so the final reveal cannot
-                // rebind from an older queue item after the shared artwork reaches its anchor.
-                Snapshot.withMutableSnapshot {
-                    state.hostTransitionActive = false
-                    state.renderSongs = hostSongs
-                    state.centerIndex = targetIndex
-                    state.progress = 0f
-                }
-                return@LaunchedEffect
-            }
-            if (previousIndexInHost < 0) {
-                Snapshot.withMutableSnapshot {
-                    state.renderSongs = hostSongs
-                    state.centerIndex = targetIndex
-                    state.progress = 0f
-                }
-                return@LaunchedEffect
-            }
-            state.renderSongs = hostSongs
-            state.centerIndex = previousIndexInHost
-            val direction = resolveCarouselHostDirection(
-                oldIndex = previousIndexInHost,
-                newIndex = targetIndex,
-                size = hostSongs.size
-            )
-            if (direction == 0 || hostSongs.size <= 1) {
-                Snapshot.withMutableSnapshot {
-                    state.centerIndex = targetIndex
-                    state.progress = 0f
-                }
-                return@LaunchedEffect
-            }
-            if (direction == Int.MIN_VALUE) {
-                Snapshot.withMutableSnapshot {
-                    state.centerIndex = targetIndex
-                    state.progress = 0f
-                }
-                return@LaunchedEffect
-            }
-
-            state.hostTransitionActive = true
-            try {
-                val animation = Animatable(0f)
-                animation.animateTo(
-                    targetValue = direction.toFloat(),
-                    animationSpec = tween(
-                        durationMillis = MINI_PLAYER_SYNC_DURATION_MS,
-                        easing = HomeCarouselHostSwitchEasing
-                    )
-                ) {
-                    state.progress = value
-                }
-                Snapshot.withMutableSnapshot {
-                    state.centerIndex = targetIndex
-                    state.progress = 0f
-                }
-            } finally {
+            // Gesture settle already animated the carousel before transport submission. Running a
+            // second host animation when the queue confirms the same selection briefly resurrects
+            // the retiring centre lane (target -> previous -> target). External button/natural
+            // changes also arrive as a committed queue snapshot, so bind them atomically here.
+            Snapshot.withMutableSnapshot {
                 state.hostTransitionActive = false
+                if (!sameCarouselQueue(state.renderSongs, hostSongs)) {
+                    state.renderSongs = hostSongs
+                }
+                state.centerIndex = targetIndex
+                state.progress = 0f
             }
         }
     }
@@ -402,7 +360,7 @@ internal fun HomeArtworkCarousel(
     lyricSong: Song?,
     playbackPositionMs: Long,
     isPlaying: Boolean,
-    onSelectSong: (List<AudioFile>, AudioFile, Int) -> Unit,
+    onNavigate: (Int) -> Unit,
     onCurrentArtworkLongPress: (HomeFullCoverSourceAnchor) -> Unit = {},
     onCurrentArtworkBoundsChanged: (AudioFile, Rect) -> Unit = { _, _ -> },
     hideCenterForFullscreenTransition: Boolean = false,
@@ -415,6 +373,15 @@ internal fun HomeArtworkCarousel(
     var settleJob by remember { mutableStateOf<Job?>(null) }
     var settleGeneration by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
+    val fontScale = density.fontScale
+    val horizontalLyricArtworkOffset = if (
+        showLyrics && style == HomeArtworkCarouselStyle.CurrentCarousel
+    ) {
+        28.dp + (40.dp * (fontScale - 1f).coerceIn(0f, 0.5f))
+    } else {
+        0.dp
+    }
+    val carouselHeight = 340.dp + horizontalLyricArtworkOffset
     var currentArtworkBounds by remember { mutableStateOf<Rect?>(null) }
     val currentCanvasArtworkBoundsHandle = remember { HomeCanvasArtworkBoundsHandle() }
     var carouselHostBounds by remember { mutableStateOf<Rect?>(null) }
@@ -493,7 +460,7 @@ internal fun HomeArtworkCarousel(
                             "target=$targetIndex identity=${state.awaitingSongIdentity?.takeLast(48)} " +
                             "queue=${carouselQueueTrace(availableSongs)}"
                     )
-                    onSelectSong(availableSongs, targetSong, targetIndex)
+                    onNavigate(commitDirection)
                 } else {
                     state.progress = 0f
                 }
@@ -516,7 +483,7 @@ internal fun HomeArtworkCarousel(
     BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
-            .height(340.dp)
+            .height(carouselHeight)
             .onGloballyPositioned { coordinates ->
                 carouselHostBounds = coordinates.boundsInRoot()
             }
@@ -634,6 +601,7 @@ internal fun HomeArtworkCarousel(
                             modifier = Modifier
                                 .requiredWidth(containerWidth + 32.dp)
                                 .fillMaxHeight()
+                                .offset(y = horizontalLyricArtworkOffset)
                                 .align(Alignment.TopCenter)
                         )
                         if (showLyrics) {
@@ -706,7 +674,7 @@ private fun rememberHomeCarouselTimelinePosition(
         value = clamp(safeAnchor)
         if (!isPlaying) return@produceState
 
-        while (true) {
+        while (isActive) {
             withFrameNanos { }
             val elapsedMs = (SystemClock.elapsedRealtime() - anchorRealtimeMs).coerceAtLeast(0L)
             val next = clamp(safeAnchor + elapsedMs)
@@ -802,7 +770,10 @@ private fun HomeArtworkDial(
                             // Keep the physical dial lane mounted while its source changes. The
                             // provider replaces the bitmap atomically, preserving a stable
                             // artwork holder instead of exposing an empty transition frame.
-                            holdPreviousOnKeyChange = true,
+                    // Every physical lane is reused for another queue item while swiping. Keeping
+                    // its previous request as a placeholder produces target -> old -> target
+                    // frames even when the target is already cached.
+                    holdPreviousOnKeyChange = false,
                             fadeInMillis = 0,
                             filterQuality = FilterQuality.Medium,
                         )
@@ -811,19 +782,6 @@ private fun HomeArtworkDial(
             }
         }
     }
-}
-
-private const val MINI_PLAYER_SYNC_DURATION_MS = 360
-
-private fun resolveCarouselHostDirection(
-    oldIndex: Int,
-    newIndex: Int,
-    size: Int
-): Int {
-    if (size <= 1 || oldIndex == newIndex) return 0
-    if ((oldIndex + 1) % size == newIndex) return 1
-    if ((oldIndex - 1 + size) % size == newIndex) return -1
-    return Int.MIN_VALUE
 }
 
 private fun smoothStep(value: Float): Float {
@@ -841,22 +799,12 @@ private fun resolveCarouselCenterIndex(
     reportedQueueIndex: Int
 ): Int {
     if (songs.isEmpty()) return 0
-    // Queue selection is committed before the decoder-owned currentSong changes. During a manual
-    // switch the backend may briefly publish the retiring song again, so using currentSong first
-    // makes the carousel render target -> old -> target. The queue index is the transport's
-    // authoritative selection and remains stable throughout that hand-off.
+    // The queue cursor and song are published as one visibleQueue snapshot. It is the authority;
+    // resolving the separately emitted song identity first reintroduces the previous-track frame.
     if (reportedQueueIndex in songs.indices) return reportedQueueIndex
-    val exactIndex = currentSong?.let { current ->
-        songs.indexOfFirst { candidate ->
-            candidate.path == current.path &&
-                candidate.cueOffsetMs == current.cueOffsetMs &&
-                candidate.cueTrackIndex == current.cueTrackIndex
-        }
-    } ?: -1
-    return when {
-        exactIndex in songs.indices -> exactIndex
-        else -> 0
-    }
+    return songs.indexOfFirst {
+        carouselSongIdentity(it) == carouselSongIdentity(currentSong)
+    }.takeIf { it >= 0 } ?: 0
 }
 
 private fun carouselSongIdentity(song: AudioFile?): String? {

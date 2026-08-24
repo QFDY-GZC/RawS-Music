@@ -7,9 +7,11 @@ namespace rawsmusic::usb {
 
 // Best-effort scheduling helper for user-space USB audio threads.
 //
-// This mirrors the stable parts of the UAPP-style design: named native USB
-// threads, very small timer slack, best-effort nice boost, and CPU-affinity
-// selection based on big/mid/little clusters.  It intentionally does NOT call
+// Keep the stable parts of the native USB design: named worker threads, very small timer
+// slack and a best-effort nice boost.  CPU affinity is intentionally inherited
+// from Android's current cpuset instead of being forced to a performance cluster.
+// Fixed big-core affinity can strand these threads when an OEM parks that cluster
+// after the app goes to the background.  It intentionally does NOT call
 // sched_setscheduler(SCHED_FIFO/SCHED_RR): those calls are frequently denied to
 // normal apps and, on some OEM kernels, successful RT scheduling can starve
 // other work badly enough to trigger watchdog-style instability.
@@ -27,6 +29,7 @@ struct UsbThreadScheduleSnapshot {
     int affinityCpuCount = 0;
     int affinityTargetFreqKHz = 0;
     int affinityHighestFreqKHz = 0;
+    int currentCpu = -1;
     bool avoidedUniquePrimeCore = false;
     bool timerSlackRequested = false;
     bool threadNamed = false;

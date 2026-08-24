@@ -52,6 +52,7 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SliderPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
@@ -88,6 +89,12 @@ fun ScanSettingsPage(
     var ignoreVideoFormats by remember {
         mutableStateOf(AppPreferences.Scanner.ignoreVideoFormats)
     }
+
+    var artistSeparators by remember { mutableStateOf(AppPreferences.Library.artistSeparators) }
+    var artistProtectedNames by remember { mutableStateOf(AppPreferences.Library.artistProtectedNames) }
+    var genreSeparators by remember { mutableStateOf(AppPreferences.Library.genreSeparators) }
+    var genreProtectedNames by remember { mutableStateOf(AppPreferences.Library.genreProtectedNames) }
+    var tagIgnoreCase by remember { mutableStateOf(AppPreferences.Library.tagIgnoreCase) }
 
     // 生命周期监听：从系统权限页返回时同步状态
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -259,6 +266,78 @@ fun ScanSettingsPage(
                 )
             }
 
+            // ── 分类名称拆分 ──
+            SmallTitle(text = stringResource(R.string.scan_settings_name_split_section))
+            CardGroup {
+                Text(
+                    text = stringResource(R.string.scan_settings_name_split_summary),
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    fontSize = 13.sp,
+                    lineHeight = 20.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                )
+                NameSplitField(
+                    label = stringResource(R.string.scan_settings_artist_separators),
+                    summary = stringResource(R.string.scan_settings_artist_separators_summary),
+                    value = artistSeparators,
+                    onValueChange = {
+                        artistSeparators = it
+                        AppPreferences.Library.artistSeparators = it
+                    }
+                )
+                NameSplitField(
+                    label = stringResource(R.string.scan_settings_artist_protected_names),
+                    summary = stringResource(R.string.scan_settings_artist_protected_names_summary),
+                    value = artistProtectedNames,
+                    onValueChange = {
+                        artistProtectedNames = it
+                        AppPreferences.Library.artistProtectedNames = it
+                    }
+                )
+                MiuixDivider()
+                NameSplitField(
+                    label = stringResource(R.string.scan_settings_genre_separators),
+                    summary = stringResource(R.string.scan_settings_genre_separators_summary),
+                    value = genreSeparators,
+                    onValueChange = {
+                        genreSeparators = it
+                        AppPreferences.Library.genreSeparators = it
+                    }
+                )
+                NameSplitField(
+                    label = stringResource(R.string.scan_settings_genre_protected_names),
+                    summary = stringResource(R.string.scan_settings_genre_protected_names_summary),
+                    value = genreProtectedNames,
+                    onValueChange = {
+                        genreProtectedNames = it
+                        AppPreferences.Library.genreProtectedNames = it
+                    }
+                )
+                SwitchPreference(
+                    title = stringResource(R.string.scan_settings_tag_ignore_case),
+                    summary = stringResource(R.string.scan_settings_tag_ignore_case_summary),
+                    checked = tagIgnoreCase,
+                    onCheckedChange = {
+                        tagIgnoreCase = it
+                        AppPreferences.Library.tagIgnoreCase = it
+                    }
+                )
+                TextButton(
+                    text = stringResource(R.string.scan_settings_name_split_apply),
+                    onClick = {
+                        onRescan()
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.scan_settings_name_split_applied),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+
             // ── 提示 ──
             SmallTitle(text = stringResource(R.string.scan_settings_hint_section))
             CardGroup {
@@ -335,6 +414,37 @@ private fun SliderRow(
             steps = steps,
             enabled = enabled,
             hapticEffect = SliderDefaults.SliderHapticEffect.Step
+        )
+    }
+}
+
+@Composable
+private fun NameSplitField(
+    label: String,
+    summary: String,
+    value: String,
+    onValueChange: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        TextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = label,
+            singleLine = false,
+            minLines = 1,
+            maxLines = 4,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            text = summary,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            fontSize = 12.sp,
+            lineHeight = 17.sp,
+            modifier = Modifier.padding(top = 4.dp)
         )
     }
 }

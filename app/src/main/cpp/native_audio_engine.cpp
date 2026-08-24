@@ -12,8 +12,11 @@
 #include <type_traits>
 #include <vector>
 
+#include "raw_transition_trace.h"
+
 #include <SLES/OpenSLES.h>
 #include <SLES/OpenSLES_Android.h>
+#include <SLES/OpenSLES_AndroidConfiguration.h>
 
 #include <aaudio/AAudio.h>
 
@@ -28,12 +31,23 @@ constexpr int MODE_OPENSL_ES = 0;
 constexpr int MODE_AAUDIO = 1;
 constexpr int MODE_DIRECT = 2;
 
+// API 32 values from aaudio/AAudio.h. Keep them local so this file still builds
+// against older NDK headers while resolving the API 32 symbols dynamically.
+constexpr int32_t AAUDIO_USAGE_MEDIA_VALUE = 1;
+constexpr int32_t AAUDIO_CONTENT_TYPE_MUSIC_VALUE = 2;
+constexpr int32_t AAUDIO_SPATIALIZATION_AUTO_VALUE = 1;
+constexpr int32_t AAUDIO_SPATIALIZATION_NEVER_VALUE = 2;
+
 constexpr int FORMAT_PCM_I16 = 1;
 constexpr int FORMAT_PCM_FLOAT = 2;
 // RawSMusic decoder outputs 24/32-bit PCM as S32LE.  Direct/AAudio must
 // request an integer 32-bit stream when AudioTrack probing returned
 // ENCODING_PCM_32BIT; treating it as I16 or FLOAT causes full-scale noise.
 constexpr int FORMAT_PCM_I32 = 3;
+
+// Native write result used only when a lifecycle pause wins before a PCM block can be queued.
+// Kotlin parks and retries the exact same PCM block after the backend has been restarted.
+constexpr int WRITE_RESULT_PAUSED = -2;
 
 #ifndef AAUDIO_FORMAT_PCM_I32
 #define AAUDIO_FORMAT_PCM_I32 ((aaudio_format_t)4)
@@ -74,6 +88,10 @@ struct AAudioApi {
     void (*builderSetFormat)(AAudioStreamBuilder*, aaudio_format_t) = nullptr;
     void (*builderSetPerformanceMode)(AAudioStreamBuilder*, aaudio_performance_mode_t) = nullptr;
     void (*builderSetSharingMode)(AAudioStreamBuilder*, aaudio_sharing_mode_t) = nullptr;
+    void (*builderSetUsage)(AAudioStreamBuilder*, int32_t) = nullptr;
+    void (*builderSetContentType)(AAudioStreamBuilder*, int32_t) = nullptr;
+    void (*builderSetSpatializationBehavior)(AAudioStreamBuilder*, int32_t) = nullptr;
+    void (*builderSetIsContentSpatialized)(AAudioStreamBuilder*, bool) = nullptr;
     void (*builderSetDeviceId)(AAudioStreamBuilder*, int32_t) = nullptr;
     aaudio_result_t (*builderOpenStream)(AAudioStreamBuilder*, AAudioStream**) = nullptr;
     aaudio_result_t (*builderDelete)(AAudioStreamBuilder*) = nullptr;
@@ -90,6 +108,8 @@ struct AAudioApi {
     int32_t (*streamGetSampleRate)(AAudioStream*) = nullptr;
     int32_t (*streamGetChannelCount)(AAudioStream*) = nullptr;
     aaudio_format_t (*streamGetFormat)(AAudioStream*) = nullptr;
+    int32_t (*streamGetSpatializationBehavior)(AAudioStream*) = nullptr;
+    bool (*streamIsContentSpatialized)(AAudioStream*) = nullptr;
     aaudio_result_t (*streamSetVolume)(AAudioStream*, float) = nullptr;
     int32_t (*streamGetDeviceId)(AAudioStream*) = nullptr;
     const char* (*convertResultToText)(aaudio_result_t) = nullptr;
@@ -148,6 +168,10 @@ static AAudioApi& aaudioApi() {
         load(api.builderSetFormat, "AAudioStreamBuilder_setFormat");
         load(api.builderSetPerformanceMode, "AAudioStreamBuilder_setPerformanceMode");
         load(api.builderSetSharingMode, "AAudioStreamBuilder_setSharingMode");
+        load(api.builderSetUsage, "AAudioStreamBuilder_setUsage");
+        load(api.builderSetContentType, "AAudioStreamBuilder_setContentType");
+        load(api.builderSetSpatializationBehavior, "AAudioStreamBuilder_setSpatializationBehavior");
+        load(api.builderSetIsContentSpatialized, "AAudioStreamBuilder_setIsContentSpatialized");
         load(api.builderSetDeviceId, "AAudioStreamBuilder_setDeviceId");
         load(api.builderOpenStream, "AAudioStreamBuilder_openStream");
         load(api.builderDelete, "AAudioStreamBuilder_delete");
@@ -164,6 +188,8 @@ static AAudioApi& aaudioApi() {
         load(api.streamGetSampleRate, "AAudioStream_getSampleRate");
         load(api.streamGetChannelCount, "AAudioStream_getChannelCount");
         load(api.streamGetFormat, "AAudioStream_getFormat");
+        load(api.streamGetSpatializationBehavior, "AAudioStream_getSpatializationBehavior");
+        load(api.streamIsContentSpatialized, "AAudioStream_isContentSpatialized");
         load(api.streamSetVolume, "AAudioStream_setVolume");
         load(api.streamGetDeviceId, "AAudioStream_getDeviceId");
         load(api.convertResultToText, "AAudio_convertResultToText");
@@ -173,14 +199,29 @@ static AAudioApi& aaudioApi() {
 
 class AAudioOutput final : public NativeOutput {
 public:
-    AAudioOutput(int mode, int sampleRate, int channels, int format, int bufferFrames, int32_t preferredDeviceId)
+    AAudioOutput(
+        int mode,
+        int sampleRate,
+        int channels,
+        int format,
+        int bufferFrames,
+        int32_t preferredDeviceId,
+        int spatializationBehavior,
+        bool contentSpatialized
+    )
         : mode_(mode),
           sampleRate_(sampleRate),
           channels_(channels),
           format_(format),
           frameBytes_(channels * bytesPerSample(format)),
           bufferFrames_(bufferFrames),
-          preferredDeviceId_(std::max<int32_t>(0, preferredDeviceId)) {}
+          preferredDeviceId_(std::max<int32_t>(0, preferredDeviceId)),
+          spatializationBehavior_(
+              spatializationBehavior == AAUDIO_SPATIALIZATION_AUTO_VALUE
+                  ? AAUDIO_SPATIALIZATION_AUTO_VALUE
+                  : AAUDIO_SPATIALIZATION_NEVER_VALUE
+          ),
+          contentSpatialized_(contentSpatialized) {}
 
     ~AAudioOutput() override {
         closeStream();
@@ -358,11 +399,31 @@ private:
         api.builderSetChannelCount(builder, channels_);
         const aaudio_format_t requestedAaudioFormat = aaudioFormatForNativeFormat(format_);
         api.builderSetFormat(builder, requestedAaudioFormat);
-        api.builderSetPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+        // Music playback is not an interactive synthesizer. The device report shows
+        // the keyboard/touch loudness regression only on native backends, whose common
+        // path was the explicit low-latency request. Keep the AAudio protocol but use
+        // its balanced basic path so ordinary system interaction sounds stay isolated.
+        api.builderSetPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_NONE);
         api.builderSetSharingMode(
             builder,
             mode_ == MODE_DIRECT ? AAUDIO_SHARING_MODE_EXCLUSIVE : AAUDIO_SHARING_MODE_SHARED
         );
+        if (api.builderSetUsage) {
+            api.builderSetUsage(builder, AAUDIO_USAGE_MEDIA_VALUE);
+        }
+        if (api.builderSetContentType) {
+            api.builderSetContentType(builder, AAUDIO_CONTENT_TYPE_MUSIC_VALUE);
+        }
+        if (api.builderSetSpatializationBehavior) {
+            const int32_t behavior =
+                mode_ == MODE_DIRECT
+                    ? AAUDIO_SPATIALIZATION_NEVER_VALUE
+                    : spatializationBehavior_;
+            api.builderSetSpatializationBehavior(builder, behavior);
+        }
+        if (api.builderSetIsContentSpatialized) {
+            api.builderSetIsContentSpatialized(builder, contentSpatialized_);
+        }
         if (preferredDeviceId_ > 0) {
             if (api.builderSetDeviceId) {
                 api.builderSetDeviceId(builder, preferredDeviceId_);
@@ -387,6 +448,12 @@ private:
         const aaudio_format_t actualFormat = api.streamGetFormat(stream_);
         const aaudio_sharing_mode_t actualSharing = api.streamGetSharingMode(stream_);
         const int32_t actualDeviceId = api.streamGetDeviceId ? api.streamGetDeviceId(stream_) : 0;
+        const int actualSpatializationBehavior = api.streamGetSpatializationBehavior
+            ? api.streamGetSpatializationBehavior(stream_)
+            : -1;
+        const int actualContentSpatialized = api.streamIsContentSpatialized
+            ? (api.streamIsContentSpatialized(stream_) ? 1 : 0)
+            : -1;
 
         // DIRECT means an exclusive AAudio stream with the exact probed format.
         // If the vendor silently gives us shared mode or a different format, do
@@ -411,7 +478,7 @@ private:
             api.streamSetBufferSizeInFrames(stream_, std::min(bufferFrames_, capacity));
         }
         if (stream_) api.streamSetVolume(stream_, volume_);
-        LOGI("AAudio opened mode=%d sharing=%d actualRate=%d ch=%d fmt=%d requestedFmt=%d requestedDeviceId=%d actualDeviceId=%d buffer=%d/%d",
+        LOGI("AAudio opened mode=%d sharing=%d actualRate=%d ch=%d fmt=%d requestedFmt=%d requestedDeviceId=%d actualDeviceId=%d spatialBehavior=%d contentSpatialized=%d buffer=%d/%d",
              mode_,
              actualSharing,
              actualRate,
@@ -420,6 +487,8 @@ private:
              requestedAaudioFormat,
              preferredDeviceId_,
              actualDeviceId,
+             actualSpatializationBehavior,
+             actualContentSpatialized,
              api.streamGetBufferSizeInFrames(stream_),
              api.streamGetBufferCapacityInFrames(stream_));
         return true;
@@ -450,6 +519,8 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<int64_t> framesWritten_{0};
     int32_t preferredDeviceId_ = 0;
+    int32_t spatializationBehavior_ = AAUDIO_SPATIALIZATION_NEVER_VALUE;
+    bool contentSpatialized_ = false;
     float volume_ = 1.0f;
     AAudioStream* stream_ = nullptr;
 };
@@ -487,7 +558,7 @@ public:
 
         SLDataLocator_AndroidSimpleBufferQueue locatorQueue = {
             SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE,
-            2
+            static_cast<SLuint32>(kQueueSlots)
         };
         SLDataFormat_PCM formatPcm = {};
         formatPcm.formatType = SL_DATAFORMAT_PCM;
@@ -506,10 +577,51 @@ public:
         };
         SLDataSink sink = { &locatorOutputMix, nullptr };
 
-        const SLInterfaceID ids[] = { SL_IID_BUFFERQUEUE, SL_IID_VOLUME };
-        const SLboolean req[] = { SL_BOOLEAN_TRUE, SL_BOOLEAN_FALSE };
-        result = (*engine_)->CreateAudioPlayer(engine_, &playerObject_, &source, &sink, 2, ids, req);
+        const SLInterfaceID ids[] = {
+            SL_IID_BUFFERQUEUE,
+            SL_IID_VOLUME,
+            SL_IID_ANDROIDCONFIGURATION
+        };
+        const SLboolean req[] = {
+            SL_BOOLEAN_TRUE,
+            SL_BOOLEAN_FALSE,
+            SL_BOOLEAN_FALSE
+        };
+        result = (*engine_)->CreateAudioPlayer(engine_, &playerObject_, &source, &sink, 3, ids, req);
         if (result != SL_RESULT_SUCCESS || playerObject_ == nullptr) return false;
+
+        // Android defaults OpenSL ES players to the latency performance mode. The
+        // device report shows the keyboard/touch loudness regression only on native
+        // backends, so explicitly request the normal media path before Realize while
+        // keeping OpenSL ES as the selected protocol.
+        SLAndroidConfigurationItf androidConfig = nullptr;
+        const SLresult configInterfaceResult =
+            (*playerObject_)->GetInterface(playerObject_, SL_IID_ANDROIDCONFIGURATION, &androidConfig);
+        if (configInterfaceResult == SL_RESULT_SUCCESS && androidConfig != nullptr) {
+            const SLint32 streamType = SL_ANDROID_STREAM_MEDIA;
+            const SLresult streamTypeResult = (*androidConfig)->SetConfiguration(
+                androidConfig,
+                SL_ANDROID_KEY_STREAM_TYPE,
+                &streamType,
+                sizeof(streamType)
+            );
+            const SLuint32 performanceMode = SL_ANDROID_PERFORMANCE_NONE;
+            const SLresult performanceResult = (*androidConfig)->SetConfiguration(
+                androidConfig,
+                SL_ANDROID_KEY_PERFORMANCE_MODE,
+                &performanceMode,
+                sizeof(performanceMode)
+            );
+            LOGI(
+                "OpenSL Android config: streamTypeResult=%u performanceResult=%u performanceMode=%u",
+                streamTypeResult,
+                performanceResult,
+                performanceMode
+            );
+        } else {
+            LOGW("OpenSL Android configuration interface unavailable: result=%u", configInterfaceResult);
+        }
+
         result = (*playerObject_)->Realize(playerObject_, SL_BOOLEAN_FALSE);
         if (result != SL_RESULT_SUCCESS) return false;
         result = (*playerObject_)->GetInterface(playerObject_, SL_IID_PLAY, &play_);
@@ -521,32 +633,76 @@ public:
 
         const int targetFrames = std::max(bufferFrames_, 512);
         bufferBytes_ = std::max(targetFrames * frameBytes_ / 2, frameBytes_ * 256);
-        buffers_[0].resize(bufferBytes_);
-        buffers_[1].resize(bufferBytes_);
-        LOGI("OpenSL opened rate=%d ch=%d bufferBytes=%d", sampleRate_, channels_, bufferBytes_);
+        for (int i = 0; i < kQueueSlots; ++i) {
+            buffers_[i].resize(bufferBytes_);
+        }
+        LOGI(
+            "OpenSL opened rate=%d ch=%d bufferBytes=%d queueSlots=%d",
+            sampleRate_,
+            channels_,
+            bufferBytes_,
+            kQueueSlots
+        );
         return true;
     }
 
     bool start() override {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!play_) return false;
-        (*play_)->SetPlayState(play_, SL_PLAYSTATE_PLAYING);
-        running_ = true;
-        return true;
+        if (!play_ || !bufferQueue_) return false;
+
+        // start() is also the resume entry point. Allow the writer to prime the queue before the
+        // AudioTrack hidden under Android OpenSL is put into PLAYING. Starting an empty queue lets
+        // the platform immediately underrun/stop; if resume happens with count=0 that can leave the
+        // UI in PLAYING while no buffer ever gets a stable drain window.
+        lifecyclePaused_ = false;
+        acceptWrites_ = true;
+        syncQueueStateLocked("start_before_play");
+        const int queued = inFlight_.load(std::memory_order_acquire);
+        if (queued <= 0) {
+            running_.store(false, std::memory_order_release);
+            startPending_ = true;
+            canWrite_.notify_all();
+            LOGI("OpenSL start pending PCM prime: queued=0");
+            return true;
+        }
+
+        startPending_ = false;
+        const bool started = setPlayingLocked("start_with_queue");
+        canWrite_.notify_all();
+        return started;
     }
 
     void pause() override {
         std::lock_guard<std::mutex> lock(mutex_);
-        running_ = false;
-        if (play_) (*play_)->SetPlayState(play_, SL_PLAYSTATE_PAUSED);
+        lifecyclePaused_ = true;
+        acceptWrites_ = false;
+        startPending_ = false;
+        running_.store(false, std::memory_order_release);
+        if (play_) {
+            const SLresult result = (*play_)->SetPlayState(play_, SL_PLAYSTATE_PAUSED);
+            if (result != SL_RESULT_SUCCESS) {
+                LOGE("OpenSL SetPlayState(PAUSED) failed: %u", result);
+            } else {
+                SLuint32 state = SL_PLAYSTATE_STOPPED;
+                const SLresult stateResult = (*play_)->GetPlayState(play_, &state);
+                if (stateResult == SL_RESULT_SUCCESS && state != SL_PLAYSTATE_PAUSED) {
+                    LOGW("OpenSL pause validation unexpected state=%u", state);
+                }
+            }
+        }
+        syncQueueStateLocked("pause_after_state");
+        canWrite_.notify_all();
     }
 
     void stop() override {
         std::lock_guard<std::mutex> lock(mutex_);
-        running_ = false;
+        lifecyclePaused_ = false;
+        acceptWrites_ = false;
+        startPending_ = false;
+        running_.store(false, std::memory_order_release);
         if (play_) (*play_)->SetPlayState(play_, SL_PLAYSTATE_STOPPED);
         if (bufferQueue_) (*bufferQueue_)->Clear(bufferQueue_);
-        inFlight_ = 0;
+        inFlight_.store(0, std::memory_order_release);
         writeIndex_ = 0;
         canWrite_.notify_all();
     }
@@ -554,7 +710,7 @@ public:
     void flush() override {
         std::lock_guard<std::mutex> lock(mutex_);
         if (bufferQueue_) (*bufferQueue_)->Clear(bufferQueue_);
-        inFlight_ = 0;
+        inFlight_.store(0, std::memory_order_release);
         writeIndex_ = 0;
         framesWritten_.store(0);
         canWrite_.notify_all();
@@ -565,23 +721,49 @@ public:
         int accepted = 0;
         while (accepted < length) {
             std::unique_lock<std::mutex> lock(mutex_);
-            canWrite_.wait(lock, [&] { return inFlight_ < 2 || !running_; });
+            canWrite_.wait(lock, [&] {
+                return inFlight_.load(std::memory_order_acquire) < kQueueSlots || !acceptWrites_;
+            });
             if (!bufferQueue_) return -1;
+
+            // Initial startup is intentionally writable before PLAYING so FfmpegAudioPlayer can
+            // prefill the OpenSL queue. A real lifecycle PAUSE is different: preserve the exact PCM
+            // block and let Kotlin retry it after resume. STOP/CLOSE is a terminal write failure.
+            if (!acceptWrites_) {
+                if (lifecyclePaused_) {
+                    return accepted > 0 ? accepted : WRITE_RESULT_PAUSED;
+                }
+                return accepted > 0 ? accepted : -1;
+            }
+
             const int bytes = std::min(bufferBytes_, length - accepted);
             auto& dst = buffers_[writeIndex_];
             std::memcpy(dst.data(), data + accepted, bytes);
-            const int queuedIndex = writeIndex_;
-            writeIndex_ = (writeIndex_ + 1) % 2;
-            ++inFlight_;
-            SLresult result = (*bufferQueue_)->Enqueue(bufferQueue_, dst.data(), bytes);
+            writeIndex_ = (writeIndex_ + 1) % kQueueSlots;
+            const SLresult result = (*bufferQueue_)->Enqueue(bufferQueue_, dst.data(), bytes);
             if (result != SL_RESULT_SUCCESS) {
-                --inFlight_;
                 LOGE("OpenSL Enqueue failed: %u", result);
                 return accepted > 0 ? accepted : -1;
             }
-            (void)queuedIndex;
+            // Publish queue ownership only after Enqueue succeeds. A completion callback for the
+            // previous buffer may race this call; re-reading GetState makes either ordering converge
+            // to the same authoritative count instead of incrementing/decrementing around a race.
+            if (!refreshInFlightFromQueue(bufferQueue_)) {
+                inFlight_.fetch_add(1, std::memory_order_acq_rel);
+            }
             accepted += bytes;
             framesWritten_.fetch_add(bytes / frameBytes_);
+
+            // Resume from a completely drained queue without ever entering PLAYING with zero PCM.
+            // start() marks startPending_, wakes the writer, and the first retained/new PCM buffer
+            // atomically becomes the prime that restarts SLPlayItf.
+            if (startPending_ && inFlight_.load(std::memory_order_acquire) > 0) {
+                startPending_ = false;
+                if (!setPlayingLocked("prime_after_enqueue")) {
+                    acceptWrites_ = false;
+                    return -1;
+                }
+            }
         }
         return accepted;
     }
@@ -608,18 +790,107 @@ public:
     }
 
 private:
-    static void bufferQueueCallback(SLAndroidSimpleBufferQueueItf, void* context) {
+    // OpenSL callbacks run on an internal real-time thread. Android's NDK guidance explicitly
+    // requires non-blocking synchronization here. Never take mutex_: start/pause/write may be in a
+    // blocking OpenSL call while the implementation needs this callback thread to make progress.
+    static void bufferQueueCallback(SLAndroidSimpleBufferQueueItf caller, void* context) {
         auto* self = static_cast<OpenSLOutput*>(context);
         if (!self) return;
-        std::lock_guard<std::mutex> lock(self->mutex_);
-        if (self->inFlight_ > 0) --self->inFlight_;
+
+        // GetState is a small Get-family call and keeps the software count authoritative even if a
+        // completion callback is delivered late across PAUSED -> PLAYING. Blindly decrementing a
+        // counter here can double-consume a completion that start() already reconciled from queue
+        // state, leaving tracked=0 while the OpenSL queue still owns one buffer.
+        if (caller && self->refreshInFlightFromQueue(caller)) {
+            self->canWrite_.notify_one();
+            return;
+        }
+        self->decrementInFlightNonBlocking();
         self->canWrite_.notify_one();
+    }
+
+    bool setPlayingLocked(const char* reason) {
+        if (!play_) return false;
+        const SLresult result = (*play_)->SetPlayState(play_, SL_PLAYSTATE_PLAYING);
+        if (result != SL_RESULT_SUCCESS) {
+            running_.store(false, std::memory_order_release);
+            LOGE("OpenSL SetPlayState(PLAYING) failed: reason=%s result=%u", reason, result);
+            return false;
+        }
+        SLuint32 state = SL_PLAYSTATE_STOPPED;
+        const SLresult stateResult = (*play_)->GetPlayState(play_, &state);
+        if (stateResult == SL_RESULT_SUCCESS && state != SL_PLAYSTATE_PLAYING) {
+            running_.store(false, std::memory_order_release);
+            LOGE("OpenSL PLAYING validation failed: reason=%s state=%u", reason, state);
+            return false;
+        }
+        if (stateResult != SL_RESULT_SUCCESS) {
+            LOGW("OpenSL GetPlayState after PLAYING failed: reason=%s result=%u", reason, stateResult);
+        }
+        running_.store(true, std::memory_order_release);
+        LOGI(
+            "OpenSL PLAYING: reason=%s queued=%d slots=%d",
+            reason,
+            inFlight_.load(std::memory_order_acquire),
+            kQueueSlots
+        );
+        return true;
+    }
+
+    bool refreshInFlightFromQueue(
+        SLAndroidSimpleBufferQueueItf queue,
+        int* actualOut = nullptr,
+        SLuint32* indexOut = nullptr
+    ) {
+        if (!queue) return false;
+        SLAndroidSimpleBufferQueueState state = {};
+        const SLresult result = (*queue)->GetState(queue, &state);
+        if (result != SL_RESULT_SUCCESS) return false;
+        const int actual = std::min<int>(static_cast<int>(state.count), kQueueSlots);
+        inFlight_.store(actual, std::memory_order_release);
+        if (actualOut) *actualOut = actual;
+        if (indexOut) *indexOut = state.index;
+        return true;
+    }
+
+    void decrementInFlightNonBlocking() {
+        int current = inFlight_.load(std::memory_order_acquire);
+        while (current > 0 &&
+               !inFlight_.compare_exchange_weak(
+                   current,
+                   current - 1,
+                   std::memory_order_acq_rel,
+                   std::memory_order_acquire)) {
+        }
+    }
+
+    void syncQueueStateLocked(const char* reason) {
+        if (!bufferQueue_) return;
+        const int tracked = inFlight_.load(std::memory_order_acquire);
+        int actual = tracked;
+        SLuint32 index = 0;
+        if (!refreshInFlightFromQueue(bufferQueue_, &actual, &index)) {
+            LOGW("OpenSL queue GetState failed: reason=%s tracked=%d", reason, tracked);
+            return;
+        }
+        if (tracked != actual) {
+            LOGW("OpenSL queue ownership reconciled: reason=%s tracked=%d actual=%d index=%u",
+                 reason,
+                 tracked,
+                 actual,
+                 index);
+        } else {
+            LOGI("OpenSL queue state: reason=%s count=%d index=%u", reason, actual, index);
+        }
     }
 
     void destroy() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            running_ = false;
+            lifecyclePaused_ = false;
+            acceptWrites_ = false;
+            startPending_ = false;
+            running_.store(false, std::memory_order_release);
             canWrite_.notify_all();
         }
         if (playerObject_) {
@@ -646,13 +917,18 @@ private:
     const int frameBytes_;
     const int bufferFrames_;
 
+    static constexpr int kQueueSlots = 4;
+
     mutable std::mutex mutex_;
     std::condition_variable canWrite_;
-    bool running_ = false;
-    int inFlight_ = 0;
+    std::atomic<bool> running_{false};
+    std::atomic<int> inFlight_{0};
+    bool lifecyclePaused_ = false;
+    bool acceptWrites_ = true;
+    bool startPending_ = false;
     int writeIndex_ = 0;
     int bufferBytes_ = 0;
-    std::vector<uint8_t> buffers_[2];
+    std::vector<uint8_t> buffers_[kQueueSlots];
     std::atomic<int64_t> framesWritten_{0};
 
     SLObjectItf engineObject_ = nullptr;
@@ -679,19 +955,44 @@ Java_com_rawsmusic_module_player_NativeAudioEngine_nativeCreate(
     jint channels,
     jint format,
     jint bufferFrames,
-    jint preferredDeviceId
+    jint preferredDeviceId,
+    jint spatializationBehavior,
+    jboolean contentSpatialized
 ) {
     if (sampleRate <= 0 || channels <= 0 || channels > 2) return 0;
 
     if (mode == MODE_OPENSL_ES) {
         auto* output = new OpenSLOutput(sampleRate, channels, format, bufferFrames);
-        if (output->open()) return reinterpret_cast<jlong>(output);
+        if (output->open()) {
+            rawsmusic::transition_trace::record(
+                rawsmusic::transition_trace::EventCode::OutputCreate,
+                static_cast<int64_t>(mode),
+                (static_cast<int64_t>(sampleRate) << 32) | (static_cast<uint32_t>(channels))
+            );
+            return reinterpret_cast<jlong>(output);
+        }
         delete output;
         return 0;
     }
 
-    auto* output = new AAudioOutput(mode, sampleRate, channels, format, bufferFrames, preferredDeviceId);
-    if (output->open()) return reinterpret_cast<jlong>(output);
+    auto* output = new AAudioOutput(
+        mode,
+        sampleRate,
+        channels,
+        format,
+        bufferFrames,
+        preferredDeviceId,
+        spatializationBehavior,
+        contentSpatialized == JNI_TRUE
+    );
+    if (output->open()) {
+        rawsmusic::transition_trace::record(
+            rawsmusic::transition_trace::EventCode::OutputCreate,
+            static_cast<int64_t>(mode),
+            (static_cast<int64_t>(sampleRate) << 32) | (static_cast<uint32_t>(channels))
+        );
+        return reinterpret_cast<jlong>(output);
+    }
     delete output;
     return 0;
 }
@@ -699,22 +1000,49 @@ Java_com_rawsmusic_module_player_NativeAudioEngine_nativeCreate(
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_rawsmusic_module_player_NativeAudioEngine_nativeStart(JNIEnv*, jclass, jlong handle) {
     auto* output = fromHandle(handle);
-    return output && output->start() ? JNI_TRUE : JNI_FALSE;
+    const bool started = output && output->start();
+    rawsmusic::transition_trace::record(
+        rawsmusic::transition_trace::EventCode::OutputStart,
+        static_cast<int64_t>(handle),
+        started ? 1 : 0
+    );
+    return started ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_rawsmusic_module_player_NativeAudioEngine_nativePause(JNIEnv*, jclass, jlong handle) {
-    if (auto* output = fromHandle(handle)) output->pause();
+    if (auto* output = fromHandle(handle)) {
+        output->pause();
+        rawsmusic::transition_trace::record(
+            rawsmusic::transition_trace::EventCode::OutputPause,
+            static_cast<int64_t>(handle),
+            output->framesWritten()
+        );
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_rawsmusic_module_player_NativeAudioEngine_nativeStop(JNIEnv*, jclass, jlong handle) {
-    if (auto* output = fromHandle(handle)) output->stop();
+    if (auto* output = fromHandle(handle)) {
+        output->stop();
+        rawsmusic::transition_trace::record(
+            rawsmusic::transition_trace::EventCode::OutputStop,
+            static_cast<int64_t>(handle),
+            output->framesWritten()
+        );
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_rawsmusic_module_player_NativeAudioEngine_nativeFlush(JNIEnv*, jclass, jlong handle) {
-    if (auto* output = fromHandle(handle)) output->flush();
+    if (auto* output = fromHandle(handle)) {
+        output->flush();
+        rawsmusic::transition_trace::record(
+            rawsmusic::transition_trace::EventCode::OutputFlush,
+            static_cast<int64_t>(handle),
+            output->framesWritten()
+        );
+    }
 }
 
 extern "C" JNIEXPORT jint JNICALL
@@ -732,8 +1060,22 @@ Java_com_rawsmusic_module_player_NativeAudioEngine_nativeWrite(
     if (offset > size || length > size - offset) return -1;
     jbyte* bytes = env->GetByteArrayElements(buffer, nullptr);
     if (!bytes) return -1;
+    const int64_t framesBefore = output->framesWritten();
     const int result = output->write(reinterpret_cast<uint8_t*>(bytes) + offset, length);
     env->ReleaseByteArrayElements(buffer, bytes, JNI_ABORT);
+    if (result > 0 && framesBefore == 0) {
+        rawsmusic::transition_trace::record(
+            rawsmusic::transition_trace::EventCode::OutputFirstWrite,
+            static_cast<int64_t>(result),
+            output->framesWritten()
+        );
+    } else if (result < 0) {
+        rawsmusic::transition_trace::record(
+            rawsmusic::transition_trace::EventCode::OutputWriteError,
+            static_cast<int64_t>(result),
+            output->framesWritten()
+        );
+    }
     return result;
 }
 
@@ -755,7 +1097,13 @@ Java_com_rawsmusic_module_player_NativeAudioEngine_nativeSetOutputDevice(
     jint deviceId
 ) {
     auto* output = fromHandle(handle);
-    return output && output->setOutputDevice(deviceId) ? JNI_TRUE : JNI_FALSE;
+    const bool changed = output && output->setOutputDevice(deviceId);
+    rawsmusic::transition_trace::record(
+        rawsmusic::transition_trace::EventCode::OutputRouteChanged,
+        static_cast<int64_t>(deviceId),
+        changed ? 1 : 0
+    );
+    return changed ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -766,5 +1114,12 @@ Java_com_rawsmusic_module_player_NativeAudioEngine_nativeGetFramesWritten(JNIEnv
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_rawsmusic_module_player_NativeAudioEngine_nativeClose(JNIEnv*, jclass, jlong handle) {
-    delete fromHandle(handle);
+    if (auto* output = fromHandle(handle)) {
+        rawsmusic::transition_trace::record(
+            rawsmusic::transition_trace::EventCode::OutputClose,
+            static_cast<int64_t>(handle),
+            output->framesWritten()
+        );
+        delete output;
+    }
 }

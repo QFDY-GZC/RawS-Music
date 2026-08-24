@@ -318,6 +318,7 @@ class AiSeparationJobService : Service() {
                     model = model,
                     sampleRate = OUTPUT_SAMPLE_RATE,
                     stats = stats,
+                    activityWav = vocalsFile,
                 )
                 if (liveStreamingEnabled) {
                     // The progressive preview reads temporary WAV files. Stop it before

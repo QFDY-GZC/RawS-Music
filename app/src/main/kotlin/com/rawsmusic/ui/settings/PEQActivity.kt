@@ -52,7 +52,7 @@ class PEQActivity : BaseSettingsActivity() {
                         exportLauncher.launch("PEQ_preset_${System.currentTimeMillis()}.peq.json")
                     },
                     onImportFromFile = {
-                        importLauncher.launch(arrayOf("application/json", "*/*"))
+                        importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
                     },
                     importedFileContent = importedFileContent,
                     onImportedFileContentConsumed = { importedFileContent = null }

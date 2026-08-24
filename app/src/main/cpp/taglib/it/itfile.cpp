@@ -242,7 +242,7 @@ void IT::File::read(bool)
     // Strictly speaking an IT file has always 64 channels, but
     // I don't count disabled and muted channels.
     // But this always gives 64 channels for all my files anyway.
-    // Strangely VLC does report other values. I wonder how VLC
+    // Some decoders report other values. It is unclear how they
     // gets its values.
     if(static_cast<unsigned char>(pannings[i]) < 128 && volumes[i] > 0)
         ++channels;
@@ -263,7 +263,7 @@ void IT::File::read(bool)
   //       in the instrument/sample names and more characters
   //       afterwards. The spec does not mention such a case.
   //       Currently I just discard anything after a nil, but
-  //       e.g. VLC seems to interpret a nil as a space. I
+  //       Some decoders interpret a nil as a space. I
   //       don't know what is the proper behaviour.
   for(unsigned short i = 0; i < instrumentCount; ++ i) {
     seek(192L + length + (static_cast<long>(i) << 2));

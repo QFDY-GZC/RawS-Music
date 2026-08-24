@@ -30,9 +30,13 @@ object AudioOutputManager {
     const val BIT_DEPTH_FLOAT32 = 3201
     const val BIT_DEPTH_32_8_24 = 3224
 
+    /** Highest PCM target exposed by the USB-exclusive resampler UI. */
+    const val USB_MAX_TARGET_SAMPLE_RATE = 768_000
+
     /** 常用采样率列表 */
     val STANDARD_SAMPLE_RATES = intArrayOf(
-        44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000
+        44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000,
+        705600, 768000
     )
 
     /** 采样率的显示名称 */
@@ -45,7 +49,9 @@ object AudioOutputManager {
         176400 to "176.4 kHz",
         192000 to "192 kHz",
         352800 to "352.8 kHz",
-        384000 to "384 kHz"
+        384000 to "384 kHz",
+        705600 to "705.6 kHz",
+        768000 to "768 kHz"
     )
 
     /** 比特深度的显示名称 */
@@ -77,8 +83,8 @@ object AudioOutputManager {
     /** AAudio 上限：16–32 bit · 44.1–384 kHz */
     const val AAUDIO_MAX_SAMPLE_RATE = 384_000
 
-    /** Direct Hi-Res 上限：16–32(8.24) bit · 44.1–384 kHz */
-    const val DIRECT_MAX_SAMPLE_RATE = 384_000
+    /** Direct Hi-Res 上限：16–32(8.24) bit · 44.1–768 kHz。高于 384 kHz 的目标只在 Direct 模式暴露。 */
+    const val DIRECT_MAX_SAMPLE_RATE = 768_000
 
     /** AudioTrack 普通输出上限：系统混音，高兼容，PCM ≤ 48 kHz / 24 bit / Stereo */
     const val AUDIO_TRACK_MAX_SAMPLE_RATE = 48_000
@@ -101,7 +107,12 @@ object AudioOutputManager {
         AudioOutputMode.AUDIO_TRACK -> intArrayOf(BIT_DEPTH_AUTO, BIT_DEPTH_16, BIT_DEPTH_24, BIT_DEPTH_FLOAT32)
     }
 
-    /** 采样率选项按输出引擎过滤（含 0=自动） */
+    /**
+     * 采样率选项按输出引擎过滤（含 0=自动）。
+     * 705.6/768 kHz 只会落入 Direct (Hi-Res) 的范围；AAudio 仍封顶 384 kHz，
+     * AudioTrack/OpenSL ES 保持各自原有上限。播放时仍由 probeRateAndEncoding()
+     * 校验当前 Android 路由是否真的接受所选格式。
+     */
     fun getSampleRateOptionsForMode(mode: AudioOutputMode): IntArray {
         val minRate = getMinSampleRateForMode(mode)
         val maxRate = getMaxSampleRateForMode(mode)

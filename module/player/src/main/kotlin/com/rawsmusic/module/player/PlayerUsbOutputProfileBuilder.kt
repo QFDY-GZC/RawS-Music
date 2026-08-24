@@ -37,6 +37,7 @@ internal class PlayerUsbOutputProfileBuilder(
         val capabilities: () -> UsbDeviceAudioCapabilities?,
         val engineCapabilities: () -> UsbDeviceAudioCapabilities?,
         val isHardwareVolumeValidated: () -> Boolean,
+        val isEffectiveBitPerfect: () -> Boolean,
         val decideFeedbackModel: (
             UsbDeviceAudioCapabilities?,
             UsbPcmFormatRequest,
@@ -51,10 +52,8 @@ internal class PlayerUsbOutputProfileBuilder(
     fun build(exclusive: Boolean): UsbOutputProfile {
         val effectiveDsdMode = callbacks.currentDsdMode()
         val effectiveDsdActive = effectiveDsdMode != null
-        val bitPerfect = AppPreferences.Player.bitPerfectEnabled &&
-            exclusive &&
-            !effectiveDsdActive
-        if (exclusive && effectiveDsdActive && AppPreferences.Player.bitPerfectEnabled) {
+        val bitPerfect = callbacks.isEffectiveBitPerfect() && exclusive && !effectiveDsdActive
+        if (exclusive && effectiveDsdActive && AppPreferences.Player.usbBitPerfectMode.requestsBitPerfect) {
             AppLogger.w(tag, "USB profile: PCM→DSD/DSD transport overrides PCM bit-perfect for this session")
         }
 

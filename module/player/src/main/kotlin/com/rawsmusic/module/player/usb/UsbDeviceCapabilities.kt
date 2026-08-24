@@ -19,7 +19,10 @@ data class UsbPcmFormatCapability(
     val nominalBytesPerTransfer: Int = 0,
     val maxPacketBytes: Int = 0,
     val capacityRatioPermille: Int = 0,
-    val profileRiskFlags: Int = 0
+    val profileRiskFlags: Int = 0,
+    val protocol: Int = 2,
+    val uac1SamplingFrequencyControl: Boolean = false,
+    val exactRateProvable: Boolean = true,
 )
 
 data class UsbDeviceAudioCapabilities(

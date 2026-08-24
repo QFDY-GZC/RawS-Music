@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -28,6 +27,7 @@ import com.rawsmusic.R
 import com.rawsmusic.ui.settings.Divider
 import com.rawsmusic.ui.settings.SectionHeader
 import com.rawsmusic.ui.settings.themeColors
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 @Composable
 fun AboutScreen(onBack: () -> Unit) {
@@ -38,7 +38,7 @@ fun AboutScreen(onBack: () -> Unit) {
             .background(colors.background)
             .verticalScroll(rememberScrollState())
             .statusBarsPadding()
-            .navigationBarsPadding()
+            .rawStableNavigationBarsPadding()
             .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {

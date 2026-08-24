@@ -20,8 +20,9 @@ fun ComposePowerListFull(
     contentTopPadding: Dp = 0.dp,
     persistentHeaderHeight: Dp = 0.dp,
     persistentHeaderVisibilityHeight: Dp = persistentHeaderHeight,
+    persistentHeaderSceneItemVisibilityHeight: Dp = persistentHeaderVisibilityHeight,
     persistentHeaderSceneItemId: String = "",
-    persistentHeaderContent: @Composable (visible: Boolean) -> Unit = {},
+    persistentHeaderContent: @Composable (headerVisible: Boolean, sceneItemVisible: Boolean) -> Unit = { _, _ -> },
     sectionHeaders: List<PowerListSectionHeader> = emptyList(),
     sectionHeaderHeight: Dp = 54.dp,
     sectionHeaderContent: @Composable (PowerListSectionHeader) -> Unit = {},
@@ -31,6 +32,7 @@ fun ComposePowerListFull(
     onPlayingCoverBoundsChanged: (RectF?) -> Unit = {},
     onPlayingCoverTargetChanged: (CoverTransitionTarget?) -> Unit = {},
     onRevealCoverTargetResolved: (CoverTransitionTarget?) -> Unit = {},
+    onScrollActiveChanged: (Boolean) -> Unit = {},
     onSongClick: (AudioFile, Int) -> Unit = { _, _ -> },
     onSongLongClick: (AudioFile, Int) -> Unit = { _, _ -> }
 ) {
@@ -46,6 +48,7 @@ fun ComposePowerListFull(
         contentTopPadding = contentTopPadding,
         persistentHeaderHeight = persistentHeaderHeight,
         persistentHeaderVisibilityHeight = persistentHeaderVisibilityHeight,
+        persistentHeaderSceneItemVisibilityHeight = persistentHeaderSceneItemVisibilityHeight,
         persistentHeaderSceneItemId = persistentHeaderSceneItemId,
         persistentHeaderContent = persistentHeaderContent,
         sectionHeaders = sectionHeaders,
@@ -56,6 +59,7 @@ fun ComposePowerListFull(
         onPlayingCoverBoundsChanged = onPlayingCoverBoundsChanged,
         onPlayingCoverTargetChanged = onPlayingCoverTargetChanged,
         onRevealCoverTargetResolved = onRevealCoverTargetResolved,
+        onScrollActiveChanged = onScrollActiveChanged,
         onSongClick = onSongClick,
         onSongLongClick = onSongLongClick
     )

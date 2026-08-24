@@ -35,7 +35,8 @@ fun BitmapImage(
     fadeOnBitmapChange: Boolean = true,
     freezeBitmapUpdates: Boolean = false,
     filterQuality: FilterQuality = FilterQuality.Low,
-    showDefaultArtwork: Boolean = DefaultAlbumArtworkPolicy.enabled
+    showDefaultArtwork: Boolean = DefaultAlbumArtworkPolicy.enabled,
+    onSuccess: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var displayedKey by remember { mutableStateOf(key) }
@@ -90,6 +91,7 @@ fun BitmapImage(
         contentDescription = contentDescription,
         modifier = modifier,
         contentScale = contentScale,
-        filterQuality = filterQuality
+        filterQuality = filterQuality,
+        onSuccess = { onSuccess?.invoke() },
     )
 }

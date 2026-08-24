@@ -12,6 +12,7 @@ import android.provider.MediaStore
 import android.util.Log
 import androidx.core.content.FileProvider
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.LyricTimingEditorTarget
 import java.io.File
 
 object LyricoIntegration {
@@ -120,6 +121,118 @@ object LyricoIntegration {
             return fallback
         }
         Log.e(LOG_TAG, "app_build_failed reason=no_launcher_activity")
+        return null
+    }
+
+    /**
+     * Build an explicit hand-off to an installed lyric timing editor.
+     *
+     * LunaBeat exposes a public timing activity. Halcyon does not expose its
+     * editor as a public deep link, so launch Halcyon itself instead of
+     * sending the audio to its viewer. The latter makes Android treat
+     * Halcyon as an ordinary audio player and never reaches the app shell.
+     */
+    fun buildExternalTimingIntent(
+        context: Context,
+        song: AudioFile,
+        target: LyricTimingEditorTarget
+    ): Intent? {
+        if (target == LyricTimingEditorTarget.HALCYON) {
+            return buildHalcyonLaunchIntent(context)
+        }
+
+        val resolvedAudio = resolveAudioUri(context, song)
+        if (resolvedAudio == null) {
+            Log.e(LOG_TAG, "timing_build_failed target=$target reason=no_audio_uri path=${song.path}")
+            return null
+        }
+
+        return when (target) {
+            LyricTimingEditorTarget.LUNABEAT -> buildLunaBeatTimingIntent(
+                context = context,
+                song = song,
+                resolvedAudio = resolvedAudio
+            )
+            LyricTimingEditorTarget.HALCYON -> error("Halcyon is handled before audio URI resolution")
+        }
+    }
+
+    private fun buildHalcyonLaunchIntent(context: Context): Intent? {
+        val packageName = "com.ella.music"
+        if (!isPackageInstalled(context, packageName)) {
+            Log.d(LOG_TAG, "timing_package_skip target=HALCYON package=$packageName")
+            return null
+        }
+
+        val intent = context.packageManager.getLaunchIntentForPackage(packageName)
+            ?: Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                setPackage(packageName)
+            }
+        if (context !is Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        val resolved = runCatching {
+            context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
+        }.onFailure {
+            Log.e(LOG_TAG, "timing_resolve_error target=HALCYON package=$packageName", it)
+        }.getOrNull()
+        if (resolved?.activityInfo?.exported != true) {
+            Log.w(
+                LOG_TAG,
+                "timing_resolve_miss target=HALCYON package=$packageName " +
+                    "reason=no_exported_launcher exported=${resolved?.activityInfo?.exported}"
+            )
+            return null
+        }
+        traceIntent(context, intent, "timing_halcyon_launch_ready")
+        return intent
+    }
+
+    private fun buildLunaBeatTimingIntent(
+        context: Context,
+        song: AudioFile,
+        resolvedAudio: ResolvedAudioUri
+    ): Intent? {
+        val candidates = listOf(
+            "com.example.LyricBox" to "com.example.LyricBox.LyricTimingActivity",
+            "com.example.lyricbox" to "com.example.LyricBox.LyricTimingActivity"
+        )
+        for ((packageName, activityName) in candidates) {
+            if (!isPackageInstalled(context, packageName)) {
+                Log.d(LOG_TAG, "timing_package_skip target=LUNABEAT package=$packageName")
+                continue
+            }
+            val intent = buildAudioIntent(
+                context = context,
+                song = song,
+                uri = resolvedAudio.uri,
+                action = Intent.ACTION_EDIT,
+                grantFlags = resolvedAudio.grantFlags
+            ).apply {
+                component = android.content.ComponentName(packageName, activityName)
+                putExtra("audioPath", song.path)
+                putExtra("source_audio_path", song.path)
+                putExtra("filePath", song.path)
+                putExtra("path", song.path)
+                putExtra("mediaId", song.id)
+                putExtra("songId", song.id)
+            }
+            val resolved = runCatching {
+                context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            }.onFailure {
+                Log.e(LOG_TAG, "timing_resolve_error target=LUNABEAT package=$packageName", it)
+            }.getOrNull()
+            if (resolved?.activityInfo?.exported == true) {
+                traceIntent(context, intent, "timing_lunabeat_ready")
+                return intent
+            }
+            Log.w(
+                LOG_TAG,
+                "timing_resolve_miss target=LUNABEAT package=$packageName " +
+                    "activity=$activityName exported=${resolved?.activityInfo?.exported}"
+            )
+        }
+        Log.e(LOG_TAG, "timing_build_failed target=LUNABEAT reason=no_public_activity")
         return null
     }
 

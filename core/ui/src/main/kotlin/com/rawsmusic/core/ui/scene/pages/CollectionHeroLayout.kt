@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,6 +32,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -103,19 +105,27 @@ internal fun CollectionHeroDetailPage(
     val sortedSongs = remember(hero.songs, sortOrder) { hero.songs.sortedForCollection(sortOrder) }
     val sortedHero = remember(hero, sortedSongs) { hero.copy(songs = sortedSongs) }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        // The list and detail artwork share one square geometry, so the retained visual only
+        // needs a uniform scale and never stretches or snaps at hand-off.
+        val heroCoverHeight = maxWidth
+        val heroTotalHeight = heroCoverHeight + CollectionHeroMetaHeight
         ComposePowerListFull(
             songs = sortedSongs,
             state = songListState,
-            persistentHeaderHeight = CollectionHeroTotalHeight,
-            persistentHeaderVisibilityHeight = CollectionHeroCoverHeight,
+            persistentHeaderHeight = heroTotalHeight,
+            // The header is cover + metadata/actions as one moving list item. Keep the full
+            // header extent authoritative until its final pixel crosses the top boundary.
+            persistentHeaderVisibilityHeight = heroTotalHeight,
+            persistentHeaderSceneItemVisibilityHeight = heroCoverHeight,
             persistentHeaderSceneItemId = hero.sharedElementId,
-            persistentHeaderContent = { visible ->
+            persistentHeaderContent = { _, coverVisible ->
                 CollectionHeroHeader(
                     hero = sortedHero,
+                    coverHeight = heroCoverHeight,
                     listScene = listScene,
                     detailScene = detailScene,
-                    headerVisible = visible,
+                    coverVisible = coverVisible,
                     freezeArtworkUpdates = songListState.isTransitioning,
                     onBack = onBack,
                     onMore = { showMoreDialog = true },
@@ -160,8 +170,10 @@ internal fun CollectionHeroDetailPage(
                 stringResource(R.string.queue_sort_original) to SortOrder.PLAYBACK_INFO,
                 stringResource(R.string.sort_by_name) to SortOrder.TITLE_ASC,
                 stringResource(R.string.sort_by_artist) to SortOrder.ARTIST_ASC,
-                stringResource(R.string.queue_sort_album) to SortOrder.ALBUM_ASC,
-                stringResource(R.string.sort_by_duration) to SortOrder.DURATION_ASC
+        stringResource(R.string.queue_sort_album) to SortOrder.ALBUM_ASC,
+        stringResource(R.string.sort_by_duration) to SortOrder.DURATION_ASC,
+        stringResource(R.string.sort_by_added) to SortOrder.DATE_ADDED_ASC,
+        stringResource(R.string.sort_by_modified) to SortOrder.DATE_MODIFIED_ASC
             ),
             onDismiss = { showSortLayout = false }
         )
@@ -171,9 +183,10 @@ internal fun CollectionHeroDetailPage(
 @Composable
 private fun CollectionHeroHeader(
     hero: CollectionHeroData,
+    coverHeight: androidx.compose.ui.unit.Dp,
     listScene: NavScene,
     detailScene: NavScene,
-    headerVisible: Boolean,
+    coverVisible: Boolean,
     freezeArtworkUpdates: Boolean,
     onBack: () -> Unit,
     onMore: () -> Unit,
@@ -194,9 +207,9 @@ private fun CollectionHeroHeader(
 
     // Hide the real item only after both layout records exist. This avoids the
     // one-frame hole between target measurement and shared-overlay composition.
-    val sharedPairReady = collectionTransition && coverRegistry.hasPair(
-        fromSceneId = spec.fromSceneId,
-        toSceneId = spec.toSceneId,
+    val sharedPairReady = collectionTransition && coverRegistry.isPreparedElement(
+        transitionKey = spec.transitionKey,
+        sceneId = detailScene.name,
         elementId = hero.sharedElementId
     )
     val coverAlpha = if (sharedPairReady) 0f else 1f
@@ -205,7 +218,7 @@ private fun CollectionHeroHeader(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(CollectionHeroCoverHeight)
+                .height(coverHeight)
                 .clip(RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp))
         ) {
             CrossfadeAlbumArt(
@@ -213,6 +226,9 @@ private fun CollectionHeroHeader(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
+                        // The persistent hero is not a PowerList zoom holder. Keep its single
+                        // artwork owner stable while rows morph around it; only the prepared
+                        // collection shared-element overlay may hide it.
                         alpha = coverAlpha
                         clip = true
                     },
@@ -227,13 +243,13 @@ private fun CollectionHeroHeader(
                 elementId = hero.sharedElementId,
                 coverKey = hero.coverKey,
                 radiusDp = 14f,
-                enabled = headerVisible,
+                enabled = coverVisible,
                 modifier = Modifier.fillMaxSize()
             )
 
             IconButton(
                 onClick = {
-                    if (headerVisible) {
+                    if (coverVisible) {
                         coverRegistry.freeze(
                             sceneId = detailScene.name,
                             elementId = hero.sharedElementId
@@ -337,13 +353,15 @@ internal fun CollectionSharedCoverAnchor(
 ) {
     val coverRegistry = LocalSharedCoverRegistry.current
     val spec = LocalSharedTransitionSpec.current
+    val hostView = LocalView.current
     val sceneId = scene.name
     val shouldTrack = enabled && spec.shouldTrackScene(sceneId)
+    val registrationOwner = remember(sceneId, elementId) { Any() }
 
-    DisposableEffect(sceneId, elementId, shouldTrack) {
-        if (!shouldTrack) coverRegistry.unregister(sceneId, elementId)
+    DisposableEffect(sceneId, elementId, shouldTrack, registrationOwner) {
+        if (!shouldTrack) coverRegistry.unregister(sceneId, elementId, registrationOwner)
         onDispose {
-            coverRegistry.unregister(sceneId, elementId)
+            coverRegistry.unregister(sceneId, elementId, registrationOwner)
         }
     }
 
@@ -352,9 +370,24 @@ internal fun CollectionSharedCoverAnchor(
             if (!shouldTrack || coverKey.isBlank() || elementId.isBlank()) return@onGloballyPositioned
             val position = coordinates.positionInWindow()
             val size = coordinates.size
+            val right = position.x + size.width
+            val bottom = position.y + size.height
+            if (!isCollectionSharedCoverVisibleInWindow(
+                    left = position.x,
+                    top = position.y,
+                    right = right,
+                    bottom = bottom,
+                    hostWidth = hostView.width.toFloat(),
+                    hostHeight = hostView.height.toFloat(),
+                )
+            ) {
+                coverRegistry.unregister(sceneId, elementId, registrationOwner)
+                return@onGloballyPositioned
+            }
             coverRegistry.register(
                 sceneId = sceneId,
                 elementId = elementId,
+                owner = registrationOwner,
                 snapshot = SharedCoverSnapshot(
                     sceneId = sceneId,
                     elementId = elementId,
@@ -439,11 +472,15 @@ private fun List<AudioFile>.sortedForCollection(order: SortOrder): List<AudioFil
             .thenBy { it.discNumber }
             .thenBy { it.trackNumber }
         SortOrder.DURATION_ASC, SortOrder.DURATION_DESC -> compareBy<AudioFile> { it.duration }
+        SortOrder.DATE_ADDED_ASC, SortOrder.DATE_ADDED_DESC -> compareBy<AudioFile> { it.dateAdded }
+        SortOrder.DATE_MODIFIED_ASC, SortOrder.DATE_MODIFIED_DESC -> compareBy<AudioFile> { it.dateModified }
         else -> return this
     }
     val descending = order == SortOrder.TITLE_DESC ||
         order == SortOrder.ARTIST_DESC ||
         order == SortOrder.ALBUM_DESC ||
-        order == SortOrder.DURATION_DESC
+        order == SortOrder.DURATION_DESC ||
+        order == SortOrder.DATE_ADDED_DESC ||
+        order == SortOrder.DATE_MODIFIED_DESC
     return sortedWith(if (descending) comparator.reversed() else comparator)
 }

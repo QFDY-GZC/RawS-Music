@@ -18,7 +18,7 @@
     <string name="settings_lyrico_import_plugin">导入歌词源插件</string>
     <string name="settings_lyrico_import_plugin_summary">选择 Lyrico 插件 ZIP，校验安全性后安装</string>
     <string name="settings_lyrico_no_plugins">尚未导入歌词源</string>
-    <string name="settings_lyrico_no_plugins_summary">导入 Lyrico API v3 歌词源后即可在线匹配歌词</string>
+    <string name="settings_lyrico_no_plugins_summary">导入 Lyrico API v4 歌词源即可在线匹配歌词（同时兼容 v1-v3）</string>
     <string name="settings_lyrico_plugin_label">%1$s · %2$s</string>
     <string name="settings_lyrico_plugin_imported">已导入 %1$s</string>
     <string name="settings_lyrico_plugins_imported">已导入 %1$d 个歌词源</string>
@@ -146,11 +146,13 @@
     <string name="transition_manual_none_title">无淡入淡出</string>
     <string name="transition_manual_none_desc">立即切换音轨，适合追求最低延迟或测试严格 bit-perfect 的场景。</string>
     <string name="transition_manual_short_title">短时交叉渐隐</string>
-    <string name="transition_manual_short_desc">先让当前音轨短时淡出，再让下一首从静音淡入。</string>
+    <string name="transition_manual_short_desc">在较短窗口内让当前音轨淡出、下一首同步淡入；格式不兼容时自动回退为顺序淡出/淡入。</string>
     <string name="transition_manual_crossfade_title">交叉淡入淡出</string>
     <string name="transition_manual_crossfade_desc">当前音轨和下一首音轨重叠混合；仅在解码后的输出格式兼容时启用。</string>
-    <string name="transition_manual_duration_title">手动过渡长度</string>
-    <string name="transition_manual_duration_desc">用于短时手动渐隐和手动交叉淡入淡出，默认 400 ms。</string>
+    <string name="transition_manual_short_duration_title">短时交叉渐隐长度</string>
+    <string name="transition_manual_short_duration_desc">短时手动交叉渐隐，默认 400 ms，范围 10–1000 ms。</string>
+    <string name="transition_manual_full_duration_title">完整交叉淡入淡出长度</string>
+    <string name="transition_manual_full_duration_desc">完整手动交叉淡入淡出，默认 5000 ms，范围 100–15000 ms。</string>
     <string name="transition_transport_title">播放、暂停与停止</string>
     <string name="transition_transport_summary">让用户触发的播放开始和结束更平滑。</string>
     <string name="transition_transport_enable_title">启用播放控制淡入淡出</string>
@@ -333,6 +335,7 @@
     <string name="settings_lyricon_enable">启用词幕推送</string>
     <string name="settings_lyricon_show_translation">显示翻译</string>
     <string name="settings_lyricon_show_roma">显示罗马音</string>
+    <string name="settings_lyricon_original_color_compat">原文使用“正常颜色”（关闭 Lyricon 逐字高亮）</string>
     <string name="settings_lyric_font_entry_title">歌词字体</string>
     <string name="settings_lyric_font_entry_desc">字体、字重、缩放和显示样式</string>
     <string name="settings_status_bar_flyme_desc">通过 Flyme 系统状态栏推送歌词显示</string>
@@ -365,7 +368,7 @@
     <string name="settings_webdav_auth_mode">认证方式</string>
     <string name="settings_not_configured">未配置</string>
     <string name="settings_auto">自动</string>
-    <string name="settings_audio_hires_summary">Hi-Res 输出 · 16–32(8.24) bit · 44.1–384 kHz</string>
+    <string name="settings_audio_hires_summary">Hi-Res 输出 · 16–32(8.24) bit · 44.1–768 kHz</string>
     <string name="settings_audio_sample_rate">采样率</string>
     <string name="settings_audio_bit_depth">位深</string>
     <string name="settings_audio_internal_precision_section">内部处理</string>
@@ -399,7 +402,7 @@
     <string name="settings_audio_dither_high_shibata_desc">最强的超声整形，请确认 DAC 和后级适合后使用。</string>
     <string name="settings_audio_playback_options">播放选项</string>
     <string name="settings_audio_focus_title">音频焦点</string>
-    <string name="settings_audio_focus_summary">管理通话、短暂打断、降低音量与自动恢复播放</string>
+    <string name="settings_audio_focus_summary">管理普通 Android 输出的通话、短暂打断、降低音量与自动恢复；USB 独占保持现有焦点策略</string>
     <string name="settings_audio_focus_resume_section">播放恢复</string>
     <string name="settings_audio_focus_changes_section">焦点变化</string>
     <string name="settings_audio_focus_resume_after_call">结束通话后继续播放</string>
@@ -459,7 +462,7 @@
     <string name="settings_audio_output_unavailable">%1$s 当前不可用</string>
     <string name="settings_audio_engine_opensl_hint">OpenSL ES · 16 bit · 44.1–96 kHz</string>
     <string name="settings_audio_engine_aaudio_hint">AAudio · 16–32 bit · 44.1–384 kHz</string>
-    <string name="settings_audio_engine_direct_hint">Hi-Res 输出 · 16–32(8.24) bit · 44.1–384 kHz</string>
+    <string name="settings_audio_engine_direct_hint">Hi-Res 输出 · 16–32(8.24) bit · 44.1–768 kHz</string>
     <string name="settings_info_icon">ⓘ</string>
     <string name="settings_lyric_import_font_file">导入字体文件 +</string>
     <string name="settings_delete">删除</string>
@@ -508,8 +511,8 @@
     <string name="settings_peq_export_desc">预设配置已生成，请复制以下JSON文本：</string>
     <string name="settings_peq_export_summary">包含 %1$d 个滤波器，Preamp: %2$.1f dB</string>
     <string name="settings_peq_default_preset_name">PEQ预设_%1$d</string>
-    <string name="settings_peq_import_desc">请粘贴PEQ预设的JSON文本：</string>
-    <string name="settings_peq_error_empty_json">请输入预设JSON文本</string>
+    <string name="settings_peq_import_desc">粘贴 RawSMusic JSON 或 AutoEq ParametricEQ / GraphicEQ 文本</string>
+    <string name="settings_peq_error_empty_json">请输入预设文本</string>
     <string name="settings_peq_error_invalid_preset">无效的预设格式</string>
     <string name="settings_peq_error_no_filters">预设中没有滤波器</string>
     <string name="settings_peq_error_parse_failed">解析失败: %1$s</string>
@@ -546,6 +549,7 @@
     <string name="settings_speaker_output_enable">扬声器外放</string>
     <string name="settings_speaker_output_unavailable">播放 DSP 控制器尚未连接。</string>
     <string name="settings_speaker_output_mode">效果模式</string>
+    <string name="settings_speaker_output_mode_summary">选择扬声器输出风格。</string>
     <string name="settings_speaker_output_mode_elasticity">弹性</string>
     <string name="settings_speaker_output_mode_elasticity_summary">强化低中频起音，短暂收紧主体后快速回弹。</string>
     <string name="settings_speaker_output_mode_powerful">澎湃</string>
@@ -705,7 +709,13 @@
     <string name="usb_dac_title">USB DAC</string>
     <string name="usb_dac_not_connected">未连接 USB DAC</string>
     <string name="usb_dac_output_mode">输出模式</string>
+    <string name="usb_dac_output_mode_summary">选择 USB PCM 输出策略。</string>
     <string name="usb_dac_bit_perfect">完美比特</string>
+    <string name="usb_dac_bit_perfect_when_possible">当可能时开启完美比特</string>
+    <string name="usb_dac_bit_perfect_when_possible_short">按条件完美比特</string>
+    <string name="usb_dac_bit_perfect_when_possible_desc">当前音轨与设备格式完全匹配时使用完美比特；不匹配时自动保持 USB 独占并进行必要的重采样或格式适配。</string>
+    <string name="usb_dac_bit_perfect_strict">严格完美比特</string>
+    <string name="usb_dac_bit_perfect_strict_desc">仅允许源格式原样输出；设备无法精确支持当前音轨时拒绝播放，不会静默重采样。</string>
     <string name="usb_dac_general_output">通用输出</string>
     <string name="usb_dac_bit_perfect_desc">保持音源格式，关闭重采样与软件处理。</string>
     <string name="usb_dac_general_output_desc">允许重采样、音量与格式适配。</string>
@@ -718,6 +728,7 @@
     <string name="usb_dac_bit_depth_desc">按 DAC 能力选择输出位深。</string>
     <string name="usb_dac_volume_short">VOL</string>
     <string name="usb_dac_volume_mode">音量模式</string>
+    <string name="usb_dac_volume_mode_summary">选择 USB 音量控制路径。</string>
     <string name="usb_dac_device_chain">设备链路</string>
     <string name="usb_dac_outputting">正在输出</string>
     <string name="usb_dac_connected">已连接</string>
@@ -754,6 +765,17 @@
     <string name="usb_dac_exclusive_pending_desc">已请求独占，正在等待设备初始化或播放链路切换。</string>
     <string name="usb_dac_exclusive_waiting_note">如果开关保持开启但仍未激活，请检查设备权限和 USB DAC 日志。</string>
     <string name="usb_dac_current_output_sample_rate">当前输出采样率</string>
+    <string name="usb_dac_independent_transport_title">USB DAC 独占传输</string>
+    <string name="usb_dac_android_output_unchanged">Android 输出：%1$s · 关闭 USB 独占后继续使用</string>
+    <string name="usb_dac_exclusive_active_short">已独占</string>
+    <string name="usb_dac_exclusive_pending_short">启动中</string>
+    <string name="usb_dac_exclusive_off_short">未启用</string>
+    <string name="usb_dac_exclusive_independent_active_desc">USB 独占传输已启用。当前选择的 Android 输出协议保持不变，退出独占后会继续使用该协议。</string>
+    <string name="usb_dac_exclusive_independent_pending_desc">正在准备 USB 独占传输；当前选择的 Android 输出协议不会被修改。</string>
+    <string name="usb_dac_buffer_explanation">缓冲区表示 native USB 环形缓冲中已经排队、可连续播放的时间。适当增大可抵抗短暂调度抖动；过高则会增加暂停、Seek 和切歌响应延迟。\n\n当前值：%1$s</string>
+    <string name="usb_dac_stability_explanation">稳定率用于描述主机到 DAC 的数据传输节奏是否稳定，会综合已完成吞吐、回调节奏、underrun 以及 transfer/submit 错误。接近 100%% 表示 USB 传输时序较稳定。\n\n当前值：%1$s</string>
+    <string name="usb_dac_health_explanation">健康率用于概括 USB 链路整体状态，包括设备连接、独占状态、真实输出、缓冲水位、错误计数与恢复状态。数值较低时应进入“设备链路”查看具体诊断。\n\n当前值：%1$s</string>
+    <string name="usb_dac_metric_explanation_fallback">该项目用于说明当前 USB DAC 传输链路的状态。\n\n当前值：%1$s</string>
     <string name="usb_dac_buffer">缓冲区</string>
     <string name="usb_dac_stability">稳定率</string>
     <string name="usb_dac_health">健康率</string>
@@ -793,6 +815,16 @@
     <string name="settings_predictive_back_summary">返回手势过程中预览即将返回的页面</string>
     <string name="settings_performance_mode_title">性能模式</string>
     <string name="settings_performance_mode_summary">关闭液态玻璃折射并改用高斯模糊，降低 GPU 负载。</string>
+    <string name="settings_top_chrome_style_title">顶部菜单样式</string>
+    <string name="settings_top_chrome_style_summary">选择分类列表顶部功能区的背景表现。</string>
+    <string name="settings_top_chrome_style_haze">渐变模糊</string>
+    <string name="settings_top_chrome_style_haze_summary">使用当前的液态玻璃采样与渐变模糊。</string>
+    <string name="settings_top_chrome_style_transparent">透明层</string>
+    <string name="settings_top_chrome_style_transparent_summary">保留顶部按钮与交互，不绘制渐变或模糊，让列表显示在透明层下方。</string>
+    <string name="settings_top_chrome_style_floating">悬浮图标</string>
+    <string name="settings_top_chrome_style_floating_summary">隐藏顶部动作栏，将稳定的分类操作固定显示在播放栏上方。</string>
+    <string name="settings_top_chrome_style_floating_vertical">Y轴悬浮</string>
+    <string name="settings_top_chrome_style_floating_vertical_summary">将分类操作沿右侧垂直排列，并跟随播放栏上沿定位。</string>
     <string name="playlist_import">导入歌单</string>
     <string name="playlist_create">新建歌单</string>
     <string name="playlist_song_count">%1$d 首</string>
@@ -828,18 +860,35 @@
     <string name="scan_complete_no_changes">扫描完成：未发现变化，共 %1$d 首，用时 %2$.1f 秒</string>
     <string name="scan_complete_summary">扫描完成：新增 %1$d 首，更新 %2$d 首，移除 %3$d 首；未变化 %4$d 首，共 %5$d 首，用时 %6$.1f 秒</string>
     <string name="update_dialog_title">RawS Music v%1$s 更新</string>
-    <string name="update_dialog_time">更新时间：2026 年 8 月 9 日</string>
+    <string name="update_dialog_time">更新时间：2026 年 8 月 24 日</string>
     <string name="update_developer_message_title">开发者的话</string>
     <string name="update_join_qq_group">点击链接加入群聊【RawS Music交流群】：https://qm.qq.com/q/bOvqTQPABi</string>
     <string name="update_close">关闭</string>
     <string-array name="update_notes">
-        <item>V0.9.80 beta</item>
-        <item>修复某些歌词格式可能导致歌词提前加载的问题。</item>
-        <item>修复 USB 独占模式下的部分问题。</item>
-        <item>修复在歌词界面右半部分进行右滑手势时屏幕抖动的问题，同时修复在播放界面部分空白区域使用手势时的同类问题。</item>
-        <item>新增上滑进入播放界面的动画，暂时仅支持普通播放界面，沉浸模式将在后续版本中支持。</item>
-        <item>新增自动交叉淡入淡出。</item>
-        <item>新增普通底栏样式。</item>
+        <item>V0.9.86 beta</item>
+        <item>优化专辑图的显示。</item>
+        <item>修复歌词格式读取问题。</item>
+        <item>修复沉浸模式下的布局问题。</item>
+        <item>修复 OpenSL ES 输出协议下的一些问题。</item>
+        <item>修复冷启动后打开播放界面卡顿的问题。</item>
+        <item>修复播放界面上滑时，若手指位于进度条，动画期间进度条会触发 Seek 的问题。</item>
+        <item>修复手动切句会导致两句同时高亮的问题。</item>
+        <item>修复分类详情界面滑动后可能导致顶部留空的问题，搜索界面同理。</item>
+        <item>修复 DSD 播放存在底噪的问题。</item>
+        <item>修复轮播专辑图切换问题。</item>
+        <item>优化切歌时专辑图的稳定性。</item>
+        <item>优化播放界面标题信息对齐的细节。</item>
+        <item>优化切歌体验，实现更平滑的交接。</item>
+        <item>优化音频淡入淡出效果，自然交叉淡入淡出不在此范围内。</item>
+        <item>新增一些排序功能。</item>
+        <item>新增 ColorOS 锁屏岛歌词显示；部分设备无法使用时，请使用模块。</item>
+        <item>新增“AI 自动打轴”。</item>
+        <item>新增 LunaBeat、Halcyon 打轴入口。</item>
+        <item>新增列表悬浮样式。</item>
+        <item>新增硬件 DSP 功能。此实验室功能仅支持带 DSP 芯片的耳机，理论上可调节耳机公开的全部能力。由于不同耳机声明的 DSP 数值和地址不一，目前只能结合网络资料逐步适配；该功能可能长期开发，以改善耳机与手机的部分生态兼容。目前已初步支持 OPPO 系和 MOONDROP 系设备，欢迎反馈问题并提交日志，帮助开发者继续适配。</item>
+        <item>新增“当可能时完美比特”，并将原“完美比特”明确为“严格完美比特”。“当可能时”会优先匹配 DAC 公布的能力；若不支持当前源格式，则降级为 PCM 重采样，但仍保持 USB 独占链路。“严格完美比特”要求 DAC 能力与源格式完全匹配，否则拒绝播放。声卡能力较完整时可使用严格模式，其他情况下推荐“当可能时”。</item>
+        <item>将 Lyrico 插件版本更新至最新版本。</item>
+        <item>更新词幕功能描述。</item>
     </string-array>
     <string-array name="update_developer_quotes">
         <item>“永远快乐”这句话，不但渺茫得不能实现，并且荒谬得不能成立。快过的决不会永久；我们说永远快乐，正好像说四方的圆形、静止的动作，同样地自相矛盾。在高兴的时候，我们空对瞬息即逝的时间喊着说：“逗留一会儿吧！你太美了！”那有什么用？你要永久，你该向痛苦里去找。不讲别的，只要一个失眠的晚上，或者有约不来的下午，或者一课沉闷的听讲，这许多比一切宗教信仰更有效力，能使你尝到什么叫做“永生”的滋味。人生的刺就在这里：留恋着不肯快走的，偏是你所不留恋的东西。</item>
@@ -971,6 +1020,7 @@
     <string name="settings_moog_title">穆格四阶梯形滤波</string>
     <string name="settings_moog_summary">带共振与模拟驱动的四级零延迟反馈梯形滤波器</string>
     <string name="settings_moog_variant">滤波变体</string>
+    <string name="settings_moog_variant_summary">选择滤波器响应类型。</string>
     <string name="settings_moog_mode_lp24">低通 24 dB/oct</string>
     <string name="settings_moog_mode_lp12">低通 12 dB/oct</string>
     <string name="settings_moog_mode_hp24">高通 24 dB/oct</string>
@@ -1052,12 +1102,19 @@
     <string name="settings_ai_runtime_imported">%1$s %2$s 已安装</string>
     <string name="settings_ai_runtime_import_failed">运行库导入失败</string>
     <string name="settings_ai_repository_section">可信模型仓库</string>
-    <string name="settings_ai_repository_none">尚未导入模型仓库</string>
-    <string name="settings_ai_repository_none_summary">请从本地导入包含 HTTPS 索引地址和签名公钥的仓库描述文件；应用不会自动信任网络下发的公钥。</string>
+    <string name="settings_ai_repository_none">模型目录尚未加载</string>
+    <string name="settings_ai_repository_none_summary">APK 内置了 RawS Music 的签名模型目录地址。第一次下载模型时会自动拉取并验签；如需使用自定义仓库，仍可手动导入。</string>
     <string name="settings_ai_repository_status">仓库 ID：%1$s · 目录中有 %2$d 个模型</string>
     <string name="settings_ai_repository_import">导入仓库描述文件</string>
     <string name="settings_ai_repository_import_summary">选择已通过可信渠道取得、内含仓库公钥的 JSON 文件</string>
+    <string name="settings_ai_repository_import_url">从 HTTPS 地址导入仓库</string>
+    <string name="settings_ai_repository_import_url_title">导入可信仓库地址</string>
+    <string name="settings_ai_repository_import_url_summary">输入 repository.json 的 HTTPS 地址。描述文件必须包含签名公钥，导入后会在本机验签模型目录。</string>
+    <string name="settings_ai_repository_import_url_label">仓库地址</string>
+    <string name="settings_ai_repository_import_url_hint">https://example.com/repository.json</string>
+    <string name="settings_ai_repository_import_url_confirm">导入并刷新</string>
     <string name="settings_ai_repository_imported">已导入可信仓库：%1$s</string>
+    <string name="settings_ai_repository_imported_and_refreshed">已导入可信仓库：%1$s。目录验签成功，共 %2$d 个模型。</string>
     <string name="settings_ai_repository_import_failed">仓库导入失败</string>
     <string name="settings_ai_repository_refresh">刷新已签名模型目录</string>
     <string name="settings_ai_repository_refresh_summary">下载索引和独立签名，并在本机完成公钥验签</string>
@@ -1068,7 +1125,7 @@
     <string name="settings_ai_repository_removed">模型仓库已移除</string>
     <string name="settings_ai_models_section">分离模型</string>
     <string name="settings_ai_models_empty">没有经过验证的模型</string>
-    <string name="settings_ai_models_empty_summary">请先导入仓库描述文件并刷新已签名目录</string>
+    <string name="settings_ai_models_empty_summary">点击模型下载后会自动拉取并验签 APK 内置的模型目录</string>
     <string name="settings_ai_model_summary">%1$s · 安装包 %2$s · 预计内存 %3$d MB
 %4$s</string>
     <string name="settings_ai_model_selected">当前使用</string>
@@ -1089,6 +1146,86 @@
     <string name="settings_ai_model_import_local_summary">仅当模型包 SHA-256 与已验签目录一致时才允许安装</string>
     <string name="settings_ai_model_imported">模型安装完成：%1$s</string>
     <string name="settings_ai_model_import_failed">本地模型包导入失败</string>
+    <string name="settings_ai_fast_alignment_section">Fast Vocal Alignment</string>
+    <string name="settings_ai_fast_alignment_empty">尚未发现快速人声活动模型</string>
+    <string name="settings_ai_fast_alignment_empty_summary">官方 Spleeter 2-stem FP16 模型可以直接下载并自动解压；已验签仓库中的其他轻量模型仍可作为可选项。模型本体不会打包进 APK。</string>
+    <string name="settings_ai_fast_alignment_manage_catalog">刷新模型目录</string>
+    <string name="settings_ai_fast_alignment_manage_catalog_summary">首次刷新会使用 APK 内置的 RawS Music 签名仓库地址。验签成功后，本区域会显示模型下载入口。</string>
+    <string name="settings_ai_fast_alignment_summary">%1$s · 模型包 %2$s · 预计内存 %3$d MB · %4$s
+%5$s</string>
+    <string name="settings_ai_fast_alignment_preferred">优先模型：Spleeter 2-stem FP16</string>
+    <string name="settings_ai_fast_alignment_compatible">兼容的轻量双轨模型</string>
+    <string name="settings_ai_fast_alignment_selected">已自动选择用于快速歌词对齐</string>
+    <string name="settings_ai_fast_alignment_installed">已安装，等待自动选择</string>
+    <string name="settings_ai_fast_alignment_not_installed">尚未下载</string>
+    <string name="settings_ai_fast_alignment_downloading">正在后台下载快速对齐模型</string>
+    <string name="settings_ai_fast_alignment_download">下载快速对齐模型</string>
+    <string name="settings_ai_fast_alignment_download_summary">从已验签目录下载并校验模型包；只计算人声活动曲线，不生成 WAV/FLAC。</string>
+    <string name="settings_ai_fast_alignment_download_one_click">一键下载快速对齐模型</string>
+    <string name="settings_ai_fast_alignment_download_one_click_summary">刷新签名目录并下载首选轻量模型。模型本体不会打包进 APK，会自动使用内置仓库地址。</string>
+    <string name="settings_ai_fast_alignment_download_started">已开始下载快速对齐模型：%1$s</string>
+    <string name="settings_ai_fast_alignment_no_downloadable_model">可信仓库中没有可下载的快速对齐模型</string>
+    <string name="settings_ai_fast_alignment_direct_title">Spleeter 2-stem FP16</string>
+    <string name="settings_ai_fast_alignment_direct_summary">%1$s · ZIP %2$s · 自动下载、SHA-256 校验并解压，包含人声和伴奏两个 ONNX 模型。</string>
+    <string name="settings_ai_fast_alignment_direct_installed">已下载并解压</string>
+    <string name="settings_ai_fast_alignment_direct_not_installed">尚未下载</string>
+    <string name="settings_ai_fast_alignment_direct_download">下载并解压 Spleeter</string>
+    <string name="settings_ai_fast_alignment_direct_download_summary">使用 RawS Music Release 地址，支持断点续传并进行固定 SHA-256 校验。</string>
+    <string name="settings_ai_lyric_alignment_section">歌词对齐模型</string>
+    <string name="settings_ai_lyric_alignment_empty">没有歌词对齐模型</string>
+    <string name="settings_ai_lyric_alignment_empty_summary">请刷新包含已签名 CTC 对齐模型的可信仓库。模型不会打包进 APK，只会在验签后下载。</string>
+    <string name="settings_ai_lyric_alignment_download_one_click">一键下载歌词对齐模型</string>
+    <string name="settings_ai_lyric_alignment_download_one_click_summary">刷新签名目录并下载内存占用最低的兼容打轴模型；APK 会自动获取 repository.json，模型本体不会打包进 APK。</string>
+    <string name="settings_ai_lyric_alignment_download_started">已开始下载歌词对齐模型：%1$s</string>
+    <string name="settings_ai_lyric_alignment_no_downloadable_model">可信仓库中没有可下载的歌词对齐模型</string>
+    <string name="settings_ai_lyric_alignment_summary">%1$s · 模型与词表 %2$s · 预计内存 %3$d MB
+%4$s</string>
+    <string name="settings_ai_lyric_alignment_selected">已用于歌词打轴</string>
+    <string name="settings_ai_lyric_alignment_installed">已安装</string>
+    <string name="settings_ai_lyric_alignment_not_installed">未安装</string>
+    <string name="settings_ai_lyric_alignment_downloading">正在后台下载</string>
+    <string name="settings_ai_lyric_alignment_download">下载歌词对齐模型</string>
+    <string name="settings_ai_lyric_alignment_download_summary">从已签名的 HTTPS 目录下载 ONNX 模型和词表，分别校验 SHA-256 后再原子安装。</string>
+    <string name="settings_ai_lyric_alignment_select">使用此歌词对齐模型</string>
+    <string name="settings_ai_lyric_alignment_select_summary">将其用于后续 CTC 歌词打轴，不会修改已有歌词。</string>
+    <string name="settings_ai_lyric_alignment_selected_toast">已选择歌词对齐模型</string>
+    <string name="ai_download_prepare_runtime">准备下载推理运行库</string>
+    <string name="ai_download_prepare_lyric_alignment">准备下载歌词对齐模型</string>
+    <string name="ai_download_prepare_model">准备下载模型</string>
+    <string name="ai_download_running_runtime">正在下载推理运行库</string>
+    <string name="ai_download_running_lyric_alignment">正在下载歌词对齐模型</string>
+    <string name="ai_download_running_model">正在下载模型</string>
+    <string name="ai_download_verifying_runtime">正在校验推理运行库</string>
+    <string name="ai_download_verifying_lyric_alignment">正在校验歌词对齐模型</string>
+    <string name="ai_download_verifying_model">正在校验模型包</string>
+    <string name="ai_download_installing_runtime">正在安装推理运行库</string>
+    <string name="ai_download_installing_lyric_alignment">正在安装歌词对齐模型</string>
+    <string name="ai_download_installing_model">正在安装模型</string>
+    <string name="ai_download_processing_runtime">正在处理推理运行库</string>
+    <string name="ai_download_processing_lyric_alignment">正在处理歌词对齐模型</string>
+    <string name="ai_download_processing_model">正在处理模型</string>
+    <string name="ai_download_completed_runtime">推理运行库安装完成</string>
+    <string name="ai_download_completed_lyric_alignment">歌词对齐模型安装完成</string>
+    <string name="ai_download_completed_model">模型安装完成</string>
+    <string name="ai_download_notification_runtime">推理运行库已安装</string>
+    <string name="ai_download_notification_lyric_alignment">歌词对齐模型已安装</string>
+    <string name="ai_download_notification_model">AI 人声分离模型已安装</string>
+    <string name="ai_fast_alignment_bundle_name">Spleeter 2-stem FP16</string>
+    <string name="ai_download_prepare_fast_alignment">准备下载快速对齐模型包</string>
+    <string name="ai_download_running_fast_alignment">正在下载快速对齐模型包</string>
+    <string name="ai_download_verifying_fast_alignment">正在校验快速对齐模型包</string>
+    <string name="ai_download_installing_fast_alignment">正在解压快速对齐模型包</string>
+    <string name="ai_download_processing_fast_alignment">正在处理快速对齐模型包</string>
+    <string name="ai_download_completed_fast_alignment">快速对齐模型包下载并解压完成</string>
+    <string name="ai_download_notification_fast_alignment">快速对齐模型包已就绪</string>
+    <string name="ai_download_cancelled_fast_alignment">快速对齐模型包下载已取消</string>
+    <string name="ai_fast_alignment_download_failed">快速对齐模型包下载失败</string>
+    <string name="ai_fast_alignment_install_failed">快速对齐模型包安装失败</string>
+    <string name="ai_download_cancelled_runtime">推理运行库下载已取消</string>
+    <string name="ai_download_cancelled_lyric_alignment">歌词对齐模型下载已取消</string>
+    <string name="ai_download_cancelled_model">模型下载已取消</string>
+    <string name="ai_download_preparing">正在准备模型</string>
+    <string name="ai_download_channel_name">AI 模型下载</string>
     <string name="settings_ai_storage_section">模型存储</string>
     <string name="settings_ai_storage_used">已安装模型数据：%1$s</string>
     <string name="settings_ai_storage_summary">共 %1$d 个已安装版本；安装成功后会自动清理临时下载文件。</string>
@@ -1134,6 +1271,7 @@
     <string name="settings_ai_recommended_section">推荐模型</string>
     <string name="settings_ai_recommended_summary">%1$s · 模型 %2$s · 预计内存 %3$d MB\n固定 SHA-256、精确 UVR MDX 中心裁剪链路，仅下载数据模型</string>
     <string name="settings_ai_recommended_download">下载推荐模型</string>
+    <string name="settings_ai_recommended_redownload">重新下载推荐模型</string>
     <string name="settings_ai_recommended_download_summary">优先尝试 GitHub Releases，再尝试 Hugging Face；核对固定大小和 SHA-256，真实图预热通过后自动选中</string>
     <string name="settings_ai_recommended_import">导入已下载模型</string>
     <string name="settings_ai_recommended_import_summary">可在其他设备下载 UVR_MDXNET_9482.onnx 后导入；仍会执行固定大小、SHA-256 与 ONNX 图检查</string>
@@ -1249,11 +1387,14 @@
     <string name="audio_spectrum_waterfall">瀑布频谱</string>
     <string name="audio_spectrum_loading">正在分析本地音频文件</string>
     <string name="audio_spectrum_error">频谱分析失败</string>
+    <string name="audio_spectrum_unknown_error">未知分析错误</string>
     <string name="audio_spectrum_peak">峰值</string>
     <string name="audio_spectrum_average_level">平均</string>
     <string name="audio_spectrum_cutoff">截止</string>
     <string name="audio_spectrum_left">左声道</string>
     <string name="audio_spectrum_right">右声道</string>
+    <string name="audio_spectrum_left_short">L</string>
+    <string name="audio_spectrum_right_short">R</string>
     <string name="audio_spectrum_dbfs">dBFS</string>
     <string name="preset_saved">预设已保存</string>
     <string name="preset_save_failed">保存失败: %1$s</string>
@@ -1396,6 +1537,9 @@
     <string name="ui_geq_band_count">段数</string>
     <string name="ui_geq_range">范围</string>
     <string name="ui_geq_gain">增益</string>
+    <string name="ui_geq_minus_12_db">-12 dB</string>
+    <string name="ui_geq_zero_db">0 dB</string>
+    <string name="ui_geq_plus_12_db">+12 dB</string>
     <string name="ui_geq_frequency">频率</string>
     <string name="ui_geq_reset">重置</string>
     <string name="ui_geq_save_preset">保存预设</string>
@@ -1469,6 +1613,13 @@
     <string name="settings_media_notification_buttons_playback_desktop">播放模式 + 桌面歌词</string>
     <string name="settings_media_notification_buttons_playback_favorite">播放模式 + 收藏</string>
     <string name="settings_media_notification_buttons_desktop_favorite">桌面歌词 + 收藏</string>
+    <string name="settings_coloros_bridge_section">ColorOS 锁屏岛歌词</string>
+    <string name="settings_coloros_bridge_enabled">发布 ColorOS 模块歌词</string>
+    <string name="settings_coloros_bridge_enabled_summary">优先发布标准 MediaSession lyricInfo；安装兼容模块时还会发送 RawS 专属 v4 通道。不会伪装成其他播放器。</string>
+    <string name="settings_coloros_bridge_mode">接入方式</string>
+    <string name="settings_coloros_bridge_mode_module">模块级</string>
+    <string name="settings_coloros_bridge_mode_non_module">非模块级</string>
+    <string name="settings_coloros_bridge_mode_summary">模块级使用外部模块 v4 通道；非模块级使用标准 MediaSession，并可选转发给测试兼容壳。</string>
     <string name="settings_xiaomi_super_island_title">小米超级岛歌词</string>
     <string name="settings_xiaomi_super_island_summary">为小米 HyperOS 超级岛发布实时歌词</string>
     <string name="settings_xiaomi_super_island_enable">启用小米超级岛歌词</string>
@@ -1571,14 +1722,101 @@
     <string name="song_delete_failed">删除失败</string>
     <string name="ai_runtime_download_failed">运行库下载失败</string>
     <string name="ai_model_download_failed">模型下载失败</string>
+    <string name="ai_lyric_alignment_download_failed">歌词对齐模型下载失败</string>
     <string name="ai_runtime_install_failed">AI 运行库安装失败</string>
     <string name="ai_model_install_failed">AI 模型安装失败</string>
+    <string name="ai_lyric_alignment_install_failed">歌词对齐模型安装失败</string>
     <string name="ai_download_check_source">请检查可信仓库和网络</string>
     <string name="ai_model_download_title">下载 AI 人声分离模型</string>
     <string name="ai_separation_notification_title">AI 人声分离 · %1$s</string>
     <string name="common_cancel">取消</string>
+    <string name="ai_lyric_timing_title">AI 歌词打轴预览</string>
+    <string name="ai_lyric_timing_ctc_action">CTC 打轴</string>
+    <string name="ai_lyric_timing_loading">正在分析人声活动…</string>
+    <string name="ai_lyric_timing_progress">人声活动分析 · %1$d%%</string>
+    <string name="ai_lyric_timing_ctc_progress">CTC 歌词对齐 · %1$d%%</string>
+    <string name="ai_lyric_timing_ctc_analyzing">正在解码当前歌曲并进行 CTC 歌词对齐</string>
+    <string name="ai_lyric_timing_mode_line">逐行（快速人声活动）</string>
+    <string name="ai_lyric_timing_mode_word">逐字（CTC/HSMM）</string>
+    <string name="ai_lyric_timing_detected_format">当前歌词格式：%1$s</string>
+    <string name="ai_lyric_timing_format_line">逐行</string>
+    <string name="ai_lyric_timing_format_word">逐字</string>
+    <string name="ai_lyric_timing_format_ttml">TTML</string>
+    <string name="ai_lyric_timing_output_title">选择写入格式</string>
+    <string name="ai_lyric_timing_output_keep">保持当前格式</string>
+    <string name="ai_lyric_timing_output_line">逐行歌词</string>
+    <string name="ai_lyric_timing_output_word">增强版逐字歌词</string>
+    <string name="ai_lyric_timing_output_ttml">TTML 歌词</string>
+    <string name="ai_lyric_timing_changes">可调整 %1$d 行歌词</string>
+    <string name="ai_lyric_timing_summary_changed">已完成整曲音频分析（%1$s）：共 %2$d 行歌词，调整 %3$d 行时间轴</string>
+    <string name="ai_lyric_timing_summary_unchanged">已完成整曲音频分析（%1$s）：共 %2$d 行歌词，没有发现安全的时间轴调整</string>
+    <string name="ai_lyric_timing_line_only_for_word_lyrics">检测到逐字时间轴，仅可应用逐行边界调整，原有逐字时间保持不变</string>
+    <string name="ai_lyric_timing_applied">已应用 %1$d 行歌词时间轴</string>
+    <string name="ai_lyric_timing_no_changes">没有发现安全的时间轴变化</string>
+    <string name="ai_lyric_timing_no_lyrics">当前歌曲没有可用的已解析歌词</string>
+    <string name="ai_lyric_timing_no_result">没有找到与当前歌曲精确匹配的分离结果，可在下方选择已有结果进行预览</string>
+    <string name="ai_lyric_timing_analyzing_source">正在分析所选结果：%1$s</string>
+    <string name="ai_lyric_timing_select_result">选择已有的人声分离结果进行预览</string>
+    <string name="ai_lyric_timing_preview_only">仅预览：当前选择不是当前歌曲的精确匹配，因此禁止写回</string>
+    <string name="ai_lyric_timing_unavailable">没有可用的人声活动缓存</string>
+    <string name="ai_lyric_timing_reject">拒绝</string>
+    <string name="ai_lyric_timing_accept">接受并写入</string>
+    <string name="ai_lyric_timing_confirm">确认</string>
+    <string name="ai_lyric_timing_confirmed_no_changes">分析已确认：已保留原歌词时间轴</string>
+    <string name="ai_lyric_timing_write_failed">无法写入歌词时间轴覆盖文件</string>
+    <string name="ai_lyric_timing_word_requires_ctc">增强逐字歌词需要先完成 CTC 打轴</string>
+    <string name="ai_lyric_timing_word_incomplete">CTC 未覆盖全部歌词行，已阻止写入混合逐字格式</string>
+    <string name="ai_lyric_timing_content_mismatch">对齐后的字符序列与原歌词不一致，未进行任何修改</string>
+    <string name="ai_lyric_timing_word_preview_count">共 %1$d 个逐字时间</string>
+    <string name="ai_lyric_timing_word_time_change">%1$s → %2$s</string>
+    <string name="ai_lyric_timing_word_new_time">新时间 %1$s</string>
+    <string name="ai_lyric_timing_word_confidence">置信度 %1$d%%</string>
     <string name="metadata_match_notification_title">RawS Music 正在匹配歌词与专辑图</string>
     <string name="webdav_empty_directory">此目录为空</string>
     <string name="webdav_load_failed">加载失败：%1$s</string>
     <string name="webdav_remote_album">WebDAV 远程音乐</string>
+    <string name="settings_custom_background_title">自定义背景</string>
+    <string name="settings_custom_background_summary">选择本地图片、动图或视频，作为应用内持续显示的背景。</string>
+    <string name="settings_custom_background_select">选择图片或视频</string>
+    <string name="settings_custom_background_replace">更换背景</string>
+    <string name="settings_custom_background_enabled">使用自定义背景</string>
+    <string name="settings_custom_background_enabled_summary">开启后默认显示在主界面与音乐分类页面。</string>
+    <string name="settings_custom_background_player">在播放界面显示</string>
+    <string name="settings_custom_background_player_summary">替换普通与沉浸播放界面的专辑取色背景。</string>
+    <string name="settings_custom_background_settings">在设置界面显示</string>
+    <string name="settings_custom_background_settings_summary">让所有设置页面也使用当前选择的背景。</string>
+    <string name="settings_custom_background_clear">移除自定义背景</string>
+    <string name="usb_dac_header_route_android">当前输出：Android USB Audio · %1$s</string>
+    <string name="usb_dac_header_route_exclusive">当前输出：USB 独占 · 独占关闭后：%1$s</string>
+    <string name="usb_dac_header_route_starting">正在启用 USB 独占 · 独占关闭后：%1$s</string>
+    <string name="usb_dac_capability_max_sample_rate">采样率上限</string>
+    <string name="usb_dac_capability_max_bit_depth">位深上限</string>
+    <string name="usb_dac_capability_max_channels">声道上限</string>
+    <string name="usb_dac_channel_count">%1$d 声道</string>
+    <string name="settings_player_title_alignment">播放标题对齐</string>
+    <string name="settings_player_title_alignment_desc">单独设置播放页标题、艺术家和专辑信息的靠左、居中或靠右位置。</string>
+    <string name="settings_mini_lyric_alignment">迷你歌词对齐</string>
+    <string name="settings_mini_lyric_alignment_desc">单独设置迷你歌词的靠左、居中或靠右位置，不再跟随标题信息。</string>
+
+    <string name="hardware_device_control_title">当前设备 · 硬件 DSP</string>
+    <string name="hardware_device_control_summary">根据当前 USB 或蓝牙音频设备实际公开的能力动态显示硬件控制。</string>
+    <string name="hardware_device_control_keywords">硬件 DSP 设备 EQ 均衡器 蓝牙 USB 声卡 耳机 降噪 滤波</string>
+    <string name="hardware_device_control_no_device">当前没有可控制的音频设备</string>
+    <string name="hardware_device_control_waiting_route">等待当前音频路由</string>
+    <string name="hardware_device_control_usb">USB 音频设备</string>
+    <string name="hardware_device_control_bluetooth">蓝牙音频设备</string>
+    <string name="hardware_device_control_refresh">刷新</string>
+    <string name="hardware_device_control_probing">正在读取硬件能力…</string>
+    <string name="hardware_device_control_unsupported">当前设备没有公开 RawSMusic 已支持的硬件控制接口。</string>
+    <string name="hardware_device_control_error">读取硬件能力失败。</string>
+    <string name="hardware_device_control_read_only">只读</string>
+    <string name="hardware_device_control_peq_band">第 %1$d 段</string>
+    <string name="hardware_device_control_write_rejected">硬件拒绝了控制请求：%1$s</string>
+    <string name="hardware_device_control_reconnecting">蓝牙硬件控制连接已断开，正在重新连接…</string>
+    <string name="hardware_device_control_disconnected">硬件控制连接已断开。</string>
+    <string name="hardware_device_control_permission_required">读取和控制当前蓝牙设备需要“附近设备”权限。</string>
+    <string name="hardware_device_control_grant_permission">授权</string>
+    <string name="hardware_device_control_copy_diagnostics">诊断信息</string>
+    <string name="hardware_device_control_diagnostics_copied">硬件 DSP 诊断信息已复制</string>
+    <string name="hardware_device_control_write_failed">硬件控制失败：%1$s</string>
 </resources>

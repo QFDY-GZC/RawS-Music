@@ -46,6 +46,59 @@ class LyricPlaybackStateTest {
     }
 
     @Test
+    fun previousLineDoesNotRemainHighlightedAfterBoundary() {
+        val lines = listOf(
+            line(0L, 1_000L, "First"),
+            line(1_200L, 2_500L, "Second")
+        )
+
+        val state = calculateLyricPlaybackState(lines, 1_250L)
+
+        assertEquals(setOf(1), state.activeLineIndices)
+        assertEquals(setOf(1), state.highlightedLineIndices)
+    }
+
+    @Test
+    fun seekToExactLineStartHighlightsOnlyTheNewLine() {
+        val lines = listOf(
+            line(0L, 1_000L, "First"),
+            line(1_000L, 2_000L, "Second")
+        )
+
+        val state = calculateLyricPlaybackState(lines, 1_000L)
+
+        assertEquals(1, state.currentLineIndex)
+        assertEquals(setOf(1), state.activeLineIndices)
+        assertEquals(setOf(1), state.highlightedLineIndices)
+    }
+
+    @Test
+    fun oppositeAlignedNonOverlappingLinesDoNotGetSyntheticOverlap() {
+        val lines = listOf(
+            line(0L, 1_000L, "First", alignedRight = true),
+            line(1_100L, 2_000L, "Second", alignedRight = false)
+        )
+
+        val state = calculateLyricPlaybackState(lines, 1_150L)
+
+        assertEquals(setOf(1), state.highlightedLineIndices)
+    }
+
+    @Test
+    fun duetOverlapDoesNotAddAnUnrelatedPreviousLineToTheHighlightSet() {
+        val lines = listOf(
+            line(0L, 1_000L, "Lead"),
+            line(1_050L, 2_000L, "Backing", alignedRight = true),
+            line(1_100L, 2_100L, "Next lead")
+        )
+
+        val state = calculateLyricPlaybackState(lines, 1_150L)
+
+        assertEquals(setOf(1, 2), state.activeLineIndices)
+        assertEquals(setOf(1, 2), state.highlightedLineIndices)
+    }
+
+    @Test
     fun oppositeDuetVoicesRemainActiveDuringOverlap() {
         val lines = listOf(
             line(0L, 5_000L, "Voice one"),
@@ -73,6 +126,7 @@ class LyricPlaybackStateTest {
         assertNotNull(state.activeInterlude)
         assertEquals(1_000L, state.activeInterlude?.startMs)
         assertEquals(10_000L, state.activeInterlude?.endMs)
+        assertTrue(state.highlightedLineIndices.isEmpty())
     }
 
     @Test
@@ -168,6 +222,60 @@ class LyricPlaybackStateTest {
 
         assertTrue(slices.any { it.wordIndex != null })
         assertEquals("A'B", slices.joinToString(separator = "") { it.text })
+    }
+
+    @Test
+    fun layoutPlaybackStateStaysEqualAcrossWordProgressOnlyUpdates() {
+        val lines = listOf(
+            RichLyricLine(
+                begin = 1_000L,
+                end = 4_000L,
+                text = "Hello world",
+                words = listOf(
+                    LyricWord(begin = 1_000L, end = 2_000L, text = "Hello"),
+                    LyricWord(begin = 2_000L, end = 4_000L, text = " world")
+                )
+            )
+        )
+        val timeline = LyricTimelineIndex(lines)
+
+        val first = timeline.layoutPlaybackStateAt(1_250L)
+        val laterSameLayout = timeline.layoutPlaybackStateAt(1_750L)
+
+        assertEquals(first, laterSameLayout)
+        assertEquals(first.hashCode(), laterSameLayout.hashCode())
+        assertTrue(first.isActive(0))
+        assertTrue(first.isHighlighted(0))
+    }
+
+    @Test
+    fun layoutPlaybackStateChangesWhenLineOwnershipChanges() {
+        val lines = listOf(
+            line(0L, 1_000L, "First"),
+            line(1_500L, 3_000L, "Second")
+        )
+        val timeline = LyricTimelineIndex(lines)
+
+        val first = timeline.layoutPlaybackStateAt(500L)
+        val second = timeline.layoutPlaybackStateAt(1_700L)
+
+        assertTrue(first != second)
+        assertTrue(first.isActive(0))
+        assertTrue(second.isActive(1))
+    }
+
+    @Test
+    fun playbackAfterTheLastLineDoesNotIndexPastTheTimeline() {
+        val lines = listOf(
+            line(0L, 1_000L, "First"),
+            line(2_000L, 3_000L, "Last")
+        )
+
+        val state = calculateLyricPlaybackState(lines, 4_000L)
+
+        assertEquals(-1, state.currentLineIndex)
+        assertTrue(state.activeLineIndices.isEmpty())
+        assertTrue(state.highlightedLineIndices.isEmpty())
     }
 
     private fun line(

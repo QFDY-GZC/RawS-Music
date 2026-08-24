@@ -17,6 +17,7 @@ internal class PlayerRestoreControlCoordinator(
         val applyPositionMs: (Long) -> Unit,
         val armPendingSeek: (positionMs: Long, path: String) -> Unit,
         val applyQueue: (PlayQueue) -> Unit,
+        val applyPriorityQueue: (List<AudioFile>) -> Unit = {},
         val logInfo: (String) -> Unit,
         val traceStartup: (stage: String, detail: String, elapsedMs: Long) -> Unit,
     )
@@ -54,6 +55,7 @@ internal class PlayerRestoreControlCoordinator(
                 currentIndex = restored.queueIndex,
             )
         )
+        callbacks.applyPriorityQueue(restored.priorityQueue)
         callbacks.traceStartup(
             "restore_last_song_done",
             "source=${restored.source} repoSongs=${restored.repositorySongCount} " +

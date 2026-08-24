@@ -70,6 +70,7 @@ import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.widget.predictiveDialogMotion
 import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.prefs.UsbBitPerfectMode
 import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.PlayerController
 import com.rawsmusic.module.player.dsp.PEQFilter
@@ -466,13 +467,13 @@ class AudioInfoCapsuleHelper(
         val outputApi = if (isUsbExclusive) "USB DAC 独占" else AudioOutputManager.getOutputModeLabel(actualOutputMode)
         val outputSettingsDest = if (isUsbExclusive) R.id.nav_usb_dac_settings else R.id.nav_audio_settings
         val trackIcon = resolveTrackFormatIcon(fmt, song.path)
-        val bitPerfectIconActive = isUsbExclusive && AppPreferences.Player.bitPerfectEnabled
+        val usbStatus = if (isUsbExclusive) runCatching { pc.getUsbDeviceStatus() }.getOrNull() else null
+        val bitPerfectIconActive = isUsbExclusive && usbStatus?.bitPerfect == true
         val outputIcon = resolveOutputProtocolIcon(
             isUsbExclusive = isUsbExclusive,
             outputMode = actualOutputMode,
             bitPerfectActive = bitPerfectIconActive
         )
-        val usbStatus = if (isUsbExclusive) runCatching { pc.getUsbDeviceStatus() }.getOrNull() else null
         val srChanged = ffmpegOutputSr > 0 && srcSr > 0 && srcSr != ffmpegOutputSr
         val bdChanged = ffmpegOutputBd > 0 && srcBd > 0 && srcBd != ffmpegOutputBd
         val targetSr = if (isUsbExclusive) AppPreferences.Player.usbTargetSampleRate else AppPreferences.Player.targetSampleRate
@@ -813,8 +814,19 @@ class AudioInfoCapsuleHelper(
         if (usbStatus?.dsdActive == true) {
             return if (usbStatus.dsdSourceDirect) "DSD源直通" else "关闭，当前为 PCM→DSD"
         }
-        if (!AppPreferences.Player.bitPerfectEnabled) return "关闭"
-        return if (!srChanged && !bdChanged) "开启，当前直通" else "开启，但当前发生格式转换"
+        return when (AppPreferences.Player.usbBitPerfectMode) {
+            UsbBitPerfectMode.OFF -> "关闭"
+            UsbBitPerfectMode.WHEN_POSSIBLE -> if (usbStatus?.bitPerfect == true) {
+                "当可能时：当前直通"
+            } else {
+                "当可能时：当前已降级"
+            }
+            UsbBitPerfectMode.STRICT -> if (usbStatus?.bitPerfect == true && !srChanged && !bdChanged) {
+                "严格：当前直通"
+            } else {
+                "严格：未建立直通"
+            }
+        }
     }
 
     private fun buildResampleLines(

@@ -1,6 +1,7 @@
 package com.rawsmusic.core.ui.widget.player
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberUpdatedState
@@ -20,18 +21,37 @@ internal fun rememberLyricTimelinePosition(
     isPlaying: Boolean,
     durationMs: Long,
 ): Long {
+    return rememberLyricTimelinePositionState(
+        positionMs = positionMs,
+        isPlaying = isPlaying,
+        durationMs = durationMs,
+    ).value
+}
+
+@Composable
+internal fun rememberLyricTimelinePositionState(
+    positionMs: Long,
+    isPlaying: Boolean,
+    durationMs: Long,
+): State<Long> {
     val latestPosition by rememberUpdatedState(positionMs.coerceAtLeast(0L))
     val latestPlaying by rememberUpdatedState(isPlaying)
     val latestDuration by rememberUpdatedState(durationMs)
-    val timelinePosition by produceState(
+    return produceState(
         initialValue = latestPosition,
         key1 = isPlaying,
         key2 = durationMs,
+        key3 = if (!isPlaying) positionMs else 0L,
     ) {
         var lastSourcePosition = latestPosition
         var anchorPosition = lastSourcePosition
         var anchorFrameNs = 0L
         value = clampLyricPosition(lastSourcePosition, latestDuration)
+
+        // A paused player has no render-time interpolation to perform. Returning here also
+        // lets a paused seek restart this producer through key3 without keeping a vsync loop
+        // alive in a static lyric/player screen.
+        if (!latestPlaying) return@produceState
 
         while (isActive) {
             val frameNs = withFrameNanos { it }
@@ -46,13 +66,6 @@ internal fun rememberLyricTimelinePosition(
                 continue
             }
 
-            if (!latestPlaying) {
-                anchorPosition = sourcePosition
-                anchorFrameNs = frameNs
-                value = clampLyricPosition(sourcePosition, sourceDuration)
-                continue
-            }
-
             if (anchorFrameNs == 0L) {
                 anchorPosition = sourcePosition
                 anchorFrameNs = frameNs
@@ -61,7 +74,6 @@ internal fun rememberLyricTimelinePosition(
             value = clampLyricPosition(anchorPosition + elapsedMs, sourceDuration)
         }
     }
-    return timelinePosition
 }
 
 private fun clampLyricPosition(positionMs: Long, durationMs: Long): Long =

@@ -150,7 +150,7 @@ internal class UsbDeviceStatusCoordinator(
         } else {
             "未开始输出"
         }
-        val bitPerfect = AppPreferences.Player.bitPerfectEnabled
+        val bitPerfect = callbacks.player.isUsbBitPerfectEffectiveForCurrentTrack()
         val dsdInfo = UsbDeviceStatusTextFormatter.buildDsdInfoText(
             sourceIsDsd = sourceIsDsd,
             dsdMode = dsdMode,
@@ -194,11 +194,18 @@ internal class UsbDeviceStatusCoordinator(
             val h = callbacks.engine.currentHandle
             if (h != 0L) callbacks.engine.nativeGetStatsString(h) else ""
         }.getOrDefault("")
+        val lastPcmStatsRaw = if (nativeStatsRaw.isBlank()) {
+            runCatching { callbacks.engine.nativeGetLastPcmInputDiagnosticsString() }
+                .getOrDefault("")
+        } else {
+            ""
+        }
         val audibleStateRaw = runCatching {
             val h = callbacks.engine.currentHandle
             if (h != 0L) callbacks.engine.nativeGetAudibleStateString(h) else ""
         }.getOrDefault("")
         val stats = UsbRuntimeStatsParser.parseStats(nativeStatsRaw)
+        val pcmStats = stats ?: UsbRuntimeStatsParser.parseStats(lastPcmStatsRaw)
         val nativeFuPolicy = runCatching { callbacks.engine.getHardwareVolumePolicyString() }.getOrDefault("")
         val volume = callbacks.manager.volumeInfo.value
         val descriptorVolumeHint = describeDescriptorVolumeHint(volume)
@@ -240,6 +247,25 @@ internal class UsbDeviceStatusCoordinator(
                 "deviceRate=${stats.clockRate}, targetRate=${stats.targetRate}"
         } else {
             "native stats unavailable"
+        }
+        val pcmInputDiagnostics = when {
+            pcmStats == null -> "not captured yet"
+            !pcmStats.pcmInputDiagReady -> "not captured yet"
+            else -> buildString {
+                if (stats == null && lastPcmStatsRaw.isNotBlank()) append("lastSession, ")
+                append("proto=UAC${pcmStats.pcmProtocol}")
+                append(", srcFrame=${pcmStats.pcmSourceFrameBytes}B")
+                append(", dstFrame=${pcmStats.pcmDeviceFrameBytes}B")
+                append(", adapter=${pcmStats.pcmAdapter.ifBlank { "none" }}")
+                append(", resample=${pcmStats.pcmNeedsResample}")
+                append(", samples=${pcmStats.pcmSamples}")
+                append(", nonSilent=${pcmStats.pcmNonSilent}")
+                append(", lowZero=${pcmStats.pcmLowZero}")
+                append(", signExtendedTop=${pcmStats.pcmSignExtendedTop}")
+                if (pcmStats.pcmFirst16Hex.isNotBlank()) {
+                    append(", first16=${pcmStats.pcmFirst16Hex}")
+                }
+            }
         }
         val featureUnitDiagnostics = if (stats != null) {
             buildString {
@@ -290,6 +316,7 @@ internal class UsbDeviceStatusCoordinator(
             initialized = initialized,
             running = running,
             bitPerfect = bitPerfect,
+            bitPerfectPolicy = AppPreferences.Player.usbBitPerfectMode.name,
             playbackMode = callbacks.playbackModeName(),
             sourceFormat = sourceFormat,
             targetFormat = targetFormat,
@@ -306,6 +333,7 @@ internal class UsbDeviceStatusCoordinator(
             audibleDiagnostics = audibleDiagnostics,
             feedbackDiagnostics = feedbackDiagnostics,
             clockDiagnostics = clockDiagnostics,
+            pcmInputDiagnostics = pcmInputDiagnostics,
             featureUnitDiagnostics = featureUnitDiagnostics,
             profileDiagnostics = profileDiagnostics,
             recoveryDiagnostics = recoveryDiagnostics,

@@ -38,6 +38,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.lifecycleScope
 import com.rawsmusic.core.common.ext.isDarkMode
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.LyricTimingEditorTarget
 import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.common.model.PlayMode
 import com.rawsmusic.core.common.model.PlayState
@@ -53,8 +54,11 @@ import com.rawsmusic.core.ui.scene.resolveHomeFullCoverActivityHostPolicy
 import com.rawsmusic.core.ui.widget.DynamicCoverBackgroundState
 import com.rawsmusic.core.ui.widget.ImmersiveBackgroundState
 import com.rawsmusic.core.ui.widget.PlayerSceneController
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
+import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkKeyContinuity
 import com.rawsmusic.core.ui.widget.bitmaps.rememberPlaybackArtworkTransitionState
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
+import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackQueueBindingIndex
 import com.rawsmusic.module.data.repository.MusicRepository
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.BottomBarStyle
@@ -74,6 +78,7 @@ import com.rawsmusic.module.scanner.LyricReader
 import com.rawsmusic.ui.songs.PlayerHolder
 import com.rawsmusic.ui.player.LandscapePlayerActivity
 import com.rawsmusic.ui.update.UpdateNotesDialog
+import com.rawsmusic.ui.player.AiLyricTimingPreviewDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -83,6 +88,7 @@ import com.rawsmusic.helper.AudioPermissionHelper
 import com.rawsmusic.helper.AudioInfoCapsuleHelper
 import com.rawsmusic.helper.AudioInfoCapsuleOverlay
 import com.rawsmusic.helper.AudioInfoLink
+import com.rawsmusic.helper.LyricoIntegration
 import com.rawsmusic.helper.CoverBackgroundLayerState
 import com.rawsmusic.helper.CoverCoordinator
 import com.rawsmusic.helper.DialogHelper
@@ -156,6 +162,19 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
+
+private fun lyricSongKey(song: AudioFile): String = buildString {
+    append(song.path)
+    append('|')
+    append(song.duration)
+    append('|')
+    append(song.cueOffsetMs)
+    append('|')
+    append(song.cueEndMs)
+    append('|')
+    append(song.cueTrackIndex)
+}
+
 class MainActivity : ComponentActivity() {
 
     private val songDeletionCoordinator = SongDeletionCoordinator(this)
@@ -169,6 +188,9 @@ class MainActivity : ComponentActivity() {
     private var startupWorkScheduled = false
 
     private var currentLyricData by mutableStateOf(LyricData())
+    private var currentLyricDataSongKey by mutableStateOf<String?>(null)
+    private var aiTimingPreviewSong by mutableStateOf<AudioFile?>(null)
+    private var showAiTimingPreview by mutableStateOf(false)
     private var composeLyricSong by mutableStateOf<Song?>(null)
     private var composeLyricPositionMs by mutableLongStateOf(0L)
     private var composeDisplayTranslation by mutableStateOf(AppPreferences.Lyricon.displayTranslation)
@@ -213,13 +235,26 @@ class MainActivity : ComponentActivity() {
             editorLauncher = lyricoEditorLauncher,
             searchLauncher = lyricoSearchLauncher,
             setPendingEditSong = { pendingLyricoEditSong = it },
-            onSongRefreshed = { original, refreshed ->
-                if (::coverUriResolver.isInitialized) {
-                    coverUriResolver.invalidate(original)
-                    coverUriResolver.invalidate(refreshed)
+            onEditApplied = { original, refreshed, mutation ->
+                if (mutation.artworkChanged) {
+                    val previousArtworkKey = original.resolvePlaybackArtworkKey()
+                    val committedArtworkKey = refreshed.resolvePlaybackArtworkKey()
+                    PlaybackArtworkKeyContinuity.markArtworkRewrite(
+                        previousKey = previousArtworkKey,
+                        committedKey = committedArtworkKey,
+                    )
+                    if (::coverUriResolver.isInitialized) {
+                        coverUriResolver.invalidate(original)
+                        coverUriResolver.invalidate(refreshed)
+                    }
+                    committedArtworkKey?.let(BitmapProvider::warmPlaybackArt)
                 }
-                playerController?.updateCurrentSongIfSamePath(refreshed)
-                lyricsCoordinator.loadLyricsForSong(refreshed)
+                if (refreshed !== original || mutation.artworkChanged) {
+                    playerController?.updateCurrentSongIfSamePath(refreshed)
+                }
+                if (mutation.lyricsChanged) {
+                    lyricsCoordinator.loadLyricsForSong(refreshed)
+                }
             },
         )
     }
@@ -227,7 +262,10 @@ class MainActivity : ComponentActivity() {
         MainActivityLyricStateCoordinator(
             currentSong = { playerController?.currentSong?.value },
             currentPositionMs = { playerController?.position?.value ?: 0L },
-            setLyricData = { currentLyricData = it },
+            setLyricData = {
+                currentLyricData = it
+                currentLyricDataSongKey = playerController?.currentSong?.value?.let(::lyricSongKey)
+            },
             setLyricSong = { composeLyricSong = it },
             setDisplayTranslation = { composeDisplayTranslation = it },
             setDisplayRoma = { composeDisplayRoma = it },
@@ -300,7 +338,7 @@ class MainActivity : ComponentActivity() {
                 "pending=${pendingLyricoEditSong?.path}"
         )
         pendingLyricoEditSong?.let { editedSong ->
-            refreshSongAfterLyricoEdit(editedSong)
+            refreshSongAfterLyricoEdit(editedSong, LyricoEditMutation.Unknown)
         }
         pendingLyricoEditSong = null
     }
@@ -313,7 +351,18 @@ class MainActivity : ComponentActivity() {
         )
         val current = playerController?.currentSong?.value
         if (current != null && current.path == editedPath) {
-            refreshSongAfterLyricoEdit(current)
+            val lyricsChanged = result.data?.getBooleanExtra(
+                com.rawsmusic.ui.settings.LyricoSearchActivity.EXTRA_CHANGED_LYRICS,
+                false,
+            ) == true
+            val artworkChanged = result.data?.getBooleanExtra(
+                com.rawsmusic.ui.settings.LyricoSearchActivity.EXTRA_CHANGED_ARTWORK,
+                false,
+            ) == true
+            refreshSongAfterLyricoEdit(
+                current,
+                LyricoEditMutation.fromFlags(lyricsChanged, artworkChanged),
+            )
         }
     }
     private var playingCoverBoundsForTransition by mutableStateOf<android.graphics.RectF?>(null)
@@ -323,6 +372,9 @@ class MainActivity : ComponentActivity() {
     // never depend on a transient/null MiniPlayer callback or on the ListCover used for entry.
     private var stableMiniPlayerCoverGeometryForTransition by mutableStateOf<CoverTransitionTarget?>(null)
     private var miniPlayerGestureBoundsForSceneGesture by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
+    private var stableMiniPlayerBoundsForSceneGesture by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
+    private var lockedMiniPlayerBoundsForTransition by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
+    private var bottomNavigationGestureBoundsForSceneGesture by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
     // FLOATING MiniPlayer is a sibling of the player sheet rather than an in-sheet child.
     // Keep one stable MAIN-layout top and freeze it for MAIN <-> PLAYER handoffs; feeding the
     // live AnimatedVisibility/offset position back into the sheet travel makes the collapsed
@@ -446,6 +498,7 @@ class MainActivity : ComponentActivity() {
     private var audioInfoSharedWindowActive by mutableStateOf(false)
     private var audioInfoSharedWindowOrigin: com.rawsmusic.core.ui.scene.NavScene? = null
     private var settingsActivityLaunched = false
+    private var predictiveBackMainPlayerSheetVisible = false
 
     private fun launchSettingsActivity(activityClass: Class<*>) {
         settingsActivityLaunched = true
@@ -843,7 +896,10 @@ class MainActivity : ComponentActivity() {
             lifecycleScope,
             { enabled -> if (::playerSceneController.isInitialized) playerSceneController.lyricEnabled = enabled },
             { playerController?.currentSong?.value },
-            { _, data -> setCurrentLyricDataForCompose(data) },
+            { song, data ->
+                currentLyricDataSongKey = lyricSongKey(song)
+                setCurrentLyricDataForCompose(data)
+            },
             { _ -> /* mini lyric removed */ },
             { currentLyricText = "" },
             { },
@@ -895,6 +951,12 @@ class MainActivity : ComponentActivity() {
             lyrics = lyricsCoordinator,
             playerServiceBridgeHelper = playerServiceBridgeHelper,
             onCurrentSongChangedExtra = { song ->
+                // The coordinator parses asynchronously. Clear the duplicated Compose bridge
+                // immediately so a newly selected song can never render the previous song's
+                // lyric tree during that gap.
+                currentLyricData = LyricData()
+                currentLyricDataSongKey = lyricSongKey(song)
+                composeLyricSong = null
                 coverCoordinator.onCurrentSongChanged(song)
                 coverBackgroundManager.loadCoverBackground(song.albumArtPath)
                 audioInfoCapsuleHelper.updateText()
@@ -1281,7 +1343,8 @@ class MainActivity : ComponentActivity() {
             isGestureBlocked = { gestureLockCoordinator.isBlocked },
             isAudioInfoSharedWindowActive = { audioInfoSharedWindowActive },
             isHorizontalGestureExcluded = { point ->
-                miniPlayerGestureBoundsForSceneGesture?.contains(point) == true
+                miniPlayerGestureBoundsForSceneGesture?.contains(point) == true ||
+                    bottomNavigationGestureBoundsForSceneGesture?.contains(point) == true
             },
         )
     }
@@ -1389,6 +1452,31 @@ class MainActivity : ComponentActivity() {
                     ) {
                         PlayerOverlayContent()
                     }
+                    AiLyricTimingPreviewDialog(
+                        show = showAiTimingPreview,
+                        song = aiTimingPreviewSong,
+                        lyrics = currentLyricData,
+                        lyricsSongKey = currentLyricDataSongKey,
+                        onDismiss = {
+                            showAiTimingPreview = false
+                            aiTimingPreviewSong = null
+                        },
+                        onApplied = { corrected ->
+                            setCurrentLyricDataForCompose(corrected)
+                            val appliedSong = aiTimingPreviewSong
+                            val playingSong = playerController?.currentSong?.value
+                            if (
+                                appliedSong != null &&
+                                playingSong != null &&
+                                lyricSongKey(appliedSong) == lyricSongKey(playingSong)
+                            ) {
+                                // The player and lyric page render LyricsCoordinator.lyricSong,
+                                // not only MainActivity's legacy mirror above. Re-read the accepted
+                                // sidecar so every lyric surface switches to the persisted timeline.
+                                lyricsCoordinator.loadLyricsForSong(appliedSong)
+                            }
+                        }
+                    )
                     if (showUpdateNotes) {
                         UpdateNotesDialog(versionName = installedVersionName) {
                             AppPreferences.UI.lastUpdateNotesVersionCode = installedVersionCode
@@ -1430,17 +1518,35 @@ class MainActivity : ComponentActivity() {
         val playbackPositionMs = playerController?.position?.value ?: 0L
         val playbackDurationMs by playerController?.duration?.collectAsState()
             ?: androidx.compose.runtime.mutableStateOf(0L)
-        val playbackQueue by playerController?.queue?.collectAsState()
+        val playbackQueue by playerController?.visibleQueue?.collectAsState()
             ?: androidx.compose.runtime.mutableStateOf(com.rawsmusic.core.common.model.PlayQueue())
         // Use the controller's real next-track resolver. It includes the priority queue,
         // shuffle reservation, and repeat-one behavior used by the actual transition.
-        val miniPlayerPreviousSong = playerController?.previewPreviousSong()
-        val miniPlayerNextSong = playerController?.previewNextSong()
+        val miniPlayerPreviousSong = playerController?.previewPreviousSong(playbackQueue)
+        val miniPlayerNextSong = playerController?.previewNextSong(playbackQueue)
+        val carouselRelativeSongs = (-3..3).map { offset ->
+            playerController?.previewRelativeSong(playbackQueue, offset)
+        }
         val nextSongTitle = miniPlayerNextSong?.displayName.orEmpty()
-        // The carousel must observe the same immutable queue snapshot as the player bar.
-        // Priority entries are a scheduler overlay, not items before the current queue index.
-        val homeQueueSongs = playbackQueue.songs
-        val homeQueueCurrentIndex = playbackQueue.currentIndex
+        // visibleQueue already folds an in-flight transport request into this immutable snapshot.
+        // Re-applying requestedSongForUi here creates a second independently published cursor and
+        // lets the retiring song win one composition between two target frames.
+        val canonicalCurrentSong = playbackQueue.currentSong ?: currentSong
+        val homeCarouselQueue = remember(
+            playbackQueue,
+            canonicalCurrentSong,
+            miniPlayerPreviousSong,
+            miniPlayerNextSong,
+            carouselRelativeSongs,
+        ) {
+            buildHomeCarouselQueueProjection(
+                queue = playbackQueue,
+                currentSong = canonicalCurrentSong,
+                previousSong = miniPlayerPreviousSong,
+                nextSong = miniPlayerNextSong,
+                relativeSongs = carouselRelativeSongs,
+            )
+        }
         // 监听扫描状态（首次运行不再自动弹文件夹选择器，直接进入歌曲列表触发 MediaStore 扫描）
         val scanStatus by com.rawsmusic.module.scanner.ScanStateBus.status.collectAsState()
         androidx.compose.runtime.LaunchedEffect(scanStatus.state, scanStatus.timeMs, scanStatus.progress) {
@@ -1542,24 +1648,38 @@ class MainActivity : ComponentActivity() {
                             "title=${song.title} path=${song.path} queueSize=${carouselSongs.size}"
                     )
                     dispatchPlayerTransportAction<Unit>("home_carousel_select") { controller ->
-                        val activeQueue = controller.queue.value
+                        val activeQueue = controller.visibleQueue.value
                         val activeIndex = activeQueue.songs.indexOfFirst { candidate ->
                             candidate.path == song.path &&
                                 candidate.cueOffsetMs == song.cueOffsetMs &&
                                 candidate.cueTrackIndex == song.cueTrackIndex
                         }
                         if (activeIndex >= 0) {
-                            controller.selectExistingQueueIndex(
+                            controller.selectVisibleQueueIndex(
                                 activeIndex,
                                 reason = "home_carousel_select",
                             )
                         } else {
-                            // The carousel can briefly outlive a legitimate external queue
-                            // replacement. Only that exceptional case may establish a new queue.
-                            controller.play(song, carouselSongs, resolvedIndex)
+                            // Never rebuild the transport queue from a stale carousel callback.
+                            // The next state emission will rebind the carousel to the canonical
+                            // queue; rebuilding here is what caused the previous-cover flash.
+                            AppLogger.w(
+                                "HOME_CAROUSEL_TRACE",
+                                "ignored_stale_selection resolved=$resolvedIndex " +
+                                    "activeSize=${activeQueue.songs.size}",
+                            )
                         }
                         Unit
                     }
+                }
+            },
+            onHomeCarouselNavigate = { direction ->
+                dispatchPlayerTransportAction<Unit>("home_carousel_navigate") { controller ->
+                    when {
+                        direction > 0 -> controller.next()
+                        direction < 0 -> controller.previousTrackFromArtworkGesture()
+                    }
+                    Unit
                 }
             },
             onQueueSongClick = { song, _ ->
@@ -1614,6 +1734,7 @@ class MainActivity : ComponentActivity() {
             onMiniPlayerExpandDragStart = {
                 preparePlayPageForBottomSheetDrag()
                 playerSceneController.startMainToPlayerDrag()
+                updatePredictiveBackRegistration()
             },
             onMiniPlayerExpandDragProgress = { ratio ->
                 playerSceneController.updateMainToPlayerDrag(ratio)
@@ -1762,12 +1883,18 @@ class MainActivity : ComponentActivity() {
 
         val data = com.rawsmusic.core.ui.scene.NavData(
             songs = songs,
-            currentPlayingIndex = songs.indexOfFirst { it.id == (currentSong?.id ?: -1L) },
-            currentSong = miniPlayerCoordinator.currentSong,
-            queueSongs = homeQueueSongs,
-            queueCurrentIndex = homeQueueCurrentIndex,
-            miniPlayerTitle = miniPlayerCoordinator.title,
-            miniPlayerArtist = miniPlayerCoordinator.artist,
+            currentPlayingIndex = songs.indexOfFirst {
+                it.path == canonicalCurrentSong?.path &&
+                    it.cueOffsetMs == canonicalCurrentSong.cueOffsetMs &&
+                    it.cueTrackIndex == canonicalCurrentSong.cueTrackIndex
+            },
+            currentSong = canonicalCurrentSong,
+            queueSongs = playbackQueue.songs,
+            queueCurrentIndex = playbackQueue.currentIndex,
+            homeCarouselSongs = homeCarouselQueue.songs,
+            homeCarouselCurrentIndex = homeCarouselQueue.currentIndex,
+            miniPlayerTitle = canonicalCurrentSong?.title ?: miniPlayerCoordinator.title,
+            miniPlayerArtist = canonicalCurrentSong?.artist ?: miniPlayerCoordinator.artist,
             miniPlayerLyric = lyricsCoordinator.currentLyricText,
             miniPlayerLyricTranslation = lyricsCoordinator.currentLyricTranslation,
             lyricSong = lyricsCoordinator.lyricSong,
@@ -1778,7 +1905,10 @@ class MainActivity : ComponentActivity() {
             playbackPositionMs = playbackPositionMs,
             playbackDurationMs = playbackDurationMs,
             nextSongTitle = nextSongTitle,
-            miniPlayerCoverPath = miniPlayerCoordinator.coverPath,
+            miniPlayerCoverPath = canonicalCurrentSong
+                ?.let(::resolveSongCoverForCompose)
+                ?.takeIf { it.isNotBlank() }
+                ?: miniPlayerCoordinator.coverPath,
             playerReturnRevealIndex = playerReturnRevealIndex,
             // List artwork remains ordinary MAIN content throughout collapse. PLAYER -> MAIN
             // is already hard-wired to the MiniPlayer endpoint, so hiding the current list cover
@@ -1830,8 +1960,12 @@ class MainActivity : ComponentActivity() {
                     playerSceneController.currentScene == PlayerSceneController.Scene.MAIN &&
                     !playerSceneController.composeIsTransitioning
                 ) {
+                    stableMiniPlayerBoundsForSceneGesture = bounds
                     stableFloatingMiniPlayerTopPx = bounds.top
                 }
+            },
+            onBottomNavigationGestureBoundsChanged = { bounds ->
+                bottomNavigationGestureBoundsForSceneGesture = bounds
             },
             playerSceneProgressState = playerSceneController.mainPlayerSheetExpansionState,
             onHomeFullCoverActiveChange = { active ->
@@ -2070,9 +2204,15 @@ class MainActivity : ComponentActivity() {
         playerSceneController.onTransitionProgress = { targetScene, ratio ->
             // 导航栏始终保持可见，不做任何 alpha/visibility 变化，避免"先淡出再显示"的闪烁
             // 场景切换的状态由 onSceneChanged 统一管理
+            val sheetVisible = targetScene == PlayerSceneController.Scene.PLAYER && ratio > 0f
+            if (predictiveBackMainPlayerSheetVisible != sheetVisible) {
+                predictiveBackMainPlayerSheetVisible = sheetVisible
+                updatePredictiveBackRegistration()
+            }
         }
 
         playerSceneController.onSceneChanged = { newScene, oldScene ->
+            predictiveBackMainPlayerSheetVisible = false
             val playState = playerController?.playState?.value
             val ffmpegState = playerController?.ffmpegPlayerRef?.state
             AppLogger.w("SceneTransition", "=== onSceneChanged: $oldScene -> $newScene, isRealTransition=${oldScene != newScene}, playState=$playState, ffmpegState=$ffmpegState, prePlayerWasInFragmentMode=$prePlayerWasInFragmentMode, prePlayerFragmentDest=$prePlayerFragmentDest ===")
@@ -2367,8 +2507,30 @@ class MainActivity : ComponentActivity() {
 
     private fun launchLyricoOnlineSearch() = lyricoCoordinator.launchOnlineSearch()
 
-    private fun refreshSongAfterLyricoEdit(song: AudioFile) {
-        lyricoCoordinator.refreshAfterEdit(song)
+    private fun launchExternalTimingEditor(target: LyricTimingEditorTarget) {
+        val song = playerController?.currentSong?.value
+        if (song == null) {
+            Toast.makeText(this, getString(UiR.string.lyric_timing_external_unavailable), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val intent = LyricoIntegration.buildExternalTimingIntent(this, song, target)
+        if (intent == null) {
+            Toast.makeText(this, getString(UiR.string.lyric_timing_external_unavailable), Toast.LENGTH_SHORT).show()
+            return
+        }
+        runCatching {
+            startActivity(intent)
+        }.onFailure { error ->
+            LyricoIntegration.traceLaunchFailure("timing_external target=$target", error)
+            Toast.makeText(this, getString(UiR.string.lyric_timing_external_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun refreshSongAfterLyricoEdit(
+        song: AudioFile,
+        mutation: LyricoEditMutation = LyricoEditMutation.Unknown,
+    ) {
+        lyricoCoordinator.refreshAfterEdit(song, mutation)
     }
 
 
@@ -2398,21 +2560,57 @@ class MainActivity : ComponentActivity() {
     private fun PlayerOverlayContent() {
         // Keep artwork lanes warm while the library is visible. Creating them only after the
         // MAIN -> PLAYER transition starts leaves an empty frame before the complete player pops in.
-        val prewarmCommittedSong by playerController?.currentSong?.collectAsState()
+        val prewarmCommittedSongFlow by playerController?.currentSong?.collectAsState()
             ?: androidx.compose.runtime.mutableStateOf(null)
         val prewarmRequestedSong by playerController?.requestedSongForUi?.collectAsState()
             ?: androidx.compose.runtime.mutableStateOf(null)
-        val prewarmQueue by playerController?.queue?.collectAsState()
+        val prewarmQueue by playerController?.visibleQueue?.collectAsState()
             ?: androidx.compose.runtime.mutableStateOf(com.rawsmusic.core.common.model.PlayQueue())
-        val prewarmSong = prewarmRequestedSong ?: prewarmCommittedSong
-        val prewarmPriorityCount = playerController?.getPriorityQueue().orEmpty().size
-        val prewarmCoverPath = prewarmSong?.let { resolveSongCoverForCompose(it) }
-        val prewarmedArtworkTransitionState = rememberPlaybackArtworkTransitionState(
-            currentKey = prewarmSong.resolvePlaybackArtworkKey(prewarmCoverPath),
-            queueCurrentIndex = prewarmQueue.currentIndex + prewarmPriorityCount,
-            queueSize = prewarmQueue.songs.size + prewarmPriorityCount,
-            automaticCrossfadeEnabled = AppPreferences.Player.automaticCrossfadeEnabled,
+        val prewarmCombinedQueue = prewarmQueue.songs
+        val prewarmReportedIndex = prewarmQueue.currentIndex
+        // Keep the prewarmed artwork surface on the same queue snapshot as the
+        // mini-player. The standalone currentSong flow can lag one emission during
+        // a manual switch and would otherwise rebind the old cover for one frame.
+        val prewarmCommittedSong = if (prewarmCombinedQueue.isNotEmpty()) {
+            prewarmQueue.currentSong
+        } else {
+            prewarmCommittedSongFlow
+        }
+        val prewarmCommittedIndex = resolvePlaybackQueueBindingIndex(
+            currentSong = prewarmCommittedSong,
+            queueSongs = prewarmCombinedQueue,
+            reportedIndex = prewarmReportedIndex,
         )
+        val prewarmCommittedCoverPath = prewarmCommittedSong?.let { resolveSongCoverForCompose(it) }
+        val prewarmRequestedCoverPath = prewarmRequestedSong?.let { resolveSongCoverForCompose(it) }
+        val prewarmedArtworkTransitionState = rememberPlaybackArtworkTransitionState(
+            // currentSong and PlayQueue are separate StateFlows. Resolve the index from the exact
+            // committed audio/CUE identity inside this same queue snapshot so a one-frame stale
+            // queue.currentIndex can never turn a real track change into a same-position art reset.
+            currentKey = prewarmCommittedSong.resolvePlaybackArtworkKey(prewarmCommittedCoverPath),
+            queueCurrentIndex = prewarmCommittedIndex,
+            queueSize = prewarmCombinedQueue.size,
+            automaticCrossfadeEnabled = AppPreferences.Player.automaticCrossfadeEnabled,
+            requestedManualKey = prewarmRequestedSong.resolvePlaybackArtworkKey(prewarmRequestedCoverPath),
+        )
+        val prewarmPreviousArtworkKey = playerController
+            ?.previewPreviousSong(prewarmQueue)
+            .resolvePlaybackArtworkKey()
+        val prewarmNextArtworkKey = playerController
+            ?.previewNextSong(prewarmQueue)
+            .resolvePlaybackArtworkKey()
+        SideEffect {
+            prewarmedArtworkTransitionState.updateNavigationNeighbourKeys(
+                previousKey = prewarmPreviousArtworkKey,
+                nextKey = prewarmNextArtworkKey,
+            )
+        }
+        LaunchedEffect(prewarmPreviousArtworkKey, prewarmNextArtworkKey) {
+            prewarmedArtworkTransitionState.prefetchNavigationNeighbours(
+                previousKey = prewarmPreviousArtworkKey,
+                nextKey = prewarmNextArtworkKey,
+            )
+        }
 
         if (!overlayCoordinator.composeOverlayContentVisible) return
 
@@ -2452,13 +2650,31 @@ class MainActivity : ComponentActivity() {
                 (controllerVisualScene == PlayerSceneController.Scene.PLAYER ||
                     controllerVisualScene == PlayerSceneController.Scene.LYRIC)
             val persistentNormalPlayerSheet = usesNormalPlayerSheet() && !composeImmersiveEnabled
-            if (controllerPlayerVisible || auxiliaryPlayerSceneVisible || persistentNormalPlayerSheet) {
+            // Floating standard-player variants used to mount the entire PLAYER/LYRIC tree only
+            // after the first tap/swipe had already started the scene animator. On a cold process
+            // that first frame had to load classes, compose/measure the full player, initialize
+            // waveform/background helpers and build text/artwork nodes at once, so the 500ms
+            // transition could visually collapse into a single jump. Keep one measured-but-
+            // unplaced standard-player tree warm while MAIN is stable. Persistent NORMAL already
+            // owns a warm sheet and therefore does not need the extra warm-only state.
+            val prewarmStandardPlayerSurface = !composeImmersiveEnabled &&
+                !persistentNormalPlayerSheet &&
+                (prewarmRequestedSong ?: prewarmCommittedSong) != null
+            if (controllerPlayerVisible || auxiliaryPlayerSceneVisible ||
+                persistentNormalPlayerSheet || prewarmStandardPlayerSurface
+            ) {
                 com.rawsmusic.core.ui.widget.PlayerDismissMotionHost(
                     openToken = 31 * controllerVisualScene.hashCode() + currentScene.hashCode(),
                     onDismissProgressChange = { /* progress reporting if needed */ },
                     onDismiss = {
                         if (::playerSceneController.isInitialized) {
-                            playerSceneController.closeCurrentPlayerStackToMain(true)
+                            // PlayerDismissMotionHost has already translated the immersive player
+                            // completely off-screen before invoking this callback. Starting a
+                            // second PLAYER -> MAIN animator keeps mainPlayerSheetExpansion at 1
+                            // while MAIN is already visible underneath, which hides both MiniPlayer
+                            // variants and can strand the user without a way back into PLAYER.
+                            // Commit the controller anchor immediately; the host owned the motion.
+                            playerSceneController.closeCurrentPlayerStackToMain(false)
                         }
                     },
                     // 禁用 PlayerDismissMotionHost 的 BackHandler，避免触发 LocalNavigationEventDispatcherOwner 崩溃
@@ -2491,13 +2707,59 @@ class MainActivity : ComponentActivity() {
                 val currentSong = requestedUiSong ?: committedCurrentSong
                 val playState by playerController?.playState?.collectAsState()
                     ?: androidx.compose.runtime.mutableStateOf(PlayState.IDLE)
-                val positionMs by playerController?.position?.collectAsState()
-                    ?: androidx.compose.runtime.mutableStateOf(0L)
-                val durationMs by playerController?.duration?.collectAsState()
-                    ?: androidx.compose.runtime.mutableStateOf(0L)
+                // Playback position can publish many times per second once the renderer starts
+                // writing audio. Reading that StateFlow in this large overlay composition made
+                // every PLAYER scene transition compete with unrelated timeline recompositions.
+                // During MAIN idle/prewarm and during every scene settle, keep a plain snapshot
+                // instead. Stable PLAYER/LYRIC resumes the live subscription immediately.
+                val timelineSnapshot = remember(
+                    currentSong?.path,
+                    currentSong?.cueOffsetMs,
+                    currentSong?.cueTrackIndex
+                ) {
+                    longArrayOf(
+                        playerController?.position?.value ?: 0L,
+                        playerController?.duration?.value ?: currentSong?.duration ?: 0L,
+                        lyricsCoordinator.lyricPositionMs,
+                    )
+                }
+                val timelineTransitionLatch = remember(
+                    currentSong?.path,
+                    currentSong?.cueOffsetMs,
+                    currentSong?.cueTrackIndex
+                ) { booleanArrayOf(false) }
+                val freezePlayerTimeline = controllerTransitioning ||
+                    controllerVisualScene == PlayerSceneController.Scene.MAIN
+                if (controllerTransitioning && !timelineTransitionLatch[0]) {
+                    timelineSnapshot[0] = playerController?.position?.value ?: timelineSnapshot[0]
+                    timelineSnapshot[1] = playerController?.duration?.value ?: timelineSnapshot[1]
+                    timelineSnapshot[2] = lyricsCoordinator.lyricPositionMs
+                }
+                timelineTransitionLatch[0] = controllerTransitioning
+
+                val positionMs: Long
+                val durationMs: Long
+                val liveLyricPositionMs: Long
+                if (freezePlayerTimeline) {
+                    positionMs = timelineSnapshot[0]
+                    durationMs = timelineSnapshot[1]
+                    liveLyricPositionMs = timelineSnapshot[2]
+                } else {
+                    val observedPosition by playerController?.position?.collectAsState()
+                        ?: androidx.compose.runtime.mutableStateOf(0L)
+                    val observedDuration by playerController?.duration?.collectAsState()
+                        ?: androidx.compose.runtime.mutableStateOf(0L)
+                    val observedLyricPosition = lyricsCoordinator.lyricPositionMs
+                    timelineSnapshot[0] = observedPosition
+                    timelineSnapshot[1] = observedDuration
+                    timelineSnapshot[2] = observedLyricPosition
+                    positionMs = observedPosition
+                    durationMs = observedDuration
+                    liveLyricPositionMs = observedLyricPosition
+                }
                 val playMode by playerController?.playMode?.collectAsState()
                     ?: androidx.compose.runtime.mutableStateOf(PlayMode.SEQUENTIAL)
-                val queue by playerController?.queue?.collectAsState()
+                val queue by playerController?.visibleQueue?.collectAsState()
                     ?: androidx.compose.runtime.mutableStateOf(com.rawsmusic.core.common.model.PlayQueue())
                 val sleepTimerRemaining by playerController?.sleepTimerRemaining?.collectAsState()
                     ?: androidx.compose.runtime.mutableStateOf(0L)
@@ -2552,11 +2814,13 @@ class MainActivity : ComponentActivity() {
                     positionMs
                 }
                 val displayLyricPositionMs = if (displayingRequestedSong) {
-                    0L
+                    // The old lyric tree remains visible during the short outgoing fade. Keep its
+                    // final timeline too; driving it with zero briefly flashes the first line.
+                    liveLyricPositionMs
                 } else if (isSeekUiHolding && seekTargetMs >= 0L) {
                     seekTargetMs.coerceAtLeast(0L)
                 } else {
-                    lyricsCoordinator.lyricPositionMs
+                    liveLyricPositionMs
                 }
                 val isPlayerReturningToMain =
                     playerSceneController.composeIsTransitioning &&
@@ -2647,12 +2911,14 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-                val lyricSong = if (displayingRequestedSong) null else lyricsCoordinator.lyricSong
+                // Keep the committed lyric tree alive while a requested track is fading out.
+                // Publishing null here disposed every mini-lyric row, producing a full-frame
+                // flash before the target track's asynchronous lyrics arrived.
+                val lyricSong = lyricsCoordinator.lyricSong
                 val displayTranslation = lyricsCoordinator.displayTranslation
                 val displayRoma = lyricsCoordinator.displayRoma
-                val prioritySongs = playerController?.getPriorityQueue().orEmpty()
-                val queueSongs = prioritySongs + queue.songs
-                val queueCurrentIndex = queue.currentIndex + prioritySongs.size
+                val queueSongs = queue.songs
+                val queueCurrentIndex = queue.currentIndex
                 androidx.compose.runtime.LaunchedEffect(Unit) {
                     com.rawsmusic.separation.AiRealtimeSeparationController.initialize(
                         this@MainActivity
@@ -2665,10 +2931,10 @@ class MainActivity : ComponentActivity() {
                     currentSong = currentSong,
                     artworkTransitionState = prewarmedArtworkTransitionState,
                     coverPath = transitionCoverPath,
-                    previousGestureArtworkKey = playerController?.previewPreviousSong()?.let { song ->
+                    previousGestureArtworkKey = playerController?.previewPreviousSong(queue)?.let { song ->
                         song.resolvePlaybackArtworkKey(resolveSongCoverForCompose(song))
                     },
-                    nextGestureArtworkKey = playerController?.previewNextSong()?.let { song ->
+                    nextGestureArtworkKey = playerController?.previewNextSong(queue)?.let { song ->
                         song.resolvePlaybackArtworkKey(resolveSongCoverForCompose(song))
                     },
                     isPlaying = !displayingRequestedSong && playState == PlayState.PLAYING,
@@ -2723,7 +2989,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onPlayMode = {
                         playerController?.let { ctrl ->
-                            ctrl.cyclePlayMode()
+                            ctrl.setPlayMode(PlayMode.quickCycle(ctrl.playMode.value))
                             playModePopupHelper.updatePlayModeIcon(ctrl.playMode.value)
                         }
                     },
@@ -2923,8 +3189,14 @@ class MainActivity : ComponentActivity() {
                     },
                     onSearchLyrico = ::launchLyricoOnlineSearch,
                     onOpenInLyrico = ::launchCurrentSongInLyrico,
+                    onAiTimingPreview = {
+                        aiTimingPreviewSong = currentSong
+                        showAiTimingPreview = true
+                    },
+                    onOpenExternalTimingEditor = ::launchExternalTimingEditor,
                     isImmersiveEnabled = composeImmersiveEnabled,
                     persistentBottomSheet = persistentNormalPlayerSheet,
+                    prewarmStandardPlayerInMain = prewarmStandardPlayerSurface,
                     overlaySuspended = false,
                     onClosePlayer = {
                         if (::playerSceneController.isInitialized) {
@@ -2968,6 +3240,14 @@ class MainActivity : ComponentActivity() {
                     playerLyricsTransitionCoordinator =
                         playerSceneController.playerLyricsTransitionCoordinator,
                     sourceCoverTarget = playerSharedSourceTarget,
+                    miniPlayerBoundsInRoot = if (playerSceneController.composeIsTransitioning) {
+                        lockedMiniPlayerBoundsForTransition
+                            ?: stableMiniPlayerBoundsForSceneGesture
+                            ?: miniPlayerGestureBoundsForSceneGesture
+                    } else {
+                        stableMiniPlayerBoundsForSceneGesture
+                            ?: miniPlayerGestureBoundsForSceneGesture
+                    },
                     floatingMiniPlayerTopPx = if (
                         !persistentNormalPlayerSheet && usesFloatingPlayerBar()
                     ) {
@@ -3191,6 +3471,8 @@ class MainActivity : ComponentActivity() {
         // artwork endpoint. ListCover remains a normal list cell only; it never participates in
         // this transition pipeline, so it cannot compete with the playback bar on either edge.
         val useMiniPlayerSource = usesNormalPlayerSheet() || usesFloatingPlayerBar() || preferMiniPlayerSource
+        lockedMiniPlayerBoundsForTransition = stableMiniPlayerBoundsForSceneGesture
+            ?: miniPlayerGestureBoundsForSceneGesture
         floatingReturnOwnsMiniPlayerTarget = false
         if (useMiniPlayerSource && !usesNormalPlayerSheet()) {
             lockedFloatingMiniPlayerTopPxForTransition = stableFloatingMiniPlayerTopPx
@@ -3249,6 +3531,7 @@ class MainActivity : ComponentActivity() {
             null
         }
         playerSceneController.openPlayPage(true)
+        updatePredictiveBackRegistration()
     }
 
     /** Prepares the same shared-cover source as a tap, without committing the player scene. */
@@ -3262,6 +3545,8 @@ class MainActivity : ComponentActivity() {
         lockedPlayerCoverPathForTransition = uiCoverPath
         updateComposeRootVisibility(true)
         registerCoverCollapseParams()
+        lockedMiniPlayerBoundsForTransition = stableMiniPlayerBoundsForSceneGesture
+            ?: miniPlayerGestureBoundsForSceneGesture
         floatingReturnOwnsMiniPlayerTarget = false
         if (!usesNormalPlayerSheet()) {
             lockedFloatingMiniPlayerTopPxForTransition = stableFloatingMiniPlayerTopPx
@@ -3310,6 +3595,8 @@ class MainActivity : ComponentActivity() {
 
         playerReturnRevealIndex = -1
         playingCoverBoundsForTransition = null
+        lockedMiniPlayerBoundsForTransition = stableMiniPlayerBoundsForSceneGesture
+            ?: miniPlayerGestureBoundsForSceneGesture
         floatingReturnOwnsMiniPlayerTarget = usesFloatingPlayerBar()
         if (usesFloatingPlayerBar()) {
             lockedFloatingMiniPlayerTopPxForTransition = stableFloatingMiniPlayerTopPx
@@ -3456,7 +3743,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun loadAlbumDetail(song: com.rawsmusic.core.common.model.AudioFile) {
-        val queueSongs = playerController?.queue?.value?.songs.orEmpty()
+        val queueSongs = playerController?.visibleQueue?.value?.songs.orEmpty()
         val albumSongs = queueSongs.filter { it.albumId == song.albumId && it.albumId > 0 }
             .ifEmpty { queueSongs.filter { it.album == song.album && song.album.isNotBlank() } }
             .ifEmpty { listOf(song) }

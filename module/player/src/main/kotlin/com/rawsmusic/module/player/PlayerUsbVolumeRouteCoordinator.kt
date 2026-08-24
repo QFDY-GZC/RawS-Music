@@ -42,6 +42,7 @@ internal class PlayerUsbVolumeRouteCoordinator(
         val setExplicitSoftwareMute: (Boolean) -> Unit,
         val applyComposedVolume: () -> Unit,
         val applyUsbVolume: (UsbOutputProfile, String) -> Unit,
+        val configureTransitionGainOwner: (UsbOutputProfile, String) -> Unit,
         val syncUsbRemoteVolumeRoute: (String) -> Unit,
         val setNativeDvc: (Boolean, Float, Float) -> Unit,
         val setHardwareVolumeStep: (Int, String) -> Int,
@@ -143,10 +144,6 @@ internal class PlayerUsbVolumeRouteCoordinator(
         AppPreferences.Player.volume = 1.0f
         callbacks.setExplicitSoftwareMute(false)
         engine.nativeSetUsbSoftwareGain(1.0f)
-        val handle = engine.currentHandle
-        if (handle != 0L) {
-            engine.setSessionVolumeScale(handle, 1.0f, 0)
-        }
         AppLogger.w(TAG, "USB fixed digital 0dB volume enforced without changing STREAM_MUSIC: reason=$reason")
     }
 
@@ -171,7 +168,7 @@ internal class PlayerUsbVolumeRouteCoordinator(
 
         when {
             !exclusive || profile == null -> {
-                engine.nativeSetPolicy(exclusive = false, bitPerfect = false, hwVol = false)
+                engine.setPolicy(exclusive = false, bitPerfect = false, hwVol = false)
                 engine.nativeSetUsbSoftwareGain(1.0f)
                 if (!androidDvcController.isActive(usbExclusive = false)) {
                     AppPreferences.Player.volume = systemLinear
@@ -183,34 +180,32 @@ internal class PlayerUsbVolumeRouteCoordinator(
                 AppLogger.i(TAG, "Non-exclusive playback uses Android system volume directly")
             }
             volumePath == UsbVolumePath.HardwareUserVolume -> {
-                engine.nativeSetPolicy(
+                engine.setPolicy(
                     exclusive = true,
                     bitPerfect = profile.bitPerfect,
                     hwVol = true,
                 )
+                callbacks.configureTransitionGainOwner(profile, "hardware:$reason")
                 engine.nativeSetUsbSoftwareGain(1.0f)
-                val handle = engine.currentHandle
-                if (handle != 0L) {
-                    engine.setSessionVolumeScale(handle, 1.0f, 0)
-                }
             }
             volumePath == UsbVolumePath.Fixed -> {
-                engine.nativeSetPolicy(exclusive = true, bitPerfect = true, hwVol = false)
+                engine.setPolicy(exclusive = true, bitPerfect = true, hwVol = false)
+                callbacks.configureTransitionGainOwner(profile, "fixed:$reason")
                 forceUsbFixedVolume0Db("applyVolumeRoute:$reason")
                 AppLogger.i(TAG, "USB exclusive fixed-output path active; user volume locked at 0dB")
             }
             else -> {
-                engine.nativeSetPolicy(
+                engine.setPolicy(
                     exclusive = true,
                     bitPerfect = profile.bitPerfect,
                     hwVol = AppPreferences.Player.usbVolumeMode == 1 &&
                         AppPreferences.Player.hardwareFeatureUnitEnabled && exclusive,
                 )
+                callbacks.configureTransitionGainOwner(profile, "software:$reason")
                 val userLinear = normalizeUsbExclusiveSoftwareEntryVolume(systemLinear, reason)
                 val handle = engine.currentHandle
                 if (handle != 0L) {
                     callbacks.applyUsbVolume(profile, "applyVolumeRoute:$reason")
-                    engine.setSessionVolumeScale(handle, 1.0f, 0)
                 } else {
                     engine.nativeSetUsbSoftwareGain(PlaybackVolumePlanner.usbSoftwarePcmGain(userLinear))
                 }

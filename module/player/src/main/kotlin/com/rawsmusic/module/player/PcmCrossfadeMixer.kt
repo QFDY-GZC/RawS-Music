@@ -1,32 +1,19 @@
 package com.rawsmusic.module.player
 
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import kotlin.math.cos
-import kotlin.math.sin
-
 /**
- * Constant-power PCM crossfade mixer.
+ * PCM crossfade mixer.
  *
+ * Reference-compatible manual transitions use complementary linear-amplitude
+ * envelopes. Automatic transitions pass their own explicitly planned gains.
  * The current buffer is mixed in place:
- * result[i] = current[i] * gainOut(progress) + next[i] * gainIn(progress)
+ * result[i] = current[i] * gainOut + next[i] * gainIn
  */
 internal object PcmCrossfadeMixer {
     private const val S32_FLOAT_SCALE = 2147483648.0f
 
-    fun gainOut(progress: Float): Float {
-        val p = progress.coerceIn(0f, 1f)
-        val out = cos(p * Math.PI.toFloat() / 2f)
-        val inn = sin(p * Math.PI.toFloat() / 2f)
-        return out / (out + inn).coerceAtLeast(1.0e-6f)
-    }
+    fun gainOut(progress: Float): Float = 1f - progress.coerceIn(0f, 1f)
 
-    fun gainIn(progress: Float): Float {
-        val p = progress.coerceIn(0f, 1f)
-        val out = cos(p * Math.PI.toFloat() / 2f)
-        val inn = sin(p * Math.PI.toFloat() / 2f)
-        return inn / (out + inn).coerceAtLeast(1.0e-6f)
-    }
+    fun gainIn(progress: Float): Float = progress.coerceIn(0f, 1f)
 
     fun mixInPlace(
         currentBuf: ByteArray,
@@ -35,19 +22,44 @@ internal object PcmCrossfadeMixer {
         nextLen: Int,
         gainOut: Float,
         gainIn: Float,
+        gainOutEnd: Float = gainOut,
+        gainInEnd: Float = gainIn,
+        frameSize: Int = 1,
         outputIsFloat: Boolean,
         bitsPerSample: Int,
-        outputIsPacked24: Boolean = false
+        outputIsPacked24: Boolean = false,
+        currentOffset: Int = 0,
+        nextOffset: Int = 0,
     ) {
         if (outputIsFloat) {
-            mixFloat32InPlace(currentBuf, currentLen, nextBuf, nextLen, gainOut, gainIn)
+            mixFloat32InPlace(currentBuf, currentLen, nextBuf, nextLen, gainOut, gainIn, gainOutEnd, gainInEnd, frameSize, currentOffset, nextOffset)
         } else if (outputIsPacked24) {
-            mixS24PackedInPlace(currentBuf, currentLen, nextBuf, nextLen, gainOut, gainIn)
+            mixS24PackedInPlace(currentBuf, currentLen, nextBuf, nextLen, gainOut, gainIn, gainOutEnd, gainInEnd, frameSize, currentOffset, nextOffset)
         } else if (bitsPerSample > 16) {
-            mixS32InPlace(currentBuf, currentLen, nextBuf, nextLen, gainOut, gainIn)
+            mixS32InPlace(currentBuf, currentLen, nextBuf, nextLen, gainOut, gainIn, gainOutEnd, gainInEnd, frameSize, currentOffset, nextOffset)
         } else {
-            mixS16InPlace(currentBuf, currentLen, nextBuf, nextLen, gainOut, gainIn)
+            mixS16InPlace(currentBuf, currentLen, nextBuf, nextLen, gainOut, gainIn, gainOutEnd, gainInEnd, frameSize, currentOffset, nextOffset)
         }
+    }
+
+    private fun gainAt(start: Float, end: Float, byteOffset: Int, byteLength: Int, frameSize: Int): Float {
+        val frames = (byteLength / frameSize.coerceAtLeast(1)).coerceAtLeast(1)
+        val frame = byteOffset / frameSize.coerceAtLeast(1)
+        val progress = if (frames <= 1) 1f else frame.toFloat() / (frames - 1).toFloat()
+        return start + (end - start) * progress.coerceIn(0f, 1f)
+    }
+
+    private fun readIntLE(buf: ByteArray, offset: Int): Int =
+        (buf[offset].toInt() and 0xff) or
+            ((buf[offset + 1].toInt() and 0xff) shl 8) or
+            ((buf[offset + 2].toInt() and 0xff) shl 16) or
+            (buf[offset + 3].toInt() shl 24)
+
+    private fun writeIntLE(buf: ByteArray, offset: Int, value: Int) {
+        buf[offset] = value.toByte()
+        buf[offset + 1] = (value ushr 8).toByte()
+        buf[offset + 2] = (value ushr 16).toByte()
+        buf[offset + 3] = (value ushr 24).toByte()
     }
 
     private fun mixFloat32InPlace(
@@ -56,16 +68,27 @@ internal object PcmCrossfadeMixer {
         nextBuf: ByteArray,
         nextLen: Int,
         gainOut: Float,
-        gainIn: Float
+        gainIn: Float,
+        gainOutEnd: Float,
+        gainInEnd: Float,
+        frameSize: Int,
+        currentOffset: Int,
+        nextOffset: Int,
     ) {
-        val samples = minOf(currentLen, nextLen) / 4
-        val curBB = ByteBuffer.wrap(currentBuf).order(ByteOrder.LITTLE_ENDIAN)
-        val nxtBB = ByteBuffer.wrap(nextBuf).order(ByteOrder.LITTLE_ENDIAN)
+        val byteLength = minOf(
+            (currentLen - currentOffset).coerceAtLeast(0),
+            (nextLen - nextOffset).coerceAtLeast(0),
+        )
+        val samples = byteLength / 4
         for (i in 0 until samples) {
-            val offset = i * 4
-            val cur = curBB.getFloat(offset)
-            val nxt = nxtBB.getFloat(offset)
-            curBB.putFloat(offset, cur * gainOut + nxt * gainIn)
+            val relativeOffset = i * 4
+            val currentSampleOffset = currentOffset + relativeOffset
+            val nextSampleOffset = nextOffset + relativeOffset
+            val out = gainAt(gainOut, gainOutEnd, relativeOffset, byteLength, frameSize)
+            val inn = gainAt(gainIn, gainInEnd, relativeOffset, byteLength, frameSize)
+            val cur = Float.fromBits(readIntLE(currentBuf, currentSampleOffset))
+            val nxt = Float.fromBits(readIntLE(nextBuf, nextSampleOffset))
+            writeIntLE(currentBuf, currentSampleOffset, (cur * out + nxt * inn).toRawBits())
         }
     }
 
@@ -75,18 +98,29 @@ internal object PcmCrossfadeMixer {
         nextBuf: ByteArray,
         nextLen: Int,
         gainOut: Float,
-        gainIn: Float
+        gainIn: Float,
+        gainOutEnd: Float,
+        gainInEnd: Float,
+        frameSize: Int,
+        currentOffset: Int,
+        nextOffset: Int,
     ) {
-        val samples = minOf(currentLen, nextLen) / 4
-        val curBB = ByteBuffer.wrap(currentBuf).order(ByteOrder.LITTLE_ENDIAN)
-        val nxtBB = ByteBuffer.wrap(nextBuf).order(ByteOrder.LITTLE_ENDIAN)
+        val byteLength = minOf(
+            (currentLen - currentOffset).coerceAtLeast(0),
+            (nextLen - nextOffset).coerceAtLeast(0),
+        )
+        val samples = byteLength / 4
         for (i in 0 until samples) {
-            val offset = i * 4
-            val cur = curBB.getInt(offset).toFloat() / S32_FLOAT_SCALE
-            val nxt = nxtBB.getInt(offset).toFloat() / S32_FLOAT_SCALE
-            val mixed = ((cur * gainOut + nxt * gainIn) * S32_FLOAT_SCALE)
+            val relativeOffset = i * 4
+            val currentSampleOffset = currentOffset + relativeOffset
+            val nextSampleOffset = nextOffset + relativeOffset
+            val out = gainAt(gainOut, gainOutEnd, relativeOffset, byteLength, frameSize)
+            val inn = gainAt(gainIn, gainInEnd, relativeOffset, byteLength, frameSize)
+            val cur = readIntLE(currentBuf, currentSampleOffset).toFloat() / S32_FLOAT_SCALE
+            val nxt = readIntLE(nextBuf, nextSampleOffset).toFloat() / S32_FLOAT_SCALE
+            val mixed = ((cur * out + nxt * inn) * S32_FLOAT_SCALE)
                 .coerceIn(-2147483648f, 2147483647f)
-            curBB.putInt(offset, mixed.toInt())
+            writeIntLE(currentBuf, currentSampleOffset, mixed.toInt())
         }
     }
 
@@ -111,17 +145,30 @@ internal object PcmCrossfadeMixer {
         nextBuf: ByteArray,
         nextLen: Int,
         gainOut: Float,
-        gainIn: Float
+        gainIn: Float,
+        gainOutEnd: Float,
+        gainInEnd: Float,
+        frameSize: Int,
+        currentOffset: Int,
+        nextOffset: Int,
     ) {
-        val samples = minOf(currentLen, nextLen) / 3
+        val byteLength = minOf(
+            (currentLen - currentOffset).coerceAtLeast(0),
+            (nextLen - nextOffset).coerceAtLeast(0),
+        )
+        val samples = byteLength / 3
         for (i in 0 until samples) {
-            val offset = i * 3
-            val cur = readS24LE(currentBuf, offset).toFloat() / 8388608.0f
-            val nxt = readS24LE(nextBuf, offset).toFloat() / 8388608.0f
-            val mixed = ((cur * gainOut + nxt * gainIn) * 8388608.0f)
+            val relativeOffset = i * 3
+            val currentSampleOffset = currentOffset + relativeOffset
+            val nextSampleOffset = nextOffset + relativeOffset
+            val out = gainAt(gainOut, gainOutEnd, relativeOffset, byteLength, frameSize)
+            val inn = gainAt(gainIn, gainInEnd, relativeOffset, byteLength, frameSize)
+            val cur = readS24LE(currentBuf, currentSampleOffset).toFloat() / 8388608.0f
+            val nxt = readS24LE(nextBuf, nextSampleOffset).toFloat() / 8388608.0f
+            val mixed = ((cur * out + nxt * inn) * 8388608.0f)
                 .coerceIn(-8388608f, 8388607f)
                 .toInt()
-            writeS24LE(currentBuf, offset, mixed)
+            writeS24LE(currentBuf, currentSampleOffset, mixed)
         }
     }
 
@@ -131,17 +178,29 @@ internal object PcmCrossfadeMixer {
         nextBuf: ByteArray,
         nextLen: Int,
         gainOut: Float,
-        gainIn: Float
+        gainIn: Float,
+        gainOutEnd: Float,
+        gainInEnd: Float,
+        frameSize: Int,
+        currentOffset: Int,
+        nextOffset: Int,
     ) {
-        val samples = minOf(currentLen, nextLen) / 2
-        val curBB = ByteBuffer.wrap(currentBuf).order(ByteOrder.LITTLE_ENDIAN)
-        val nxtBB = ByteBuffer.wrap(nextBuf).order(ByteOrder.LITTLE_ENDIAN)
+        val byteLength = minOf(
+            (currentLen - currentOffset).coerceAtLeast(0),
+            (nextLen - nextOffset).coerceAtLeast(0),
+        )
+        val samples = byteLength / 2
         for (i in 0 until samples) {
-            val offset = i * 2
-            val cur = curBB.getShort(offset).toInt()
-            val nxt = nxtBB.getShort(offset).toInt()
-            val mixed = (cur * gainOut + nxt * gainIn).toInt().coerceIn(-32768, 32767)
-            curBB.putShort(offset, mixed.toShort())
+            val relativeOffset = i * 2
+            val currentSampleOffset = currentOffset + relativeOffset
+            val nextSampleOffset = nextOffset + relativeOffset
+            val out = gainAt(gainOut, gainOutEnd, relativeOffset, byteLength, frameSize)
+            val inn = gainAt(gainIn, gainInEnd, relativeOffset, byteLength, frameSize)
+            val cur = ((currentBuf[currentSampleOffset].toInt() and 0xff) or (currentBuf[currentSampleOffset + 1].toInt() shl 8)).toShort().toInt()
+            val nxt = ((nextBuf[nextSampleOffset].toInt() and 0xff) or (nextBuf[nextSampleOffset + 1].toInt() shl 8)).toShort().toInt()
+            val mixed = (cur * out + nxt * inn).toInt().coerceIn(-32768, 32767)
+            currentBuf[currentSampleOffset] = mixed.toByte()
+            currentBuf[currentSampleOffset + 1] = (mixed shr 8).toByte()
         }
     }
 }

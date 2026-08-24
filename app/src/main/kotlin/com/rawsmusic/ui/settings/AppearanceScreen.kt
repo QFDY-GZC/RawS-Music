@@ -41,6 +41,10 @@ import androidx.compose.ui.text.style.TextAlign
 import com.rawsmusic.core.ui.widget.text.LongTextMotionState
 import com.rawsmusic.locale.AppLocaleManager
 import android.app.Activity
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.rawsmusic.core.ui.widget.background.CustomMediaBackgroundState
 
 @Composable
 fun LiquidGlassAppearanceScreen(
@@ -50,6 +54,26 @@ fun LiquidGlassAppearanceScreen(
     val fontFamily = appFontFamily()
     val context = LocalContext.current
     RawFlowTuningState.ensureInitialized(context)
+    CustomMediaBackgroundState.ensureInitialized(context)
+    @Suppress("UNUSED_VARIABLE")
+    val customBackgroundRevision = CustomMediaBackgroundState.revision
+    val customBackgroundPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+            CustomMediaBackgroundState.setSource(
+                context = context,
+                uri = uri,
+                mimeType = context.contentResolver.getType(uri),
+            )
+        }
+    }
 
     val themeRuntimeVersion = RawThemeRuntimeState.version
     var currentTheme by remember(themeRuntimeVersion) { mutableStateOf(ThemeManager.getCurrentTheme()) }
@@ -313,6 +337,57 @@ fun LiquidGlassAppearanceScreen(
                 valueText = "${(RawFlowTuningState.brightness * 100).toInt()}%",
                 onValueChange = { RawFlowTuningState.setBrightness(context, it) }
             )
+        }
+
+        SettingsCard {
+            SectionHeader(stringResource(R.string.settings_custom_background_title))
+            Text(
+                text = stringResource(R.string.settings_custom_background_summary),
+                fontSize = 13.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                fontFamily = fontFamily,
+            )
+            Spacer(Modifier.height(8.dp))
+            SettingsActionRow(
+                title = stringResource(
+                    if (CustomMediaBackgroundState.sourceUri.isBlank()) {
+                        R.string.settings_custom_background_select
+                    } else {
+                        R.string.settings_custom_background_replace
+                    }
+                ),
+                description = CustomMediaBackgroundState.sourceUri
+                    .takeIf { it.isNotBlank() }
+                    ?.let { android.net.Uri.parse(it).lastPathSegment },
+                onClick = { customBackgroundPicker.launch(arrayOf("image/*", "video/*")) },
+            )
+            SwitchPreference(
+                title = stringResource(R.string.settings_custom_background_enabled),
+                summary = stringResource(R.string.settings_custom_background_enabled_summary),
+                checked = CustomMediaBackgroundState.enabled,
+                enabled = CustomMediaBackgroundState.sourceUri.isNotBlank(),
+                onCheckedChange = { CustomMediaBackgroundState.setEnabled(context, it) },
+            )
+            SwitchPreference(
+                title = stringResource(R.string.settings_custom_background_player),
+                summary = stringResource(R.string.settings_custom_background_player_summary),
+                checked = CustomMediaBackgroundState.showOnPlayer,
+                enabled = CustomMediaBackgroundState.enabled,
+                onCheckedChange = { CustomMediaBackgroundState.setShowOnPlayer(context, it) },
+            )
+            SwitchPreference(
+                title = stringResource(R.string.settings_custom_background_settings),
+                summary = stringResource(R.string.settings_custom_background_settings_summary),
+                checked = CustomMediaBackgroundState.showOnSettings,
+                enabled = CustomMediaBackgroundState.enabled,
+                onCheckedChange = { CustomMediaBackgroundState.setShowOnSettings(context, it) },
+            )
+            if (CustomMediaBackgroundState.sourceUri.isNotBlank()) {
+                SettingsActionRow(
+                    title = stringResource(R.string.settings_custom_background_clear),
+                    onClick = { CustomMediaBackgroundState.clear(context) },
+                )
+            }
         }
     }
 }

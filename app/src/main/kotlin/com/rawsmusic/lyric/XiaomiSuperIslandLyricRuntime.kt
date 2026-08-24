@@ -9,6 +9,7 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricLine
 import com.rawsmusic.core.common.model.LyricWord
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.prefs.XiaomiSuperIslandSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -23,6 +24,9 @@ internal object XiaomiSuperIslandLyricRuntime {
     private var artworkPath: String = ""
     private var artworkBitmap: Bitmap? = null
     private val eventGeneration = AtomicLong(0L)
+    private var enabled = false
+    private var playbackCleared = true
+    private var appliedSettings: XiaomiSuperIslandSettings? = null
 
     fun handle(context: Context, intent: Intent) {
         val appContext = context.applicationContext
@@ -30,6 +34,8 @@ internal object XiaomiSuperIslandLyricRuntime {
             bridge = it
         }
         if (intent.action == "com.rawsmusic.action.SUPER_ISLAND_LYRIC_CLEAR") {
+            if (playbackCleared) return
+            playbackCleared = true
             eventGeneration.incrementAndGet()
             currentBridge.onPlaybackPaused()
             return
@@ -41,11 +47,22 @@ internal object XiaomiSuperIslandLyricRuntime {
 
         val settings = AppPreferences.Lyrics.xiaomiSuperIslandSettings
         if (!AppPreferences.Lyrics.xiaomiSuperIslandLyricEnabled) {
-            currentBridge.setEnabled(false)
+            if (enabled) {
+                currentBridge.setEnabled(false)
+                enabled = false
+            }
+            playbackCleared = true
             return
         }
-        currentBridge.setSettings(settings)
-        currentBridge.setEnabled(true)
+        if (appliedSettings != settings) {
+            currentBridge.setSettings(settings)
+            appliedSettings = settings
+        }
+        if (!enabled) {
+            currentBridge.setEnabled(true)
+            enabled = true
+        }
+        playbackCleared = false
 
         val path = intent.getStringExtra("path").orEmpty()
         val artworkKey = intent.getStringExtra("albumArtPath").orEmpty().ifBlank { path }
@@ -76,6 +93,7 @@ internal object XiaomiSuperIslandLyricRuntime {
         )
         val position = intent.getLongExtra("position", 0L)
         scope.launch(Dispatchers.IO) {
+            XiaomiSuperIslandCapabilities.logOnce(appContext)
             val artwork = loadArtwork(artworkKey)
             if (generation != eventGeneration.get()) return@launch
             currentBridge.sendLyric(song, line, position, song.duration, artwork)

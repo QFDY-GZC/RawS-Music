@@ -1,6 +1,7 @@
 package com.rawsmusic.module.data.repository
 
 import android.content.Context
+import android.os.Process
 import androidx.room.withTransaction
 import com.rawsmusic.core.common.model.Album
 import com.rawsmusic.core.common.model.Artist
@@ -11,6 +12,8 @@ import com.rawsmusic.core.common.model.PlayStats
 import com.rawsmusic.core.common.model.SortOrder
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.utils.CjkSortUtils
+import com.rawsmusic.core.common.utils.MetadataNameSplitConfig
+import com.rawsmusic.core.common.utils.MetadataNameSplitter
 import com.rawsmusic.core.common.utils.PowerTraceLogger
 import com.rawsmusic.module.data.db.MusicDatabase
 import com.rawsmusic.module.data.db.converter.EntityConverter
@@ -27,6 +30,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.asCoroutineDispatcher
+import java.util.concurrent.Executors
 
 /**
  * 音乐仓库 — 数据库层。
@@ -42,8 +47,21 @@ object MusicRepository {
     private var db: MusicDatabase? = null
 
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Metadata edits should never compete at normal IO priority with a PLAYER <-> LYRIC frame.
+    // Keep full-library index rebuilds and snapshot serialization on one background-priority lane.
+    private val libraryMaintenanceDispatcher = Executors
+        .newSingleThreadExecutor { worker ->
+            Thread({
+                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+                worker.run()
+            }, "RawS-LibraryMaintenance").apply { isDaemon = true }
+        }
+        .asCoroutineDispatcher()
+    private val libraryMaintenanceScope = CoroutineScope(SupervisorJob() + libraryMaintenanceDispatcher)
     private val startupSnapshotSaveLock = Any()
     private var startupSnapshotSaveJob: Job? = null
+    private val metadataIndexRefreshLock = Any()
+    private var metadataIndexRefreshJob: Job? = null
 
     @Volatile
     private var cachedSongs: List<AudioFile>? = null
@@ -173,7 +191,7 @@ object MusicRepository {
         if (songs.isEmpty()) return
         synchronized(startupSnapshotSaveLock) {
             startupSnapshotSaveJob?.cancel()
-            startupSnapshotSaveJob = repositoryScope.launch {
+            startupSnapshotSaveJob = libraryMaintenanceScope.launch {
                 StartupSongSnapshotStore.save(context, songs, AppPreferences.Sort.songSortOrder)
                 AppLogger.d(TAG, "startup snapshot save completed: reason=$reason songs=${songs.size}")
             }
@@ -364,9 +382,19 @@ object MusicRepository {
             ?: loadSongsFromStorage().firstOrNull { it.path == path }
     }
 
-    fun getSongsByArtist(artist: String): List<AudioFile> = loadSongsFromStorage().filter { it.artist == artist }
+    fun getSongsByArtist(artist: String): List<AudioFile> {
+        val config = metadataNameSplitConfig()
+        return loadSongsFromStorage().filter {
+            MetadataNameSplitter.matchesArtistName(it.artist, artist, config)
+        }
+    }
     fun getSongsByAlbum(album: String): List<AudioFile> = loadSongsFromStorage().filter { it.album == album }
-    fun getSongsByGenre(genre: String): List<AudioFile> = loadSongsFromStorage().filter { it.genre == genre }
+    fun getSongsByGenre(genre: String): List<AudioFile> {
+        val config = metadataNameSplitConfig()
+        return loadSongsFromStorage().filter {
+            MetadataNameSplitter.matchesGenreName(it.genre, genre, config)
+        }
+    }
     fun getSongsByFolder(folderPath: String): List<AudioFile> = loadSongsFromStorage().filter { it.path.startsWith(folderPath) }
     fun getFavorites(): List<AudioFile> = loadSongsFromStorage().filter { it.isFavorite }
 
@@ -595,8 +623,16 @@ object MusicRepository {
             val sorted = sortSongs(replaced, AppPreferences.Sort.songSortOrder)
             startupSnapshotPublished = false
             _songs.value = sorted
+            // Rebuilding artists/albums/genres plus serializing the full startup snapshot can be
+            // noticeably CPU/allocation heavy on large libraries. Keep both off the normal IO pool
+            // so an immediate PLAYER <-> LYRIC gesture after a metadata save retains UI priority.
+            synchronized(metadataIndexRefreshLock) {
+                metadataIndexRefreshJob?.cancel()
+                metadataIndexRefreshJob = libraryMaintenanceScope.launch {
+                    refreshLibraryIndexes(sorted)
+                }
+            }
             saveStartupSnapshotAsync(sorted, "metadata_update")
-            repositoryScope.launch { refreshLibraryIndexes(sorted) }
             AppLogger.d(TAG, "updateSong: lightweight publish key=$targetKey")
         }
     }
@@ -663,8 +699,21 @@ object MusicRepository {
     // ────────────────────── 分类聚合 ──────────────────────
 
     private fun buildArtists(songs: List<AudioFile>): List<Artist> {
-        return songs.filter { it.artist.isNotBlank() }
-            .groupBy { it.artist }
+        val config = metadataNameSplitConfig()
+        val grouped = linkedMapOf<String, Pair<String, MutableList<AudioFile>>>()
+        songs.filter { it.artist.isNotBlank() }.forEach { song ->
+            MetadataNameSplitter.splitArtistNames(song.artist, config)
+                .forEach { name ->
+                    val key = MetadataNameSplitter.identityKey(name, config.ignoreCase)
+                    val bucket = grouped[key]
+                    if (bucket == null) {
+                        grouped[key] = name to mutableListOf(song)
+                    } else if (song !in bucket.second) {
+                        bucket.second += song
+                    }
+                }
+        }
+        return grouped.values
             .map { (name, list) ->
                 Artist(
                     name = name,
@@ -692,11 +741,32 @@ object MusicRepository {
     }
 
     private fun buildGenres(songs: List<AudioFile>): List<Genre> {
-        return songs.filter { it.genre.isNotBlank() }
-            .groupBy { it.genre }
+        val config = metadataNameSplitConfig()
+        val grouped = linkedMapOf<String, Pair<String, MutableList<AudioFile>>>()
+        songs.filter { it.genre.isNotBlank() }.forEach { song ->
+            MetadataNameSplitter.splitGenreNames(song.genre, config)
+                .forEach { name ->
+                    val key = MetadataNameSplitter.identityKey(name, config.ignoreCase)
+                    val bucket = grouped[key]
+                    if (bucket == null) {
+                        grouped[key] = name to mutableListOf(song)
+                    } else if (song !in bucket.second) {
+                        bucket.second += song
+                    }
+                }
+        }
+        return grouped.values
             .map { (name, list) -> Genre(name = name, songCount = list.size) }
             .sortedBy { CjkSortUtils.sortKey(it.name) }
     }
+
+    private fun metadataNameSplitConfig(): MetadataNameSplitConfig = MetadataNameSplitConfig(
+        artistSeparators = MetadataNameSplitter.parseSetting(AppPreferences.Library.artistSeparators),
+        artistProtectedNames = MetadataNameSplitter.parseSetting(AppPreferences.Library.artistProtectedNames),
+        genreSeparators = MetadataNameSplitter.parseSetting(AppPreferences.Library.genreSeparators),
+        genreProtectedNames = MetadataNameSplitter.parseSetting(AppPreferences.Library.genreProtectedNames),
+        ignoreCase = AppPreferences.Library.tagIgnoreCase
+    )
 
     private fun buildFolders(songs: List<AudioFile>): List<Folder> {
         return songs.map { it.path.substringBeforeLast("/") }
@@ -735,6 +805,8 @@ object MusicRepository {
             SortOrder.ALBUM_DESC -> songs.sortedByDescending { CjkSortUtils.sortKey(it.album) }
             SortOrder.DATE_ADDED_ASC -> songs.sortedBy { it.dateAdded }
             SortOrder.DATE_ADDED_DESC -> songs.sortedByDescending { it.dateAdded }
+            SortOrder.DATE_MODIFIED_ASC -> songs.sortedBy { it.dateModified }
+            SortOrder.DATE_MODIFIED_DESC -> songs.sortedByDescending { it.dateModified }
             SortOrder.DURATION_ASC -> songs.sortedBy { it.duration }
             SortOrder.DURATION_DESC -> songs.sortedByDescending { it.duration }
             SortOrder.YEAR_ASC -> songs.sortedWith(compareBy<AudioFile> { if (it.year <= 0) Int.MAX_VALUE else it.year }.thenBy { CjkSortUtils.sortKey(it.displayName) })

@@ -14,9 +14,9 @@ internal class UsbDeviceDiscovery(private val usbManager: UsbManager) {
     }
 
     fun findUsbAudioDevice(): UsbDevice? {
-        val deviceList = usbManager.deviceList
-        AppLogger.d(TAG, "Scanning ${deviceList.size} USB devices...")
-        for (device in deviceList.values) {
+        val devices = usbManager.deviceList.values.toList()
+        AppLogger.d(TAG, "Scanning ${devices.size} USB devices...")
+        for (device in devices) {
             AppLogger.d(
                 TAG,
                 "Device: ${device.deviceName}, VID=${String.format("%04X", device.vendorId)}, " +
@@ -30,12 +30,31 @@ internal class UsbDeviceDiscovery(private val usbManager: UsbManager) {
             ) {
                 dumpInterfaces(device)
             }
-            if (isUsbAudioOutputDevice(device)) {
-                AppLogger.i(TAG, "Found USB audio device: ${device.productName}")
-                return device
-            }
         }
-        AppLogger.w(TAG, "No USB audio device with ISO OUT endpoint found")
+
+        // Prefer the strongest Android-visible proof: an AudioStreaming alternate setting with
+        // an isochronous OUT endpoint. This remains the normal UAC1/UAC2 path.
+        devices.firstOrNull(::isUsbAudioOutputDevice)?.let { device ->
+            AppLogger.i(TAG, "Found USB audio output device: ${device.productName}")
+            return device
+        }
+
+        // UAPP does not require Android's Java interface view to expose an ISO OUT endpoint before
+        // it asks for permission; native descriptor parsing is authoritative after openDevice().
+        // Some UAC1/composite devices expose only alt0 (or otherwise incomplete alternate-setting
+        // data) through UsbDevice on specific OEM builds. Keep a narrow compatibility candidate
+        // lane for devices that are still visibly USB Audio class / AudioStreaming. Native init
+        // must later prove an actual playback stream before exclusive mode can start.
+        devices.firstOrNull(::isUsbAudioCandidateDevice)?.let { device ->
+            AppLogger.w(
+                TAG,
+                "UAC_COMPAT_CANDIDATE selected without Java-visible ISO OUT: " +
+                    "device=${device.productName} class=${device.deviceClass}",
+            )
+            return device
+        }
+
+        AppLogger.w(TAG, "No USB audio candidate found")
         return null
     }
 
@@ -53,6 +72,24 @@ internal class UsbDeviceDiscovery(private val usbManager: UsbManager) {
             }
         }
         return false
+    }
+
+
+    /**
+     * Permission-stage USB-audio candidate. Native raw-descriptor parsing remains authoritative.
+     *
+     * Do not broaden this to every per-interface/vendor device: the fallback exists specifically
+     * for UAC1/composite DACs whose Android UsbDevice view may omit the non-zero AS alternate
+     * setting, not for arbitrary USB peripherals.
+     */
+    fun isUsbAudioCandidateDevice(device: UsbDevice): Boolean {
+        if (isUsbAudioOutputDevice(device)) return true
+        if (device.deviceClass == USB_CLASS_AUDIO) return true
+        return (0 until device.interfaceCount).any { index ->
+            val intf = device.getInterface(index)
+            intf.interfaceClass == USB_CLASS_AUDIO &&
+                intf.interfaceSubclass == USB_SUBCLASS_AUDIOSTREAMING
+        }
     }
 
     fun dumpInterfaces(device: UsbDevice) {

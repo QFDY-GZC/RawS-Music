@@ -9,9 +9,20 @@ import com.tencent.mmkv.MMKV
 object TransitionPreferences {
     private val kv: MMKV get() = AppPreferences.storage
 
-    const val MANUAL_DURATION_MIN_MS = 10
-    const val MANUAL_DURATION_MAX_MS = 1000
-    const val MANUAL_DURATION_DEFAULT_MS = 400
+    const val SHORT_MANUAL_DURATION_MIN_MS = 10
+    const val SHORT_MANUAL_DURATION_MAX_MS = 1000
+    const val SHORT_MANUAL_DURATION_DEFAULT_MS = 400
+
+    const val FULL_CROSSFADE_DURATION_MIN_MS = 100
+    const val FULL_CROSSFADE_DURATION_MAX_MS = 15_000
+    const val FULL_CROSSFADE_DURATION_DEFAULT_MS = 5_000
+
+    @Deprecated("Use SHORT_MANUAL_DURATION_* or FULL_CROSSFADE_DURATION_* as appropriate")
+    const val MANUAL_DURATION_MIN_MS = SHORT_MANUAL_DURATION_MIN_MS
+    @Deprecated("Use SHORT_MANUAL_DURATION_* or FULL_CROSSFADE_DURATION_* as appropriate")
+    const val MANUAL_DURATION_MAX_MS = SHORT_MANUAL_DURATION_MAX_MS
+    @Deprecated("Use SHORT_MANUAL_DURATION_* or FULL_CROSSFADE_DURATION_* as appropriate")
+    const val MANUAL_DURATION_DEFAULT_MS = SHORT_MANUAL_DURATION_DEFAULT_MS
 
     const val TRANSPORT_DURATION_MIN_MS = 10
     const val TRANSPORT_DURATION_MAX_MS = 1000
@@ -38,15 +49,38 @@ object TransitionPreferences {
         )
         set(value) { kv.encode("transition_manual_track_mode", value.ordinal) }
 
-    var manualTrackFadeMs: Int
-        get() = kv.decodeInt("transition_manual_track_fade_ms", MANUAL_DURATION_DEFAULT_MS)
-            .coerceIn(MANUAL_DURATION_MIN_MS, MANUAL_DURATION_MAX_MS)
+    /** Reference fade_short_xfade_ms equivalent. */
+    var shortManualFadeMs: Int
+        get() = kv.decodeInt("transition_manual_track_fade_ms", SHORT_MANUAL_DURATION_DEFAULT_MS)
+            .coerceIn(SHORT_MANUAL_DURATION_MIN_MS, SHORT_MANUAL_DURATION_MAX_MS)
         set(value) {
             kv.encode(
                 "transition_manual_track_fade_ms",
-                value.coerceIn(MANUAL_DURATION_MIN_MS, MANUAL_DURATION_MAX_MS)
+                value.coerceIn(SHORT_MANUAL_DURATION_MIN_MS, SHORT_MANUAL_DURATION_MAX_MS)
             )
         }
+
+    /** Reference crossfade_length_ms equivalent; deliberately independent from short fade. */
+    var fullManualCrossfadeMs: Int
+        get() = kv.decodeInt("transition_manual_full_crossfade_ms", FULL_CROSSFADE_DURATION_DEFAULT_MS)
+            .coerceIn(FULL_CROSSFADE_DURATION_MIN_MS, FULL_CROSSFADE_DURATION_MAX_MS)
+        set(value) {
+            kv.encode(
+                "transition_manual_full_crossfade_ms",
+                value.coerceIn(FULL_CROSSFADE_DURATION_MIN_MS, FULL_CROSSFADE_DURATION_MAX_MS)
+            )
+        }
+
+    fun manualTransitionDurationOrZero(): Int = when (manualTrackTransitionMode) {
+        ManualTrackTransitionMode.NONE -> 0
+        ManualTrackTransitionMode.SHORT_FADE -> shortManualFadeMs
+        ManualTrackTransitionMode.CROSSFADE -> fullManualCrossfadeMs
+    }
+
+    @Deprecated("Use shortManualFadeMs or fullManualCrossfadeMs")
+    var manualTrackFadeMs: Int
+        get() = shortManualFadeMs
+        set(value) { shortManualFadeMs = value }
 
     var transportFadeEnabled: Boolean
         get() = kv.decodeBool("transition_transport_fade_enabled", true)

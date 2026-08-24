@@ -401,12 +401,30 @@ class PlayerSceneController {
     fun setLyricAtTopBoundary(atTop: Boolean) = Unit
 
     fun resetInteractionState() {
+        sceneAnimGeneration++
         sceneAnimator?.cancel()
+        sceneAnimator = null
+
+        // Lifecycle/style changes may interrupt a settling animation while MainActivity is
+        // backgrounded by a settings screen. The committed scene is authoritative; leaving the
+        // Compose visual pair on PLAYER with progress reset to zero makes MAIN render underneath
+        // while the bottom chrome still believes the player sheet is fully expanded. Canonicalize
+        // every visual field to the committed scene before accepting new gestures.
+        val committed = currentScene
+        fromScene = committed
+        toScene = committed
+        composeFromScene = committed
+        composeToScene = committed
+        composeCurrentScene = committed
         transitionRatio = 0f
         isTransitioning = false
         composeIsTransitioning = false
         composeTransitionProgress = 0f
         composeIsInteractiveGesture = false
+        mainPlayerSheetDragActive = false
+        mainPlayerSheetDragStartExpansion = if (committed == Scene.PLAYER) 1f else 0f
+        mainPlayerSheetCommittedScene = committed
+        playerReturnPreparationActive = false
         playerLyricsTransitionCoordinator.cancel()
     }
 
@@ -438,6 +456,27 @@ class PlayerSceneController {
             onPrepareMainToPlayer?.invoke()
         }
         beginMainPlayerSheetDrag()
+    }
+
+    fun hasMainPlayerSheetBackTarget(): Boolean =
+        isMainPlayerSheetAvailable() && currentMainPlayerExpansion() > 0f
+
+    fun startMainPlayerPredictiveBack(): Boolean {
+        if (!hasMainPlayerSheetBackTarget()) return false
+        beginMainPlayerSheetDrag()
+        return true
+    }
+
+    fun updateMainPlayerPredictiveBack(progress: Float) {
+        if (!mainPlayerSheetDragActive) return
+        updateMainPlayerSheetExpansion(
+            mainPlayerSheetDragStartExpansion * (1f - progress.coerceIn(0f, 1f))
+        )
+    }
+
+    fun finishMainPlayerPredictiveBack(commit: Boolean) {
+        if (!mainPlayerSheetDragActive) return
+        settleMainPlayerSheet(expanded = !commit, velocity = 0f)
     }
 
     fun updateMainToPlayerDrag(ratio: Float) {
@@ -550,7 +589,10 @@ class PlayerSceneController {
             composeTransitionProgress.coerceIn(0f, 1f)
         composeIsTransitioning && composeFromScene == Scene.PLAYER && composeToScene == Scene.MAIN ->
             (1f - composeTransitionProgress).coerceIn(0f, 1f)
-        currentScene == Scene.PLAYER || composeCurrentScene == Scene.PLAYER -> 1f
+        // currentScene is the committed anchor. composeCurrentScene is a drawing mirror and can
+        // temporarily be stale if a lifecycle/style change interrupted a visual transition. Never
+        // let that stale mirror keep MAIN's MiniPlayer/navigation hidden.
+        currentScene == Scene.PLAYER -> 1f
         else -> 0f
     }
 

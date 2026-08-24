@@ -44,6 +44,9 @@ fun LiquidGlassLyricManagementScreen(
     var lyriconEnabled by remember { mutableStateOf(lyriconPrefs.enabled) }
     var lyriconTranslation by remember { mutableStateOf(lyriconPrefs.displayTranslation) }
     var lyriconRoma by remember { mutableStateOf(lyriconPrefs.displayRoma) }
+    var lyriconOriginalColorCompat by remember {
+        mutableStateOf(lyriconPrefs.originalTextColorCompatibility)
+    }
     var karaokeGlowEnabled by remember { mutableStateOf(AppPreferences.UI.lyricKaraokeGlowEnabled) }
     var karaokeLiftEnabled by remember { mutableStateOf(AppPreferences.UI.lyricKaraokeLiftEnabled) }
     val lyricBottomPaddingDp by LyricLayoutPreferences.bottomPaddingDp.collectAsState()
@@ -282,6 +285,14 @@ fun LiquidGlassLyricManagementScreen(
             SwitchRow(stringResource(R.string.settings_lyricon_show_roma), lyriconRoma, enabled = lyriconEnabled) { checked ->
                 lyriconRoma = checked
                 LyriconProviderManager.setDisplayRoma(checked)
+            }
+            SwitchRow(
+                stringResource(R.string.settings_lyricon_original_color_compat),
+                lyriconOriginalColorCompat,
+                enabled = lyriconEnabled
+            ) { checked ->
+                lyriconOriginalColorCompat = checked
+                LyriconProviderManager.setOriginalTextColorCompatibility(checked)
             }
         }
 

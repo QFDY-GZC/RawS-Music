@@ -15,12 +15,14 @@ namespace rawsmusic::usb {
 //
 // The libusb event thread should remain a completion pump.  It enqueues completed
 // ISO transfer indices here; this worker performs fill+libusb_submit from a
-// separate "send USB" thread, matching UAPP's event/send-thread split.
+// separate "send USB" thread, keeping event handling and packet submission isolated.
 class RawUsbSubmitScheduler {
 public:
     enum class JobReason : int {
-        Resubmit = 0,
-        Progressive = 1,
+        Initial = 0,
+        Resubmit = 1,
+        Progressive = 2,
+        Feedback = 3,
     };
 
     using SubmitFn = std::function<void(int index, JobReason reason)>;
@@ -35,7 +37,10 @@ public:
     void stop();
 
     bool enqueue(int index, JobReason reason);
+    bool enqueueInitial(int index);
+    bool enqueueResubmit(int index);
     bool enqueueProgressive();
+    bool enqueueFeedback();
 
     bool isRunning() const;
     int64_t enqueuedJobs() const;

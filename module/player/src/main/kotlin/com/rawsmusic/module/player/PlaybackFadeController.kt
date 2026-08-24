@@ -10,7 +10,7 @@ import kotlin.math.roundToInt
  * to be written.  The owner decides when to arm a fade; this class only mutates
  * samples and tracks completion.
  */
-internal class PlaybackFadeController(private val tag: String) {
+internal class PlaybackFadeController(private val tag: String) : TransportFadeProcessor {
     private enum class Direction { IN, OUT }
 
     @Volatile
@@ -22,18 +22,27 @@ internal class PlaybackFadeController(private val tag: String) {
     @Volatile
     private var reason: String = ""
 
-    val isActive: Boolean
+    override val isActive: Boolean
         get() = direction != null
 
-    fun startFadeIn(durationMs: Int, reason: String) {
+    override val isNativeBacked: Boolean = false
+
+    override val currentGain: Float
+        get() = when (direction) {
+            Direction.IN -> 0f
+            Direction.OUT -> 1f
+            null -> 1f
+        }
+
+    override fun startFadeIn(durationMs: Int, reason: String) {
         start(Direction.IN, durationMs, reason)
     }
 
-    fun startFadeOut(durationMs: Int, reason: String) {
+    override fun startFadeOut(durationMs: Int, reason: String) {
         start(Direction.OUT, durationMs, reason)
     }
 
-    fun clear(reason: String) {
+    override fun clear(reason: String) {
         if (direction != null) {
             AppLogger.d(tag, "PlaybackFade: clear active=$direction oldReason=${this.reason} reason=$reason")
         }
@@ -43,7 +52,7 @@ internal class PlaybackFadeController(private val tag: String) {
         this.reason = ""
     }
 
-    fun processInPlace(
+    override fun processInPlace(
         buffer: ByteArray,
         offset: Int,
         length: Int,

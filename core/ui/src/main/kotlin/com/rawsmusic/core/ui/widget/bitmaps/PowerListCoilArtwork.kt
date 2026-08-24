@@ -1,6 +1,7 @@
 package com.rawsmusic.core.ui.widget.bitmaps
 
 import android.content.Context
+import android.content.ComponentCallbacks2
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.drawable.BitmapDrawable
@@ -286,18 +287,30 @@ object CoilArtworkRuntime {
         applicationContext?.let { invalidate(it, key) }
     }
 
-    fun trimMemory(context: Context) {
-        imageLoader(context).memoryCache?.clear()
+    fun trimMemory(
+        context: Context,
+        level: Int = ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
+    ) {
+        // Coil's level-aware trim keeps the same pressure semantics as Reference's bitmap
+        // manager. Clearing the whole cache on every notification forces visible holders to
+        // decode again when the app returns to the foreground.
+        imageLoader(context).memoryCache?.trimMemory(level)
         // Keep the newest list thumbnails as immediate placeholders. The cache is already
         // bounded independently from Coil, so a fair-memory callback should shrink it instead of
         // making every recycled PowerList holder blank and forcing a disk/source re-request.
         synchronized(listThumbnailMemory) {
-            listThumbnailMemory.trimToSize((LIST_THUMB_MEMORY_BYTES / 2L).toInt())
+            val targetBytes = when {
+                level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE -> 0L
+                level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> LIST_THUMB_MEMORY_BYTES / 4L
+                level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> LIST_THUMB_MEMORY_BYTES / 4L
+                else -> LIST_THUMB_MEMORY_BYTES / 2L
+            }
+            listThumbnailMemory.trimToSize(targetBytes.toInt())
         }
     }
 
-    fun trimMemory() {
-        applicationContext?.let(::trimMemory)
+    fun trimMemory(level: Int = ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+        applicationContext?.let { trimMemory(it, level) }
     }
 
     internal suspend fun decode(context: Context, model: CoilArtworkModel): Bitmap? {
@@ -573,8 +586,13 @@ object PowerListCoilArtwork {
             height = height,
             surface = ArtworkSurface.List
         )
-    fun trimMemory(context: Context) = CoilArtworkRuntime.trimMemory(context)
-    fun trimMemory() = CoilArtworkRuntime.trimMemory()
+    fun trimMemory(
+        context: Context,
+        level: Int = ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
+    ) = CoilArtworkRuntime.trimMemory(context, level)
+
+    fun trimMemory(level: Int = ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) =
+        CoilArtworkRuntime.trimMemory(level)
 }
 
 private class CoilArtworkFetcher(

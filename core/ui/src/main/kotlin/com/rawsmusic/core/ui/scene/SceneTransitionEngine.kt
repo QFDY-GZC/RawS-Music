@@ -7,6 +7,7 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.requiredSize
@@ -28,12 +29,15 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
@@ -45,11 +49,11 @@ import androidx.compose.ui.util.lerp
 import com.rawsmusic.core.ui.widget.index.AlphabetIndexOverlayRegistry
 import com.rawsmusic.core.ui.widget.index.LocalAlphabetIndexOverlayRegistry
 import com.rawsmusic.core.ui.widget.index.RawAlphabetIndex
+import com.rawsmusic.core.ui.widget.bitmaps.PowerListCoilArtwork
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collect
 import kotlin.math.abs
 import kotlin.math.ln
-import kotlin.math.max
 import kotlin.math.cos
 import kotlin.math.roundToInt
 
@@ -59,7 +63,9 @@ private const val POWER_LIST_CANCEL_MS = 500
 private const val POWER_LIST_COMMIT_PROGRESS = 0.3f
 private const val POWER_LIST_VELOCITY_DP_PER_S = 500f
 private const val SHARED_PAIR_WAIT_FRAMES = 6
-private const val SCENE_PREPARE_FRAMES = 4
+// One frame is enough to measure the retained target. Repeated full-page warm-up frames make
+// cold entry worse in Compose.
+private const val SCENE_PREPARE_FRAMES = 1
 private const val SETTINGS_FRAGMENT_ANIM_MS = 300
 private const val EDGE_DETECT_WIDTH_DP = 24
 private const val OVER_DRAG_UNIT = 0.05f
@@ -249,38 +255,23 @@ private fun dampProgress(progress: Float): Float {
 
 private suspend fun awaitSharedLayouts(
     coverRegistry: SharedCoverRegistry,
-    itemRegistry: PowerListSceneTransitionRegistry,
     fromScene: NavScene,
     toScene: NavScene,
     transitionKey: String,
     allowRememberedTarget: Boolean = false
-) {
+): Boolean {
     repeat(SHARED_PAIR_WAIT_FRAMES) {
         withFrameNanos { }
         val pairs = coverRegistry.findPairs(
             fromSceneId = fromScene.name,
             toSceneId = toScene.name,
-            allowRememberedTarget = allowRememberedTarget
+            allowRememberedTarget = allowRememberedTarget,
+            requireLiveTarget = allowRememberedTarget,
         )
-        val bothScenesMeasured = itemRegistry.hasScene(fromScene.name) &&
-            (itemRegistry.hasScene(toScene.name) ||
-                (allowRememberedTarget && itemRegistry.hasRememberedScene(toScene.name)))
-        if (pairs.isNotEmpty() && bothScenesMeasured) {
-            pairs.forEach { (from, to) ->
-                coverRegistry.freeze(from)
-                coverRegistry.freeze(to)
-                if (!allowRememberedTarget) coverRegistry.rememberReturnTarget(from)
-            }
-            itemRegistry.freezeTransition(
-                transitionKey = transitionKey,
-                fromSceneId = fromScene.name,
-                toSceneId = toScene.name,
-                anchorItemId = pairs.first().first.elementId,
-                allowRememberedTarget = allowRememberedTarget,
-                anchorFromBounds = pairs.first().first.boundsInWindow,
-                anchorToBounds = pairs.first().second.boundsInWindow
-            )
-            return
+        if (pairs.isNotEmpty()) {
+            val (from, to) = pairs.first()
+            coverRegistry.prepareTransition(transitionKey, from, to)
+            return true
         }
     }
     val pairs = coverRegistry.findPairs(
@@ -288,23 +279,10 @@ private suspend fun awaitSharedLayouts(
         toSceneId = toScene.name,
         allowRememberedTarget = allowRememberedTarget
     )
-    pairs.forEach { (from, to) ->
-        coverRegistry.freeze(from)
-        coverRegistry.freeze(to)
-        if (!allowRememberedTarget) coverRegistry.rememberReturnTarget(from)
-    }
-    itemRegistry.freezeTransition(
-        transitionKey = transitionKey,
-        fromSceneId = fromScene.name,
-        toSceneId = toScene.name,
-        anchorItemId = pairs.firstOrNull()
-            ?.first
-            ?.elementId
-            .orEmpty(),
-        allowRememberedTarget = allowRememberedTarget,
-        anchorFromBounds = pairs.firstOrNull()?.first?.boundsInWindow,
-        anchorToBounds = pairs.firstOrNull()?.second?.boundsInWindow
-    )
+    val pair = pairs.firstOrNull() ?: return false
+    val (from, to) = pair
+    coverRegistry.prepareTransition(transitionKey, from, to)
+    return true
 }
 
 @Composable
@@ -329,12 +307,13 @@ fun SceneTransitionHost(
     var usesDirectionalBackPivot by remember { mutableStateOf(false) }
     var pageMotion by remember { mutableStateOf(PageMotion.Generic) }
     var hostPositionInRoot by remember { mutableStateOf(Offset.Zero) }
+    var hostPositionInWindow by remember { mutableStateOf(Offset.Zero) }
     val alphabetIndexAlpha = remember { Animatable(1f) }
     val topMenuAlpha = remember { Animatable(1f) }
     var screenWidthPx by remember { mutableFloatStateOf(0f) }
+    var screenHeightPx by remember { mutableFloatStateOf(0f) }
     val prevSceneRef = remember { mutableStateOf(state.currentScene) }
     val sharedCoverRegistry = remember { SharedCoverRegistry() }
-    val powerListSceneRegistry = remember { PowerListSceneTransitionRegistry() }
     val alphabetIndexOverlayRegistry = remember { AlphabetIndexOverlayRegistry() }
 
     // 共享元素专用 from/to（独立于渲染用的 fromScene/displayedScene）
@@ -370,18 +349,6 @@ fun SceneTransitionHost(
             return@LaunchedEffect
         }
 
-        // Keep two list slots and prepare the target slot before exposing the
-        // transition. Do the same here: let the target compose and measure offscreen first,
-        // instead of paying its first composition/layout cost in the opening animation.
-        if (retainedScene != newScene) {
-            preparingScene = newScene
-            // Measure and record the target list before its first visible frame.
-            // Four frame callbacks give Compose time to finish composition, layout and the
-            // first RenderNode recording without making the opening animation pay that cost.
-            repeat(SCENE_PREPARE_FRAMES) {
-                withFrameNanos { }
-            }
-        }
         fromScene = oldScene
         isBackTransition = false
         usesDirectionalBackPivot = false
@@ -395,17 +362,27 @@ fun SceneTransitionHost(
             usesSettingsFragmentMotion(oldScene, newScene) -> PageMotion.SettingsForward
             else -> PageMotion.Generic
         }
+
+        // Register the destination endpoints while the prepared page is still laid out at its
+        // final, untransformed geometry. Capturing them after the destination root is scaled for
+        // entry records layer-space coordinates and can send the shared visual outside the host.
+        if (retainedScene != newScene) {
+            preparingScene = newScene
+            repeat(SCENE_PREPARE_FRAMES) {
+                withFrameNanos { }
+            }
+        }
         isAnimating = true
         animProgress.snapTo(1f)
         displayedScene = newScene
         if (pageMotion == PageMotion.FolderSharedForward) {
-            awaitSharedLayouts(
+            val prepared = awaitSharedLayouts(
                 coverRegistry = sharedCoverRegistry,
-                itemRegistry = powerListSceneRegistry,
                 fromScene = oldScene,
                 toScene = newScene,
                 transitionKey = "${oldScene.name}->${newScene.name}"
             )
+            if (!prepared) pageMotion = PageMotion.Generic
         } else {
             withFrameNanos { }
         }
@@ -417,6 +394,13 @@ fun SceneTransitionHost(
                 else -> transitionTween
             }
         )
+        if (pageMotion == PageMotion.FolderSharedForward) {
+            // Drop the page transform while the prepared shared owner is still covering the
+            // target. The next frame can then hand the pixels back without exposing a stale
+            // layout or running the cover through two coordinate systems.
+            fromScene = displayedScene
+            withFrameNanos { }
+        }
         isAnimating = false
         retainedScene = oldScene
         preparingScene = null
@@ -436,26 +420,34 @@ fun SceneTransitionHost(
         usesDirectionalBackPivot = false
         sharedFromScene = state.currentScene
         sharedToScene = targetScene
+        val sharedReturnSourceCaptured = usesSharedCoverMotion(state.currentScene, targetScene) &&
+            sharedCoverRegistry.captureLiveCollectionReturnSource(
+                fromSceneId = state.currentScene.name,
+                toSceneId = targetScene.name,
+            )
         pageMotion = when {
             state.backNavigationMotionHint == NavigationMotionHint.BOTTOM_NAVIGATION -> PageMotion.Generic
-            usesSharedCoverMotion(state.currentScene, targetScene) -> PageMotion.FolderSharedBack
+            sharedReturnSourceCaptured -> PageMotion.FolderSharedBack
             usesSettingsFragmentMotion(state.currentScene, targetScene) -> PageMotion.SettingsBack
             else -> PageMotion.Generic
         }
-        isAnimating = true
-        animProgress.snapTo(0f)
+        // Resolve the retained source/target holders before exposing the transition layer. If the
+        // detail list has moved, showing page transforms while the shared pair is still being
+        // measured produces a full-screen preparation flash.
         if (pageMotion == PageMotion.FolderSharedBack) {
-            awaitSharedLayouts(
+            val prepared = awaitSharedLayouts(
                 coverRegistry = sharedCoverRegistry,
-                itemRegistry = powerListSceneRegistry,
                 fromScene = state.currentScene,
                 toScene = targetScene,
                 transitionKey = "${state.currentScene.name}->${targetScene.name}",
                 allowRememberedTarget = true
             )
+            if (!prepared) pageMotion = PageMotion.Generic
         } else {
             withFrameNanos { }
         }
+        animProgress.snapTo(0f)
+        isAnimating = true
         animProgress.animateTo(
             1f,
             when (pageMotion) {
@@ -468,6 +460,10 @@ fun SceneTransitionHost(
         displayedScene = targetScene
         retainedScene = state.currentScene
         preparingScene = null
+        // Restore the real target only after it has produced one frame at its final geometry.
+        // This mirrors the retained-holder handoff used by the reference implementation and
+        // prevents the shared layer from handing off to a still-transformed target.
+        withFrameNanos { }
         isAnimating = false
         state.completeAnimatingBack()
         animProgress.snapTo(0f)
@@ -489,23 +485,28 @@ fun SceneTransitionHost(
         topMenuAlpha.snapTo(1f)
         sharedFromScene = state.currentScene
         sharedToScene = targetScene
+        val sharedReturnSourceCaptured = usesSharedCoverMotion(state.currentScene, targetScene) &&
+            sharedCoverRegistry.captureLiveCollectionReturnSource(
+                fromSceneId = state.currentScene.name,
+                toSceneId = targetScene.name,
+            )
         pageMotion = when {
             state.backNavigationMotionHint == NavigationMotionHint.BOTTOM_NAVIGATION -> PageMotion.Generic
-            usesSharedCoverMotion(state.currentScene, targetScene) -> PageMotion.FolderSharedBack
+            sharedReturnSourceCaptured -> PageMotion.FolderSharedBack
             usesSettingsFragmentMotion(state.currentScene, targetScene) -> PageMotion.SettingsBack
             else -> PageMotion.Generic
         }
         isGestureActive = true
         animProgress.snapTo(0f)
         if (pageMotion == PageMotion.FolderSharedBack) {
-            awaitSharedLayouts(
+            val prepared = awaitSharedLayouts(
                 coverRegistry = sharedCoverRegistry,
-                itemRegistry = powerListSceneRegistry,
                 fromScene = state.currentScene,
                 toScene = targetScene,
                 transitionKey = "${state.currentScene.name}->${targetScene.name}",
                 allowRememberedTarget = true
             )
+            if (!prepared) pageMotion = PageMotion.Generic
         } else {
             withFrameNanos { }
         }
@@ -528,15 +529,15 @@ fun SceneTransitionHost(
         if (sharedPowerListSettle) {
             val targetScene = state.backPreviewScene ?: state.getPreviousScene()
             val transitionKey = targetScene?.let { "${state.currentScene.name}->${it.name}" }.orEmpty()
-            if (targetScene != null && !powerListSceneRegistry.isPrepared(transitionKey)) {
-                awaitSharedLayouts(
+            if (targetScene != null && !sharedCoverRegistry.isPrepared(transitionKey)) {
+                val prepared = awaitSharedLayouts(
                     coverRegistry = sharedCoverRegistry,
-                    itemRegistry = powerListSceneRegistry,
                     fromScene = state.currentScene,
                     toScene = targetScene,
                     transitionKey = transitionKey,
                     allowRememberedTarget = true
                 )
+                if (!prepared) pageMotion = PageMotion.Generic
             }
         }
         val normalizedVelocity = state.dragBackReleaseVelocity / screenWidthPx.coerceAtLeast(1f)
@@ -558,7 +559,10 @@ fun SceneTransitionHost(
                 ((1f - start) * POWER_LIST_COMMIT_MS).roundToInt().coerceAtLeast(100)
             }
             else -> {
-                (start * POWER_LIST_CANCEL_MS).roundToInt().coerceAtLeast(1)
+                // PowerList keeps at least one third of its 500 ms cancellation duration.
+                // This prevents a short rejected gesture from snapping back in one frame.
+                (start * POWER_LIST_CANCEL_MS).roundToInt()
+                    .coerceAtLeast(POWER_LIST_CANCEL_MS / 3)
             }
         }
         val settleEasing = when {
@@ -574,6 +578,9 @@ fun SceneTransitionHost(
             prevSceneRef.value = targetScene
             displayedScene = targetScene
             retainedScene = previousDisplayedScene
+            // Keep the shared owner at the endpoint while the target holder settles into its
+            // untransformed layout. Releasing both in the same frame causes a visible jump.
+            withFrameNanos { }
         }
         preparingScene = null
         state.completeBackDrag(commit)
@@ -762,6 +769,7 @@ fun SceneTransitionHost(
             .fillMaxSize()
             .onGloballyPositioned { coordinates ->
                 hostPositionInRoot = coordinates.positionInRoot()
+                hostPositionInWindow = coordinates.positionInWindow()
             }
             .then(gestureModifier)
     ) {
@@ -770,6 +778,7 @@ fun SceneTransitionHost(
             modifier = Modifier.fillMaxSize(),
             measurePolicy = { _, constraints ->
                 screenWidthPx = constraints.maxWidth.toFloat()
+                screenHeightPx = constraints.maxHeight.toFloat()
                 layout(0, 0) {}
             }
         )
@@ -819,12 +828,11 @@ fun SceneTransitionHost(
             }
         }.coerceIn(0f, 1f)
 
-        val sharedActive = inTransition && sharedFromScene != sharedToScene
+        val sharedActive = (inTransition || preparingScene != null) &&
+            sharedFromScene != sharedToScene
         val transitionKey = "${sharedFromScene.name}->${sharedToScene.name}"
-
         if (!sharedActive) {
             sharedCoverRegistry.clearFrozen()
-            powerListSceneRegistry.clearTransition()
         }
 
         val sharedSpec = SharedTransitionSpec(
@@ -833,15 +841,30 @@ fun SceneTransitionHost(
             toSceneId = sharedToScene.name,
             activeSceneId = displayedScene.name,
             progress = sharedProgress,
-            transitionKey = transitionKey
+            transitionKey = transitionKey,
+            allowRememberedTarget = pageMotion == PageMotion.FolderSharedBack,
+            sharedCoverOverlayOwnsAnchor = sharedActive &&
+                (pageMotion == PageMotion.FolderSharedForward ||
+                    pageMotion == PageMotion.FolderSharedBack)
         )
+        val preparedSharedPair = sharedCoverRegistry.getPreparedPair(transitionKey)
         val pageTransform = if (inTransition && fromScene != displayedScene) {
-            pageTransforms(
-                motion = pageMotion,
-                progress = progress,
-                directionalBack = usesDirectionalBackPivot,
-                backDirection = state.dragBackDirection,
-            )
+            if ((pageMotion == PageMotion.FolderSharedForward ||
+                    pageMotion == PageMotion.FolderSharedBack) && preparedSharedPair == null
+            ) {
+                sharedPreparationTransform(pageMotion)
+            } else {
+                pageTransforms(
+                    motion = pageMotion,
+                    progress = progress,
+                    directionalBack = usesDirectionalBackPivot,
+                    backDirection = state.dragBackDirection,
+                    viewportWidth = screenWidthPx,
+                    viewportHeight = screenHeightPx,
+                    hostPositionInWindow = hostPositionInWindow,
+                    sharedPair = preparedSharedPair,
+                )
+            }
         } else {
             null
         }
@@ -857,15 +880,24 @@ fun SceneTransitionHost(
         } else {
             1f
         }
+        // Keep the action host mounted and move it with the same scene progress. This mirrors
+        // the reference player's anchored toolbar: the icons do not get recreated or inserted
+        // into the page while a predictive gesture is in flight.
+        val topMenuTranslationProgress = if (inTransition && fromScene != displayedScene) {
+            val direction = if (isBackTransition) 1f else -1f
+            direction * progress
+        } else {
+            0f
+        }
 
         CompositionLocalProvider(
             LocalSharedCoverRegistry provides sharedCoverRegistry,
-            LocalPowerListSceneTransitionRegistry provides powerListSceneRegistry,
             LocalAlphabetIndexOverlayRegistry provides alphabetIndexOverlayRegistry,
             LocalSharedTransitionSpec provides sharedSpec,
             LocalSceneChromeAlpha provides SceneChromeAlpha(
                 alphabetIndex = alphabetIndexAlpha.value * alphabetGestureAlpha,
                 topMenu = topMenuAlpha.value * topMenuGestureAlpha,
+                topMenuTranslationProgress = topMenuTranslationProgress,
                 detachAlphabetIndex = detachAlphabetIndex,
             ),
         ) {
@@ -878,9 +910,12 @@ fun SceneTransitionHost(
                         .fillMaxSize()
                         .graphicsLayer {
                             translationX = transform.fromTranslationX
+                            translationY = transform.fromTranslationY
                             scaleX = transform.fromScale
                             scaleY = transform.fromScale
                             alpha = transform.fromAlpha
+                            // Keep the page on its render node instead of allocating a full-screen
+                            // offscreen buffer for alpha composition.
                             compositingStrategy = CompositingStrategy.ModulateAlpha
                             transformOrigin = transform.fromTransformOrigin
                         }
@@ -898,9 +933,12 @@ fun SceneTransitionHost(
                         .fillMaxSize()
                         .graphicsLayer {
                             translationX = transform.currentTranslationX
+                            translationY = transform.currentTranslationY
                             scaleX = transform.currentScale
                             scaleY = transform.currentScale
                             alpha = transform.currentAlpha
+                            // Keep the page transition on the render node. Offscreen here would
+                            // rasterize both full pages and is the main cold-entry cost.
                             compositingStrategy = CompositingStrategy.ModulateAlpha
                             transformOrigin = transform.currentTransformOrigin
                         }
@@ -925,11 +963,16 @@ fun SceneTransitionHost(
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer {
-                                // Keep the target drawable for the GPU warm-up pass while it is
-                                // translated outside the viewport. A zero alpha may be skipped
-                                // by some render backends and would defeat the pre-recording.
-                                alpha = 0.001f
-                                translationX = screenWidthPx.coerceAtLeast(1f) * 2f
+                                val isPreparing = preparingScene != null
+                                // Compose still composes and measures an alpha-zero layer, but
+                                // the renderer skips its pixels. This warms layout without the
+                                // full-screen Offscreen buffer that caused cold-entry jank.
+                                alpha = 0f
+                                translationX = if (isPreparing) {
+                                    0f
+                                } else {
+                                    screenWidthPx.coerceAtLeast(1f) * 2f
+                                }
                                 compositingStrategy = CompositingStrategy.ModulateAlpha
                             }
                     ) {
@@ -945,7 +988,8 @@ fun SceneTransitionHost(
             prewarmScenes.forEach { scene ->
                 val participatesInTransition =
                     inTransition && (scene == displayedScene || scene == fromScene)
-                if (scene != displayedScene && !participatesInTransition) {
+                val alreadyRetained = scene == (preparingScene ?: retainedScene)
+                if (scene != displayedScene && !participatesInTransition && !alreadyRetained) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -966,7 +1010,9 @@ fun SceneTransitionHost(
             if (sharedCoverOverlayActive) {
                 SharedCoverOverlay(
                     registry = sharedCoverRegistry,
-                    spec = sharedSpec
+                    spec = sharedSpec,
+                    hostPositionInWindow = hostPositionInWindow,
+                    viewportWidth = screenWidthPx,
                 )
             }
 
@@ -989,10 +1035,12 @@ private data class PageTransform(
     val fromScale: Float,
     val fromAlpha: Float,
     val fromTranslationX: Float,
+    val fromTranslationY: Float = 0f,
     val fromTransformOrigin: TransformOrigin = TransformOrigin.Center,
     val currentScale: Float,
     val currentAlpha: Float,
     val currentTranslationX: Float,
+    val currentTranslationY: Float = 0f,
     val currentTransformOrigin: TransformOrigin = TransformOrigin.Center,
 )
 
@@ -1001,6 +1049,10 @@ private fun pageTransforms(
     progress: Float,
     directionalBack: Boolean,
     backDirection: Float,
+    viewportWidth: Float,
+    viewportHeight: Float,
+    hostPositionInWindow: Offset,
+    sharedPair: Pair<SharedCoverSnapshot, SharedCoverSnapshot>?,
 ): PageTransform {
     val directionalPivot = if (backDirection >= 0f) {
         TransformOrigin(1.5f, 0.5f)
@@ -1022,25 +1074,59 @@ private fun pageTransforms(
 
         PageMotion.FolderSharedForward -> {
             val elapsed = 1f - progress
+            val pair = sharedPair
+            val sourcePivot = pair?.first?.boundsInWindow?.toPowerListItemPivot(
+                hostPositionInWindow = hostPositionInWindow,
+                viewportWidth = viewportWidth,
+                viewportHeight = viewportHeight,
+                horizontalOffsetFraction = 0f,
+            ) ?: TransformOrigin.Center
             PageTransform(
-                fromScale = 1f,
+                // Item -> header: the source list contracts around the selected item's bottom
+                // edge while the header list expands from its viewport centre.
+                fromScale = lerp(1f, POWER_LIST_SCALE_MIN, elapsed),
                 fromAlpha = lerp(1f, 0f, elapsed),
                 fromTranslationX = 0f,
-                currentScale = 1f,
+                fromTransformOrigin = sourcePivot,
+                currentScale = lerp(POWER_LIST_SCALE_MAX, 1f, elapsed),
                 currentAlpha = lerp(0f, 1f, elapsed),
                 currentTranslationX = 0f,
+                currentTransformOrigin = TransformOrigin.Center,
             )
         }
 
         PageMotion.FolderSharedBack -> {
             val elapsed = progress
+            val pair = sharedPair
+            val horizontalPivotOffset = if (directionalBack) {
+                if (backDirection >= 0f) 1f else -1f
+            } else {
+                0f
+            }
+            val targetPivot = pair?.second?.boundsInWindow?.toPowerListItemPivot(
+                hostPositionInWindow = hostPositionInWindow,
+                viewportWidth = viewportWidth,
+                viewportHeight = viewportHeight,
+                horizontalOffsetFraction = horizontalPivotOffset,
+            ) ?: TransformOrigin(
+                pivotFractionX = 0.5f + horizontalPivotOffset,
+                pivotFractionY = 0.5f,
+            )
+            val headerPivot = TransformOrigin(
+                pivotFractionX = 0.5f + horizontalPivotOffset,
+                pivotFractionY = 0.5f,
+            )
             PageTransform(
-                fromScale = 1f,
+                // Header -> item uses the same two layout engines in reverse. The destination
+                // list is centred on the exact target item, not on a copied screen coordinate.
+                fromScale = lerp(POWER_LIST_SCALE_MAX, 1f, elapsed),
                 fromAlpha = lerp(0f, 1f, elapsed),
                 fromTranslationX = 0f,
-                currentScale = 1f,
+                fromTransformOrigin = targetPivot,
+                currentScale = lerp(1f, POWER_LIST_SCALE_MIN, elapsed),
                 currentAlpha = lerp(1f, 0f, elapsed),
                 currentTranslationX = 0f,
+                currentTransformOrigin = headerPivot,
             )
         }
 
@@ -1071,6 +1157,44 @@ private fun pageTransforms(
     }
 }
 
+private fun sharedPreparationTransform(motion: PageMotion): PageTransform {
+    return when (motion) {
+        PageMotion.FolderSharedForward -> PageTransform(
+            fromScale = 1f,
+            fromAlpha = 1f,
+            fromTranslationX = 0f,
+            currentScale = 1f,
+            currentAlpha = 0f,
+            currentTranslationX = 0f,
+        )
+        PageMotion.FolderSharedBack -> PageTransform(
+            fromScale = 1f,
+            fromAlpha = 0f,
+            fromTranslationX = 0f,
+            currentScale = 1f,
+            currentAlpha = 1f,
+            currentTranslationX = 0f,
+        )
+        else -> error("Only shared collection transitions have a preparation frame")
+    }
+}
+
+private fun Rect.toPowerListItemPivot(
+    hostPositionInWindow: Offset,
+    viewportWidth: Float,
+    viewportHeight: Float,
+    horizontalOffsetFraction: Float,
+): TransformOrigin {
+    // PowerList's native layout engine uses viewportCenter +
+    // (-viewportHeight / 2 + itemTop + itemHeight), which resolves to item.bottom.
+    // Its swipe variant shifts the horizontal pivot by exactly one viewport width.
+    val localBottom = bottom - hostPositionInWindow.y
+    return TransformOrigin(
+        pivotFractionX = 0.5f + horizontalOffsetFraction,
+        pivotFractionY = localBottom / viewportHeight.coerceAtLeast(1f),
+    )
+}
+
 /**
  * 共享封面 overlay。
  * 在 SceneTransitionHost 根层绘制，不受来源页/目标页的 alpha 影响。
@@ -1079,10 +1203,13 @@ private fun pageTransforms(
 @Composable
 private fun SharedCoverOverlay(
     registry: SharedCoverRegistry,
-    spec: SharedTransitionSpec
+    spec: SharedTransitionSpec,
+    hostPositionInWindow: Offset,
+    viewportWidth: Float,
 ) {
     if (!spec.active) return
 
+    val context = LocalContext.current
     val density = LocalDensity.current
     var overlayOrigin by remember {
         mutableStateOf(androidx.compose.ui.geometry.Offset.Zero)
@@ -1095,61 +1222,91 @@ private fun SharedCoverOverlay(
                 overlayOrigin = coordinates.positionInWindow()
             }
     ) {
-        val pairs = registry.findPairs(
-            fromSceneId = spec.fromSceneId,
-            toSceneId = spec.toSceneId
-        )
-        if (pairs.isEmpty()) return@Box
-
-        for ((rawFrom, rawTo) in pairs) {
-            if (registry.getFrozen(rawFrom.sceneId, rawFrom.elementId) == null) {
-                registry.freeze(rawFrom.sceneId, rawFrom.elementId)
-            }
-            if (registry.getFrozen(rawTo.sceneId, rawTo.elementId) == null) {
-                registry.freeze(rawTo.sceneId, rawTo.elementId)
-            }
-
-            val from = registry.getFrozen(rawFrom.sceneId, rawFrom.elementId) ?: rawFrom
-            val to = registry.getFrozen(rawTo.sceneId, rawTo.elementId) ?: rawTo
+        val preparedPair = registry.getPreparedPair(spec.transitionKey) ?: return@Box
+        with(preparedPair) {
+            val from = first
+            val to = second
             val progress = spec.progress.coerceIn(0f, 1f)
 
-            val leftPx = lerp(from.boundsInWindow.left, to.boundsInWindow.left, progress) - overlayOrigin.x
-            val topPx = lerp(from.boundsInWindow.top, to.boundsInWindow.top, progress) - overlayOrigin.y
-            val widthPx = lerp(from.boundsInWindow.width, to.boundsInWindow.width, progress).coerceAtLeast(1f)
-            val heightPx = lerp(from.boundsInWindow.height, to.boundsInWindow.height, progress).coerceAtLeast(1f)
-            val baseWidthPx = max(from.boundsInWindow.width, to.boundsInWindow.width).coerceAtLeast(1f)
-            val baseHeightPx = max(from.boundsInWindow.height, to.boundsInWindow.height).coerceAtLeast(1f)
+            val rawFrom = from.boundsInWindow
+            val sourceWidthPx = rawFrom.width.coerceAtLeast(1f)
+            val sourceHeightPx = rawFrom.height.coerceAtLeast(1f)
+            val viewportCenterX = hostPositionInWindow.x + viewportWidth / 2f
+            // A detail header is a viewport-level hero. Keep its measured vertical position,
+            // but correct its horizontal centre to the host just like the promoted PowerList
+            // holder. This also neutralises stale window-inset/retained-layer X offsets.
+            val fromRect = if (viewportWidth > 0f && rawFrom.width >= viewportWidth * 0.5f) {
+                Rect(
+                    left = viewportCenterX - rawFrom.width / 2f,
+                    top = rawFrom.top,
+                    right = viewportCenterX + rawFrom.width / 2f,
+                    bottom = rawFrom.bottom,
+                )
+            } else {
+                rawFrom
+            }
+            val toRect = to.boundsInWindow
+            // PowerList interpolates the promoted holder's complete LayoutRes rectangle. Edge
+            // interpolation preserves its centre and independent width/height exactly; using a
+            // single width-derived scale is what previously sent the large cover off course.
+            val currentLeft = lerp(fromRect.left, toRect.left, progress)
+            val currentTop = lerp(fromRect.top, toRect.top, progress)
+            val currentRight = lerp(fromRect.right, toRect.right, progress)
+            val currentBottom = lerp(fromRect.bottom, toRect.bottom, progress)
+            val scaleX = ((currentRight - currentLeft) / sourceWidthPx).coerceAtLeast(0.001f)
+            val scaleY = ((currentBottom - currentTop) / sourceHeightPx).coerceAtLeast(0.001f)
+            val leftPx = currentLeft - overlayOrigin.x
+            val topPx = currentTop - overlayOrigin.y
             val radiusDp = lerp(from.radiusDp, to.radiusDp, progress)
-            val coverKey = if (to.coverKey.isNotBlank()) to.coverKey else from.coverKey
-            if (coverKey.isBlank()) continue
-            val scaleX = widthPx / baseWidthPx
-            val scaleY = heightPx / baseHeightPx
-            val visualScale = minOf(scaleX, scaleY).coerceAtLeast(0.001f)
+            val coverKey = from.coverKey.ifBlank { to.coverKey }
+            if (coverKey.isBlank()) return@with
+            val promotedBitmap = remember(spec.transitionKey, coverKey) {
+                PowerListCoilArtwork.peekBitmap(
+                    context = context,
+                    key = coverKey,
+                    width = sourceWidthPx.roundToInt().coerceAtLeast(1),
+                    height = sourceHeightPx.roundToInt().coerceAtLeast(1)
+                )
+            }
+            val promotedImage = remember(promotedBitmap) {
+                promotedBitmap?.takeIf { !it.isRecycled }?.asImageBitmap()
+            }
+            val imageModifier = Modifier
+                .requiredSize(
+                    width = with(density) { sourceWidthPx.toDp() },
+                    height = with(density) { sourceHeightPx.toDp() }
+                )
+                .graphicsLayer {
+                    translationX = leftPx
+                    translationY = topPx
+                    this.scaleX = scaleX
+                    this.scaleY = scaleY
+                    transformOrigin = TransformOrigin(0f, 0f)
+                    alpha = 1f
+                    clip = true
+                    // Shape is evaluated before the layer transform. Compensate each axis so
+                    // the visible radius follows the same LayoutRes interpolation.
+                    shape = RoundedCornerShape((radiusDp / minOf(scaleX, scaleY)).dp)
+                }
 
-            com.rawsmusic.core.ui.widget.bitmaps.CrossfadeAlbumArt(
-                key = coverKey,
-                modifier = Modifier
-                    .requiredSize(
-                        width = with(density) { baseWidthPx.toDp() },
-                        height = with(density) { baseHeightPx.toDp() }
-                    )
-                    .graphicsLayer {
-                        translationX = leftPx
-                        translationY = topPx
-                        this.scaleX = scaleX
-                        this.scaleY = scaleY
-                        transformOrigin = TransformOrigin(0f, 0f)
-                        alpha = 1f
-                        clip = true
-                        // The layer is clipped before it is scaled. Compensate so the visible
-                        // corner radius, rather than the pre-scale radius, follows the interpolation.
-                        shape = RoundedCornerShape((radiusDp / visualScale).dp)
-                    },
-                contentScale = ContentScale.Crop,
-                showPlaceholder = false,
-                fadeMillis = 0,
-                freezeBitmapUpdates = true
-            )
+            if (promotedImage != null) {
+                Image(
+                    bitmap = promotedImage,
+                    contentDescription = null,
+                    modifier = imageModifier,
+                    contentScale = ContentScale.Crop,
+                    filterQuality = FilterQuality.High
+                )
+            } else {
+                com.rawsmusic.core.ui.widget.bitmaps.CrossfadeAlbumArt(
+                    key = coverKey,
+                    modifier = imageModifier,
+                    contentScale = ContentScale.Crop,
+                    showPlaceholder = false,
+                    fadeMillis = 0,
+                    freezeBitmapUpdates = true
+                )
+            }
         }
     }
 }

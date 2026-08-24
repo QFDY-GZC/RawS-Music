@@ -9,6 +9,7 @@ object PersonalizationPreferences {
     private const val KEY_PERFORMANCE_MODE_DEFAULT_V2 = "personalization_performance_mode_default_v2"
     private const val KEY_BOTTOM_NAVIGATION_SCENES = "personalization_bottom_navigation_scenes_v1"
     private const val KEY_BOTTOM_BAR_STYLE = "personalization_bottom_bar_style_v1"
+    private const val KEY_TOP_CHROME_STYLE = "personalization_top_chrome_style_v1"
 
     private val allowedBottomNavigationTags = setOf(
         "home",
@@ -65,6 +66,21 @@ object PersonalizationPreferences {
             if (_bottomBarStyle.value == value) return
             _bottomBarStyle.value = value
             AppPreferences.storage.encode(KEY_BOTTOM_BAR_STYLE, value.prefValue)
+        }
+
+    private val _topChromeStyle = MutableStateFlow(
+        TopChromeStyle.fromPref(
+            AppPreferences.storage.decodeString(KEY_TOP_CHROME_STYLE, TopChromeStyle.HAZE.prefValue)
+        )
+    )
+    val topChromeStyle = _topChromeStyle.asStateFlow()
+
+    var topChromeStyleValue: TopChromeStyle
+        get() = _topChromeStyle.value
+        set(value) {
+            if (_topChromeStyle.value == value) return
+            _topChromeStyle.value = value
+            AppPreferences.storage.encode(KEY_TOP_CHROME_STYLE, value.prefValue)
         }
 
     var isBottomNavigationEnabled: Boolean

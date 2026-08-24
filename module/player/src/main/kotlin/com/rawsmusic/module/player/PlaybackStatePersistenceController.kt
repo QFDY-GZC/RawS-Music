@@ -24,6 +24,7 @@ internal class PlaybackStatePersistenceController(
     private val keepUsbExclusive: () -> Boolean,
     private val positionMs: () -> Long,
     private val queue: () -> PlayQueue,
+    private val priorityQueue: () -> List<AudioFile> = { emptyList() },
 ) {
     private var saveStateJob: Job? = null
     private val persistenceLock = Any()
@@ -40,11 +41,13 @@ internal class PlaybackStatePersistenceController(
         val queueSnapshot = queue()
         val songsSnapshot = queueSnapshot.songs.toList()
         val currentIndex = queueSnapshot.currentIndex
+        val prioritySnapshot = priorityQueue().toList()
         saveStateJob?.cancel()
         saveStateJob = scope.launch(Dispatchers.IO) {
             runCatching {
                 synchronized(persistenceLock) {
                     persistence.saveQueue(songsSnapshot, currentIndex)
+                    persistence.savePriorityQueue(prioritySnapshot)
                 }
             }.onFailure { error ->
                 AppLogger.w(TAG, "async queue snapshot failed", error)
@@ -68,6 +71,7 @@ internal class PlaybackStatePersistenceController(
                 )
                 persistence.savePosition(positionMs())
                 persistence.saveQueue(queueSnapshot.songs.toList(), queueSnapshot.currentIndex)
+                persistence.savePriorityQueue(priorityQueue().toList())
                 AppPreferences.sync()
             }
             true

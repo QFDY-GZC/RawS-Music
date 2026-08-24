@@ -1,6 +1,8 @@
 #include <jni.h>
 #include <android/log.h>
 #include <string.h>
+#include <cstring>
+#include <cerrno>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string>
@@ -10,6 +12,10 @@
 #include <signal.h>
 #include <setjmp.h>
 #include <time.h>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -28,8 +34,40 @@ extern "C" {
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+static std::string online_safe_url(const char *value) {
+    if (!value || value[0] == '\0') return "-";
+    std::string result(value);
+    const size_t query = result.find('?');
+    const size_t fragment = result.find('#');
+    size_t cut = std::string::npos;
+    if (query != std::string::npos) cut = query;
+    if (fragment != std::string::npos && (cut == std::string::npos || fragment < cut)) cut = fragment;
+    if (cut != std::string::npos) result.resize(cut);
+    const size_t scheme = result.find("://");
+    if (scheme != std::string::npos) {
+        const size_t authorityStart = scheme + 3;
+        const size_t authorityEnd = result.find('/', authorityStart);
+        const size_t at = result.find('@', authorityStart);
+        if (at != std::string::npos && (authorityEnd == std::string::npos || at < authorityEnd)) {
+            result.erase(authorityStart, at - authorityStart + 1);
+        }
+    }
+    if (result.size() > 300) result.resize(300);
+    return result;
+}
+
+static int online_header_line_count(const char *headers) {
+    if (!headers || headers[0] == '\0') return 0;
+    int count = 0;
+    for (const char *p = headers; *p; ++p) {
+        if (*p == '\n') ++count;
+    }
+    return count > 0 ? count : 1;
+}
+
 static thread_local sigjmp_buf s_abort_jmp_buf;
 static thread_local volatile sig_atomic_t s_abort_caught = 0;
+static std::mutex s_send_packet_signal_mutex;
 
 static jstring newJStringFromUtf8Lenient(JNIEnv *env, const char *text) {
     if (!text) {
@@ -114,6 +152,11 @@ static void abort_signal_handler(int sig) {
  * Returns the normal avcodec_send_packet result, or -100 if SIGABRT was caught.
  */
 static int sendPacketSafe(AVCodecContext *ctx, AVPacket *pkt) {
+    // sigaction() changes a process-wide handler. During rapid switching the old and
+    // new decoder can overlap, so serialize this compatibility guard across sessions.
+    // Use explicit lock/unlock because siglongjmp does not run C++ destructors.
+    s_send_packet_signal_mutex.lock();
+
     struct sigaction sa_old, sa_new;
     sa_new.sa_handler = abort_signal_handler;
     sigemptyset(&sa_new.sa_mask);
@@ -124,10 +167,11 @@ static int sendPacketSafe(AVCodecContext *ctx, AVPacket *pkt) {
     if (sigsetjmp(s_abort_jmp_buf, 1) == 0) {
         int ret = avcodec_send_packet(ctx, pkt);
         sigaction(SIGABRT, &sa_old, nullptr);
+        s_send_packet_signal_mutex.unlock();
         return ret;
     } else {
-        // SIGABRT was caught — restore old handler
         sigaction(SIGABRT, &sa_old, nullptr);
+        s_send_packet_signal_mutex.unlock();
         LOGE("sendPacketSafe: caught SIGABRT from avcodec_send_packet, returning error");
         return -100;
     }
@@ -824,9 +868,60 @@ cleanup_pcm:
     return ret;
 }
 
-static jlong probe_duration(const char *path) {
+
+static int open_input_with_http_options(
+    AVFormatContext **format_context,
+    const char *path,
+    const char *headers_block,
+    const char *user_agent
+) {
+    AVDictionary *options = nullptr;
+    const bool remote_input = path &&
+        (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0);
+    if (remote_input) {
+        if (headers_block && headers_block[0] != '\0') {
+            av_dict_set(&options, "headers", headers_block, 0);
+        }
+        if (user_agent && user_agent[0] != '\0') {
+            av_dict_set(&options, "user_agent", user_agent, 0);
+        }
+        av_dict_set(&options, "reconnect", "1", 0);
+        av_dict_set(&options, "reconnect_streamed", "1", 0);
+        av_dict_set(&options, "reconnect_delay_max", "5", 0);
+        av_dict_set(&options, "rw_timeout", "15000000", 0);
+    }
+    const std::string safeUrl = online_safe_url(path);
+    if (remote_input) {
+        LOGI("ONLINE_PIPE NATIVE_PROBE_OPEN_START url=%s headers=%d ua=%d",
+             safeUrl.c_str(), online_header_line_count(headers_block),
+             user_agent && user_agent[0] != '\0');
+    }
+    const int result = avformat_open_input(format_context, path, nullptr, &options);
+    av_dict_free(&options);
+    if (remote_input) {
+        if (result < 0) {
+            char errorText[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(result, errorText, sizeof(errorText));
+            LOGE("ONLINE_PIPE NATIVE_PROBE_OPEN_FAIL url=%s error=%d (%s)",
+                 safeUrl.c_str(), result, errorText);
+        } else {
+            LOGI("ONLINE_PIPE NATIVE_PROBE_OPEN_OK url=%s format=%s streams=%u",
+                 safeUrl.c_str(),
+                 (*format_context && (*format_context)->iformat && (*format_context)->iformat->name)
+                     ? (*format_context)->iformat->name : "-",
+                 *format_context ? (*format_context)->nb_streams : 0);
+        }
+    }
+    return result;
+}
+
+static jlong probe_duration(
+    const char *path,
+    const char *headers_block = nullptr,
+    const char *user_agent = nullptr
+) {
     AVFormatContext *fmt_ctx = nullptr;
-    if (avformat_open_input(&fmt_ctx, path, nullptr, nullptr) < 0) return 0;
+    if (open_input_with_http_options(&fmt_ctx, path, headers_block, user_agent) < 0) return 0;
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
         avformat_close_input(&fmt_ctx);
         return 0;
@@ -838,9 +933,13 @@ static jlong probe_duration(const char *path) {
     return dur / 1000;
 }
 
-static jint probe_sample_rate(const char *path) {
+static jint probe_sample_rate(
+    const char *path,
+    const char *headers_block = nullptr,
+    const char *user_agent = nullptr
+) {
     AVFormatContext *fmt_ctx = nullptr;
-    if (avformat_open_input(&fmt_ctx, path, nullptr, nullptr) < 0) return 0;
+    if (open_input_with_http_options(&fmt_ctx, path, headers_block, user_agent) < 0) return 0;
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
         avformat_close_input(&fmt_ctx);
         return 0;
@@ -856,9 +955,13 @@ static jint probe_sample_rate(const char *path) {
     return sr;
 }
 
-static jint probe_bits_per_sample(const char *path) {
+static jint probe_bits_per_sample(
+    const char *path,
+    const char *headers_block = nullptr,
+    const char *user_agent = nullptr
+) {
     AVFormatContext *fmt_ctx = nullptr;
-    if (avformat_open_input(&fmt_ctx, path, nullptr, nullptr) < 0) {
+    if (open_input_with_http_options(&fmt_ctx, path, headers_block, user_agent) < 0) {
         LOGE("probe_bits_per_sample: failed to open %s", path);
         return 0;
     }
@@ -886,9 +989,13 @@ static jint probe_bits_per_sample(const char *path) {
     return bits;
 }
 
-static jint probe_channel_count(const char *path) {
+static jint probe_channel_count(
+    const char *path,
+    const char *headers_block = nullptr,
+    const char *user_agent = nullptr
+) {
     AVFormatContext *fmt_ctx = nullptr;
-    if (avformat_open_input(&fmt_ctx, path, nullptr, nullptr) < 0) return 0;
+    if (open_input_with_http_options(&fmt_ctx, path, headers_block, user_agent) < 0) return 0;
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
         avformat_close_input(&fmt_ctx);
         return 0;
@@ -979,9 +1086,9 @@ static int extract_cover(const char *input_path, const char *output_path) {
 }
 
 
-// Poweramp-like offline Waveseek scanner lives in raw_waveform_scan.cpp.
+// Offline waveform seek scanner lives in raw_waveform_scan.cpp.
 // Keep the JNI bridge small; do not pile scan/decode policy into this file.
-std::vector<float> rawsmusic_scan_waveform_poweramp_seek(
+std::vector<float> rawsmusic_scan_waveform_precise_seek(
     const char *input_path,
     int64_t start_ms,
     int64_t end_ms,
@@ -1047,6 +1154,58 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCount(
     return ch;
 }
 
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeDurationWithOptions(
+    JNIEnv *env, jobject, jstring path, jstring headersBlock, jstring userAgent) {
+    const char *p = env->GetStringUTFChars(path, nullptr);
+    const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
+    const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
+    const jlong value = probe_duration(p, headers, agent);
+    if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+    if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
+    env->ReleaseStringUTFChars(path, p);
+    return value;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeSampleRateWithOptions(
+    JNIEnv *env, jobject, jstring path, jstring headersBlock, jstring userAgent) {
+    const char *p = env->GetStringUTFChars(path, nullptr);
+    const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
+    const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
+    const jint value = probe_sample_rate(p, headers, agent);
+    if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+    if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
+    env->ReleaseStringUTFChars(path, p);
+    return value;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeBitsPerSampleWithOptions(
+    JNIEnv *env, jobject, jstring path, jstring headersBlock, jstring userAgent) {
+    const char *p = env->GetStringUTFChars(path, nullptr);
+    const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
+    const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
+    const jint value = probe_bits_per_sample(p, headers, agent);
+    if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+    if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
+    env->ReleaseStringUTFChars(path, p);
+    return value;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCountWithOptions(
+    JNIEnv *env, jobject, jstring path, jstring headersBlock, jstring userAgent) {
+    const char *p = env->GetStringUTFChars(path, nullptr);
+    const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
+    const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
+    const jint value = probe_channel_count(p, headers, agent);
+    if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+    if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
+    env->ReleaseStringUTFChars(path, p);
+    return value;
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeExtractCover(
     JNIEnv *env, jobject, jstring input, jstring output) {
@@ -1062,7 +1221,7 @@ extern "C" JNIEXPORT jfloatArray JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeScanWaveform(
     JNIEnv *env, jobject, jstring path, jlong startMs, jlong endMs, jint sampleCount) {
     const char *p = env->GetStringUTFChars(path, nullptr);
-    std::vector<float> result = rawsmusic_scan_waveform_poweramp_seek(p, (int64_t)startMs, (int64_t)endMs, (int)sampleCount);
+    std::vector<float> result = rawsmusic_scan_waveform_precise_seek(p, (int64_t)startMs, (int64_t)endMs, (int)sampleCount);
     env->ReleaseStringUTFChars(path, p);
     jfloatArray array = env->NewFloatArray((jsize)result.size());
     if (!array) return nullptr;
@@ -1114,8 +1273,183 @@ static bool streamRawPcmPassthroughFormat(
     }
 }
 
+
+// Some FLAC files in the wild contain another metadata chain after a block that
+// already has the FLAC "last metadata block" flag. Strict demuxers then expect an
+// audio frame at that point and return zero packets. RawSMusic's old direct tag
+// writer could preserve such an orphan PICTURE/PADDING chain as if it were audio.
+// For playback, expose a virtual read-only view that omits only that orphan range;
+// the media file itself is never modified.
+struct FlacOrphanMetadataIo {
+    FILE *file;
+    int64_t physical_size;
+    int64_t skip_start;
+    int64_t skip_end;
+    int64_t virtual_position;
+};
+
+static uint32_t read_flac_be24(const uint8_t *p) {
+    return ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[2];
+}
+
+static bool read_file_at(FILE *file, int64_t offset, uint8_t *buffer, size_t size) {
+    if (!file || !buffer || size == 0 || offset < 0) return false;
+    if (fseeko(file, (off_t)offset, SEEK_SET) != 0) return false;
+    return fread(buffer, 1, size, file) == size;
+}
+
+static bool is_flac_frame_sync_at(FILE *file, int64_t offset, int64_t file_size) {
+    if (offset < 0 || offset + 2 > file_size) return false;
+    uint8_t bytes[2] = {0, 0};
+    if (!read_file_at(file, offset, bytes, sizeof(bytes))) return false;
+    // FLAC frame sync is 14 bits: 11111111111110.
+    return bytes[0] == 0xFF && (bytes[1] & 0xFE) == 0xF8;
+}
+
+static bool read_plausible_flac_metadata_header(
+    FILE *file,
+    int64_t offset,
+    int64_t file_size,
+    bool *is_last,
+    uint8_t *block_type,
+    uint32_t *block_length
+) {
+    if (offset < 0 || offset + 4 > file_size) return false;
+    uint8_t header[4] = {0, 0, 0, 0};
+    if (!read_file_at(file, offset, header, sizeof(header))) return false;
+    const uint8_t type = header[0] & 0x7F;
+    const uint32_t length = read_flac_be24(header + 1);
+    const int64_t end = offset + 4 + (int64_t)length;
+    // Types 0..6 are the currently defined FLAC metadata blocks. Treating an
+    // arbitrary audio byte as metadata is therefore deliberately conservative.
+    if (type > 6 || end < offset || end > file_size) return false;
+    if (is_last) *is_last = (header[0] & 0x80) != 0;
+    if (block_type) *block_type = type;
+    if (block_length) *block_length = length;
+    return true;
+}
+
+static bool detect_flac_orphan_metadata_range(
+    const char *path,
+    int64_t *skip_start,
+    int64_t *skip_end
+) {
+    if (!path || !skip_start || !skip_end) return false;
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+
+    bool found = false;
+    do {
+        if (fseeko(file, 0, SEEK_END) != 0) break;
+        const int64_t file_size = (int64_t)ftello(file);
+        if (file_size < 8) break;
+
+        uint8_t marker[4] = {0, 0, 0, 0};
+        if (!read_file_at(file, 0, marker, sizeof(marker)) ||
+            memcmp(marker, "fLaC", 4) != 0) {
+            break;
+        }
+
+        int64_t position = 4;
+        int64_t first_declared_end = -1;
+        for (int block_count = 0; block_count < 512; ++block_count) {
+            bool is_last = false;
+            uint32_t block_length = 0;
+            if (!read_plausible_flac_metadata_header(
+                    file, position, file_size, &is_last, nullptr, &block_length)) {
+                break;
+            }
+
+            const int64_t block_end = position + 4 + (int64_t)block_length;
+            if (is_last) {
+                if (first_declared_end < 0) first_declared_end = block_end;
+                if (is_flac_frame_sync_at(file, block_end, file_size)) {
+                    if (first_declared_end < block_end) {
+                        *skip_start = first_declared_end;
+                        *skip_end = block_end;
+                        found = true;
+                    }
+                    break;
+                }
+
+                uint8_t next_type = 0;
+                uint32_t next_length = 0;
+                if (!read_plausible_flac_metadata_header(
+                        file, block_end, file_size,
+                        nullptr, &next_type, &next_length)) {
+                    break;
+                }
+                LOGI(
+                    "FLAC_COMPAT orphan metadata after declared-last: path=%s "
+                    "declaredEnd=%lld nextType=%u nextLen=%u",
+                    path,
+                    (long long)block_end,
+                    (unsigned int)next_type,
+                    (unsigned int)next_length);
+            }
+            position = block_end;
+        }
+    } while (false);
+
+    fclose(file);
+    return found && *skip_end > *skip_start;
+}
+
+static int flac_orphan_read_packet(void *opaque, uint8_t *buffer, int buffer_size) {
+    FlacOrphanMetadataIo *io = (FlacOrphanMetadataIo *)opaque;
+    if (!io || !io->file || !buffer || buffer_size <= 0) return AVERROR(EINVAL);
+
+    const int64_t skip_length = io->skip_end - io->skip_start;
+    const int64_t virtual_size = io->physical_size - skip_length;
+    if (io->virtual_position >= virtual_size) return AVERROR_EOF;
+
+    int total = 0;
+    while (total < buffer_size && io->virtual_position < virtual_size) {
+        const bool before_skip = io->virtual_position < io->skip_start;
+        const int64_t physical_position = before_skip
+            ? io->virtual_position
+            : io->virtual_position + skip_length;
+        int64_t available = before_skip
+            ? io->skip_start - io->virtual_position
+            : virtual_size - io->virtual_position;
+        if (available <= 0) continue;
+
+        const int chunk = (int)std::min<int64_t>(buffer_size - total, available);
+        if (fseeko(io->file, (off_t)physical_position, SEEK_SET) != 0) {
+            return total > 0 ? total : AVERROR(EIO);
+        }
+        const size_t read = fread(buffer + total, 1, (size_t)chunk, io->file);
+        if (read == 0) break;
+        total += (int)read;
+        io->virtual_position += (int64_t)read;
+        if ((int)read < chunk) break;
+    }
+    return total > 0 ? total : AVERROR_EOF;
+}
+
+static int64_t flac_orphan_seek(void *opaque, int64_t offset, int whence) {
+    FlacOrphanMetadataIo *io = (FlacOrphanMetadataIo *)opaque;
+    if (!io) return AVERROR(EINVAL);
+    const int64_t virtual_size = io->physical_size - (io->skip_end - io->skip_start);
+    if (whence == AVSEEK_SIZE) return virtual_size;
+
+    const int origin = whence & ~AVSEEK_FORCE;
+    int64_t target = 0;
+    switch (origin) {
+        case SEEK_SET: target = offset; break;
+        case SEEK_CUR: target = io->virtual_position + offset; break;
+        case SEEK_END: target = virtual_size + offset; break;
+        default: return AVERROR(EINVAL);
+    }
+    if (target < 0 || target > virtual_size) return AVERROR(EINVAL);
+    io->virtual_position = target;
+    return target;
+}
+
 struct StreamDecoder {
     AVFormatContext *fmt_ctx;
+    AVIOContext *flac_repair_avio;
+    FlacOrphanMetadataIo *flac_repair_io;
     AVCodecContext *codec_ctx;
     SwrContext *swr_ctx;
     int audio_stream_idx;
@@ -1159,11 +1493,141 @@ struct StreamDecoder {
     bool raw_dsd_planar;
     int raw_dsd_bytes_per_channel_frame;
 
+    // DSD source fallback for PCM-only output devices. Trimmed FFmpeg builds do
+    // not necessarily include the DSD decoder, so decimate demuxed DSD bytes to
+    // PCM here instead of failing the whole track.
+    bool raw_dsd_to_pcm;
+    int dsd_pcm_decimation;
+    int dsd_pcm_phase;
+    int dsd_pcm_taps;
+    int dsd_pcm_history_pos;
+    float *dsd_pcm_coeffs;
+    float *dsd_pcm_history;
+
     // State
     bool eof_reached;
     bool flushed_decoder;
     bool flushed_swr;
 };
+
+static void release_flac_repair_io(StreamDecoder *sd) {
+    if (!sd) return;
+    if (sd->flac_repair_avio) {
+        if (sd->flac_repair_avio->buffer) {
+            av_freep(&sd->flac_repair_avio->buffer);
+        }
+        avio_context_free(&sd->flac_repair_avio);
+    }
+    if (sd->flac_repair_io) {
+        if (sd->flac_repair_io->file) fclose(sd->flac_repair_io->file);
+        free(sd->flac_repair_io);
+        sd->flac_repair_io = nullptr;
+    }
+}
+
+static bool prepare_flac_repair_input(StreamDecoder *sd, const char *path) {
+    if (!sd || !path) return false;
+    int64_t skip_start = 0;
+    int64_t skip_end = 0;
+    if (!detect_flac_orphan_metadata_range(path, &skip_start, &skip_end)) return false;
+
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+    if (fseeko(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return false;
+    }
+    const int64_t physical_size = (int64_t)ftello(file);
+    if (physical_size <= skip_end || fseeko(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return false;
+    }
+
+    FlacOrphanMetadataIo *io =
+        (FlacOrphanMetadataIo *)calloc(1, sizeof(FlacOrphanMetadataIo));
+    uint8_t *buffer = (uint8_t *)av_malloc(64 * 1024);
+    AVFormatContext *format = avformat_alloc_context();
+    if (!io || !buffer || !format) {
+        if (format) avformat_free_context(format);
+        if (buffer) av_free(buffer);
+        if (io) free(io);
+        fclose(file);
+        return false;
+    }
+
+    io->file = file;
+    io->physical_size = physical_size;
+    io->skip_start = skip_start;
+    io->skip_end = skip_end;
+    io->virtual_position = 0;
+
+    AVIOContext *avio = avio_alloc_context(
+        buffer,
+        64 * 1024,
+        0,
+        io,
+        flac_orphan_read_packet,
+        nullptr,
+        flac_orphan_seek);
+    if (!avio) {
+        avformat_free_context(format);
+        av_free(buffer);
+        fclose(file);
+        free(io);
+        return false;
+    }
+
+    format->pb = avio;
+    format->flags |= AVFMT_FLAG_CUSTOM_IO;
+    sd->fmt_ctx = format;
+    sd->flac_repair_avio = avio;
+    sd->flac_repair_io = io;
+    LOGI(
+        "FLAC_COMPAT virtual input enabled path=%s skip=[%lld,%lld) bytes=%lld",
+        path,
+        (long long)skip_start,
+        (long long)skip_end,
+        (long long)(skip_end - skip_start));
+    return true;
+}
+
+
+struct StreamDecoderSession {
+    std::mutex mutex;
+    StreamDecoder* decoder;
+
+    explicit StreamDecoderSession(StreamDecoder* value) : decoder(value) {}
+};
+
+static std::mutex g_stream_decoder_registry_mutex;
+static std::unordered_map<jlong, std::shared_ptr<StreamDecoderSession>> g_stream_decoder_registry;
+static std::atomic<jlong> g_next_stream_decoder_handle{1};
+
+static jlong registerStreamDecoder(StreamDecoder* decoder) {
+    if (!decoder) return 0;
+    const jlong handle = g_next_stream_decoder_handle.fetch_add(1, std::memory_order_relaxed);
+    auto session = std::make_shared<StreamDecoderSession>(decoder);
+    std::lock_guard<std::mutex> lock(g_stream_decoder_registry_mutex);
+    g_stream_decoder_registry.emplace(handle, std::move(session));
+    return handle;
+}
+
+static std::shared_ptr<StreamDecoderSession> acquireStreamDecoderSession(jlong handle) {
+    if (handle == 0) return nullptr;
+    std::lock_guard<std::mutex> lock(g_stream_decoder_registry_mutex);
+    auto it = g_stream_decoder_registry.find(handle);
+    return it == g_stream_decoder_registry.end() ? nullptr : it->second;
+}
+
+static std::shared_ptr<StreamDecoderSession> detachStreamDecoderSession(jlong handle) {
+    if (handle == 0) return nullptr;
+    std::lock_guard<std::mutex> lock(g_stream_decoder_registry_mutex);
+    auto it = g_stream_decoder_registry.find(handle);
+    if (it == g_stream_decoder_registry.end()) return nullptr;
+    auto session = it->second;
+    g_stream_decoder_registry.erase(it);
+    return session;
+}
 
 static int streamCopyResidual(StreamDecoder* sd, uint8_t* out_buf, int out_max_bytes, int* bytes_written) {
     if (!sd || !out_buf || !bytes_written) return 0;
@@ -1235,12 +1699,16 @@ static StreamDecoder* stream_decoder_open(
     const char *path,
     int target_sample_rate,
     int bits_per_sample,
-    int channels
+    int channels,
+    const char *headers_block,
+    const char *user_agent
 ) {
     StreamDecoder *sd = (StreamDecoder *)calloc(1, sizeof(StreamDecoder));
     if (!sd) return nullptr;
 
     sd->fmt_ctx = nullptr;
+    sd->flac_repair_avio = nullptr;
+    sd->flac_repair_io = nullptr;
     sd->codec_ctx = nullptr;
     sd->swr_ctx = nullptr;
     sd->pkt = nullptr;
@@ -1256,21 +1724,84 @@ static StreamDecoder* stream_decoder_open(
     sd->raw_dsd_lsbf = false;
     sd->raw_dsd_planar = false;
     sd->raw_dsd_bytes_per_channel_frame = 0;
+    sd->raw_dsd_to_pcm = false;
+    sd->dsd_pcm_decimation = 0;
+    sd->dsd_pcm_phase = 0;
+    sd->dsd_pcm_taps = 0;
+    sd->dsd_pcm_history_pos = 0;
+    sd->dsd_pcm_coeffs = nullptr;
+    sd->dsd_pcm_history = nullptr;
 
-    if (avformat_open_input(&sd->fmt_ctx, path, nullptr, nullptr) < 0) {
-        LOGE("stream_decoder_open: Could not open input: %s", path);
+    AVDictionary *openOptions = nullptr;
+    const bool remoteInput = path &&
+        (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0);
+    if (remoteInput) {
+        if (headers_block && headers_block[0] != '\0') {
+            av_dict_set(&openOptions, "headers", headers_block, 0);
+        }
+        if (user_agent && user_agent[0] != '\0') {
+            av_dict_set(&openOptions, "user_agent", user_agent, 0);
+        }
+        // FFmpeg's HTTP protocol reconnects the decoded stream without involving a
+        // background Java MediaPlayer. This keeps online PCM inside the DSP/USB path.
+        av_dict_set(&openOptions, "reconnect", "1", 0);
+        av_dict_set(&openOptions, "reconnect_streamed", "1", 0);
+        av_dict_set(&openOptions, "reconnect_delay_max", "5", 0);
+        av_dict_set(&openOptions, "rw_timeout", "15000000", 0);
+    }
+    const std::string safeUrl = online_safe_url(path);
+    if (remoteInput) {
+        LOGI("ONLINE_PIPE NATIVE_DECODER_OPEN_START url=%s target=%dHz/%dbit/%dch headers=%d ua=%d",
+             safeUrl.c_str(), target_sample_rate, bits_per_sample, channels,
+             online_header_line_count(headers_block), user_agent && user_agent[0] != '\0');
+    }
+    const bool repairedFlacInput = !remoteInput && prepare_flac_repair_input(sd, path);
+    const int openResult = avformat_open_input(&sd->fmt_ctx, path, nullptr, &openOptions);
+    av_dict_free(&openOptions);
+    if (openResult < 0) {
+        char errorText[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(openResult, errorText, sizeof(errorText));
+        LOGE("stream_decoder_open: Could not open input: %s error=%d (%s)",
+             safeUrl.c_str(), openResult, errorText);
+        if (remoteInput) {
+            LOGE("ONLINE_PIPE NATIVE_DECODER_OPEN_FAIL url=%s error=%d (%s)",
+                 safeUrl.c_str(), openResult, errorText);
+        }
+        if (sd->fmt_ctx) avformat_close_input(&sd->fmt_ctx);
+        release_flac_repair_io(sd);
         free(sd);
         return nullptr;
+    }
+    if (repairedFlacInput) {
+        LOGI("FLAC_COMPAT virtual input opened path=%s format=%s streams=%u",
+             path,
+             (sd->fmt_ctx && sd->fmt_ctx->iformat && sd->fmt_ctx->iformat->name)
+                 ? sd->fmt_ctx->iformat->name : "-",
+             sd->fmt_ctx ? sd->fmt_ctx->nb_streams : 0);
+    }
+    if (remoteInput) {
+        LOGI("ONLINE_PIPE NATIVE_DECODER_INPUT_OK url=%s format=%s streams=%u",
+             safeUrl.c_str(),
+             (sd->fmt_ctx && sd->fmt_ctx->iformat && sd->fmt_ctx->iformat->name)
+                 ? sd->fmt_ctx->iformat->name : "-",
+             sd->fmt_ctx ? sd->fmt_ctx->nb_streams : 0);
     }
 
     if (avformat_find_stream_info(sd->fmt_ctx, nullptr) < 0) {
         LOGE("stream_decoder_open: Could not find stream info");
+        if (remoteInput) {
+            LOGE("ONLINE_PIPE NATIVE_STREAM_INFO_FAIL url=%s", safeUrl.c_str());
+        }
         goto fail;
     }
 
     sd->audio_stream_idx = find_audio_stream(sd->fmt_ctx);
     if (sd->audio_stream_idx < 0) {
         LOGE("stream_decoder_open: No audio stream found");
+        if (remoteInput) {
+            LOGE("ONLINE_PIPE NATIVE_NO_AUDIO_STREAM url=%s streams=%u",
+                 safeUrl.c_str(), sd->fmt_ctx ? sd->fmt_ctx->nb_streams : 0);
+        }
         goto fail;
     }
 
@@ -1330,6 +1861,90 @@ static StreamDecoder* stream_decoder_open(
                  sd->out_channels,
                  avcodec_get_name(codecpar->codec_id));
             return sd;
+        }
+
+        // Prefer FFmpeg's production DSD decoder whenever it is available. The
+        // lightweight bit-domain decimator below is only an emergency fallback
+        // for custom builds that omit DSD decoders; using it in normal builds
+        // leaks too much shaped ultrasonic noise into low-rate PCM output.
+        if (is_dsd_codec(codecpar->codec_id) &&
+            avcodec_find_decoder(codecpar->codec_id) == nullptr) {
+            const int codecRate = codecpar->sample_rate > 0 ? codecpar->sample_rate : 352800;
+            const int sourceDsdRate = codecRate >= 2822400 ? codecRate : codecRate * 8;
+            const int requestedPcmRate = target_sample_rate > 0 ? target_sample_rate : 176400;
+            sd->raw_dsd_to_pcm = true;
+            sd->raw_dsd_lsbf =
+                codecpar->codec_id == AV_CODEC_ID_DSD_LSBF ||
+                codecpar->codec_id == AV_CODEC_ID_DSD_LSBF_PLANAR;
+            sd->raw_dsd_planar =
+                codecpar->codec_id == AV_CODEC_ID_DSD_LSBF_PLANAR ||
+                codecpar->codec_id == AV_CODEC_ID_DSD_MSBF_PLANAR;
+            sd->src_sample_rate = sourceDsdRate;
+            sd->src_channels = codecpar->channels > 0 ? codecpar->channels : (channels > 0 ? channels : 2);
+            sd->duration_us = (sd->fmt_ctx->duration == AV_NOPTS_VALUE || sd->fmt_ctx->duration < 0)
+                ? 0 : sd->fmt_ctx->duration;
+            sd->out_sample_rate = requestedPcmRate;
+            sd->out_channels = channels > 0 ? channels : sd->src_channels;
+            sd->out_bits = normalize_bits_per_sample(bits_per_sample);
+            sd->out_bytes_per_sample = sd->out_bits == 16 ? 2 : 4;
+            sd->file_bytes_per_sample = bytes_per_sample_for_bits(sd->out_bits);
+            sd->out_fmt = swr_output_format_for_bits(sd->out_bits);
+            sd->dsd_pcm_decimation = std::max(1, (int)llround(
+                (double)sourceDsdRate / (double)sd->out_sample_rate));
+            sd->dsd_pcm_taps = 63;
+            sd->dsd_pcm_coeffs = (float *)av_mallocz(sizeof(float) * sd->dsd_pcm_taps);
+            sd->dsd_pcm_history = (float *)av_mallocz(
+                sizeof(float) * sd->dsd_pcm_taps * sd->src_channels);
+            if (!sd->dsd_pcm_coeffs || !sd->dsd_pcm_history) {
+                LOGE("stream_decoder_open: Could not allocate DSD-to-PCM FIR state");
+                goto fail;
+            }
+
+            // Windowed-sinc low-pass before decimation. Keep the cutoff below
+            // the audible/noise-shaping band while retaining normal music bandwidth.
+            const double cutoffHz = std::min(40000.0, sd->out_sample_rate * 0.42);
+            const double fc = cutoffHz / (double)sourceDsdRate;
+            const int middle = (sd->dsd_pcm_taps - 1) / 2;
+            double coeffSum = 0.0;
+            for (int i = 0; i < sd->dsd_pcm_taps; ++i) {
+                const int x = i - middle;
+                const double sinc = x == 0
+                    ? 2.0 * fc
+                    : sin(2.0 * M_PI * fc * x) / (M_PI * x);
+                const double window = 0.42
+                    - 0.5 * cos(2.0 * M_PI * i / (sd->dsd_pcm_taps - 1))
+                    + 0.08 * cos(4.0 * M_PI * i / (sd->dsd_pcm_taps - 1));
+                sd->dsd_pcm_coeffs[i] = (float)(sinc * window);
+                coeffSum += sd->dsd_pcm_coeffs[i];
+            }
+            if (fabs(coeffSum) > 1e-12) {
+                for (int i = 0; i < sd->dsd_pcm_taps; ++i) {
+                    sd->dsd_pcm_coeffs[i] = (float)(sd->dsd_pcm_coeffs[i] / coeffSum);
+                }
+            }
+
+            sd->residual_buf_capacity = sd->out_sample_rate * sd->out_channels * sd->out_bytes_per_sample;
+            sd->residual_buf = (uint8_t *)av_malloc(sd->residual_buf_capacity);
+            sd->pkt = av_packet_alloc();
+            if (!sd->residual_buf || !sd->pkt) {
+                LOGE("stream_decoder_open: Could not allocate DSD-to-PCM buffers");
+                goto fail;
+            }
+            sd->residual_buf_size = 0;
+            sd->residual_buf_pos = 0;
+            sd->eof_reached = false;
+            sd->flushed_decoder = false;
+            sd->flushed_swr = true;
+            LOGI("stream_decoder_open: DSD-to-PCM fallback %s dsdRate=%d pcmRate=%d decimation=%d ch=%d bits=%d",
+                 path, sourceDsdRate, sd->out_sample_rate, sd->dsd_pcm_decimation,
+                 sd->out_channels, sd->out_bits);
+            return sd;
+        }
+
+        if (is_dsd_codec(codecpar->codec_id)) {
+            LOGI("stream_decoder_open: using FFmpeg DSD decoder for PCM output codec=%s target=%dHz/%dbit/%dch",
+                 avcodec_get_name(codecpar->codec_id), target_sample_rate,
+                 bits_per_sample, channels);
         }
 
         const AVCodec *codec = avcodec_find_decoder(codecpar->codec_id);
@@ -1433,10 +2048,20 @@ static StreamDecoder* stream_decoder_open(
         sd->flushed_swr = false;
 
         LOGI("stream_decoder_open: OK, %s -> %dHz %dch %dbit, duration=%lldus%s%s",
-             path, sd->out_sample_rate, sd->out_channels, sd->out_bits,
+             safeUrl.c_str(), sd->out_sample_rate, sd->out_channels, sd->out_bits,
              (long long)sd->duration_us,
              sd->raw_pcm_passthrough ? ", rawFallback=" : "",
              sd->raw_pcm_passthrough ? sd->raw_pcm_name : "");
+        if (remoteInput) {
+            const AVCodecParameters *openedCodec =
+                sd->fmt_ctx->streams[sd->audio_stream_idx]->codecpar;
+            LOGI("ONLINE_PIPE NATIVE_DECODER_OPEN_OK url=%s codec=%s source=%dHz/%dch output=%dHz/%dbit/%dch durationUs=%lld",
+                 safeUrl.c_str(),
+                 openedCodec ? avcodec_get_name(openedCodec->codec_id) : "-",
+                 sd->src_sample_rate, sd->src_channels,
+                 sd->out_sample_rate, sd->out_bits, sd->out_channels,
+                 (long long)sd->duration_us);
+        }
         return sd;
     }
 
@@ -1444,11 +2069,67 @@ fail:
     if (sd->pkt) av_packet_free(&sd->pkt);
     if (sd->frame) av_frame_free(&sd->frame);
     if (sd->residual_buf) av_free(sd->residual_buf);
+    if (sd->dsd_pcm_coeffs) av_free(sd->dsd_pcm_coeffs);
+    if (sd->dsd_pcm_history) av_free(sd->dsd_pcm_history);
     if (sd->swr_ctx) swr_free(&sd->swr_ctx);
     if (sd->codec_ctx) avcodec_free_context(&sd->codec_ctx);
     if (sd->fmt_ctx) avformat_close_input(&sd->fmt_ctx);
+    release_flac_repair_io(sd);
     free(sd);
     return nullptr;
+}
+
+static int convertRawDsdPacketToPcm(StreamDecoder *sd, const AVPacket *pkt) {
+    if (!sd || !pkt || !pkt->data || pkt->size <= 0 || !sd->raw_dsd_to_pcm) return 0;
+    const int sourceChannels = std::max(1, sd->src_channels);
+    const int bytesPerChannel = pkt->size / sourceChannels;
+    if (bytesPerChannel <= 0) return 0;
+    const int maxFrames = (bytesPerChannel * 8 + sd->dsd_pcm_phase) /
+        std::max(1, sd->dsd_pcm_decimation) + 2;
+    const int required = maxFrames * sd->out_channels * sd->out_bytes_per_sample;
+    if (!streamEnsureResidualCapacity(sd, required)) return -1;
+
+    int outputFrames = 0;
+    for (int byteIndex = 0; byteIndex < bytesPerChannel; ++byteIndex) {
+        for (int bitIndex = 0; bitIndex < 8; ++bitIndex) {
+            for (int ch = 0; ch < sourceChannels; ++ch) {
+                const int sourceIndex = sd->raw_dsd_planar
+                    ? ch * bytesPerChannel + byteIndex
+                    : byteIndex * sourceChannels + ch;
+                if (sourceIndex >= pkt->size) continue;
+                const int shift = sd->raw_dsd_lsbf ? bitIndex : (7 - bitIndex);
+                const float value = ((pkt->data[sourceIndex] >> shift) & 1u) ? 1.0f : -1.0f;
+                sd->dsd_pcm_history[ch * sd->dsd_pcm_taps + sd->dsd_pcm_history_pos] = value;
+            }
+
+            sd->dsd_pcm_history_pos = (sd->dsd_pcm_history_pos + 1) % sd->dsd_pcm_taps;
+            if (++sd->dsd_pcm_phase < sd->dsd_pcm_decimation) continue;
+            sd->dsd_pcm_phase = 0;
+
+            for (int outCh = 0; outCh < sd->out_channels; ++outCh) {
+                const int sourceCh = std::min(outCh, sourceChannels - 1);
+                double sample = 0.0;
+                int historyIndex = sd->dsd_pcm_history_pos - 1;
+                if (historyIndex < 0) historyIndex += sd->dsd_pcm_taps;
+                for (int tap = 0; tap < sd->dsd_pcm_taps; ++tap) {
+                    sample += sd->dsd_pcm_history[sourceCh * sd->dsd_pcm_taps + historyIndex] *
+                        sd->dsd_pcm_coeffs[tap];
+                    if (--historyIndex < 0) historyIndex += sd->dsd_pcm_taps;
+                }
+                sample = std::max(-1.0, std::min(1.0, sample * 0.90));
+                const int outputIndex = outputFrames * sd->out_channels + outCh;
+                if (sd->out_bits == 16) {
+                    reinterpret_cast<int16_t *>(sd->residual_buf)[outputIndex] =
+                        (int16_t)llround(sample * 32767.0);
+                } else {
+                    reinterpret_cast<int32_t *>(sd->residual_buf)[outputIndex] =
+                        (int32_t)llround(sample * 2147483647.0);
+                }
+            }
+            ++outputFrames;
+        }
+    }
+    return outputFrames * sd->out_channels * sd->out_bytes_per_sample;
 }
 
 /**
@@ -1488,6 +2169,32 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
             }
 
             sd->residual_buf_size = normalizedBytes;
+            sd->residual_buf_pos = 0;
+            streamCopyResidual(sd, out_buf, out_max_bytes, &bytes_written);
+        }
+        return bytes_written > 0 ? bytes_written : -1;
+    }
+
+    if (sd->raw_dsd_to_pcm) {
+        while (bytes_written < out_max_bytes && !sd->eof_reached) {
+            const int ret = av_read_frame(sd->fmt_ctx, sd->pkt);
+            if (ret < 0) {
+                sd->eof_reached = true;
+                break;
+            }
+            if (sd->pkt->stream_index != sd->audio_stream_idx) {
+                av_packet_unref(sd->pkt);
+                continue;
+            }
+            const int pcmBytes = convertRawDsdPacketToPcm(sd, sd->pkt);
+            av_packet_unref(sd->pkt);
+            if (pcmBytes < 0) {
+                LOGE("stream_decoder_read: DSD-to-PCM conversion failed");
+                sd->eof_reached = true;
+                break;
+            }
+            if (pcmBytes == 0) continue;
+            sd->residual_buf_size = pcmBytes;
             sd->residual_buf_pos = 0;
             streamCopyResidual(sd, out_buf, out_max_bytes, &bytes_written);
         }
@@ -1677,6 +2384,15 @@ static bool stream_decoder_seek(StreamDecoder *sd, int64_t position_us) {
     sd->eof_reached = false;
     sd->flushed_decoder = false;
     sd->flushed_swr = false;
+    if (sd->raw_dsd_to_pcm) {
+        sd->dsd_pcm_phase = 0;
+        sd->dsd_pcm_history_pos = 0;
+        if (sd->dsd_pcm_history) {
+            memset(sd->dsd_pcm_history, 0,
+                   sizeof(float) * sd->dsd_pcm_taps * sd->src_channels);
+        }
+        sd->flushed_swr = true;
+    }
     if (sd->codec_ctx) {
         avcodec_flush_buffers(sd->codec_ctx);
     }
@@ -1696,9 +2412,12 @@ static void stream_decoder_close(StreamDecoder *sd) {
     if (sd->pkt) av_packet_free(&sd->pkt);
     if (sd->frame) av_frame_free(&sd->frame);
     if (sd->residual_buf) av_free(sd->residual_buf);
+    if (sd->dsd_pcm_coeffs) av_free(sd->dsd_pcm_coeffs);
+    if (sd->dsd_pcm_history) av_free(sd->dsd_pcm_history);
     if (sd->swr_ctx) swr_free(&sd->swr_ctx);
     if (sd->codec_ctx) avcodec_free_context(&sd->codec_ctx);
     if (sd->fmt_ctx) avformat_close_input(&sd->fmt_ctx);
+    release_flac_repair_io(sd);
     free(sd);
 }
 
@@ -1706,80 +2425,115 @@ static void stream_decoder_close(StreamDecoder *sd) {
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoder(
-    JNIEnv *env, jobject, jstring path, jint targetRate, jint targetBits, jint channels) {
+    JNIEnv *env,
+    jobject,
+    jstring path,
+    jint targetRate,
+    jint targetBits,
+    jint channels,
+    jstring headersBlock,
+    jstring userAgent) {
     const char *p = env->GetStringUTFChars(path, nullptr);
-    StreamDecoder *sd = stream_decoder_open(p, targetRate, targetBits, channels);
+    const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
+    const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
+    StreamDecoder *sd = stream_decoder_open(
+        p,
+        targetRate,
+        targetBits,
+        channels,
+        headers,
+        agent);
+    if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+    if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
     env->ReleaseStringUTFChars(path, p);
-    return static_cast<jlong>(reinterpret_cast<uintptr_t>(sd));
+    return registerStreamDecoder(sd);
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeDecodeChunk(
     JNIEnv *env, jobject, jlong handle, jbyteArray buffer, jint offset, jint maxBytes) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (!sd) return -2;
+    auto session = acquireStreamDecoderSession(handle);
+    if (!session) return -2;
 
-    // Get direct pointer to Java byte array
     jbyte *buf = env->GetByteArrayElements(buffer, nullptr);
     if (!buf) return -2;
 
-    int ret = stream_decoder_read(sd, (uint8_t *)(buf + offset), maxBytes);
+    int ret = -2;
+    {
+        std::lock_guard<std::mutex> lock(session->mutex);
+        if (session->decoder) {
+            ret = stream_decoder_read(session->decoder, reinterpret_cast<uint8_t *>(buf + offset), maxBytes);
+        }
+    }
 
-    // Release without copying back (JNI_ABORT) since we wrote to it
     env->ReleaseByteArrayElements(buffer, buf, 0);
     return ret;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeSeekDecoder(
-    JNIEnv *env, jobject, jlong handle, jlong positionMs) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (!sd) return JNI_FALSE;
-    int64_t position_us = positionMs * 1000;
-    return stream_decoder_seek(sd, position_us) ? JNI_TRUE : JNI_FALSE;
+    JNIEnv *, jobject, jlong handle, jlong positionMs) {
+    auto session = acquireStreamDecoderSession(handle);
+    if (!session) return JNI_FALSE;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (!session->decoder) return JNI_FALSE;
+    return stream_decoder_seek(session->decoder, positionMs * 1000) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderSampleRate(
     JNIEnv *, jobject, jlong handle) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (!sd) return 0;
-    return sd->out_sample_rate;
+    auto session = acquireStreamDecoderSession(handle);
+    if (!session) return 0;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    return session->decoder ? session->decoder->out_sample_rate : 0;
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderChannels(
     JNIEnv *, jobject, jlong handle) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (!sd) return 0;
-    return sd->out_channels;
+    auto session = acquireStreamDecoderSession(handle);
+    if (!session) return 0;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    return session->decoder ? session->decoder->out_channels : 0;
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderBitsPerSample(
     JNIEnv *, jobject, jlong handle) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (!sd) return 0;
-    return sd->out_bits;
+    auto session = acquireStreamDecoderSession(handle);
+    if (!session) return 0;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    return session->decoder ? session->decoder->out_bits : 0;
 }
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderDuration(
     JNIEnv *, jobject, jlong handle) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (!sd) return 0;
-    return sd->duration_us / 1000; // microseconds to milliseconds
+    auto session = acquireStreamDecoderSession(handle);
+    if (!session) return 0;
+    std::lock_guard<std::mutex> lock(session->mutex);
+    return session->decoder ? session->decoder->duration_us / 1000 : 0;
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeCloseDecoder(
     JNIEnv *, jobject, jlong handle) {
-    StreamDecoder *sd = reinterpret_cast<StreamDecoder *>(handle);
-    if (sd) {
-        stream_decoder_close(sd);
-        LOGI("stream_decoder closed");
+    auto session = detachStreamDecoderSession(handle);
+    if (!session) return;
+
+    StreamDecoder* decoder = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(session->mutex);
+        decoder = session->decoder;
+        session->decoder = nullptr;
+        if (decoder) {
+            stream_decoder_close(decoder);
+        }
     }
+    LOGI("stream_decoder closed handle=%lld", static_cast<long long>(handle));
 }
+
 
 
 static bool is_lossy_audio_codec(enum AVCodecID codec_id) {
@@ -2098,7 +2852,37 @@ static int writeFlacMetadata(const char *filePath, const char *tmpPath,
         }
 
         metadataEnd = blockDataEnd;
-        if (isLast) break;
+        if (isLast) {
+            const bool nextIsAudioFrame =
+                blockDataEnd + 2 <= (size_t)fileSize &&
+                data[blockDataEnd] == 0xFF &&
+                (data[blockDataEnd + 1] & 0xFE) == 0xF8;
+            if (nextIsAudioFrame) break;
+
+            // Recovery for files with another metadata chain after a block that
+            // was already marked as the last block. Do not treat that orphan
+            // PICTURE/PADDING chain as audio; absorb it into the metadata region,
+            // clear all intermediate last flags below, and emit one valid chain.
+            bool hasOrphanMetadata = false;
+            uint8_t nextType = 0;
+            uint32_t nextLen = 0;
+            if (blockDataEnd + 4 <= (size_t)fileSize) {
+                nextType = data[blockDataEnd] & 0x7F;
+                nextLen = read_be24(data + blockDataEnd + 1);
+                const size_t nextEnd = blockDataEnd + 4 + (size_t)nextLen;
+                hasOrphanMetadata = nextType <= 6 &&
+                    nextEnd >= blockDataEnd &&
+                    nextEnd <= (size_t)fileSize;
+            }
+            if (!hasOrphanMetadata) break;
+
+            LOGI(
+                "writeFlac: recovering orphan metadata after declared-last at %zu "
+                "nextType=%u nextLen=%u",
+                blockDataEnd,
+                (unsigned int)nextType,
+                (unsigned int)nextLen);
+        }
         pos = blockDataEnd;
     }
 
@@ -2261,6 +3045,22 @@ static int writeFlacMetadata(const char *filePath, const char *tmpPath,
  * Preserves all audio streams and existing data; only updates metadata tags.
  * Returns 0 on success, negative on error.
  */
+static const char *metadataMuxerForPath(const char *path) {
+    if (!path) return nullptr;
+    const char *dot = std::strrchr(path, '.');
+    if (!dot) return nullptr;
+    std::string ext(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    if (ext == "aac") return "adts";
+    if (ext == "m4a" || ext == "m4b" || ext == "m4p") return "ipod";
+    if (ext == "mp3" || ext == "mp2" || ext == "mpga") return "mp3";
+    if (ext == "wma" || ext == "asf") return "asf";
+    if (ext == "aif" || ext == "aiff") return "aiff";
+    return nullptr;
+}
+
 static int writeMetadataGeneric(const char *inputPath, const char *tmpPath,
                                  const char **keys, const char **values, int tagCount) {
     AVFormatContext *ifmt_ctx = nullptr;
@@ -2281,10 +3081,12 @@ static int writeMetadataGeneric(const char *inputPath, const char *tmpPath,
         return -31;
     }
 
-    // Create output context (guess format from tmpPath extension)
-    ret = avformat_alloc_output_context2(&ofmt_ctx, nullptr, nullptr, tmpPath);
+    // Raw ADTS and several audio-only extensions need an explicit muxer name.
+    const char *muxerName = metadataMuxerForPath(tmpPath);
+    ret = avformat_alloc_output_context2(&ofmt_ctx, nullptr, muxerName, tmpPath);
     if (ret < 0 || !ofmt_ctx) {
-        LOGE("writeMetaGeneric: avformat_alloc_output_context2 failed: %d", ret);
+        LOGE("writeMetaGeneric: avformat_alloc_output_context2 failed: %d muxer=%s",
+             ret, muxerName ? muxerName : "auto");
         avformat_close_input(&ifmt_ctx);
         return -32;
     }
@@ -2330,6 +3132,11 @@ static int writeMetadataGeneric(const char *inputPath, const char *tmpPath,
             LOGE("writeMetaGeneric: avio_open failed: %d", ret);
             goto cleanup;
         }
+    }
+
+    if (muxerName && std::strcmp(muxerName, "adts") == 0 && ofmt_ctx->priv_data) {
+        // ADTS stores global metadata in a leading ID3v2 tag rather than a container table.
+        av_opt_set(ofmt_ctx->priv_data, "write_id3v2", "1", 0);
     }
 
     // Write header

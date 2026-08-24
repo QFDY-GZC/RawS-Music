@@ -3,6 +3,7 @@ package com.rawsmusic.module.player
 import android.content.Context
 import android.os.ParcelFileDescriptor
 import com.rawsmusic.core.common.utils.AppLogger
+import java.io.File
 
 /**
  * Owns SAF ParcelFileDescriptors used to feed content:// URIs into FFmpeg.
@@ -17,10 +18,25 @@ internal class DecoderPathResolver(
     private val tag: String
 ) {
     private val activePfds = ArrayList<ParcelFileDescriptor>()
+    private val flacCompatibilityCache = FlacPlaybackCompatibilityCache(
+        cacheDirectory = File(context.cacheDir, "flac_playback_compat"),
+        tag = tag,
+    )
 
     @Synchronized
     fun resolve(path: String): String {
-        if (!path.startsWith("content://")) return path
+        val resolvedPath = if (path.startsWith("content://")) {
+            resolveContentUri(path)
+        } else {
+            path
+        }
+        return flacCompatibilityCache.resolve(
+            sourcePath = resolvedPath,
+            sourceIdentity = path,
+        )
+    }
+
+    private fun resolveContentUri(path: String): String {
         return try {
             val uri = android.net.Uri.parse(path)
             val pfd = context.contentResolver.openFileDescriptor(uri, "r") ?: return path

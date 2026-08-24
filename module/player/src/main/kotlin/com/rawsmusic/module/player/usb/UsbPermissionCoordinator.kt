@@ -8,11 +8,12 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
 /**
- * Owns Android USB permission orchestration without opening a device.
+ * Owns Android USB permission orchestration.
  *
- * Permission is an Android framework concern, so it intentionally remains in
- * Kotlin. Native is entered only after the manager receives the grant and a
- * real playback request reaches the transport owner.
+ * Permission is an Android framework concern, so it intentionally remains in Kotlin. The
+ * coordinator itself does not claim interfaces or enter native audio; after a fresh grant it
+ * invokes the manager hook on the serialized transport owner so the Java UsbDeviceConnection may
+ * be primed before a later playback cutover.
  */
 internal class UsbPermissionCoordinator(
     private val usbManager: UsbManager,

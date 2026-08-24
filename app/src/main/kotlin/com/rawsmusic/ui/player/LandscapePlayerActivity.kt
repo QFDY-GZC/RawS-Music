@@ -53,6 +53,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -81,11 +82,13 @@ import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.core.common.model.toLyriconSong
 import com.rawsmusic.core.ui.theme.RawSMusicTheme
 import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkTransition
+import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkMetadataTransition
 import com.rawsmusic.core.ui.widget.bitmaps.PlayerArtworkAnimationStyle
 import com.rawsmusic.core.ui.widget.bitmaps.PlayerArtworkDirection
 import com.rawsmusic.core.ui.widget.bitmaps.playbackArtworkSwipeGesture
 import com.rawsmusic.core.ui.widget.bitmaps.rememberPlaybackArtworkTransitionState
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
+import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackQueueBindingIndex
 import com.rawsmusic.core.ui.widget.player.ComposeLyricView
 import com.rawsmusic.core.ui.widget.player.FullCoverPage
 import com.rawsmusic.core.ui.widget.player.FullCoverPredictiveBackHandler
@@ -292,19 +295,48 @@ private fun LandscapePlayerScreen(
     onBack: () -> Unit
 ) {
     val currentSong by playerController.currentSong.collectAsState()
+    val requestedSongForUi by playerController.requestedSongForUi.collectAsState()
     val playState by playerController.playState.collectAsState()
     val positionMs by playerController.position.collectAsState()
     val durationMs by playerController.duration.collectAsState()
-    val queue by playerController.queue.collectAsState()
+    val queue by playerController.visibleQueue.collectAsState()
     val isPlaying = playState == PlayState.PLAYING
     val artworkKey = currentSong.resolvePlaybackArtworkKey()
+    val committedQueueIndex = resolvePlaybackQueueBindingIndex(
+        currentSong = currentSong,
+        queueSongs = queue.songs,
+        reportedIndex = queue.currentIndex,
+    )
     val artworkState = rememberPlaybackArtworkTransitionState(
         currentKey = artworkKey,
-        queueCurrentIndex = queue.currentIndex,
-        queueSize = queue.songs.size
+        queueCurrentIndex = committedQueueIndex,
+        queueSize = queue.songs.size,
+        automaticCrossfadeEnabled = AppPreferences.Player.automaticCrossfadeEnabled,
+        requestedManualKey = requestedSongForUi.resolvePlaybackArtworkKey(),
     )
     val artworkStyle = remember {
         PlayerArtworkAnimationStyle.from(AppPreferences.UI.playerArtworkAnimationStyle)
+    }
+    val previousNavigationArtworkKey = playerController
+        .previewPreviousSong(queue)
+        .resolvePlaybackArtworkKey()
+    val nextNavigationArtworkKey = playerController
+        .previewNextSong(queue)
+        .resolvePlaybackArtworkKey()
+    // Reference portrait/landscape share the same C0858/C0889 AA holders. Keep landscape on the
+    // same hot previous/current/next identities as the standard portrait player instead of
+    // constructing its neighbour for the first time after a drag has already started.
+    SideEffect {
+        artworkState.updateNavigationNeighbourKeys(
+            previousKey = previousNavigationArtworkKey,
+            nextKey = nextNavigationArtworkKey,
+        )
+    }
+    LaunchedEffect(previousNavigationArtworkKey, nextNavigationArtworkKey) {
+        artworkState.prefetchNavigationNeighbours(
+            previousKey = previousNavigationArtworkKey,
+            nextKey = nextNavigationArtworkKey,
+        )
     }
     val lyricSong by produceState<Song?>(initialValue = null, currentSong) {
         val song = currentSong
@@ -518,17 +550,33 @@ private fun LandscapePlayerScreen(
         gestureCommand: () -> AudioFile?
     ) {
         val gestureTargetKey = artworkState.pendingGestureTarget(direction)
+        val previewKey = artworkState.manualNavigationTargetKey(direction)
+        val previewIndex = previewKey?.takeIf { it.isNotBlank() }?.let { key ->
+            queue.songs.indexOfFirst { it.resolvePlaybackArtworkKey() == key }
+        } ?: -1
+
+        artworkState.armManualNavigation(
+            direction = direction,
+            expectedKey = previewKey,
+            expectedQueueIndex = previewIndex,
+        )
         val selectedSong = if (gestureTargetKey != null) gestureCommand() else command()
         val selectedKey = selectedSong.resolvePlaybackArtworkKey()
-        if (selectedSong != null && !selectedKey.isNullOrBlank()) {
-            artworkState.prepare(
-                direction = direction,
-                expectedKey = selectedKey,
-                expectedQueueIndex = songIndex(selectedSong)
-            )
-        } else {
-            artworkState.expectConfirmedNavigation(direction)
+        val selectedIndex = songIndex(selectedSong)
+
+        if (selectedKey.isNullOrBlank() || selectedKey == artworkState.foregroundCurrentKey()) {
+            artworkState.cancelManualNavigationExpectation()
+            return
         }
+        if (gestureTargetKey != null && selectedKey == gestureTargetKey) {
+            artworkState.confirmManualNavigationBinding(selectedKey, selectedIndex)
+            return
+        }
+        artworkState.confirmManualTransportDispatch(
+            direction = direction,
+            key = selectedKey,
+            queueIndex = selectedIndex,
+        )
     }
 
     fun previousFromPlayer() {
@@ -636,6 +684,7 @@ private fun LandscapePlayerScreen(
                 coverPath = artworkKey,
                 accent = Color.Transparent,
                 artworkTransitionState = artworkState,
+                motionEnabled = isPlaying,
                 modifier = Modifier.fillMaxSize(),
             )
             Box(
@@ -711,10 +760,8 @@ private fun LandscapePlayerScreen(
                                         }
                                         .playbackArtworkSwipeGesture(
                                             state = artworkState,
-                                            previousKey = playerController.previewPreviousSong()
-                                                .resolvePlaybackArtworkKey(),
-                                            nextKey = playerController.previewNextSong()
-                                                .resolvePlaybackArtworkKey(),
+                                            previousKey = previousNavigationArtworkKey,
+                                            nextKey = nextNavigationArtworkKey,
                                             onLongPress = ::openFullscreenCarousel,
                                             onPrevious = ::previousFromPlayer,
                                             onNext = ::nextFromPlayer,
@@ -722,15 +769,30 @@ private fun LandscapePlayerScreen(
                                 )
                             }
                             Spacer(Modifier.height(8.dp))
-                            Text(
-                                text = currentSong?.displayName.orEmpty(),
-                                color = Color.White.copy(alpha = 0.92f),
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.fillMaxWidth(0.82f)
-                            )
+                            PlaybackArtworkMetadataTransition(
+                                state = artworkState,
+                                animationStyle = artworkStyle,
+                                modifier = Modifier
+                                    .fillMaxWidth(0.82f)
+                                    .height(24.dp),
+                            ) { metadataKey, _ ->
+                                val metadataSong = remember(metadataKey, queue.songs, currentSong) {
+                                    queue.songs.firstOrNull {
+                                        it.resolvePlaybackArtworkKey() == metadataKey
+                                    } ?: currentSong?.takeIf {
+                                        it.resolvePlaybackArtworkKey() == metadataKey
+                                    }
+                                }
+                                Text(
+                                    text = metadataSong?.displayName.orEmpty(),
+                                    color = Color.White.copy(alpha = 0.92f),
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
                             Spacer(Modifier.height(4.dp))
                             ReusablePlayerTimelineProgress(
                                 styleValue = progressStyleValue,

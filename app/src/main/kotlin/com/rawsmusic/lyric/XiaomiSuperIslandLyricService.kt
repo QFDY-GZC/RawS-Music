@@ -43,6 +43,11 @@ internal class XiaomiSuperIslandLyricService : Service() {
 
         fun stop(context: Context) {
             pendingNotification = null
+            if (!running) {
+                context.getSystemService(NotificationManager::class.java)
+                    ?.cancel(XiaomiSuperIslandLyricBridge.NOTIFICATION_ID)
+                return
+            }
             val intent = Intent(context, XiaomiSuperIslandLyricService::class.java).setAction(ACTION_STOP)
             runCatching { context.startService(intent) }
                 .onFailure {

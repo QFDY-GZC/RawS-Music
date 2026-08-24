@@ -2,10 +2,8 @@ package com.rawsmusic.core.ui.scene.pages
 
 import android.os.Build
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -19,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -32,6 +29,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,14 +43,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
@@ -79,7 +80,11 @@ import com.rawsmusic.core.ui.scene.CoverTransitionTarget
 import com.rawsmusic.core.ui.scene.LocalAppHazeState
 import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.scene.LocalSceneChromeAlpha
+import com.rawsmusic.core.ui.scene.LocalBottomChromeScrollState
 import com.rawsmusic.core.ui.widget.index.RawAlphabetIndex
+import com.rawsmusic.module.data.prefs.PersonalizationPreferences
+import com.rawsmusic.module.data.prefs.BottomBarStyle
+import com.rawsmusic.module.data.prefs.TopChromeStyle
 import com.rawsmusic.core.ui.widget.index.RawAlphabetIndexData
 import com.rawsmusic.core.ui.widget.index.RawIndexMode
 import com.rawsmusic.core.ui.widget.index.RawAlphabetIndexCache
@@ -89,6 +94,10 @@ import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
 import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListState
 import com.rawsmusic.core.ui.widget.powerlist.ListZoomIndex
 import com.rawsmusic.core.ui.widget.powerlist.rememberComposePowerListState
+import com.rawsmusic.core.ui.scene.pages.floatingActionVisibilityProgress
+import com.rawsmusic.core.ui.scene.pages.TOP_CHROME_COLLAPSE_DISTANCE_DP
+import com.rawsmusic.core.ui.widget.text.LongTextMotionState
+import com.rawsmusic.core.ui.widget.text.SharedMarqueeText
 import dev.chrisbanes.haze.HazeInputScale
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeEffect
@@ -110,6 +119,7 @@ import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.icon.extended.ExpandLess
 import top.yukonga.miuix.kmp.icon.extended.ExpandMore
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 /**
  * 歌曲列表页面。
@@ -168,7 +178,7 @@ fun SongsPage(
     val density = LocalDensity.current
     val backgroundColor = MiuixTheme.colorScheme.background
     val isLightGlass = backgroundColor.luminance() > 0.5f
-    // Salt uses Haze source/effect nodes so the top material stays synchronized with
+    // Lyric uses Haze source/effect nodes so the top material stays synchronized with
     // scrolling RenderNodes instead of replaying a separately recorded Compose layer.
     val localSongsListHazeState = rememberHazeState()
     val songsListHazeState = LocalAppHazeState.current ?: localSongsListHazeState
@@ -224,18 +234,31 @@ fun SongsPage(
     val statusBarTop = WindowInsets.statusBars
         .asPaddingValues()
         .calculateTopPadding()
+    val bottomChromeScrollState = LocalBottomChromeScrollState.current
+    val windowInfo = LocalWindowInfo.current
 
     val toolbarContentHeight = LIBRARY_TOOLBAR_CONTENT_HEIGHT
     val toolbarTotalHeight = statusBarTop + toolbarContentHeight
-    // 让列表内容真实经过顶部栏背后，模糊层才能采样到封面与文字。
-    // 只保留少量起始留白，首项会像系统媒体列表一样部分进入顶部玻璃区域。
-    val listContentTopPadding = (toolbarTotalHeight - LIBRARY_CONTENT_OVERLAP)
+    val topChromeStyle by PersonalizationPreferences.topChromeStyle.collectAsState()
+    val bottomBarStyle by PersonalizationPreferences.bottomBarStyle.collectAsState()
+    val floatingTopChrome = topChromeStyle == TopChromeStyle.FLOATING ||
+        topChromeStyle == TopChromeStyle.FLOATING_VERTICAL
+    val floatingTopChromeVertical = topChromeStyle == TopChromeStyle.FLOATING_VERTICAL
+    // Keep the first row below the complete top tail. The tail is 8dp taller than the controls;
+    // without the same guard here, the first row is clipped while the list is settling.
+    val listContentTopPadding = (toolbarTotalHeight + LIBRARY_CONTENT_TOP_GUARD - LIBRARY_CONTENT_OVERLAP)
         .coerceAtLeast(statusBarTop + LIBRARY_CONTENT_MIN_INSET)
 
     fun clearSelection() {
         selectionMode = false
         selectedSongIds = emptySet()
         showSelectionSheet = false
+    }
+
+    fun openSelectionActions(ids: Set<Long>) {
+        selectedSongIds = ids
+        selectionMode = ids.isNotEmpty()
+        showSelectionSheet = ids.isNotEmpty()
     }
 
     BackHandler(enabled = selectionMode) {
@@ -248,15 +271,34 @@ fun SongsPage(
 
     val topOverlayProgress by remember {
         derivedStateOf {
-            val triggerPx = with(density) { 80.dp.toPx() }
+            val triggerPx = with(density) { TOP_CHROME_COLLAPSE_DISTANCE_DP.dp.toPx() }
             (powerListState.viewportScrollYPx / triggerPx).coerceIn(0f, 1f)
         }
     }
     val topOverlayProgressState = rememberUpdatedState(topOverlayProgress)
-    // Backdrop source must stay attached across pinch/elastic transitions. Removing
-    // the recorder for even one frame leaves the fallback tint visible indefinitely
-    // on some vendor RenderNode implementations.
-    val topBackdropBlurEnabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val sceneTopMenuAlpha = LocalSceneChromeAlpha.current.topMenu
+    val floatingActionProgress = if (floatingTopChrome) {
+        floatingActionVisibilityProgress(topOverlayProgress)
+    } else 0f
+    val floatingActionBottomPadding = bottomChromeScrollState
+        ?.restingTopInRootPx
+        ?.takeIf { it > 0f }
+        ?.let { topInRootPx ->
+            with(density) {
+                ((windowInfo.containerSize.height - topInRootPx).toDp() + 10.dp)
+                    .coerceAtLeast(72.dp)
+            }
+        }
+        ?: 126.dp
+    var listMotionActive by remember { mutableStateOf(false) }
+    val performanceMode by PersonalizationPreferences.performanceMode.collectAsState()
+    val transparentTopChrome = topChromeStyle == TopChromeStyle.TRANSPARENT
+    // Keep the Haze source/effect attached during motion. Performance mode only makes the
+    // material tint transparent while the list is moving; it must not switch to a different
+    // gradient implementation or detach the recorder for a frame.
+    val topBackdropBlurEnabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        !transparentTopChrome && !floatingTopChrome
+    val transparentGlassDuringMotion = performanceMode && listMotionActive
     val showNextQueueHint = miniPlayerIsPlaying &&
         playbackDurationMs > 0L &&
         (playbackDurationMs - playbackPositionMs) in 1L..10_000L &&
@@ -265,6 +307,9 @@ fun SongsPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            // The floating action group follows the bottom chrome beyond its resting slot.
+            // Keep the page host from clipping the group while it travels downward.
+            .graphicsLayer { clip = false }
     ) {
         ComposePowerListFull(
             songs = visibleSongs,
@@ -277,6 +322,7 @@ fun SongsPage(
             onPlayingCoverBoundsChanged = onPlayingCoverBoundsChanged,
             onPlayingCoverTargetChanged = onPlayingCoverTargetChanged,
             onRevealCoverTargetResolved = onRevealCoverTargetResolved,
+            onScrollActiveChanged = { listMotionActive = it },
             onSongClick = { song, index ->
                 if (selectionMode) {
                     val next = if (song.id in selectedSongIds) {
@@ -292,12 +338,25 @@ fun SongsPage(
                 }
             },
             onSongLongClick = { song, _ ->
-                selectionMode = true
-                selectedSongIds = setOf(song.id)
-                showSelectionSheet = true
+                openSelectionActions(setOf(song.id))
             },
             modifier = Modifier
                 .fillMaxSize()
+                .then(
+                    if (transparentTopChrome) {
+                        Modifier.drawWithContent {
+                            // Keep the transparent chrome visually transparent while still
+                            // occluding list content underneath it, matching category pages.
+                            clipRect(
+                                top = (toolbarTotalHeight + LIBRARY_CONTENT_TOP_GUARD).toPx()
+                            ) {
+                                this@drawWithContent.drawContent()
+                            }
+                        }
+                    } else {
+                        Modifier
+                    }
+                )
                 .then(
                     if (topBackdropBlurEnabled) {
                         Modifier.hazeSource(songsListHazeState)
@@ -307,25 +366,30 @@ fun SongsPage(
                 )
         )
 
-        val sceneTopMenuAlpha = LocalSceneChromeAlpha.current.topMenu
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .zIndex(40f)
-        ) {
-            TopGradientGlassTail(
+        run {
+            val topMenuVisibility = if (floatingTopChrome) {
+                1f - topOverlayProgress
+            } else 1f
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .zIndex(40f)
+            ) {
+                TopGradientGlassTail(
                 hazeState = songsListHazeState,
                 blurEnabled = topBackdropBlurEnabled,
                 isLight = isLightGlass,
+                transparentStyle = transparentTopChrome || floatingTopChrome,
+                transparentDuringMotion = transparentGlassDuringMotion,
                 overlayProgress = topOverlayProgressState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(toolbarTotalHeight + 8.dp)
-                    .graphicsLayer { alpha = sceneTopMenuAlpha }
-            )
+                    .graphicsLayer { alpha = sceneTopMenuAlpha * topMenuVisibility }
+                )
 
-            SongsTopMenuBar(
+                SongsTopMenuBar(
                 title = libraryTitle,
                 sceneId = NavScene.SONGS.name,
                 nowPlayingTitle = miniPlayerTitle,
@@ -355,11 +419,38 @@ fun SongsPage(
                 isLight = isLightGlass,
                 overlayProgress = topOverlayProgress,
                 backdropBlurEnabled = topBackdropBlurEnabled,
+                transparentStyle = transparentTopChrome || floatingTopChrome,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .graphicsLayer { alpha = sceneTopMenuAlpha }
-            )
+                    .graphicsLayer { alpha = sceneTopMenuAlpha * topMenuVisibility }
+                )
+            }
         }
+
+        FloatingLibraryActionBar(
+            // Use the same selection action sheet as a long-press. Selecting
+            // all visible rows gives the standalone floating action a stable,
+            // deterministic selection target instead of an empty mode.
+            onSelect = { openSelectionActions(visibleSongs.map { it.id }.toSet()) },
+            onSearch = onOpenGlobalSearch,
+            onShuffle = { onShuffleAll(visibleSongs) },
+            onMore = { showMoreDialog = true },
+            onCreatePlaylist = null,
+            onImportPlaylist = null,
+            vertical = floatingTopChromeVertical,
+            visibilityProgress = floatingActionProgress,
+            transitionAlpha = sceneTopMenuAlpha,
+            bottomPadding = floatingActionBottomPadding,
+            bottomOffsetPx = {
+                bottomChromeScrollState?.renderFollowerOffsetPx(
+                    normalStyle = bottomBarStyle == BottomBarStyle.NORMAL,
+                ) ?: 0f
+            },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = if (floatingTopChromeVertical) 40.dp else 56.dp)
+                .zIndex(45f),
+        )
 
         RawAlphabetIndex(
             data = alphabetIndexData,
@@ -442,7 +533,6 @@ fun SongsPage(
 
 // ─────────────── 顶部菜单 ───────────────
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun SongsTopMenuBar(
     title: String,
@@ -470,9 +560,13 @@ internal fun SongsTopMenuBar(
     isLight: Boolean,
     overlayProgress: Float,
     backdropBlurEnabled: Boolean,
+    transparentStyle: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val scheme = MiuixTheme.colorScheme
+    // The top menu can remain mounted while the player sheet is open. Do not let
+    // its hidden title register a marquee client or keep the shared clock alive.
+    val listMarqueeVisible = LongTextMotionState.LocalListMarqueeVisibility.current
     val surfaceColor = blendColor(
         start = scheme.background,
         end = scheme.primary,
@@ -506,7 +600,7 @@ internal fun SongsTopMenuBar(
     Column(
         modifier = modifier
             .then(
-                if (backdropBlurEnabled) {
+                if (backdropBlurEnabled || transparentStyle) {
                     // The separately sampled glass tail owns the background. Keeping
                     // controls transparent avoids a hard card edge over the fade.
                     Modifier
@@ -609,19 +703,15 @@ internal fun SongsTopMenuBar(
                                 fontSize = 12.sp,
                                 maxLines = 1
                             )
-                            Text(
-                                text = nowPlayingTitle,
-                                color = scheme.onSurfaceVariantSummary,
-                                fontSize = 12.sp,
-                                maxLines = 1,
-                                softWrap = false,
+                                SharedMarqueeText(
+                                    text = nowPlayingTitle,
+                                    color = scheme.onSurfaceVariantSummary,
+                                    fontSizeSp = 12f,
                                 modifier = Modifier
-                                    .weight(1f)
-                                    .basicMarquee(
-                                        iterations = 1,
-                                        repeatDelayMillis = 1_000
-                                    )
-                            )
+                                        .weight(1f)
+                                        .height(20.dp),
+                                    visible = listMarqueeVisible
+                                )
                         }
                         Text(
                             text = stringResource(R.string.songs_next_playing, nextSongTitle),
@@ -788,30 +878,43 @@ internal fun TopGradientGlassTail(
     blurEnabled: Boolean,
     isLight: Boolean,
     overlayProgress: State<Float>,
+    transparentStyle: Boolean = false,
+    transparentDuringMotion: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val scheme = MiuixTheme.colorScheme
 
-    if (blurEnabled) {
+    if (transparentStyle) {
+        // The scaffold clips list content at the toolbar boundary, so this layer can stay truly
+        // transparent and naturally continue the persistent album-derived background.
+        Box(modifier = modifier)
+    } else if (blurEnabled) {
         Box(
             modifier = modifier.hazeEffect(state = hazeState) {
-                // Salt fixes the input scale near 0.67 for this material. Haze owns
+                // Lyric fixes the input scale near 0.67 for this material. Haze owns
                 // the source geometry and the progressive Gaussian shader.
                 inputScale = HazeInputScale.Fixed(0.67f)
                 clipToAreasBounds = false
                 expandLayerBounds = true
                 drawContentBehind = true
-                forceInvalidateOnPreDraw = true
+                        // Keep the blur render node demand-driven. Invalidating it on every
+                        // pre-draw turns an ordinary list fling into a full-screen blur pass.
+                        forceInvalidateOnPreDraw = false
                 blurEffect {
                     // The animated RawFlow layer lives behind this page. An opaque
                     // fallback here cuts it off at the effect bounds, so keep the
                     // blur transparent and use only a light material tint.
                     backgroundColor = Color.Transparent
-                    colorEffects = listOf(
-                        HazeColorEffect.tint(
-                            scheme.background.copy(alpha = if (isLight) 0.24f else 0.20f)
-                        )
-                    )
+                    val tintAlpha = when {
+                        transparentDuringMotion -> 0f
+                        isLight -> 0.24f
+                        else -> 0.20f
+                    }
+                    colorEffects = if (tintAlpha > 0f) {
+                        listOf(HazeColorEffect.tint(scheme.background.copy(alpha = tintAlpha)))
+                    } else {
+                        emptyList()
+                    }
                     blurRadius = 72.dp
                     noiseFactor = 0f
                     progressive = HazeProgressive.verticalGradient(
@@ -822,7 +925,7 @@ internal fun TopGradientGlassTail(
             }
         )
     } else {
-        // Android 11 及以下，或列表缩放/弹性期间才使用颜色降级层。
+        // Android 11 及以下才使用颜色降级层。滚动、缩放和弹性期间仍保留 Haze 节点。
         val progress = overlayProgress.value
         val fallbackBase = blendColor(
             start = scheme.background,
@@ -909,6 +1012,8 @@ internal fun SongsSortLayoutSheet(
                         stringResource(R.string.sort_by_artist) to SortOrder.ARTIST_ASC,
                         stringResource(R.string.sort_by_album) to SortOrder.ALBUM_ASC,
                         stringResource(R.string.sort_by_year) to SortOrder.YEAR_ASC,
+                        stringResource(R.string.sort_by_added) to SortOrder.DATE_ADDED_ASC,
+                        stringResource(R.string.sort_by_modified) to SortOrder.DATE_MODIFIED_ASC,
                         stringResource(R.string.sort_by_play_count) to SortOrder.PLAYBACK_INFO
                     )).filterNot { (_, order) -> order.baseSortOrder() == SortOrder.TITLE_ASC }
                     effectiveSortOptions.forEach { (label, baseOrder) ->
@@ -1002,7 +1107,7 @@ private fun SongSelectionActionSheet(
                         progress = dismissProgress,
                         transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 1f)
                     )
-                    .navigationBarsPadding()
+                    .rawStableNavigationBarsPadding()
                     .padding(bottom = 12.dp)
                     .clip(RoundedCornerShape(28.dp))
                     .background(sheetColor)
@@ -1201,6 +1306,7 @@ private fun SortOrder.baseSortOrder(): SortOrder = when (this) {
     SortOrder.YEAR_ASC, SortOrder.YEAR_DESC -> SortOrder.YEAR_ASC
     SortOrder.PLAYBACK_INFO, SortOrder.PLAYBACK_INFO_DESC -> SortOrder.PLAYBACK_INFO
     SortOrder.DATE_ADDED_ASC, SortOrder.DATE_ADDED_DESC -> SortOrder.DATE_ADDED_ASC
+    SortOrder.DATE_MODIFIED_ASC, SortOrder.DATE_MODIFIED_DESC -> SortOrder.DATE_MODIFIED_ASC
     SortOrder.DURATION_ASC, SortOrder.DURATION_DESC -> SortOrder.DURATION_ASC
 }
 
@@ -1216,6 +1322,7 @@ private fun SortOrder.withSortDirection(descending: Boolean): SortOrder = when (
     SortOrder.YEAR_ASC -> if (descending) SortOrder.YEAR_DESC else SortOrder.YEAR_ASC
     SortOrder.PLAYBACK_INFO -> if (descending) SortOrder.PLAYBACK_INFO_DESC else SortOrder.PLAYBACK_INFO
     SortOrder.DATE_ADDED_ASC -> if (descending) SortOrder.DATE_ADDED_DESC else SortOrder.DATE_ADDED_ASC
+    SortOrder.DATE_MODIFIED_ASC -> if (descending) SortOrder.DATE_MODIFIED_DESC else SortOrder.DATE_MODIFIED_ASC
     SortOrder.DURATION_ASC -> if (descending) SortOrder.DURATION_DESC else SortOrder.DURATION_ASC
     else -> this
 }
@@ -1229,6 +1336,7 @@ private fun SortOrder.isDescendingSortOrder(): Boolean = when (this) {
     SortOrder.YEAR_DESC,
     SortOrder.PLAYBACK_INFO_DESC,
     SortOrder.DATE_ADDED_DESC,
+    SortOrder.DATE_MODIFIED_DESC,
     SortOrder.DURATION_DESC -> true
     else -> false
 }
@@ -1250,6 +1358,8 @@ private fun SortOrder.reversedSortOrder(): SortOrder = when (this) {
     SortOrder.PLAYBACK_INFO_DESC -> SortOrder.PLAYBACK_INFO
     SortOrder.DATE_ADDED_ASC -> SortOrder.DATE_ADDED_DESC
     SortOrder.DATE_ADDED_DESC -> SortOrder.DATE_ADDED_ASC
+    SortOrder.DATE_MODIFIED_ASC -> SortOrder.DATE_MODIFIED_DESC
+    SortOrder.DATE_MODIFIED_DESC -> SortOrder.DATE_MODIFIED_ASC
     SortOrder.DURATION_ASC -> SortOrder.DURATION_DESC
     SortOrder.DURATION_DESC -> SortOrder.DURATION_ASC
 }

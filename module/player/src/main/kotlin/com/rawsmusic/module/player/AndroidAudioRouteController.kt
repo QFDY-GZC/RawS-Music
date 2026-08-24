@@ -408,6 +408,7 @@ internal class AndroidAudioRouteController(
 internal fun AudioDeviceInfo.isBluetoothRouteDevice(): Boolean {
     return type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
         type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+        type == 23 || // TYPE_HEARING_AID
         type == 26 || // TYPE_BLE_HEADSET
         type == 27    // TYPE_BLE_SPEAKER
 }

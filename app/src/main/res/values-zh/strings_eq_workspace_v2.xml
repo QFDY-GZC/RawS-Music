@@ -11,7 +11,7 @@
     <string name="settings_peq_band_layout_hint">智能转换当前滤波器</string>
     <string name="settings_peq_presets_and_tools">预设与工具</string>
     <string name="settings_peq_autoeq_card_summary">搜索并导入耳机校正</string>
-    <string name="settings_peq_import_formats">支持 RawSMusic JSON、AutoEq 文本和 AutoEq JSON</string>
+    <string name="settings_peq_import_formats">支持 RawSMusic JSON、AutoEq ParametricEQ 文本和 AutoEq JSON；GraphicEQ 文本会转到图形均衡器</string>
     <string name="settings_peq_export_card_summary">保存当前滤波器和前级增益</string>
     <string name="settings_peq_reset_card_summary">按当前段数恢复中性滤波器</string>
     <string name="settings_peq_cached_preset_summary">%1$d 个滤波器 · %2$s</string>
@@ -29,4 +29,8 @@
     <string name="settings_peq_import_applied_detail">已导入 %1$s：%2$d 个源滤波器 → %3$d 段</string>
     <string name="settings_peq_imported_autoeq_name">导入的 AutoEq</string>
     <string name="settings_peq_imported_list_name">导入的滤波器列表</string>
+
+    <string name="settings_peq_error_graphic_eq_target">检测到 AutoEq GraphicEQ 预设，请在“图形均衡器”页导入</string>
+    <string name="settings_graphic_eq_imported_autoeq_name">导入的 AutoEq GraphicEQ</string>
+    <string name="settings_graphic_eq_autoeq_import_success">已导入 AutoEq GraphicEQ：%1$d 个曲线点 → %2$d 段</string>
 </resources>

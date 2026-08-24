@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
@@ -46,12 +45,12 @@ import top.yukonga.miuix.kmp.layout.DialogDefaults
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.rawsmusic.core.ui.widget.MiuixOverlayBackRuntime
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 private const val PLAYER_MORE_ENTER_MS = 300
 private const val PLAYER_MORE_EXIT_MS = 250
 private const val PLAYER_MORE_MAX_HEIGHT_DP = 600
 private const val PLAYER_MORE_OUTSIDE_MARGIN_DP = 12
-private const val PLAYER_MORE_SOURCE_ARTWORK_RADIUS_DP = 28f
 private const val PLAYER_MORE_TARGET_ARTWORK_RADIUS_DP = 8f
 
 private data class ArtworkTransitionSnapshot(
@@ -74,7 +73,7 @@ internal fun PlayerMoreViewOverlay(
     artwork: Bitmap?,
     onDismiss: () -> Unit,
     onMountedChange: (Boolean) -> Unit = {},
-    sourceArtworkRadiusDp: Float = PLAYER_MORE_SOURCE_ARTWORK_RADIUS_DP,
+    sourceArtworkRadiusDp: Float = STANDARD_PLAYER_ARTWORK_CORNER_RADIUS_DP,
     targetArtworkRadiusDp: Float = PLAYER_MORE_TARGET_ARTWORK_RADIUS_DP,
     content: @Composable (artworkAlpha: Float, onArtworkBoundsChanged: (Rect) -> Unit) -> Unit
 ) {
@@ -267,7 +266,7 @@ internal fun PlayerMoreViewOverlay(
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
+                .rawStableNavigationBarsPadding()
                 .padding(
                     horizontal = PLAYER_MORE_OUTSIDE_MARGIN_DP.dp,
                     vertical = PLAYER_MORE_OUTSIDE_MARGIN_DP.dp

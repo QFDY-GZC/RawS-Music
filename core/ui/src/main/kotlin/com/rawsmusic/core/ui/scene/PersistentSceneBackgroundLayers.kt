@@ -11,6 +11,7 @@ import com.rawsmusic.core.ui.scene.pages.HomeArtworkCarouselState
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.core.ui.widget.flow.RawFlowBackground
 import com.rawsmusic.core.ui.widget.flow.RawFlowMode
+import com.rawsmusic.core.ui.widget.background.CustomMediaBackground
 
 private const val PERSISTENT_BACKGROUND_FRAME_INTERVAL_MS = 16L
 
@@ -74,7 +75,10 @@ internal fun PersistentSceneBackgroundLayers(
                 currentSong = currentSong,
                 state = homeCarouselState,
                 active = carouselLayerAlpha > 0.001f || transitionFrame.active,
-                motionEnabled = homeCarouselBackdropTransitionActive || transitionFrame.active,
+                // A scene transition only changes layer alpha. Keep the carousel clock stopped
+                // unless its artwork is actually changing; this mirrors Reference's demand-driven
+                // animation callbacks and avoids waking the renderer during category entry.
+                motionEnabled = homeCarouselBackdropTransitionActive,
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -90,9 +94,16 @@ internal fun PersistentSceneBackgroundLayers(
                 modifier = Modifier.fillMaxSize(),
                 active = uiForeground && rawBackgroundAllowed &&
                     (rawLayerAlpha > 0.001f || transitionFrame.active),
-                motionEnabled = rawFlowMotionActive || transitionFrame.active,
+                // Do not turn the flow animation back on merely because two scenes are cross-
+                // fading. The persistent layer can remain visible while its clock is idle.
+                motionEnabled = rawFlowMotionActive,
                 frameIntervalMs = PERSISTENT_BACKGROUND_FRAME_INTERVAL_MS,
             )
         }
+
+        CustomMediaBackground(
+            active = uiForeground,
+            modifier = Modifier.fillMaxSize(),
+        )
     }
 }

@@ -15,6 +15,16 @@
     <string name="lyric_more_lyrico_summary">搜索、补全并写回当前歌曲的歌词与标签</string>
     <string name="lyric_more_lyrico_search_title">在线匹配歌词</string>
     <string name="lyric_more_lyrico_search_summary">使用已导入的 Lyrico 歌词源搜索当前歌曲</string>
+    <string name="lyric_more_ai_timing_title">AI 歌词打轴预览</string>
+    <string name="lyric_more_ai_timing_summary">根据人声活动修正逐行歌词的起止时间，可预览后再写入</string>
+    <string name="lyric_more_timing_editor_title">外部打轴工具</string>
+    <string name="lyric_more_timing_editor_summary">选择已安装的歌词打轴播放器处理当前歌曲</string>
+    <string name="lyric_more_timing_lunabeat">LunaBeat</string>
+    <string name="lyric_more_timing_lunabeat_summary">打开 LunaBeat 的歌词打轴界面</string>
+    <string name="lyric_more_timing_halcyon">Halcyon</string>
+    <string name="lyric_more_timing_halcyon_summary">将当前音频交给 Halcyon 继续处理</string>
+    <string name="lyric_timing_external_unavailable">未找到可用的外部打轴工具</string>
+    <string name="lyric_timing_external_failed">打开外部打轴工具失败</string>
     <string name="home_recommend_title">推荐</string>
     <string name="home_recommend_subtitle">从你的本地曲库出发</string>
     <string name="home_weather_clear">晴</string>
@@ -168,7 +178,7 @@
     <string name="player_realtime_separation_vocals">人声</string>
     <string name="player_realtime_separation_instrumental">伴奏</string>
     <string name="player_realtime_separation_strength">分离强度</string>
-    <string name="player_realtime_separation_strength_summary">0%% 接近原音，100%% 仅保留所选声部</string>
+    <string name="player_realtime_separation_strength_summary" formatted="false">0% 接近原音，100% 仅保留所选声部</string>
     <string name="player_more_visualizer">可视化</string>
     <string name="player_more_spectrum_analysis">文件频谱</string>
     <string name="player_share_audio_chooser">分享音频</string>
@@ -220,6 +230,20 @@
     <string name="scan_settings_seconds_value">%1$d 秒</string>
     <string name="scan_settings_min_duration_summary">短于此时间的音频文件将被忽略</string>
     <string name="scan_settings_ignore_video_title">忽略视频文件</string>
+    <string name="scan_settings_name_split_section">分类名称拆分</string>
+    <string name="scan_settings_name_split_summary">按行填写分隔符与保护名称。保护名称会优先整体保留，应用规则后刷新分类索引。</string>
+    <string name="scan_settings_artist_separators">艺术家分隔符</string>
+    <string name="scan_settings_artist_separators_summary">每行一个，例如 /、feat.、&amp;、,</string>
+    <string name="scan_settings_artist_protected_names">艺术家保护名称</string>
+    <string name="scan_settings_artist_protected_names_summary">每行一个完整名称，例如 AC/DC；拆分时不会被分隔符切开</string>
+    <string name="scan_settings_genre_separators">流派分隔符</string>
+    <string name="scan_settings_genre_separators_summary">每行一个，例如 ;</string>
+    <string name="scan_settings_genre_protected_names">流派保护名称</string>
+    <string name="scan_settings_genre_protected_names_summary">每行一个需要整体保留的流派名称</string>
+    <string name="scan_settings_tag_ignore_case">分类名称忽略大小写</string>
+    <string name="scan_settings_tag_ignore_case_summary">合并仅大小写不同的艺术家和流派名称</string>
+    <string name="scan_settings_name_split_apply">应用拆分规则</string>
+    <string name="scan_settings_name_split_applied">拆分规则已应用，正在刷新分类索引</string>
     <string name="scan_settings_hint_section">提示</string>
     <string name="scan_settings_hint_text">扫描完成后，新增的音乐会自动出现在音乐库中。如需修改扫描文件夹，请先移除旧文件夹再添加新文件夹。</string>
     <string name="scan_settings_selected_folder_fallback">已选文件夹</string>
@@ -311,7 +335,7 @@
     <string name="settings_root_section_data">数据</string>
     <string name="settings_root_section_other">其他</string>
     <string name="settings_scan_settings_title">扫描与媒体库</string>
-    <string name="settings_scan_settings_summary">音乐文件夹、访问权限、重新扫描与文件过滤</string>
+    <string name="settings_scan_settings_summary">音乐文件夹、扫描、过滤与分类名称拆分</string>
     <string name="settings_appearance_title">外观主题</string>
     <string name="settings_appearance_summary">主题模式、界面色彩与显示风格</string>
     <string name="settings_player_interface_title">播放器界面</string>
@@ -362,6 +386,9 @@
     <string name="library_action_sort">排序</string>
     <string name="library_action_select_all">全选</string>
     <string name="library_action_cancel">取消</string>
+    <string name="library_action_select">选择</string>
+    <string name="library_action_select_vertical">选\n择</string>
+    <string name="library_action_collapse">收束</string>
     <string name="library_play_all_count">播放全部（%1$d）</string>
     <string name="home_action_share">分享</string>
     <string name="song_info_clipboard_label">歌曲信息</string>
@@ -412,7 +439,8 @@
     <string name="sort_by_path">根据路径</string>
     <string name="sort_by_artist">根据艺术家</string>
     <string name="sort_by_year">根据年份</string>
-    <string name="sort_by_modified">根据添加/修改日期</string>
+    <string name="sort_by_modified">根据修改日期</string>
+    <string name="sort_by_added">根据添加日期</string>
     <string name="sort_by_duration">按持续时间</string>
     <string name="sort_by_song_count">根据歌曲数</string>
     <string name="sort_by_album_count">根据专辑数</string>
@@ -445,8 +473,7 @@
     <string name="artwork_saving">正在保存…</string>
     <string name="artwork_saved">已保存到系统相册</string>
     <string name="artwork_save_failed">专辑图保存失败</string>
-    <string name="audio_visualizer_controls_hint">眼睛：关闭 · 锁：保持显示</string>
-    <string name="audio_visualizer_close">关闭音频可视化</string>
+    <string name="audio_visualizer_menu_summary">实时频谱跟随播放；标准播放页先在封面后方显示，再平滑进入前景。开启和关闭均从此菜单控制。</string>
     <string name="queue_enter_fullscreen">展开播放队列</string>
     <string name="queue_exit_fullscreen">收起播放队列</string>
     <string name="queue_sort_layout">排序与布局</string>
@@ -455,6 +482,7 @@
     <string name="player_video_cover">视频封面</string>
     <string name="player_video_cover_summary">使用 FFmpeg 静音循环播放所选视频</string>
     <string name="player_video_cover_mode">显示范围</string>
+    <string name="player_video_cover_mode_summary">选择视频封面的应用范围</string>
     <string name="player_video_cover_permanent">永久</string>
     <string name="player_video_cover_current">当前</string>
     <string name="player_video_cover_temporary">临时</string>

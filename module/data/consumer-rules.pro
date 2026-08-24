@@ -12,3 +12,8 @@
 # Keep Gson
 -keep class com.google.gson.** { *; }
 -dontwarn com.google.gson.**
+
+# MusicFree WebView bridge method names are referenced from JavaScript.
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}

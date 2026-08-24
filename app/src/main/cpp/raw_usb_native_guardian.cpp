@@ -188,7 +188,10 @@ void UsbNativeBackgroundGuardian::notifyKeepAlivePulse(const char* reason) {
 }
 
 void UsbNativeBackgroundGuardian::threadMain() {
-    const auto schedule = applyUsbThreadScheduling("usb_bg_guard", -16, true);
+    // The monitor does not run a third high-priority event-pump owner. It only
+    // observes state and wakes the real event owner, so keep it at normal
+    // scheduling priority to avoid competing with decoder/USB send work.
+    const auto schedule = applyUsbThreadScheduling("usb_bg_guard", 0, false);
     LOGI("USB_BG_GUARD thread online sched=%s", formatUsbThreadScheduleSnapshot(schedule).c_str());
 
     uint64_t lastSessionId = 0;
@@ -205,7 +208,11 @@ void UsbNativeBackgroundGuardian::threadMain() {
             snap.exclusiveActive &&
             !snap.transportLost;
 
-        const int timeoutMs = guardActive ? 8 : 250;
+        // A monitor does not need an 8 ms wake cadence. High-frequency wakeups at
+        // audio priority can crowd out the Java decoder after the app moves to a
+        // background cgroup. 100 ms is sufficient for diagnostics and terminal
+        // zero-pending detection without becoming another transport owner.
+        const int timeoutMs = guardActive ? 100 : 500;
         if (controlReadFd_ >= 0) {
             pollfd pfd{};
             pfd.fd = controlReadFd_;
@@ -234,6 +241,20 @@ void UsbNativeBackgroundGuardian::threadMain() {
             lastStallLogMs = 0;
         }
 
+        if (snap.pendingTransfers <= 0 && hooks_.recoverTransfers) {
+            const int recovered = hooks_.recoverTransfers(opaque_, "usb_bg_guard_zero_pending");
+            if (recovered > 0) {
+                LOGW(
+                    "USB_BG_GUARD rearmed transfer chain: session=%llu submitted=%d buf=%zu/%zu",
+                    static_cast<unsigned long long>(snap.streamSessionId),
+                    recovered,
+                    snap.ringUsedBytes,
+                    snap.ringCapacityBytes
+                );
+                continue;
+            }
+        }
+
         const bool callbackStale =
             snap.lastIsoCallbackMs > 0 &&
             nowMs - snap.lastIsoCallbackMs >= 24 &&
@@ -243,35 +264,13 @@ void UsbNativeBackgroundGuardian::threadMain() {
             nowMs - snap.lastEventLoopGapMs <= 2'000 &&
             snap.lastEventLoopGapDurationMs >= 100;
 
-        int burstCount = callbackStale ? 3 : 1;
-        if (recentGap && snap.lastEventLoopGapDurationMs >= 250) {
-            burstCount = std::max(burstCount, 4);
-        }
-
-        int pumpRc = 0;
-        int lockedCount = 0;
-        int busyCount = 0;
-        int errorCount = 0;
-        for (int i = 0; i < burstCount; i++) {
-            bool obtainedEventLock = false;
-            pumpRc = hooks_.pumpEventsOnce
-                ? hooks_.pumpEventsOnce(opaque_, "usb_bg_guard", &obtainedEventLock)
-                : -1;
-            if (obtainedEventLock) {
-                lockedCount++;
-            } else {
-                busyCount++;
-            }
-            if (pumpRc < 0 &&
-                pumpRc != LIBUSB_ERROR_BUSY &&
-                pumpRc != LIBUSB_ERROR_TIMEOUT &&
-                pumpRc != LIBUSB_ERROR_INTERRUPTED) {
-                errorCount++;
-            }
-            if (!obtainedEventLock) {
-                break;
-            }
-        }
+        // The epoll-driven USB event thread is the sole libusb event owner.
+        // A second consumer can contend on libusb's event lock and delay the
+        // completion thread it is intended to protect.
+        const int pumpRc = 0;
+        const int lockedCount = 0;
+        const int busyCount = 0;
+        const int errorCount = 0;
 
         if (callbackStale && nowMs - lastStallLogMs >= 1'500) {
             lastStallLogMs = nowMs;

@@ -24,6 +24,22 @@ class PlayerGaplessControlCoordinatorTest {
         assertEquals(false, plan?.automaticCrossfadeEnabled)
     }
 
+
+    @Test
+    fun `manual overlap alone keeps planned next decoder warm`() {
+        var plan: GaplessPlaybackPlan? = null
+        coordinator(
+            gaplessEnabled = false,
+            automaticCrossfadeEnabled = false,
+            manualOverlapEnabled = true,
+            queue = PlayQueue(listOf(song("/a"), song("/b")), currentIndex = 0),
+            apply = { plan = it },
+        ).prepareNextSong()
+
+        assertEquals("/b", plan?.nextSongPath)
+        assertEquals(false, plan?.automaticCrossfadeEnabled)
+    }
+
     @Test
     fun `sequential and repeat one resolve next decoder source`() {
         val songs = listOf(song("/a"), song("/b"))
@@ -65,6 +81,7 @@ class PlayerGaplessControlCoordinatorTest {
             PlayerGaplessControlCoordinator.Callbacks(
                 gaplessEnabled = { true },
                 automaticCrossfadeEnabled = { false },
+                manualOverlapEnabled = { false },
                 currentQueue = { PlayQueue(songs, currentIndex = 0) },
                 currentPlayMode = { PlayMode.SHUFFLE_ALL },
                 peekShuffleIndex = { previewCalls += 1; 2 },
@@ -83,6 +100,7 @@ class PlayerGaplessControlCoordinatorTest {
     private fun coordinator(
         gaplessEnabled: Boolean = true,
         automaticCrossfadeEnabled: Boolean = false,
+        manualOverlapEnabled: Boolean = false,
         queue: PlayQueue,
         playMode: PlayMode = PlayMode.SEQUENTIAL,
         apply: (GaplessPlaybackPlan) -> Unit,
@@ -90,6 +108,7 @@ class PlayerGaplessControlCoordinatorTest {
         PlayerGaplessControlCoordinator.Callbacks(
             gaplessEnabled = { gaplessEnabled },
             automaticCrossfadeEnabled = { automaticCrossfadeEnabled },
+            manualOverlapEnabled = { manualOverlapEnabled },
             currentQueue = { queue },
             currentPlayMode = { playMode },
             peekShuffleIndex = { -1 },

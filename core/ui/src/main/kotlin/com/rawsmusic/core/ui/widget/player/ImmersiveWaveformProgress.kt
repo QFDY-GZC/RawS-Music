@@ -35,11 +35,13 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AudioUtils
@@ -74,6 +76,7 @@ fun ImmersiveSecondProgressBar(
     colors: ImmersiveWaveformColors,
     onSeekStart: () -> Unit,
     onSeekStop: (Float) -> Unit,
+    horizontalExtension: Dp = 0.dp,
     modifier: Modifier = Modifier
 ) {
     var widthPx by remember { mutableIntStateOf(1) }
@@ -183,7 +186,11 @@ fun ImmersiveSecondProgressBar(
     }
     val latestDisplaySecond by rememberUpdatedState(displaySecond)
 
-    Column(modifier = modifier.fillMaxWidth()) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .extendTimelineHorizontally(horizontalExtension)
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -195,23 +202,34 @@ fun ImmersiveSecondProgressBar(
                         if (effectiveDurationMs <= 0L || widthPx <= 1) return@awaitEachGesture
                         val barStep = 7.45f * densityValue
                         val startSecond = latestDisplaySecond
-                        val startX = down.position.x
+                        val start = down.position
                         var lastSecond = startSecond
+                        var axis = PlayerTimelineGestureAxis.Undecided
                         var started = false
-                        down.consume()
                         try {
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Main)
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                val deltaX = change.position.x - startX
-                                if (!started && abs(deltaX) >= touchSlop) {
-                                    started = true
-                                    isDragging = true
-                                    dragSecond = startSecond
-                                    onSeekStart()
+                                val deltaX = change.position.x - start.x
+                                if (axis == PlayerTimelineGestureAxis.Undecided && change.isConsumed) {
+                                    axis = PlayerTimelineGestureAxis.VerticalScene
                                 }
-                                if (started) {
-                                    lastSecond = (startSecond - deltaX / barStep).coerceIn(0f, totalSeconds)
+                                if (axis == PlayerTimelineGestureAxis.Undecided) {
+                                    axis = resolvePlayerTimelineGestureAxis(
+                                        dx = deltaX,
+                                        dy = change.position.y - start.y,
+                                        touchSlop = touchSlop,
+                                    )
+                                    if (axis == PlayerTimelineGestureAxis.HorizontalSeek) {
+                                        started = true
+                                        isDragging = true
+                                        dragSecond = startSecond
+                                        onSeekStart()
+                                    }
+                                }
+                                if (axis == PlayerTimelineGestureAxis.HorizontalSeek) {
+                                    lastSecond = (startSecond - deltaX / barStep)
+                                        .coerceIn(0f, totalSeconds)
                                     dragSecond = lastSecond
                                     change.consume()
                                 }
@@ -325,6 +343,26 @@ fun ImmersiveSecondProgressBar(
             totalMs = effectiveDurationMs,
             textColor = colors.time
         )
+    }
+}
+
+private fun Modifier.extendTimelineHorizontally(extension: Dp): Modifier {
+    if (extension <= 0.dp) return this
+    return layout { measurable, constraints ->
+        val extraPx = extension.roundToPx().coerceAtLeast(0)
+        val viewportWidth = constraints.maxWidth.coerceAtLeast(constraints.minWidth)
+        val expandedWidth = (viewportWidth + extraPx * 2).coerceAtLeast(viewportWidth)
+        val placeable = measurable.measure(
+            constraints.copy(minWidth = expandedWidth, maxWidth = expandedWidth)
+        )
+        // The old implementation reported the expanded child width to the parent and then placed
+        // that same child at -extraPx. Inside the immersive player's centred/padded column this
+        // changed the layout coordinate system itself, so the seconds timeline was effectively
+        // shifted left and one edge could be clipped. Keep the parent's viewport width stable and
+        // let only the child paint symmetrically into the surrounding 30dp immersive padding.
+        layout(viewportWidth, placeable.height) {
+            placeable.place(-extraPx, 0)
+        }
     }
 }
 
@@ -457,30 +495,61 @@ internal fun ImmersiveWaveformProgressBar(
                             requireUnconsumed = false,
                             pass = PointerEventPass.Main
                         )
-                        if (totalDurationMs <= 0L || widthPx <= 1) {
-                            down.consume()
-                            return@awaitEachGesture
-                        }
-                        var lastFraction = (down.position.x / widthPx.toFloat()).coerceIn(0f, 1f)
-                        isDragging = true
-                        dragFraction = lastFraction
-                        onSeekStart()
-                        down.consume()
+                        if (totalDurationMs <= 0L || widthPx <= 1) return@awaitEachGesture
+
+                        val start = down.position
+                        var lastPosition = start
+                        var axis = PlayerTimelineGestureAxis.Undecided
+                        var seekStarted = false
+                        var lastFraction = (start.x / widthPx.toFloat()).coerceIn(0f, 1f)
+                        var finishedNormally = false
                         try {
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Main)
                                 val change = event.changes.firstOrNull { it.id == down.id }
                                     ?: event.changes.firstOrNull()
                                     ?: break
-                                lastFraction = (change.position.x / widthPx.toFloat()).coerceIn(0f, 1f)
-                                dragFraction = lastFraction
-                                change.consume()
-                                if (!change.pressed) break
+                                lastPosition = change.position
+                                if (axis == PlayerTimelineGestureAxis.Undecided && change.isConsumed) {
+                                    axis = PlayerTimelineGestureAxis.VerticalScene
+                                }
+                                if (axis == PlayerTimelineGestureAxis.Undecided) {
+                                    axis = resolvePlayerTimelineGestureAxis(
+                                        dx = change.position.x - start.x,
+                                        dy = change.position.y - start.y,
+                                        touchSlop = viewConfiguration.touchSlop,
+                                    )
+                                    if (axis == PlayerTimelineGestureAxis.HorizontalSeek) {
+                                        seekStarted = true
+                                        isDragging = true
+                                        onSeekStart()
+                                    }
+                                }
+                                if (axis == PlayerTimelineGestureAxis.HorizontalSeek) {
+                                    lastFraction = (change.position.x / widthPx.toFloat())
+                                        .coerceIn(0f, 1f)
+                                    dragFraction = lastFraction
+                                    change.consume()
+                                }
+                                if (!change.pressed) {
+                                    finishedNormally = true
+                                    break
+                                }
                             }
                         } finally {
-                            pendingSeekFraction = lastFraction
-                            isDragging = false
-                            onSeekStop(lastFraction)
+                            if (seekStarted) {
+                                pendingSeekFraction = lastFraction
+                                isDragging = false
+                                onSeekStop(lastFraction)
+                            } else if (finishedNormally &&
+                                axis == PlayerTimelineGestureAxis.Undecided
+                            ) {
+                                val tapFraction = (lastPosition.x / widthPx.toFloat())
+                                    .coerceIn(0f, 1f)
+                                pendingSeekFraction = tapFraction
+                                onSeekStart()
+                                onSeekStop(tapFraction)
+                            }
                         }
                     }
                 },

@@ -46,8 +46,9 @@ data class SongPowerListItem(
 
 /**
  * The third song-list line intentionally contains source information only.
- * Keep it short so the retained list renderer can ellipsize it without starting
- * a marquee animation for every physical holder during a fling.
+ * Keep it short so the retained list renderer does not spend unnecessary travel time on it.
+ * Marquee animation is still paused during an active fling and resumes for any real overflow
+ * once the list settles.
  */
 internal fun formatPowerListSongMeta(song: AudioFile): String {
     val format = song.format

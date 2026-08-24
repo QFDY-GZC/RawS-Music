@@ -76,7 +76,7 @@ internal class PlayerTransportControlCoordinator(
         val resolveExplicitPlayQueue: (AudioFile, List<AudioFile>, Int) -> Pair<List<AudioFile>, Int>,
         val primeSongSelectionForUi: (AudioFile) -> Unit,
         val shouldRouteExplicitPlayThroughManualSwitch: (AudioFile) -> Boolean,
-        val playManualSwitchFromStartLocked: suspend (AudioFile, List<AudioFile>, Int, String) -> Unit,
+        val playManualSwitchFromStartLocked: suspend (AudioFile, List<AudioFile>, Int, String, () -> Boolean) -> Unit,
         val playInternal: (AudioFile, List<AudioFile>, Int) -> Unit,
         val backendState: () -> BackendState,
         val backendStateAgeMs: () -> Long,
@@ -140,7 +140,7 @@ internal class PlayerTransportControlCoordinator(
                         resolvedQueue,
                         resolvedIndex,
                         "manual_select",
-                    )
+                    ) { isLatestPlayRequest(token) }
                 } else {
                     callbacks.playInternal(queuedSong, resolvedQueue, resolvedIndex)
                 }

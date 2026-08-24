@@ -28,6 +28,9 @@ class RealtimeSpectrumPipeline(
 
     companion object {
         private const val FRAME_PERIOD_MS = 16L
+        // Keep FFT/smoothing at the display cadence, but do not enqueue a new
+        // Compose state snapshot for every analysis tick.
+        private const val UI_DELIVERY_PERIOD_MS = 24L
         private const val MIN_SUBMIT_INTERVAL_NS = 8_000_000L
         private const val MAX_CAPTURE_BYTES = 160 * 1024
         private const val INITIAL_BUFFER_BYTES = 32 * 1024
@@ -63,6 +66,7 @@ class RealtimeSpectrumPipeline(
     private var closed = false
     @Volatile
     private var lastSubmitNs = 0L
+    private var lastUiDeliveryMs = 0L
     private var ticker: ScheduledFuture<*>? = null
 
     fun setActive(value: Boolean) {
@@ -77,6 +81,7 @@ class RealtimeSpectrumPipeline(
                     pendingMeta = FrameMeta()
                 }
                 lastSubmitNs = 0L
+                lastUiDeliveryMs = 0L
                 executor.execute {
                     NativeStereoSpectrumAnalyzer.reset()
                     output.fill(0f)
@@ -95,6 +100,7 @@ class RealtimeSpectrumPipeline(
                     hasPendingFrame = false
                     pendingMeta = FrameMeta()
                 }
+                lastUiDeliveryMs = 0L
                 executor.execute {
                     NativeStereoSpectrumAnalyzer.reset()
                     output.fill(0f)
@@ -184,7 +190,11 @@ class RealtimeSpectrumPipeline(
         } else {
             NativeStereoSpectrumAnalyzer.tick(paused = !playing, output = output)
         }
-        if (updated && active && !closed) {
+        val nowMs = SystemClock.elapsedRealtime()
+        if (updated && active && !closed &&
+            nowMs - lastUiDeliveryMs >= UI_DELIVERY_PERIOD_MS
+        ) {
+            lastUiDeliveryMs = nowMs
             onSpectrum(output.copyOf())
         }
     }

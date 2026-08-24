@@ -11,10 +11,10 @@ import android.os.Build
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.prefs.UsbBitPerfectMode
 import com.rawsmusic.module.data.source.playback.MusicSourceResolvedStreamRegistry
 import com.rawsmusic.module.data.prefs.TransitionPreferences
 import com.rawsmusic.module.player.AudioOutputManager
-import com.rawsmusic.module.player.UsbStatusNoticeBus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.concurrent.atomic.AtomicBoolean
@@ -38,6 +38,10 @@ class UsbExclusiveManager(private val context: Context) {
     companion object {
         private const val TAG = "UsbExclusiveManager"
         private const val USB_DT_INTERFACE = 0x04
+        private const val AUTH_OPEN_MAX_ATTEMPTS = 3
+        private const val NATIVE_INIT_MAX_ATTEMPTS = 3
+        private val AUTH_RETRY_DELAYS_MS = longArrayOf(60L, 180L)
+        private val NATIVE_INIT_RETRY_DELAYS_MS = longArrayOf(120L, 420L)
     }
 
     enum class State {
@@ -74,6 +78,8 @@ class UsbExclusiveManager(private val context: Context) {
 
     private var currentDevice: UsbDevice? = null
     private var connection: UsbDeviceConnection? = null
+    private var connectionDeviceId: Int = -1
+    private var connectionDeviceName: String? = null
     private var currentConfig: UsbAudioConfig? = null
     private var currentSourceSampleRate: Int = 0
     private var currentSourceBits: Int = 0
@@ -109,8 +115,20 @@ class UsbExclusiveManager(private val context: Context) {
             setState = { state -> _state.value = state },
             setError = { message -> _error.value = message },
             onFreshGrantBeforeResume = { device ->
-                AppLogger.i(TAG, "Fresh USB permission granted; queue DAC initialization notice")
-                UsbStatusNoticeBus.post("USB DAC 初始化成功！")
+                // UAPP opens the Android UsbDeviceConnection directly from the permission-result
+                // path, then hands that already-authorized FD to its transport thread. Mirror that
+                // ownership model here: permission is the authorization edge, not merely a flag to
+                // be re-observed much later during renderer preparation. The connection remains
+                // Java-owned until native teardown completes.
+                val primed = ensureAuthorizedConnectionOnTransport(
+                    requestedDevice = device,
+                    reason = "fresh_permission_grant",
+                    forceReopen = false,
+                ) != null
+                AppLogger.i(
+                    TAG,
+                    "Fresh USB permission authorization lease primed=$primed device=${device.deviceName}",
+                )
             },
             onPermissionResolved = { device, granted ->
                 AppLogger.i(TAG, "Permission resolved for ${device.productName}, granted=$granted")
@@ -120,6 +138,143 @@ class UsbExclusiveManager(private val context: Context) {
     }
 
     fun hasPermission(device: UsbDevice): Boolean = usbManager.hasPermission(device)
+
+    /**
+     * Keep Android's post-permission UsbDeviceConnection alive as an authorization lease.
+     *
+     * UAPP's Java layer opens the device immediately after the permission broadcast and forwards
+     * that exact FD to its USB transport initializer. RawS keeps native claim/set-alt lazy, but
+     * primes the Java connection at the same boundary so an OEM permission sheet cannot disappear
+     * and leave the first exclusive prepare racing a second openDevice().
+     */
+    fun primeAuthorizedDevice(device: UsbDevice, reason: String = "explicit_prime"): Boolean =
+        transportOwner.call("prime-authorized:$reason") {
+            ensureAuthorizedConnectionOnTransport(device, reason, forceReopen = false) != null
+        }
+
+    private fun resolveAttachedAuthorizedDevice(requestedDevice: UsbDevice): UsbDevice? {
+        val devices = usbManager.deviceList.values
+        val exact = devices.firstOrNull { it.deviceName == requestedDevice.deviceName }
+            ?: devices.firstOrNull { it.deviceId == requestedDevice.deviceId }
+        val candidate = exact ?: devices.filter {
+            it.vendorId == requestedDevice.vendorId &&
+                it.productId == requestedDevice.productId &&
+                usbDiscovery.isUsbAudioCandidateDevice(it)
+        }.singleOrNull()
+        if (candidate == null || !usbDiscovery.isUsbAudioCandidateDevice(candidate)) return null
+        return candidate.takeIf { usbManager.hasPermission(it) }
+    }
+
+    private fun closeJavaConnectionOnly(reason: String) {
+        val conn = connection
+        connection = null
+        connectionDeviceId = -1
+        connectionDeviceName = null
+        if (conn != null) {
+            AppLogger.i(
+                TAG,
+                "USB_AUTH_LEASE close conn=${System.identityHashCode(conn)} reason=$reason",
+            )
+            runCatching { conn.close() }
+                .onFailure { AppLogger.w(TAG, "USB_AUTH_LEASE connection.close failed reason=$reason", it) }
+        }
+    }
+
+    /** Must run on [transportOwner]. */
+    private fun ensureAuthorizedConnectionOnTransport(
+        requestedDevice: UsbDevice,
+        reason: String,
+        forceReopen: Boolean,
+    ): UsbDeviceConnection? {
+        var device: UsbDevice = resolveAttachedAuthorizedDevice(requestedDevice) ?: run {
+            AppLogger.e(
+                TAG,
+                "USB_AUTH_LEASE unavailable: attached/authorized device not found reason=$reason " +
+                    "requested=${requestedDevice.deviceName}",
+            )
+            return null
+        }
+        currentDevice = device
+
+        val existing = connection
+        if (!forceReopen &&
+            existing != null &&
+            connectionDeviceId == device.deviceId &&
+            connectionDeviceName == device.deviceName
+        ) {
+            val fd = runCatching { existing.fileDescriptor }.getOrDefault(-1)
+            if (fd >= 0) {
+                AppLogger.i(
+                    TAG,
+                    "USB_AUTH_LEASE reuse device=${device.deviceName} fd=$fd reason=$reason",
+                )
+                _state.value = State.READY
+                _error.value = null
+                return existing
+            }
+            AppLogger.w(TAG, "USB_AUTH_LEASE stale fd=$fd; reopening reason=$reason")
+        }
+
+        if (UsbAudioEngine.currentHandle != 0L) {
+            AppLogger.e(
+                TAG,
+                "USB_AUTH_LEASE refused Java reopen while native handle is live " +
+                    "handle=0x${UsbAudioEngine.currentHandle.toString(16)} reason=$reason",
+            )
+            return existing
+        }
+        closeJavaConnectionOnly("reopen:$reason")
+
+        for (attempt in 1..AUTH_OPEN_MAX_ATTEMPTS) {
+            device = resolveAttachedAuthorizedDevice(device) ?: run {
+                AppLogger.e(TAG, "USB_AUTH_LEASE device disappeared before attempt=$attempt reason=$reason")
+                return null
+            }
+            val opened = runCatching { usbManager.openDevice(device) }
+                .onFailure {
+                    AppLogger.w(
+                        TAG,
+                        "USB_AUTH_LEASE openDevice threw attempt=$attempt/$AUTH_OPEN_MAX_ATTEMPTS reason=$reason",
+                        it,
+                    )
+                }
+                .getOrNull()
+            val fd = opened?.let { runCatching { it.fileDescriptor }.getOrDefault(-1) } ?: -1
+            val rawBytes = opened?.let { runCatching { it.rawDescriptors?.size ?: 0 }.getOrDefault(0) } ?: 0
+            if (opened != null && fd >= 0) {
+                connection = opened
+                connectionDeviceId = device.deviceId
+                connectionDeviceName = device.deviceName
+                currentDevice = device
+                _state.value = State.READY
+                _error.value = null
+                AppLogger.i(
+                    TAG,
+                    "USB_AUTH_LEASE ready attempt=$attempt/$AUTH_OPEN_MAX_ATTEMPTS " +
+                        "device=${device.deviceName} fd=$fd rawBytes=$rawBytes reason=$reason",
+                )
+                return opened
+            }
+            opened?.let { runCatching { it.close() } }
+            AppLogger.w(
+                TAG,
+                "USB_AUTH_LEASE open failed attempt=$attempt/$AUTH_OPEN_MAX_ATTEMPTS " +
+                    "device=${device.deviceName} fd=$fd rawBytes=$rawBytes reason=$reason",
+            )
+            if (attempt < AUTH_OPEN_MAX_ATTEMPTS) {
+                val waitMs = AUTH_RETRY_DELAYS_MS.getOrElse(attempt - 1) { AUTH_RETRY_DELAYS_MS.last() }
+                try {
+                    Thread.sleep(waitMs)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return null
+                }
+            }
+        }
+        _state.value = State.ERROR
+        _error.value = "USB 设备已授权，但无法打开设备连接"
+        return null
+    }
 
     /** DSD/PCM→DSD sessions must never use PCM warm pause or standby reuse. */
     fun isDsdSessionActive(): Boolean =
@@ -168,8 +323,8 @@ class UsbExclusiveManager(private val context: Context) {
             return
         }
         // 必须确认真的是 USB audio 设备
-        if (!usbDiscovery.isUsbAudioOutputDevice(device)) {
-            AppLogger.d(TAG, "Attached device is not USB audio, ignore")
+        if (!usbDiscovery.isUsbAudioCandidateDevice(device)) {
+            AppLogger.d(TAG, "Attached device is not a USB audio candidate, ignore")
             return
         }
         AppLogger.i(TAG, "USB audio device confirmed, dumping descriptor:")
@@ -190,28 +345,20 @@ class UsbExclusiveManager(private val context: Context) {
      * 只扫描并记住 USB 音频设备，不 openDevice。
      */
     fun scanAndRememberDevice(): Boolean {
-        val devices = usbManager.deviceList.values
-        AppLogger.d(TAG, "Scanning ${devices.size} USB devices...")
-        for (device in devices) {
-            AppLogger.d(
-                TAG,
-                "Device: ${device.deviceName}, VID=${device.vendorId.toString(16)}, " +
-                        "PID=${device.productId.toString(16)}, interfaces=${device.interfaceCount}"
-            )
-            if (usbDiscovery.isUsbAudioOutputDevice(device)) {
-                currentDevice = device
-                AppLogger.i(TAG, "Remembered USB audio device: ${device.productName}")
-                usbDiscovery.dumpInterfaces(device)
-                return true
-            }
+        val device = usbDiscovery.findUsbAudioDevice()
+        if (device != null) {
+            currentDevice = device
+            AppLogger.i(TAG, "Remembered USB audio device: ${device.productName}")
+            usbDiscovery.dumpInterfaces(device)
+            return true
         }
         currentDevice = null
-        AppLogger.w(TAG, "No USB audio output device found")
+        AppLogger.w(TAG, "No USB audio candidate found")
         return false
     }
 
     fun rememberDeviceOnly(device: UsbDevice, reason: String = "unknown") {
-        if (!usbDiscovery.isUsbAudioOutputDevice(device)) {
+        if (!usbDiscovery.isUsbAudioCandidateDevice(device)) {
             AppLogger.d(TAG, "rememberDeviceOnly ignored non-audio device: ${device.deviceName} reason=$reason")
             return
         }
@@ -227,8 +374,8 @@ class UsbExclusiveManager(private val context: Context) {
 
     /**
      * 请求 USB 权限。
-     * 权限获取后只记住设备，不 openDevice。
-     * openDevice 在 prepareForPlayback 中完成。
+     * 权限获取后由 Transport owner 立即尝试建立 Java UsbDeviceConnection 授权租约。
+     * native claim/set-alt 仍然只在真正 prepareForPlayback 时执行。
      */
     fun requestPermissionSafely(device: UsbDevice) = permissionCoordinator.requestSafely(device)
 
@@ -243,8 +390,8 @@ class UsbExclusiveManager(private val context: Context) {
      */
     /**
      * 播放每首歌/每次格式变化时调用。
-     * 这里才 openDevice + 初始化 native。
-     * connection 作为成员变量一直持有到 nativeClose 之后。
+     * 这里初始化 native；若授权回调已经预先 openDevice，则复用同一 Java connection。
+     * connection 作为成员变量一直持有到 nativeClose 之后，并在失败时做有界 reopen。
      */
     fun prepareForPlayback(
         sampleRate: Int,
@@ -252,7 +399,8 @@ class UsbExclusiveManager(private val context: Context) {
         channels: Int,
         srcFilePath: String? = null,
         allowFallback: Boolean = true,
-        suppressDsdForRetry: Boolean = false
+        suppressDsdForRetry: Boolean = false,
+        effectiveBitPerfect: Boolean? = null,
     ): Boolean = transportOwner.call("prepare ${sampleRate}/${bits}/${channels}") {
         prepareForPlaybackOnTransport(
             sampleRate = sampleRate,
@@ -260,7 +408,8 @@ class UsbExclusiveManager(private val context: Context) {
             channels = channels,
             srcFilePath = srcFilePath,
             allowFallback = allowFallback,
-            suppressDsdForRetry = suppressDsdForRetry
+            suppressDsdForRetry = suppressDsdForRetry,
+            effectiveBitPerfect = effectiveBitPerfect,
         )
     }
 
@@ -270,7 +419,8 @@ class UsbExclusiveManager(private val context: Context) {
         channels: Int,
         srcFilePath: String?,
         allowFallback: Boolean,
-        suppressDsdForRetry: Boolean
+        suppressDsdForRetry: Boolean,
+        effectiveBitPerfect: Boolean?,
     ): Boolean {
         // 配置 native breadcrumb 日志路径（用于突发重启后的崩溃定位）
         try {
@@ -296,7 +446,20 @@ class UsbExclusiveManager(private val context: Context) {
         }
         val dsdTransport = UsbDsdTransport.fromPref(AppPreferences.Player.usbDsdTransportMode)
         val caps = UsbAudioEngine.getDeviceCapabilities()
-        val bitPerfect = AppPreferences.Player.bitPerfectEnabled
+        val bitPerfect = effectiveBitPerfect ?: (AppPreferences.Player.usbBitPerfectMode == UsbBitPerfectMode.STRICT)
+        // STRICT is a transport contract, not a preference to silently weaken.
+        // The normal Ffmpeg path rejects these geometries before reaching the USB manager;
+        // keep the same invariant here for direct/recovery callers as a second safety boundary.
+        if (bitPerfect && !sourceIsDsd &&
+            (sampleRate <= 0 || bits !in 1..32 || channels !in 1..2)
+        ) {
+            AppLogger.e(
+                TAG,
+                "prepareForPlayback: strict bit-perfect source geometry cannot be represented exactly " +
+                    "source=${sampleRate}/${bits}/${channels}",
+            )
+            return false
+        }
         val sourceDsdMode = if (sourceIsDsd && !suppressDsdForRetry) {
             buildSupportedDsdSourceDirectModeConfig(
                 sourceDsdRateHz = sourceDsdRateHz,
@@ -337,7 +500,6 @@ class UsbExclusiveManager(private val context: Context) {
                 "DSD unsupported by device; PCM fallback sourceRate=$sampleRate deviceRate=$dsdPcmFallbackRate"
             )
         }
-        UsbAudioEngine.setPcmOutputMode(pcmMode)
         val profile = UsbPlaybackProfilePolicy.plan(
             sampleRate = sampleRate,
             sourceBits = bits,
@@ -364,9 +526,6 @@ class UsbExclusiveManager(private val context: Context) {
                 "prepareForPlayback: sourceBits=$bits exceeds USB PCM max, " +
                     "use decoder/native S32LE and request 32-bit USB format"
             )
-        }
-        if (bitPerfect && !strictBitPerfectForUsb) {
-            AppLogger.w(TAG, "prepareForPlayback: strict bit-perfect disabled for >32-bit source")
         }
         val deviceSampleRate = profile.deviceSampleRate
         val deviceBits = profile.deviceBits
@@ -407,7 +566,8 @@ class UsbExclusiveManager(private val context: Context) {
                     channels = channels,
                     srcFilePath = srcFilePath,
                     allowFallback = false,
-                    suppressDsdForRetry = true
+                    suppressDsdForRetry = true,
+                    effectiveBitPerfect = false,
                 )
             }
             if (strictBitPerfectForUsb) {
@@ -434,7 +594,7 @@ class UsbExclusiveManager(private val context: Context) {
                     UsbAudioFormatPolicy.selectConfigForFormat(rate, bits, subslot, channelCount) != null
                 }
             )
-            return prepareForPlayback(fmt.sampleRate, fmt.bitsPerSample, fmt.channels, newPath, allowFallback)
+            return prepareForPlayback(fmt.sampleRate, fmt.bitsPerSample, fmt.channels, newPath, allowFallback, effectiveBitPerfect = false)
         }
         val runtimeForFastReuse = runCatching { UsbAudioEngine.getRuntimeFormat() }.getOrNull()
         val runtimeFeedbackEndpoint = runtimeForFastReuse?.feedbackEndpoint ?: -1
@@ -468,13 +628,13 @@ class UsbExclusiveManager(private val context: Context) {
             AppLogger.i(TAG, "prepareForPlayback: fast reuse existing USB handle for cfg=$cfg wasRunning=$wasRunning")
             // 同格式切歌不要 close/open/重新枚举 USB。只 flush ring 并重置 session，
             // 让下一首直接预填并 nativeStart，避免 1~3 秒的 release/reclaim 延迟。
-            UsbAudioEngine.flushForNextTrack("prepareForPlayback_fast_reuse_same_config")
-            if (UsbAudioEngine.isNativeSessionBroken()) {
+            val boundaryApplied = UsbAudioEngine.flushForNextTrack("prepareForPlayback_fast_reuse_same_config")
+            if (!boundaryApplied || UsbAudioEngine.isNativeSessionBroken()) {
                 AppLogger.e(
                     TAG,
-                    "prepareForPlayback: fast reuse rejected because cancelled USB transfers remain; reopening device",
+                    "prepareForPlayback: fast reuse rejected because native track boundary was not safe; reopening device",
                 )
-                closeAllNow()
+                closeNativeSessionPreservingAuthorization("unsafe_fast_reuse")
                 return prepareForPlayback(
                     sampleRate = sampleRate,
                     bits = bits,
@@ -482,6 +642,7 @@ class UsbExclusiveManager(private val context: Context) {
                     srcFilePath = srcFilePath,
                     allowFallback = allowFallback,
                     suppressDsdForRetry = suppressDsdForRetry,
+                    effectiveBitPerfect = bitPerfect,
                 )
             }
             _state.value = State.READY
@@ -495,29 +656,22 @@ class UsbExclusiveManager(private val context: Context) {
             )
         }
 
-        closeAllNow()
+        closeNativeSessionPreservingAuthorization("prepare_fresh_stream")
 
-        // Transaction boundary: only after the old writer/handle/connection are fully closed may
-        // process-global PCM/DoP/Native-DSD state change. This prevents an old DSD altsetting from
-        // observing a new PCM configuration during settings changes or recovery.
-        UsbAudioEngine.setDsdConversion(
-            enabled = dsdMode != null,
-            rate = dsdMode?.multiplier ?: AppPreferences.Player.dsdRate,
-            type = AppPreferences.Player.dsdConversionType,
-            dither = if (pcmDsdActive) AppPreferences.Player.dsdDitherEnabled else false,
-            dop = dsdMode?.transport == UsbDsdTransport.DOP,
-        )
-        AppLogger.i(
-            TAG,
-            "DSD session config applied after old USB close: key=$desiredDsdSessionKey handle=${UsbAudioEngine.currentHandle}",
-        )
-
-        val conn = usbManager.openDevice(device)
-            ?: return false.also { AppLogger.e(TAG, "openDevice failed") }
-        connection = conn
+        // Native transport policy is committed later as one UsbNativeSessionPolicy transaction.
+        // Do not mutate process-global PCM/DoP/compat flags here: Android keeps the authorization
+        // lease, while native receives the complete immutable session request immediately before
+        // descriptor scoring / claim / clock / alt-setting work.
+        val conn = ensureAuthorizedConnectionOnTransport(
+            requestedDevice = device,
+            reason = "prepare_before_native",
+            forceReopen = false,
+        ) ?: return false.also {
+            AppLogger.e(TAG, "prepareForPlayback failed: authorized openDevice lease unavailable")
+        }
 
         // 提前扫描 Feature Unit（供 UI 提示，C++ 层会做更完整的安全验证）
-        val volInfo = queryHardwareVolume(device, conn)
+        val volInfo = queryHardwareVolume(currentDevice ?: device, conn)
         _volumeInfo.value = volInfo
         if (volInfo != null) {
             AppLogger.i(TAG, "Feature Unit descriptor hint: entityId=0x${volInfo.entityId.toString(16)} " +
@@ -528,26 +682,36 @@ class UsbExclusiveManager(private val context: Context) {
             AppLogger.i(TAG, "No Volume Feature Unit descriptor hint found; native validation may still report final state")
         }
 
-        val fd = conn.fileDescriptor
         AppLogger.w(
             TAG,
             "USB_INIT_FINAL sourceSr=$sampleRate deviceSr=${cfg.sampleRate} " +
                 "prefRate=${AppPreferences.Player.usbTargetSampleRate} " +
-                "bitPerfect=${AppPreferences.Player.bitPerfectEnabled} " +
+                "bitPerfect=$bitPerfect policy=${AppPreferences.Player.usbBitPerfectMode} " +
                 "sourceBits=${cfg.sourceBits} deviceBits=${cfg.bits} deviceSubslot=${cfg.subslot} frame=${cfg.frameSize}"
         )
-        val handle = UsbAudioEngine.initWithHandle(
-            fd = fd,
-            sampleRate = cfg.sampleRate,
+        val stagedPolicy = UsbAudioEngine.snapshotNextSessionPolicy()
+        val sessionPolicy = stagedPolicy.copy(
+            exclusive = true,
+            // Fixed-digital-volume is a native playback-mode contract even when the decoder is
+            // not in strict bit-perfect mode. Preserve that distinction without relying on a
+            // previous nativeSetPolicy() call.
+            bitPerfect = bitPerfect || AppPreferences.Player.usbVolumeMode == 2,
+            hardwareVolumeRequested =
+                AppPreferences.Player.usbVolumeMode == 1 && AppPreferences.Player.hardwareFeatureUnitEnabled,
+            pcmOutputMode = pcmMode,
+            dsdConversionEnabled = dsdMode != null,
+            dsdRate = dsdMode?.multiplier ?: AppPreferences.Player.dsdRate,
+            dsdConversionType = AppPreferences.Player.dsdConversionType,
+            dsdDitherEnabled = pcmDsdActive && AppPreferences.Player.dsdDitherEnabled,
+            dsdDoPEnabled = dsdMode?.transport == UsbDsdTransport.DOP,
+        )
+        UsbAudioEngine.stageNextSessionPolicy(sessionPolicy, "prepare_for_playback")
+        val handle = initNativeWithAuthorizedRetry(
+            requestedDevice = currentDevice ?: device,
+            cfg = cfg,
             sourceSampleRate = sampleRate,
-            sourceBitsPerSample = cfg.sourceBits,
-            channels = cfg.channels,
-            bitsPerSample = cfg.bits,
-            iface = cfg.iface,
-            alt = cfg.alt,
-            outEndpoint = cfg.outEp,
-            feedbackEndpoint = cfg.fbEp,
-            subslotSize = cfg.subslot
+            bitPerfect = bitPerfect,
+            sessionPolicy = sessionPolicy,
         )
         if (handle == 0L) {
             AppLogger.e(TAG, "nativeInitUsbDevice failed")
@@ -566,7 +730,8 @@ class UsbExclusiveManager(private val context: Context) {
                     channels = channels,
                     srcFilePath = srcFilePath,
                     allowFallback = false,
-                    suppressDsdForRetry = true
+                    suppressDsdForRetry = true,
+                    effectiveBitPerfect = false,
                 )
             }
             if (strictBitPerfectForUsb) {
@@ -591,7 +756,8 @@ class UsbExclusiveManager(private val context: Context) {
                     channels = fmt.channels,
                     srcFilePath = newPath,
                     allowFallback = false,
-                    suppressDsdForRetry = suppressDsdForRetry
+                    suppressDsdForRetry = suppressDsdForRetry,
+                    effectiveBitPerfect = false,
                 )
             }
             return false
@@ -624,6 +790,121 @@ class UsbExclusiveManager(private val context: Context) {
         return true
     }
 
+    private fun initNativeWithAuthorizedRetry(
+        requestedDevice: UsbDevice,
+        cfg: UsbAudioConfig,
+        sourceSampleRate: Int,
+        bitPerfect: Boolean,
+        sessionPolicy: UsbNativeSessionPolicy,
+    ): Long {
+        for (attempt in 1..NATIVE_INIT_MAX_ATTEMPTS) {
+            val conn = ensureAuthorizedConnectionOnTransport(
+                requestedDevice = requestedDevice,
+                reason = "native_init_attempt_$attempt",
+                forceReopen = attempt > 1,
+            )
+            if (conn == null) {
+                AppLogger.w(
+                    TAG,
+                    "USB_NATIVE_INIT_RETRY no connection attempt=$attempt/$NATIVE_INIT_MAX_ATTEMPTS",
+                )
+            } else {
+                val fd = runCatching { conn.fileDescriptor }.getOrDefault(-1)
+                if (fd >= 0) {
+                    AppLogger.i(
+                        TAG,
+                        "USB_NATIVE_INIT_RETRY attempt=$attempt/$NATIVE_INIT_MAX_ATTEMPTS " +
+                            "fd=$fd device=${requestedDevice.deviceName} cfg=$cfg bitPerfect=$bitPerfect",
+                    )
+                    val handle = UsbAudioEngine.initWithHandle(
+                        fd = fd,
+                        sampleRate = cfg.sampleRate,
+                        sourceSampleRate = sourceSampleRate,
+                        sourceBitsPerSample = cfg.sourceBits,
+                        channels = cfg.channels,
+                        bitsPerSample = cfg.bits,
+                        iface = cfg.iface,
+                        alt = cfg.alt,
+                        outEndpoint = cfg.outEp,
+                        feedbackEndpoint = cfg.fbEp,
+                        subslotSize = cfg.subslot,
+                        sessionPolicy = sessionPolicy,
+                    )
+                    if (handle != 0L) {
+                        AppLogger.i(
+                            TAG,
+                            "USB_NATIVE_INIT_RETRY success attempt=$attempt/$NATIVE_INIT_MAX_ATTEMPTS " +
+                                "handle=0x${handle.toString(16)}",
+                        )
+                        return handle
+                    }
+                }
+            }
+
+            AppLogger.w(
+                TAG,
+                "USB_NATIVE_INIT_RETRY failed attempt=$attempt/$NATIVE_INIT_MAX_ATTEMPTS " +
+                    "device=${requestedDevice.deviceName}; reopen Android connection before retry",
+            )
+            if (attempt < NATIVE_INIT_MAX_ATTEMPTS) {
+                // libusb_wrap_sys_device/claim/alt failures can poison only this wrapped FD. Keep
+                // the Android permission but replace the Java connection before the next attempt,
+                // matching UAPP's reopen/re-enumeration recovery rather than changing PCM format.
+                if (UsbAudioEngine.currentHandle == 0L) {
+                    // Defensive teardown for partially-created native contexts. initWithHandle()
+                    // normally unwinds them itself, but a retry boundary must never inherit a
+                    // half-open libusb session.
+                    UsbAudioEngine.closeNative("UsbExclusiveManager.native_init_retry_cleanup:$attempt")
+                    closeJavaConnectionOnly("native_init_retry_$attempt")
+                }
+                val waitMs = NATIVE_INIT_RETRY_DELAYS_MS.getOrElse(attempt - 1) {
+                    NATIVE_INIT_RETRY_DELAYS_MS.last()
+                }
+                try {
+                    Thread.sleep(waitMs)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return 0L
+                }
+            }
+        }
+        return 0L
+    }
+
+    /**
+     * Close only native stream ownership while retaining Android's authorized connection.
+     *
+     * This is the normal permission/cutover retry boundary. Keeping the Java FD lease prevents a
+     * fresh grant from being immediately closed and reopened before libusb gets a chance to wrap it.
+     */
+    @Synchronized
+    private fun closeNativeSessionPreservingAuthorization(reason: String) {
+        stopHidListening()
+        UsbAudioEngine.closeNative("UsbExclusiveManager.preserveAuth:$reason")
+        currentConfig = null
+        currentSourceSampleRate = 0
+        currentSourceBits = 0
+        currentDsdSessionKey = null
+        _volumeInfo.value = null
+
+        val device = currentDevice
+        val canKeepLease = device != null &&
+            connection != null &&
+            connectionDeviceId == device.deviceId &&
+            connectionDeviceName == device.deviceName &&
+            usbManager.hasPermission(device) &&
+            usbManager.deviceList.containsKey(device.deviceName)
+        if (!canKeepLease) {
+            closeJavaConnectionOnly("preserve-auth-invalid:$reason")
+        }
+        _state.value = if (device != null && usbManager.hasPermission(device)) State.READY else State.IDLE
+        _error.value = null
+        AppLogger.i(
+            TAG,
+            "USB_AUTH_LEASE native reset preserve=$canKeepLease device=${device?.deviceName} reason=$reason",
+        )
+    }
+
     /**
      * 强制关闭所有 native / Java 资源，确保下次播放是干净状态。
      */
@@ -634,11 +915,7 @@ class UsbExclusiveManager(private val context: Context) {
         currentSourceSampleRate = 0
         currentSourceBits = 0
         currentDsdSessionKey = null
-        val conn = connection
-        connection = null
-        conn?.let {
-            try { it.close() } catch (e: Exception) { AppLogger.w(TAG, "close failed", e) }
-        }
+        closeJavaConnectionOnly("close_all_now")
         _state.value = State.IDLE
         _error.value = null
         _volumeInfo.value = null
@@ -772,7 +1049,10 @@ class UsbExclusiveManager(private val context: Context) {
     fun stopAndFlushStreaming(reason: String = "track_change") =
         transportOwner.call("flush:$reason") {
             AppLogger.i(TAG, "stopAndFlushStreaming called, reason=$reason")
-            UsbAudioEngine.flushForNextTrack("stopAndFlushStreaming:$reason")
+            val boundaryApplied = UsbAudioEngine.flushForNextTrack("stopAndFlushStreaming:$reason")
+            if (!boundaryApplied) {
+                AppLogger.w(TAG, "stopAndFlushStreaming: native boundary not applied reason=$reason")
+            }
         }
 
     fun release(reason: String = "unknown") = transportOwner.call("release:$reason") {
@@ -784,6 +1064,15 @@ class UsbExclusiveManager(private val context: Context) {
         transportOwner.call("reset:$reason") {
             AppLogger.w(TAG, "resetPlaybackPipeline requested: reason=$reason, state=${_state.value}")
             closeAllNow()
+        }
+
+    fun resetPlaybackPipelinePreservingAuthorization(reason: String = "unknown") =
+        transportOwner.call("reset-preserve-auth:$reason") {
+            AppLogger.w(
+                TAG,
+                "resetPlaybackPipelinePreservingAuthorization requested: reason=$reason state=${_state.value}",
+            )
+            closeNativeSessionPreservingAuthorization(reason)
         }
 
     fun notifyNativeDetached(reason: String = "detached") =
@@ -829,16 +1118,7 @@ class UsbExclusiveManager(private val context: Context) {
                 "closeLocked: preserving remembered USB device ${currentDevice?.deviceName} reason=$reason"
             )
         }
-        val conn = connection
-        connection = null
-        if (conn != null) {
-            AppLogger.i(TAG, "UsbDeviceConnection.close conn=${System.identityHashCode(conn)}")
-            try {
-                conn.close()
-            } catch (e: Exception) {
-                AppLogger.w(TAG, "connection.close failed", e)
-            }
-        }
+        closeJavaConnectionOnly("close_locked:$reason")
         val rememberedDevice = currentDevice
         _state.value = when {
             rememberedDevice == null -> State.IDLE

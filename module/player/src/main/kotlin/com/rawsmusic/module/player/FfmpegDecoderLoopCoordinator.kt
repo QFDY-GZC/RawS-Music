@@ -11,15 +11,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class FfmpegDecoderLoopCoordinator(
     private val tag: String,
     private val decoderChunkWriter: FfmpegDecoderChunkWriter,
+    private val gaplessAuditRegistry: DecoderGaplessAuditRegistry,
     private val isPlaying: () -> Boolean,
     private val setPlaying: (Boolean) -> Unit,
     private val isReleased: () -> Boolean,
     private val isStillCurrentPlayback: (String, Int) -> Boolean,
-    private val consumePendingSeek: () -> Long?,
-    private val pendingSeekSerial: () -> Long,
+    private val consumePendingSeek: () -> PendingDecoderSeek.Request?,
     private val setPositionMs: (Long) -> Unit,
-    private val markAudioTrackFlush: () -> Unit,
-    private val flushNativePcmBuffer: (String) -> Unit,
+    private val canStartDecoderSeek: (serial: Long) -> Boolean,
     private val pausedSeekCommitGate: PausedSeekCommitGate,
     private val seekOutputBarrier: SeekOutputBarrier,
     private val activeDecoderHandle: () -> Long,
@@ -30,6 +29,11 @@ internal class FfmpegDecoderLoopCoordinator(
     private val onPlaybackError: (String) -> Unit,
     private val decoderHandleTransferred: AtomicBoolean,
     private val clearDecoderHandleIfMatches: (Long) -> Unit,
+    private val onFirstDecode: (sourcePath: String, generation: Int, decodedBytes: Int, elapsedMs: Double) -> Unit = { _, _, _, _ -> },
+    private val onSeekCommitted: (serial: Long, targetMs: Long) -> Boolean = { _, _ -> true },
+    private val onSeekFailed: (serial: Long, targetMs: Long, reason: String) -> Unit = { _, _, _ -> },
+    private val onDecoderEof: (sourcePath: String, generation: Int, totalDecodedBytes: Long) -> Unit = { _, _, _ -> },
+    private val onDecodeFailed: (sourcePath: String, generation: Int, result: Int) -> Unit = { _, _, _ -> },
 ) {
     fun run(
         handle: Long,
@@ -47,6 +51,21 @@ internal class FfmpegDecoderLoopCoordinator(
             AppLogger.w(tag, "Unable to raise FFmpeg decoder thread priority", it)
         }
         val decodeBuffer = ByteArray(decodeChunkSize)
+        val decoderSampleRate = runCatching { FFmpegBridge.getDecoderSampleRate(handle) }.getOrDefault(0)
+        val decoderChannels = runCatching { FFmpegBridge.getDecoderChannels(handle) }.getOrDefault(0)
+        val decoderBits = runCatching { FFmpegBridge.getDecoderBitsPerSample(handle) }.getOrDefault(0)
+        val decoderBytesPerSample = when {
+            decoderBits <= 1 -> 1
+            decoderBits <= 16 -> 2
+            else -> 4
+        }
+        val decoderFrameSize = (decoderChannels * decoderBytesPerSample).coerceAtLeast(1)
+        gaplessAuditRegistry.ensure(
+            decoderSerial = handle,
+            sourcePath = sourcePath,
+            outputSampleRate = decoderSampleRate,
+            outputFrameSize = decoderFrameSize,
+        )
 
         AppLogger.i(
             tag,
@@ -73,21 +92,25 @@ internal class FfmpegDecoderLoopCoordinator(
                     break
                 }
 
-                val seekTarget = consumePendingSeek()
-                if (seekTarget != null) {
-                    val seekSerial = pendingSeekSerial()
-                    ringBuffer.clear()
-                    val seekOk = FFmpegBridge.seekDecoder(handle, seekTarget)
-                    if (seekSerial != pendingSeekSerial()) {
+                val seekRequest = consumePendingSeek()
+                if (seekRequest != null) {
+                    val seekSerial = seekRequest.serial
+                    val seekTarget = seekRequest.targetMs
+                    if (!canStartDecoderSeek(seekSerial)) {
+                        seekOutputBarrier.cancel(seekSerial)
                         AppLogger.w(
                             tag,
-                            ">>> DECODER seek superseded: seekTarget=$seekTarget " +
-                                "serial=$seekSerial latest=${pendingSeekSerial()}",
+                            ">>> DECODER seek rejected by native barrier: " +
+                                "seekTarget=$seekTarget serial=$seekSerial",
                         )
                         continue
                     }
+                    gaplessAuditRegistry.invalidate(handle, "seek_serial_$seekSerial")
+                    ringBuffer.clear()
+                    val seekOk = FFmpegBridge.seekDecoder(handle, seekTarget)
                     if (!seekOk) {
                         seekOutputBarrier.cancel(seekSerial)
+                        onSeekFailed(seekSerial, seekTarget, "ffmpeg_seek_failed")
                         AppLogger.w(
                             tag,
                             ">>> DECODER seek failed: seekTarget=$seekTarget serial=$seekSerial",
@@ -95,15 +118,22 @@ internal class FfmpegDecoderLoopCoordinator(
                         continue
                     }
                     ringBuffer.clear()
+                    if (!onSeekCommitted(seekSerial, seekTarget)) {
+                        seekOutputBarrier.cancel(seekSerial)
+                        AppLogger.w(
+                            tag,
+                            ">>> DECODER seek commit rejected as stale: " +
+                                "seekTarget=$seekTarget serial=$seekSerial",
+                        )
+                        continue
+                    }
                     setPositionMs(seekTarget)
                     pausedSeekCommitGate.markCommitted(seekSerial)
                     seekOutputBarrier.markCommitted(seekSerial)
-                    markAudioTrackFlush()
-                    flushNativePcmBuffer("decoder_pending_seek")
                     AppLogger.w(
                         tag,
                         ">>> DECODER seek done: seekTarget=$seekTarget, " +
-                            "barrier=${seekOutputBarrier.describe()}",
+                            "serial=$seekSerial barrier=${seekOutputBarrier.describe()}",
                     )
                     continue
                 }
@@ -142,6 +172,7 @@ internal class FfmpegDecoderLoopCoordinator(
                         "Decoder thread: FIRST decodeChunk returned $decoded bytes " +
                             "(started ${"%.1f".format(firstMs)}ms ago, rbAvail=$ringBufferAvailable)",
                     )
+                    onFirstDecode(sourcePath, generation, decoded, firstMs)
                     onlineEntry?.let {
                         AppLogger.i(
                             tag,
@@ -162,6 +193,7 @@ internal class FfmpegDecoderLoopCoordinator(
 
                 when {
                     decoded > 0 -> {
+                        gaplessAuditRegistry.recordDecodedBytes(handle, decoded)
                         val chunk = decoderChunkWriter.write(
                             decodeBuffer = decodeBuffer,
                             decoded = decoded,
@@ -200,6 +232,16 @@ internal class FfmpegDecoderLoopCoordinator(
                         if (ownsActiveDecoder) {
                             markDecoderDone()
                         }
+                        val gaplessAudit = gaplessAuditRegistry.finish(handle)
+                        onDecoderEof(sourcePath, generation, totalDecodedBytes)
+                        if (gaplessAudit != null) {
+                            AppLogger.i(
+                                tag,
+                                "Decoder gapless EOF audit: verification=${gaplessAudit.verification} " +
+                                    "decodedFrames=${gaplessAudit.decodedOutputFrames} " +
+                                    "expectedAudible=${gaplessAudit.expectedAudibleOutputFrames}",
+                            )
+                        }
                         ringBuffer.markEOF()
                         break
                     }
@@ -211,6 +253,8 @@ internal class FfmpegDecoderLoopCoordinator(
                                 "(decodeCalls=$decodeCallCount totalDecoded=$totalDecodedBytes " +
                                 "totalWrittenToRb=$totalWrittenToRingBuffer)",
                         )
+                        gaplessAuditRegistry.invalidate(handle, "decode_error_$decoded")
+                        onDecodeFailed(sourcePath, generation, decoded)
                         onlineEntry?.let {
                             AppLogger.e(
                                 tag,
@@ -225,15 +269,30 @@ internal class FfmpegDecoderLoopCoordinator(
                 }
             }
         } catch (_: InterruptedException) {
+            gaplessAuditRegistry.invalidate(handle, "interrupted")
             AppLogger.w(tag, "Decoder thread interrupted")
         } catch (error: Exception) {
+            gaplessAuditRegistry.invalidate(handle, "fatal_${error.javaClass.simpleName}")
             AppLogger.e(tag, "Decoder thread fatal error", error)
             runCatching {
-                setPlaying(false)
+                // This decoder may be the retired owner of the previous track.  During a
+                // rapid replacement (especially across formats) FFmpeg can surface an
+                // exception only after the new playback generation has already started.
+                // Never let that stale thread clear the process-wide playing flag or move
+                // the replacement session to ERROR.  Its local ring/handle still need
+                // normal cleanup in finally.
+                val ownsCurrentPlayback = isStillCurrentPlayback(sourcePath, generation)
                 ringBuffer.close()
-                if (isStillCurrentPlayback(sourcePath, generation)) {
+                if (ownsCurrentPlayback) {
+                    setPlaying(false)
                     setState(FfmpegAudioPlayer.State.ERROR)
                     onPlaybackError("解码线程异常: ${error.message}")
+                } else {
+                    AppLogger.w(
+                        tag,
+                        "Decoder thread fatal error belongs to stale generation; " +
+                            "replacement playback state left untouched source=$sourcePath gen=$generation",
+                    )
                 }
             }.onFailure { notifyError ->
                 AppLogger.e(tag, "Error notifying decoder failure", notifyError)
@@ -261,10 +320,12 @@ internal class FfmpegDecoderLoopCoordinator(
                     "Decoder thread ended (stop requested token=${stopToken.label} " +
                         "reason=${stopToken.reason}), closing retired handle=$handle in owner thread",
                 )
+                gaplessAuditRegistry.discard(handle, "stop_owner_close")
                 runCatching { FFmpegBridge.closeDecoder(handle) }
                     .onFailure { error -> AppLogger.e(tag, "Error closing retired decoder in owner thread", error) }
                 clearDecoderHandleIfMatches(handle)
             } else {
+                gaplessAuditRegistry.discard(handle, "stop_without_owner_close")
                 AppLogger.w(
                     tag,
                     "Decoder thread ended (stop requested token=${stopToken.label} " +
@@ -277,6 +338,7 @@ internal class FfmpegDecoderLoopCoordinator(
             AppLogger.w(tag, "Decoder thread ended but handle transferred to new thread, NOT closing handle=$handle")
         } else {
             AppLogger.i(tag, "Decoder thread ended (error/interrupt), closing handle=$handle")
+            gaplessAuditRegistry.discard(handle, "thread_error_or_interrupt")
             runCatching { FFmpegBridge.closeDecoder(handle) }
                 .onFailure { error -> AppLogger.e(tag, "Error closing decoder in thread finally", error) }
             clearDecoderHandleIfMatches(handle)

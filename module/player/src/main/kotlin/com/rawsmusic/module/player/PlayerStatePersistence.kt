@@ -10,6 +10,7 @@ internal data class RestoredPlayerState(
     val song: AudioFile,
     val queue: List<AudioFile>,
     val queueIndex: Int,
+    val priorityQueue: List<AudioFile>,
     val positionMs: Long,
     val source: String,
     val repositorySongCount: Int
@@ -53,6 +54,10 @@ internal class PlayerStatePersistence {
         AppPreferences.Player.playQueueSongsJson = encodeSongList(songs)
     }
 
+    fun savePriorityQueue(songs: List<AudioFile>) {
+        AppPreferences.Player.priorityQueueSongsJson = encodeSongList(songs)
+    }
+
     fun encodeSongList(songs: List<AudioFile>): String = encodeSongs(songs)
 
     fun decodeSongList(json: String): List<AudioFile> = decodeSongs(
@@ -81,6 +86,7 @@ internal class PlayerStatePersistence {
             songsById = songsById,
             songsByPath = songsByPath
         )
+        val restoredPriorityQueue = decodeSongList(AppPreferences.Player.priorityQueueSongsJson)
         val savedQueueIndex = AppPreferences.Player.currentQueueIndex
         val indexedQueueSong = restoredQueue.getOrNull(savedQueueIndex)
             ?.takeIf { it.path == lastPath }
@@ -117,6 +123,7 @@ internal class PlayerStatePersistence {
             song = song,
             queue = hydratedQueue,
             queueIndex = restoredIndex,
+            priorityQueue = restoredPriorityQueue,
             positionMs = positionMs,
             source = if (repositorySong != null) "repository_state" else "preference_snapshot",
             repositorySongCount = repositorySongs.size

@@ -31,6 +31,7 @@ internal class PlayerGaplessControlCoordinator(
     data class Callbacks(
         val gaplessEnabled: () -> Boolean,
         val automaticCrossfadeEnabled: () -> Boolean,
+        val manualOverlapEnabled: () -> Boolean,
         val currentQueue: () -> PlayQueue,
         val currentPlayMode: () -> PlayMode,
         val peekShuffleIndex: (PlayQueue) -> Int,
@@ -43,7 +44,8 @@ internal class PlayerGaplessControlCoordinator(
         try {
             val gaplessEnabled = callbacks.gaplessEnabled()
             val automaticCrossfadeEnabled = callbacks.automaticCrossfadeEnabled()
-            if (!gaplessEnabled && !automaticCrossfadeEnabled) {
+            val manualOverlapEnabled = callbacks.manualOverlapEnabled()
+            if (!gaplessEnabled && !automaticCrossfadeEnabled && !manualOverlapEnabled) {
                 callbacks.applyPlan(GaplessPlaybackPlan(null, false))
                 return
             }
