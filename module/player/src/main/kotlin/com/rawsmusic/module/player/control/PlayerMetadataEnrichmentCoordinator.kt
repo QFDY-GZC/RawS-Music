@@ -27,6 +27,7 @@ internal class PlayerMetadataEnrichmentCoordinator(
         val setCurrentSong: (AudioFile) -> Unit,
         val currentQueue: () -> PlayQueue,
         val setQueue: (PlayQueue) -> Unit,
+        val enrichRemoteCachedSong: (AudioFile) -> AudioFile?,
         val logInfo: (String) -> Unit,
     )
 
@@ -35,7 +36,33 @@ internal class PlayerMetadataEnrichmentCoordinator(
 
     fun start(song: AudioFile, remoteUrl: Boolean) {
         cancel()
-        if (remoteUrl) return
+        if (remoteUrl) {
+            enrichJob = scope.launch(Dispatchers.IO) {
+                var attempt = 0
+                while (attempt < REMOTE_CACHE_MAX_ATTEMPTS) {
+                    val enriched = runCatching { callbacks.enrichRemoteCachedSong(song) }.getOrNull()
+                    if (enriched != null) {
+                        withContext(Dispatchers.Main) {
+                            if (sameItem(callbacks.currentSong(), song)) {
+                                callbacks.setCurrentSong(enriched)
+                            }
+                            replaceQueueItem(song, enriched)
+                        }
+                        callbacks.logInfo(
+                            "remote metadata enrichment applied path=${song.path.substringAfterLast('/').take(96)} " +
+                                "art=${enriched.albumArtPath.isNotBlank()} sr=${enriched.sampleRate} bits=${enriched.bitsPerSample}"
+                        )
+                        return@launch
+                    }
+                    attempt++
+                    if (attempt < REMOTE_CACHE_MAX_ATTEMPTS) {
+                        delay(remoteRetryDelayMs(attempt))
+                    }
+                }
+                callbacks.logInfo("remote metadata enrichment gave up waiting for local transport")
+            }
+            return
+        }
         enrichJob = scope.launch(Dispatchers.IO) {
             if (callbacks.isUsbCriticalStartup()) {
                 callbacks.logInfo("metadata enrichment delayed by USB critical startup")
@@ -131,4 +158,18 @@ internal class PlayerMetadataEnrichmentCoordinator(
             left.path == right.path &&
             left.cueOffsetMs == right.cueOffsetMs &&
             left.cueTrackIndex == right.cueTrackIndex
+
+    private fun remoteRetryDelayMs(attempt: Int): Long = when {
+        attempt <= 1 -> 100L
+        attempt == 2 -> 250L
+        attempt == 3 -> 500L
+        attempt == 4 -> 1_000L
+        attempt <= 6 -> 2_000L
+        else -> 5_000L
+    }
+
+    companion object {
+        // Allows a large first-time WebDAV cache download to finish while the selected song is still current.
+        private const val REMOTE_CACHE_MAX_ATTEMPTS = 64
+    }
 }

@@ -9,9 +9,14 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.rawsmusic.R
+import com.rawsmusic.ai.melody.AiMelodyModelStore
+import com.rawsmusic.ai.melody.AiRecommendedMelodyModels
+import com.rawsmusic.ai.instrument.AiRecommendedPianoPack
+import com.rawsmusic.ai.instrument.AiRecommendedPianoPackInstaller
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +51,10 @@ class AiSeparationDownloadService : Service() {
             }
         }
         val runtimeRequest = intent?.getBooleanExtra(EXTRA_RUNTIME, false) == true
+        val lyricAlignmentRequest = intent?.action == ACTION_DOWNLOAD_LYRIC_ALIGNMENT
+        val fastVocalAlignmentRequest = intent?.action == ACTION_DOWNLOAD_FAST_VOCAL_ALIGNMENT
+        val melodyRequest = intent?.action == ACTION_DOWNLOAD_MELODY
+        val pianoPackRequest = intent?.action == ACTION_DOWNLOAD_PIANO_PACK
         val store = AiSeparationPluginStore.get(this)
         val runtimeEntry = if (runtimeRequest) {
             store.state.value.runtimeCatalog
@@ -55,13 +64,25 @@ class AiSeparationDownloadService : Service() {
         } else {
             null
         }
-        val modelId = if (runtimeRequest) {
+        val modelId = if (pianoPackRequest) {
+            AiRecommendedPianoPack.ID
+        } else if (melodyRequest) {
+            AiRecommendedMelodyModels.RMVPE_Q8.id
+        } else if (runtimeRequest) {
             runtimeEntry?.id.orEmpty()
+        } else if (fastVocalAlignmentRequest) {
+            AiFastVocalAlignmentBundle.ID
         } else {
             intent?.getStringExtra(EXTRA_MODEL_ID).orEmpty()
         }
-        val modelVersion = if (runtimeRequest) {
+        val modelVersion = if (pianoPackRequest) {
+            AiRecommendedPianoPack.VERSION
+        } else if (melodyRequest) {
+            AiRecommendedMelodyModels.RMVPE_Q8.version
+        } else if (runtimeRequest) {
             runtimeEntry?.version.orEmpty()
+        } else if (fastVocalAlignmentRequest) {
+            AiFastVocalAlignmentBundle.VERSION
         } else {
             intent?.getStringExtra(EXTRA_MODEL_VERSION).orEmpty()
         }
@@ -73,12 +94,44 @@ class AiSeparationDownloadService : Service() {
 
         cancelled.set(false)
         acquireWakeLock()
+        val lyricEntry = if (lyricAlignmentRequest) {
+            // Do not use only the StateFlow here. A service may be recreated after the UI
+            // process has been trimmed while the signed catalog is still on disk.
+            store.cachedLyricAlignmentEntry(modelId, modelVersion)
+        } else null
         val modelEntry = AiRecommendedModels.find(modelId, modelVersion)
             ?: store.state.value.catalog.firstOrNull {
                 it.id == modelId && it.version == modelVersion
             }
-        val modelName = runtimeEntry?.name ?: modelEntry?.name ?: modelId
-        val totalBytes = if (runtimeRequest &&
+        val modelName = if (pianoPackRequest) {
+            AiRecommendedPianoPack.DISPLAY_NAME
+        } else if (melodyRequest) {
+            AiRecommendedMelodyModels.RMVPE_Q8.displayName
+        } else if (fastVocalAlignmentRequest) {
+            getString(R.string.ai_fast_alignment_bundle_name)
+        } else {
+            runtimeEntry?.name ?: modelEntry?.name ?: lyricEntry?.name ?: modelId
+        }
+        Log.i(
+            TAG,
+            "AI_DOWNLOAD_START type=${when {
+                pianoPackRequest -> "piano_pack"
+                melodyRequest -> "melody"
+                lyricAlignmentRequest -> "lyric_alignment"
+                fastVocalAlignmentRequest -> "fast_alignment"
+                runtimeRequest -> "runtime"
+                else -> "model"
+            }} id=$modelId version=$modelVersion entry=${lyricEntry != null || modelEntry != null}",
+        )
+        val totalBytes = if (pianoPackRequest) {
+            AiRecommendedPianoPack.ESTIMATED_DOWNLOAD_BYTES
+        } else if (melodyRequest) {
+            AiRecommendedMelodyModels.RMVPE_Q8.modelSizeBytes
+        } else if (fastVocalAlignmentRequest) {
+            AiFastVocalAlignmentBundle.ARCHIVE_SIZE_BYTES
+        } else if (lyricAlignmentRequest) {
+            lyricEntry?.modelSizeBytes?.plus(lyricEntry.vocabularySizeBytes) ?: 0L
+        } else if (runtimeRequest &&
             store.state.value.runtimeCatalog.none {
                 it.id == runtimeEntry?.id &&
                     it.version == runtimeEntry.version &&
@@ -96,7 +149,14 @@ class AiSeparationDownloadService : Service() {
                 modelName = modelName,
                 phase = AiSeparationDownloadPhase.PREPARING,
                 totalBytes = totalBytes,
-                message = if (runtimeRequest) "准备下载运行库" else "准备下载模型",
+                message = when {
+                    pianoPackRequest -> getString(R.string.ai_download_prepare_piano_pack)
+                    melodyRequest -> getString(R.string.ai_download_prepare_melody)
+                    fastVocalAlignmentRequest -> getString(R.string.ai_download_prepare_fast_alignment)
+                    runtimeRequest -> getString(R.string.ai_download_prepare_runtime)
+                    lyricAlignmentRequest -> getString(R.string.ai_download_prepare_lyric_alignment)
+                    else -> getString(R.string.ai_download_prepare_model)
+                },
             )
         )
         startForeground(NOTIFICATION_ID, buildNotification(modelName, 0L, totalBytes, true))
@@ -113,17 +173,43 @@ class AiSeparationDownloadService : Service() {
                                 phase = AiSeparationDownloadPhase.DOWNLOADING,
                                 downloadedBytes = downloaded,
                                 totalBytes = total,
-                                message = if (runtimeRequest) "正在下载运行库" else "正在下载模型",
+                                message = when {
+                                    pianoPackRequest -> getString(R.string.ai_download_running_piano_pack)
+                                    melodyRequest -> getString(R.string.ai_download_running_melody)
+                                    fastVocalAlignmentRequest -> getString(R.string.ai_download_running_fast_alignment)
+                                    runtimeRequest -> getString(R.string.ai_download_running_runtime)
+                                    lyricAlignmentRequest -> getString(R.string.ai_download_running_lyric_alignment)
+                                    else -> getString(R.string.ai_download_running_model)
+                                },
                             )
                         )
                     }
                 val onPhase: (AiSeparationDownloadPhase) -> Unit = { phase ->
-                        val message = when (phase) {
-                            AiSeparationDownloadPhase.VERIFYING ->
-                                if (runtimeRequest) "正在校验运行库" else "正在校验模型包"
-                            AiSeparationDownloadPhase.INSTALLING ->
-                                if (runtimeRequest) "正在安装运行库" else "正在安装模型"
-                            else -> if (runtimeRequest) "正在处理运行库" else "正在处理模型"
+                            val message = when (phase) {
+                            AiSeparationDownloadPhase.VERIFYING -> when {
+                                pianoPackRequest -> getString(R.string.ai_download_verifying_piano_pack)
+                                melodyRequest -> getString(R.string.ai_download_verifying_melody)
+                                fastVocalAlignmentRequest -> getString(R.string.ai_download_verifying_fast_alignment)
+                                runtimeRequest -> getString(R.string.ai_download_verifying_runtime)
+                                lyricAlignmentRequest -> getString(R.string.ai_download_verifying_lyric_alignment)
+                                else -> getString(R.string.ai_download_verifying_model)
+                            }
+                            AiSeparationDownloadPhase.INSTALLING -> when {
+                                pianoPackRequest -> getString(R.string.ai_download_installing_piano_pack)
+                                melodyRequest -> getString(R.string.ai_download_installing_melody)
+                                fastVocalAlignmentRequest -> getString(R.string.ai_download_installing_fast_alignment)
+                                runtimeRequest -> getString(R.string.ai_download_installing_runtime)
+                                lyricAlignmentRequest -> getString(R.string.ai_download_installing_lyric_alignment)
+                                else -> getString(R.string.ai_download_installing_model)
+                            }
+                            else -> when {
+                                pianoPackRequest -> getString(R.string.ai_download_processing_piano_pack)
+                                melodyRequest -> getString(R.string.ai_download_processing_melody)
+                                fastVocalAlignmentRequest -> getString(R.string.ai_download_processing_fast_alignment)
+                                runtimeRequest -> getString(R.string.ai_download_processing_runtime)
+                                lyricAlignmentRequest -> getString(R.string.ai_download_processing_lyric_alignment)
+                                else -> getString(R.string.ai_download_processing_model)
+                            }
                         }
                         publish(
                             AiSeparationDownloadProgress(
@@ -137,13 +223,47 @@ class AiSeparationDownloadService : Service() {
                             )
                         )
                     }
-                if (runtimeRequest) {
+                if (pianoPackRequest) {
+                    val installed = AiRecommendedPianoPackInstaller.get(this@AiSeparationDownloadService)
+                        .downloadAndInstall(
+                            onProgress = onProgress,
+                            onPhase = onPhase,
+                            isCancelled = { cancelled.get() },
+                        )
+                    completedBytes = installed.manifest.samples.sumOf { sample ->
+                        installed.sampleFile(sample).length()
+                    }
+                } else if (melodyRequest) {
+                    val installed = AiMelodyModelStore.get(this@AiSeparationDownloadService)
+                        .downloadAndInstallRecommended(
+                            onProgress = onProgress,
+                            onPhase = onPhase,
+                            isCancelled = { cancelled.get() },
+                        )
+                    completedBytes = installed.descriptor.modelSizeBytes
+                } else if (fastVocalAlignmentRequest) {
+                    completedBytes = store.downloadAndInstallFastVocalAlignmentBundle(
+                        onProgress = onProgress,
+                        onPhase = onPhase,
+                        isCancelled = { cancelled.get() },
+                    )
+                } else if (runtimeRequest) {
                     val installed = store.downloadAndInstallRuntime(
                         onProgress = onProgress,
                         onPhase = onPhase,
                         isCancelled = { cancelled.get() },
                     )
                     completedBytes = installed.librarySizeBytes
+                } else if (lyricAlignmentRequest) {
+                    val installed = store.downloadAndInstallLyricAlignment(
+                        modelId = modelId,
+                        modelVersion = modelVersion,
+                        onProgress = onProgress,
+                        onPhase = onPhase,
+                        isCancelled = { cancelled.get() },
+                    )
+                    completedBytes = installed.catalog.modelSizeBytes +
+                        installed.catalog.vocabularySizeBytes
                 } else {
                     val installed = store.downloadAndInstall(
                         modelId = modelId,
@@ -162,7 +282,14 @@ class AiSeparationDownloadService : Service() {
                         phase = AiSeparationDownloadPhase.COMPLETED,
                         downloadedBytes = completedBytes,
                         totalBytes = completedBytes,
-                        message = if (runtimeRequest) "运行库安装完成" else "模型安装完成",
+                        message = when {
+                            pianoPackRequest -> getString(R.string.ai_download_completed_piano_pack)
+                            melodyRequest -> getString(R.string.ai_download_completed_melody)
+                            fastVocalAlignmentRequest -> getString(R.string.ai_download_completed_fast_alignment)
+                            runtimeRequest -> getString(R.string.ai_download_completed_runtime)
+                            lyricAlignmentRequest -> getString(R.string.ai_download_completed_lyric_alignment)
+                            else -> getString(R.string.ai_download_completed_model)
+                        },
                     )
                 )
                 notificationManager().notify(
@@ -170,7 +297,14 @@ class AiSeparationDownloadService : Service() {
                     NotificationCompat.Builder(this@AiSeparationDownloadService, CHANNEL_ID)
                         .setSmallIcon(R.drawable.ic_music_note)
                         .setContentTitle(
-                            if (runtimeRequest) "AI 推理运行库已安装" else "AI 人声分离模型已安装"
+                            when {
+                                pianoPackRequest -> getString(R.string.ai_download_notification_piano_pack)
+                                melodyRequest -> getString(R.string.ai_download_notification_melody)
+                                fastVocalAlignmentRequest -> getString(R.string.ai_download_notification_fast_alignment)
+                                runtimeRequest -> getString(R.string.ai_download_notification_runtime)
+                                lyricAlignmentRequest -> getString(R.string.ai_download_notification_lyric_alignment)
+                                else -> getString(R.string.ai_download_notification_model)
+                            }
                         )
                         .setContentText(modelName)
                         .setAutoCancel(true)
@@ -183,10 +317,18 @@ class AiSeparationDownloadService : Service() {
                         modelVersion = modelVersion,
                         modelName = modelName,
                         phase = AiSeparationDownloadPhase.CANCELLED,
-                        message = if (runtimeRequest) "运行库下载已取消" else "模型下载已取消",
+                        message = when {
+                            pianoPackRequest -> getString(R.string.ai_download_cancelled_piano_pack)
+                            melodyRequest -> getString(R.string.ai_download_cancelled_melody)
+                            fastVocalAlignmentRequest -> getString(R.string.ai_download_cancelled_fast_alignment)
+                            runtimeRequest -> getString(R.string.ai_download_cancelled_runtime)
+                            lyricAlignmentRequest -> getString(R.string.ai_download_cancelled_lyric_alignment)
+                            else -> getString(R.string.ai_download_cancelled_model)
+                        },
                     )
                 )
             } catch (error: Throwable) {
+                Log.e(TAG, "AI_DOWNLOAD_FAILED id=$modelId version=$modelVersion", error)
                 publish(
                     AiSeparationDownloadProgress(
                         modelId = modelId,
@@ -194,7 +336,11 @@ class AiSeparationDownloadService : Service() {
                         modelName = modelName,
                         phase = AiSeparationDownloadPhase.FAILED,
                         message = error.message ?: getString(
-                            if (runtimeRequest) R.string.ai_runtime_download_failed
+                            if (pianoPackRequest) R.string.ai_piano_pack_download_failed
+                            else if (melodyRequest) R.string.ai_melody_download_failed
+                            else if (runtimeRequest) R.string.ai_runtime_download_failed
+                            else if (fastVocalAlignmentRequest) R.string.ai_fast_alignment_download_failed
+                            else if (lyricAlignmentRequest) R.string.ai_lyric_alignment_download_failed
                             else R.string.ai_model_download_failed
                         ),
                     )
@@ -205,7 +351,11 @@ class AiSeparationDownloadService : Service() {
                         .setSmallIcon(R.drawable.ic_music_note)
                         .setContentTitle(
                             getString(
-                                if (runtimeRequest) R.string.ai_runtime_install_failed
+                                if (pianoPackRequest) R.string.ai_piano_pack_install_failed
+                                else if (melodyRequest) R.string.ai_melody_install_failed
+                                else if (runtimeRequest) R.string.ai_runtime_install_failed
+                                else if (fastVocalAlignmentRequest) R.string.ai_fast_alignment_install_failed
+                                else if (lyricAlignmentRequest) R.string.ai_lyric_alignment_install_failed
                                 else R.string.ai_model_install_failed
                             )
                         )
@@ -267,7 +417,7 @@ class AiSeparationDownloadService : Service() {
         val text = if (total > 0L && !indeterminate) {
             "${formatBytes(downloaded)} / ${formatBytes(total)}"
         } else {
-            "正在准备模型"
+            getString(R.string.ai_download_preparing)
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_music_note)
@@ -289,7 +439,7 @@ class AiSeparationDownloadService : Service() {
             notificationManager().createNotificationChannel(
                 NotificationChannel(
                     CHANNEL_ID,
-                    "AI 模型下载",
+                    getString(R.string.ai_download_channel_name),
                     NotificationManager.IMPORTANCE_LOW,
                 )
             )
@@ -311,9 +461,18 @@ class AiSeparationDownloadService : Service() {
     }
 
     companion object {
+        private const val TAG = "AiSeparationDownloadService"
         private const val CHANNEL_ID = "rawsmusic_ai_model_download"
         private const val NOTIFICATION_ID = 7301
         private const val ACTION_CANCEL = "com.rawsmusic.ai.action.CANCEL_MODEL_DOWNLOAD"
+        private const val ACTION_DOWNLOAD_LYRIC_ALIGNMENT =
+            "com.rawsmusic.ai.action.DOWNLOAD_LYRIC_ALIGNMENT"
+        private const val ACTION_DOWNLOAD_FAST_VOCAL_ALIGNMENT =
+            "com.rawsmusic.ai.action.DOWNLOAD_FAST_VOCAL_ALIGNMENT"
+        private const val ACTION_DOWNLOAD_MELODY =
+            "com.rawsmusic.ai.action.DOWNLOAD_MELODY"
+        private const val ACTION_DOWNLOAD_PIANO_PACK =
+            "com.rawsmusic.ai.action.DOWNLOAD_PIANO_PACK"
         private const val EXTRA_MODEL_ID = "ai_model_id"
         private const val EXTRA_MODEL_VERSION = "ai_model_version"
         private const val EXTRA_RUNTIME = "ai_runtime"
@@ -328,6 +487,32 @@ class AiSeparationDownloadService : Service() {
         fun startRuntime(context: Context) {
             val intent = Intent(context, AiSeparationDownloadService::class.java)
                 .putExtra(EXTRA_RUNTIME, true)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun startLyricAlignment(context: Context, modelId: String, modelVersion: String) {
+            val intent = Intent(context, AiSeparationDownloadService::class.java)
+                .setAction(ACTION_DOWNLOAD_LYRIC_ALIGNMENT)
+                .putExtra(EXTRA_MODEL_ID, modelId)
+                .putExtra(EXTRA_MODEL_VERSION, modelVersion)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun startFastVocalAlignment(context: Context) {
+            val intent = Intent(context, AiSeparationDownloadService::class.java)
+                .setAction(ACTION_DOWNLOAD_FAST_VOCAL_ALIGNMENT)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun startMelody(context: Context) {
+            val intent = Intent(context, AiSeparationDownloadService::class.java)
+                .setAction(ACTION_DOWNLOAD_MELODY)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun startRecommendedPianoPack(context: Context) {
+            val intent = Intent(context, AiSeparationDownloadService::class.java)
+                .setAction(ACTION_DOWNLOAD_PIANO_PACK)
             ContextCompat.startForegroundService(context, intent)
         }
 

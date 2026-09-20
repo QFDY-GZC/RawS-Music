@@ -21,7 +21,7 @@ internal class UsbNativeStreamController(
     private val nativeStart: (Long) -> Boolean,
     private val nativePause: (Long) -> Unit,
     private val nativeStopAndFlush: (Long) -> Unit,
-    private val nativeFlushForNextTrack: (Long) -> Unit,
+    private val nativeFlushForNextTrack: (Long) -> Boolean,
     private val nativeRestartIsoTransfersSameProfile: (Long) -> Boolean,
     private val nativeResetSessionForPlayback: (Long) -> Unit,
     private val nativeCloseStreamForReconfigure: (Long) -> Unit,
@@ -108,7 +108,7 @@ internal class UsbNativeStreamController(
         }
     }
 
-    fun flushForNextTrack(reason: String) {
+    fun flushForNextTrack(reason: String): Boolean {
         val handle = currentHandle()
         val now = android.os.SystemClock.elapsedRealtime()
         if (reason == "prepareForPlayback_fast_reuse_same_config" &&
@@ -120,12 +120,15 @@ internal class UsbNativeStreamController(
                     "lastReason=$lastNextTrackFlushReason age=${now - lastNextTrackFlushMs}ms"
             AppLogger.w(TAG, message)
             Log.w(TAG, message)
-            return
+            return true
         }
         lastNextTrackFlushMs = now
         lastNextTrackFlushReason = reason
         AppLogger.i(TAG, "flushForNextTrack: reason=$reason handle=0x${handle.toString(16)}")
-        if (handle != 0L) nativeFlushForNextTrack(handle)
+        if (handle == 0L) return false
+        return runCatching { nativeFlushForNextTrack(handle) }
+            .onFailure { AppLogger.e(TAG, "flushForNextTrack JNI failed: reason=$reason", it) }
+            .getOrDefault(false)
     }
 
     fun resetSessionForPlayback(reason: String) {
@@ -136,7 +139,7 @@ internal class UsbNativeStreamController(
 
     fun closeStreamForReconfigure(reason: String) {
         val handle = currentHandle()
-        AppLogger.i(TAG, "closeStreamForReconfigure: reason=$reason handle=0x${handle.toString(16)}")
+        AppLogger.i(TAG, "closeStreamForReconfigure(legacy-recovery): reason=$reason handle=0x${handle.toString(16)}")
         if (handle != 0L) nativeCloseStreamForReconfigure(handle)
     }
 

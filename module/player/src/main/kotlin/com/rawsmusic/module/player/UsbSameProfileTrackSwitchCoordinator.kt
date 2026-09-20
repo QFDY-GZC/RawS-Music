@@ -24,7 +24,6 @@ internal class UsbSameProfileTrackSwitchCoordinator(
     private val closeNextDecoder: () -> Unit,
     private val setNextSongPath: (String) -> Unit,
     private val setCrossfadeDurationMs: (Int) -> Unit,
-    private val prepareNextDecoder: (String, Int) -> Boolean,
     private val currentFormat: () -> PcmFormat,
     private val wakeFeeder: () -> Unit,
 ) {
@@ -52,26 +51,23 @@ internal class UsbSameProfileTrackSwitchCoordinator(
         }
 
         val generation = currentGeneration()
-        var prepared = snapshotPrepared(generation)
-        if (prepared?.path != nextPath) {
-            closeNextDecoder()
-            setNextSongPath(nextPath)
-            // Strict bit-perfect USB switching is a cut/gapless handoff, not a
-            // PCM crossfade that would require a second mixed output path.
-            setCrossfadeDurationMs(0)
-            if (!prepareNextDecoder(nextPath, generation)) {
-                return FfmpegAudioPlayer.UsbManualSwitchResult.REJECTED
-            }
-            prepared = snapshotPrepared(generation)
-        } else {
-            setNextSongPath(nextPath)
-            setCrossfadeDurationMs(0)
-            AppLogger.d(tag, "USB same-profile switch reusing prepared decoder path=$nextPath gen=$generation")
+        val prepared = snapshotPrepared(generation)
+        setNextSongPath(nextPath)
+        // Strict bit-perfect USB switching is a cut/gapless handoff, not a
+        // PCM crossfade that would require a second mixed output path.
+        setCrossfadeDurationMs(0)
+        if (prepared == null || prepared.path != nextPath) {
+            AppLogger.w(
+                tag,
+                "USB same-profile switch target is not READY; reject without opening FFmpeg " +
+                    "on the transport path path=$nextPath gen=$generation",
+            )
+            return FfmpegAudioPlayer.UsbManualSwitchResult.REJECTED
         }
+        AppLogger.d(tag, "USB same-profile switch reusing prepared decoder path=$nextPath gen=$generation")
 
         val current = currentFormat()
-        val compatible = prepared != null &&
-            prepared.path == nextPath &&
+        val compatible = prepared.path == nextPath &&
             prepared.sampleRate == current.sampleRate &&
             prepared.channels == current.channels &&
             prepared.bitsPerSample == current.bitsPerSample
@@ -79,7 +75,7 @@ internal class UsbSameProfileTrackSwitchCoordinator(
             AppLogger.w(
                 tag,
                 "USB same-profile switch rejected: current=${current.sampleRate}/${current.bitsPerSample}/${current.channels} " +
-                    "next=${prepared?.sampleRate}/${prepared?.bitsPerSample}/${prepared?.channels} path=$nextPath",
+                    "next=${prepared.sampleRate}/${prepared.bitsPerSample}/${prepared.channels} path=$nextPath",
             )
             closeNextDecoder()
             return FfmpegAudioPlayer.UsbManualSwitchResult.REJECTED

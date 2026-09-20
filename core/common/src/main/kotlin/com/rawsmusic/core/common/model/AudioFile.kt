@@ -3,6 +3,7 @@ package com.rawsmusic.core.common.model
 import android.os.Parcelable
 import androidx.compose.runtime.Immutable
 import kotlinx.parcelize.Parcelize
+import java.security.MessageDigest
 
 @Immutable
 @Parcelize
@@ -40,6 +41,29 @@ data class AudioFile(
     val cueEndMs: Long = 0L,
     val cueTrackIndex: Int = 0
 ) : Parcelable {
+
+    /**
+     * Stable, content-adjacent identity for analysis caches.
+     *
+     * Reading the whole audio file here would make opening a lyric page expensive. The source
+     * path plus MediaStore/file metadata is enough to invalidate the cache when the file changes.
+     */
+    fun stableAudioFingerprint(): String {
+        val identity = buildString {
+            append(id).append('|')
+            append(path.trim()).append('|')
+            append(fileSize).append('|')
+            append(dateModified).append('|')
+            append(duration).append('|')
+            append(format.trim().uppercase()).append('|')
+            append(sampleRate).append('|')
+            append(bitsPerSample).append('|')
+            append(channelCount)
+        }
+        return MessageDigest.getInstance("SHA-256")
+            .digest(identity.toByteArray(Charsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte) }
+    }
 
     val displayName: String
         get() = title.ifBlank { path.substringAfterLast("/", "").substringBeforeLast(".") }

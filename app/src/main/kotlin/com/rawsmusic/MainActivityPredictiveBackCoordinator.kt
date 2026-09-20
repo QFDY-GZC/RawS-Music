@@ -35,17 +35,32 @@ internal class MainActivityPredictiveBackCoordinator(
     private val hidePlayModePopup: () -> Unit,
     private val onActivityBackFallback: () -> Unit,
 ) {
-    private enum class BackDragType { NONE, COVER, CONTAINER, HOME_FULL_COVER }
+    private enum class BackDragType {
+        NONE,
+        COVER,
+        MAIN_PLAYER_SHEET,
+        CONTAINER,
+        HOME_FULL_COVER,
+    }
 
     private var callback: OnBackPressedCallback? = null
     private var dragType = BackDragType.NONE
     private var redispatching = false
+    private var rejectedContainerGesture = false
+
+    private fun startContainerBack(direction: Float): Boolean {
+        val started = mainNavigation.startBackDrag(direction)
+        // A rejected predictive sequence must not become an ordinary back on finger release.
+        rejectedContainerGesture = !started
+        return started
+    }
     private val handoffRelease = Runnable { updateRegistration() }
 
     fun setup() {
         callback = object : OnBackPressedCallback(true) {
             override fun handleOnBackStarted(backEvent: BackEventCompat) {
                 dragType = BackDragType.NONE
+                rejectedContainerGesture = false
                 if (!PersonalizationPreferences.predictiveBackAnimationEnabled) return
                 if (com.rawsmusic.core.ui.scene.pages.SourcePortalBackRuntime.shouldSuppressSceneBack()) return
                 if (
@@ -76,9 +91,16 @@ internal class MainActivityPredictiveBackCoordinator(
                 val sceneController = playerSceneController() ?: return
                 val swipeRight = backEvent.swipeEdge == BackEventCompat.EDGE_LEFT
                 when {
+                    sceneController.hasMainPlayerSheetBackTarget() -> {
+                        dragType = if (sceneController.startMainPlayerPredictiveBack()) {
+                            BackDragType.MAIN_PLAYER_SHEET
+                        } else {
+                            BackDragType.NONE
+                        }
+                    }
                     audioInfoSharedWindowActive() && mainNavigation.canNavigateBack() -> {
                         val direction = if (swipeRight) 1f else -1f
-                        dragType = if (mainNavigation.startBackDrag(direction)) {
+                        dragType = if (startContainerBack(direction)) {
                             BackDragType.CONTAINER
                         } else {
                             BackDragType.NONE
@@ -103,7 +125,7 @@ internal class MainActivityPredictiveBackCoordinator(
                     sceneController.currentScene == PlayerSceneController.Scene.MAIN &&
                         !mainNavigation.isAtHome() -> {
                         val direction = if (swipeRight) 1f else -1f
-                        dragType = if (mainNavigation.startBackDrag(direction)) {
+                        dragType = if (startContainerBack(direction)) {
                             BackDragType.CONTAINER
                         } else {
                             BackDragType.NONE
@@ -116,6 +138,8 @@ internal class MainActivityPredictiveBackCoordinator(
                 if (!PersonalizationPreferences.predictiveBackAnimationEnabled) return
                 when (dragType) {
                     BackDragType.COVER -> playerSceneController()?.updateCoverDragProgress(backEvent.progress)
+                    BackDragType.MAIN_PLAYER_SHEET ->
+                        playerSceneController()?.updateMainPlayerPredictiveBack(backEvent.progress)
                     BackDragType.CONTAINER -> mainNavigation.updateBackDrag(backEvent.progress)
                     BackDragType.HOME_FULL_COVER -> HomeFullCoverBackRuntime.progress(backEvent.progress)
                     BackDragType.NONE -> Unit
@@ -128,6 +152,10 @@ internal class MainActivityPredictiveBackCoordinator(
                         playerSceneController()?.releaseCoverDrag(true, 0f)
                         dragType = BackDragType.NONE
                     }
+                    BackDragType.MAIN_PLAYER_SHEET -> {
+                        playerSceneController()?.finishMainPlayerPredictiveBack(commit = true)
+                        dragType = BackDragType.NONE
+                    }
                     BackDragType.CONTAINER -> {
                         mainNavigation.releaseBackDrag(commit = true)
                         dragType = BackDragType.NONE
@@ -137,6 +165,10 @@ internal class MainActivityPredictiveBackCoordinator(
                         dragType = BackDragType.NONE
                     }
                     BackDragType.NONE -> {
+                        if (rejectedContainerGesture) {
+                            rejectedContainerGesture = false
+                            return
+                        }
                         if (homeFullCoverOverlayActive() && HomeFullCoverBackRuntime.complete()) {
                             dragType = BackDragType.NONE
                             return
@@ -167,8 +199,11 @@ internal class MainActivityPredictiveBackCoordinator(
             }
 
             override fun handleOnBackCancelled() {
+                rejectedContainerGesture = false
                 when (dragType) {
                     BackDragType.COVER -> playerSceneController()?.releaseCoverDrag(false, 0f)
+                    BackDragType.MAIN_PLAYER_SHEET ->
+                        playerSceneController()?.finishMainPlayerPredictiveBack(commit = false)
                     BackDragType.CONTAINER -> mainNavigation.releaseBackDrag(commit = false)
                     BackDragType.HOME_FULL_COVER -> HomeFullCoverBackRuntime.cancel()
                     BackDragType.NONE -> Unit
@@ -189,8 +224,11 @@ internal class MainActivityPredictiveBackCoordinator(
     }
 
     fun resetGestureOwnership(reason: String) {
+        rejectedContainerGesture = false
         when (dragType) {
             BackDragType.COVER -> playerSceneController()?.releaseCoverDrag(false, 0f)
+            BackDragType.MAIN_PLAYER_SHEET ->
+                playerSceneController()?.finishMainPlayerPredictiveBack(commit = false)
             BackDragType.CONTAINER -> mainNavigation.releaseBackDrag(commit = false)
             BackDragType.HOME_FULL_COVER -> HomeFullCoverBackRuntime.cancel()
             BackDragType.NONE -> Unit
@@ -238,7 +276,8 @@ internal class MainActivityPredictiveBackCoordinator(
             return
         }
         mainHandler.removeCallbacks(handoffRelease)
-        val isAtAppRoot = sceneController.currentScene == PlayerSceneController.Scene.MAIN &&
+        val isAtAppRoot = !sceneController.hasMainPlayerSheetBackTarget() &&
+            sceneController.currentScene == PlayerSceneController.Scene.MAIN &&
             mainNavigation.isAtHome()
         currentCallback.isEnabled = activeMiuixOverlayCount == 0 &&
             activeSourcePortalBackCount == 0 &&

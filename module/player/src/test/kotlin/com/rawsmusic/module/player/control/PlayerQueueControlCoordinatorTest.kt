@@ -54,6 +54,83 @@ class PlayerQueueControlCoordinatorTest {
     }
 
     @Test
+    fun successiveNextKeepsRemainingPriorityItemsInTheProjectedQueue() {
+        val harness = Harness()
+
+        harness.coordinator.addToPriorityQueue(audio(4, "priority-1"))
+        harness.coordinator.addToPriorityQueue(audio(5, "priority-2"))
+
+        assertEquals("priority-1", harness.coordinator.previewNextSong()?.path)
+        assertEquals("priority-1", harness.coordinator.next()?.path)
+        assertEquals("priority-2", harness.coordinator.previewNextSong()?.path)
+        assertEquals("priority-2", harness.coordinator.next()?.path)
+        assertEquals("b", harness.coordinator.previewNextSong()?.path)
+    }
+
+
+    @Test
+    fun rapidArtworkGesturesAdvancePrivateCursorWithoutPublishingPublicQueue() {
+        val harness = Harness()
+
+        assertEquals(harness.b, harness.coordinator.nextFromArtworkGesture())
+        assertEquals(0, harness.queue.currentIndex)
+        assertEquals("artwork_gesture_next:b", harness.switches.last())
+
+        // Authoritative renderer state is deliberately still A. The second direct gesture must
+        // nevertheless resolve from the private B projection and target C without writing queue UI.
+        assertEquals(harness.c, harness.coordinator.nextFromArtworkGesture())
+        assertEquals(0, harness.queue.currentIndex)
+        assertEquals(
+            listOf("artwork_gesture_next:b", "artwork_gesture_next:c"),
+            harness.switches.takeLast(2),
+        )
+        assertEquals(0, harness.updateQueueCalls)
+        assertEquals(0, harness.visibleQueueOverrideCalls)
+        assertEquals(0, harness.savePositionCalls)
+    }
+
+    @Test
+    fun rapidArtworkPreviousAndReverseUseTheSamePrivateCursor() {
+        val harness = Harness()
+        harness.queue = PlayQueue(listOf(harness.a, harness.b, harness.c), 2)
+        harness.current = harness.c
+
+        assertEquals(harness.b, harness.coordinator.previousFromArtworkGesture())
+        assertEquals(harness.a, harness.coordinator.previousFromArtworkGesture())
+        assertEquals(2, harness.queue.currentIndex)
+
+        // Reversing direction before renderer acknowledgement must resolve from projected A,
+        // therefore Next returns B rather than jumping from authoritative C.
+        assertEquals(harness.b, harness.coordinator.nextFromArtworkGesture())
+        assertEquals(2, harness.queue.currentIndex)
+        assertEquals(0, harness.updateQueueCalls)
+        assertEquals(0, harness.visibleQueueOverrideCalls)
+    }
+
+    @Test
+    fun artworkGestureProjectionCollapsesWhenAuthoritativeCursorCatchesUp() {
+        val harness = Harness()
+
+        assertEquals(harness.b, harness.coordinator.nextFromArtworkGesture())
+        // Simulate renderer TRACK_STARTED committing B. The next gesture must naturally continue
+        // from public B after the private projection collapses.
+        harness.queue = harness.queue.copy(currentIndex = 1)
+        harness.current = harness.b
+        assertEquals(harness.c, harness.coordinator.nextFromArtworkGesture())
+        assertEquals("artwork_gesture_next:c", harness.switches.last())
+    }
+
+    @Test
+    fun automaticAdvanceUsesNaturalLaneWithoutManualTransition() {
+        val harness = Harness()
+
+        assertEquals(harness.b, harness.coordinator.automaticAdvance())
+        assertEquals(1, harness.queue.currentIndex)
+        assertEquals("automatic:b", harness.switches.last())
+        assertFalse(harness.switches.any { it.startsWith("manual_next:") })
+    }
+
+    @Test
     fun removingCurrentSongUsesCueIdentityAndStopsOnlyWhenQueueBecomesEmpty() {
         val harness = Harness()
         val cueOne = audio(10, "album.flac", cueOffsetMs = 0L, cueTrackIndex = 1)
@@ -89,6 +166,9 @@ class PlayerQueueControlCoordinatorTest {
         var playMode = PlayMode.SEQUENTIAL
         var shuffleEnabled = false
         var repeatModeSet: RepeatMode? = null
+        var savePositionCalls = 0
+        var updateQueueCalls = 0
+        var visibleQueueOverrideCalls = 0
         val switches = mutableListOf<String>()
 
         val coordinator = PlayerQueueControlCoordinator(
@@ -99,6 +179,9 @@ class PlayerQueueControlCoordinatorTest {
                 previousShuffleIndex = { 0 },
                 peekNextShuffleIndex = { 2 },
                 peekPreviousShuffleIndex = { 0 },
+                peekRelativeShuffleIndex = { queue, offset ->
+                    (queue.currentIndex + offset).mod(queue.songs.size)
+                },
                 toggleRepeatMode = {},
                 setRepeatMode = { repeatModeSet = it },
                 toggleShuffle = { shuffleEnabled = !shuffleEnabled },
@@ -109,14 +192,15 @@ class PlayerQueueControlCoordinatorTest {
             callbacks = PlayerQueueControlCoordinator.Callbacks(
                 isReleased = { false },
                 currentQueue = { queue },
-                updateQueue = { queue = it },
+                updateQueue = { updateQueueCalls++; queue = it },
+                setVisibleQueueOverride = { visibleQueueOverrideCalls++ },
                 currentSong = { current },
                 clearCurrentSong = { current = null },
                 clearRequestedSong = { requestedSongCleared = true },
                 resetTimeline = { positionMs = 0L; timelineReset = true },
                 playerPositionMs = { positionMs },
                 seekToStart = { positionMs = 0L },
-                savePosition = {},
+                savePosition = { savePositionCalls++ },
                 saveState = {},
                 play = { song, songs, index ->
                     current = song
@@ -127,6 +211,15 @@ class PlayerQueueControlCoordinatorTest {
                     current = song
                     queue = PlayQueue(songs, index)
                     switches += "$reason:${song.path}"
+                },
+                manualArtworkGestureSwitchFromStart = { song, songs, index, reason ->
+                    switches += "$reason:${song.path}"
+                },
+                automaticSwitchFromStart = { song, songs, index ->
+                    current = song
+                    queue = PlayQueue(songs, index)
+                    switches += "automatic:${song.path}"
+                    true
                 },
                 stop = { stopped = true },
             ),

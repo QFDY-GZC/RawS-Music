@@ -1,66 +1,83 @@
 package com.rawsmusic.core.ui.widget.player
 
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.invalidateDraw
+import androidx.compose.ui.platform.InspectorInfo
+import android.view.Choreographer
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.rawsmusic.core.ui.R
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlin.math.ceil
 import kotlin.math.exp
 import kotlin.math.floor
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 private const val MONO_BAND_COUNT = 112
+private const val PARTICLE_COUNT = 280
+private const val PARTICLE_TRAIL_HISTORY = 4
 
-private class DisplaySpectrumMotion {
+enum class AudioVisualizerStyle(val value: Int) {
+    Spectrum(0),
+    Particle(1),
+    ParticleTrails(2),
+    PulseRings(3),
+    EnergyRibbon(4),
+    Ripple(5);
+
+    companion object {
+        fun from(value: Int): AudioVisualizerStyle =
+            entries.firstOrNull { it.value == value } ?: Spectrum
+    }
+}
+
+enum class AudioVisualizerParticleColorMode(val value: Int) {
+    White(0),
+    Rainbow(1);
+
+    companion object {
+        fun from(value: Int): AudioVisualizerParticleColorMode =
+            entries.firstOrNull { it.value == value } ?: White
+    }
+}
+
+val LocalAudioVisualizerStyle = staticCompositionLocalOf { AudioVisualizerStyle.Spectrum }
+val LocalAudioVisualizerStyleChange =
+    staticCompositionLocalOf<(AudioVisualizerStyle) -> Unit> { {} }
+val LocalAudioVisualizerParticleColorMode =
+    staticCompositionLocalOf { AudioVisualizerParticleColorMode.White }
+
+internal class DisplaySpectrumMotion {
     val levels = FloatArray(MONO_BAND_COUNT)
+    var animationTimeSeconds: Float = 0f
 
     private val targets = FloatArray(MONO_BAND_COUNT)
     private val spatialScratch = FloatArray(MONO_BAND_COUNT)
@@ -80,6 +97,7 @@ private class DisplaySpectrumMotion {
 
     fun advance(deltaSeconds: Float, playing: Boolean) {
         val dt = deltaSeconds.coerceIn(1f / 240f, 1f / 20f)
+        animationTimeSeconds = (animationTimeSeconds + dt) % 4096f
         val attack = 1f - exp((-dt * 62f).toDouble()).toFloat()
         val releaseRate = if (playing) 28f else 8f
         val release = 1f - exp((-dt * releaseRate).toDouble()).toFloat()
@@ -94,6 +112,445 @@ private class DisplaySpectrumMotion {
 
     fun hasVisibleEnergy(): Boolean = levels.any { it > 0.002f }
 }
+
+private class ParticleFieldLayout {
+    val baseX = FloatArray(PARTICLE_COUNT)
+    val depth = FloatArray(PARTICLE_COUNT)
+    val floorOffsetDp = FloatArray(PARTICLE_COUNT)
+    val radiusScale = FloatArray(PARTICLE_COUNT)
+    val launchBias = FloatArray(PARTICLE_COUNT)
+    val driftDirection = FloatArray(PARTICLE_COUNT)
+    val band = IntArray(PARTICLE_COUNT)
+    val heightDp = FloatArray(PARTICLE_COUNT)
+    val velocityYDp = FloatArray(PARTICLE_COUNT)
+    val offsetXDp = FloatArray(PARTICLE_COUNT)
+    val velocityXDp = FloatArray(PARTICLE_COUNT)
+    val rainbowArgb = IntArray(PARTICLE_COUNT)
+    val trailHeightDp = FloatArray(PARTICLE_COUNT * PARTICLE_TRAIL_HISTORY)
+    val trailOffsetXDp = FloatArray(PARTICLE_COUNT * PARTICLE_TRAIL_HISTORY)
+
+    private val previousBandEnergy = FloatArray(MONO_BAND_COUNT)
+    private var previousBass = 0f
+    private var lastTimeSeconds = Float.NaN
+    private val lastLaunchSeconds = FloatArray(PARTICLE_COUNT) { -10f }
+    private var trailCursor = 0
+
+    init {
+        var seed = 0x5EED1234
+        fun nextUnit(): Float {
+            seed = seed * 1664525 + 1013904223
+            return ((seed ushr 8) and 0x00FFFFFF) / 16777215f
+        }
+        for (index in 0 until PARTICLE_COUNT) {
+            baseX[index] = nextUnit()
+            depth[index] = 0.38f + nextUnit() * 0.62f
+            floorOffsetDp[index] = nextUnit() * 4.2f
+            radiusScale[index] = 0.70f + nextUnit() * 0.82f
+            launchBias[index] = nextUnit()
+            driftDirection[index] = nextUnit() * 2f - 1f
+            band[index] = (baseX[index] * (MONO_BAND_COUNT - 1))
+                .roundToInt()
+                .coerceIn(0, MONO_BAND_COUNT - 1)
+            rainbowArgb[index] = Color.hsv(
+                hue = 8f + baseX[index] * 312f,
+                saturation = 0.88f,
+                value = 1f,
+            ).toArgb()
+        }
+    }
+
+    fun advance(timeSeconds: Float, levels: FloatArray, playing: Boolean) {
+        val rawDt = if (lastTimeSeconds.isNaN() || timeSeconds < lastTimeSeconds) {
+            1f / 60f
+        } else {
+            timeSeconds - lastTimeSeconds
+        }
+        lastTimeSeconds = timeSeconds
+        val dt = rawDt.coerceIn(1f / 240f, 1f / 20f)
+
+        var bass = 0f
+        for (index in 0 until 18) bass += levels[index]
+        bass = (bass / 18f).coerceIn(0f, 1f)
+        val bassOnset = (bass - previousBass).coerceAtLeast(0f)
+        previousBass = bass
+
+        val gravityDpPerSecond2 = 560f
+        val horizontalDrag = exp((-dt * 3.4f).toDouble()).toFloat()
+
+        for (index in 0 until PARTICLE_COUNT) {
+            val sourceBand = band[index]
+            val previousIndex = (sourceBand - 1).coerceAtLeast(0)
+            val nextIndex = (sourceBand + 1).coerceAtMost(MONO_BAND_COUNT - 1)
+            val localEnergy = (
+                levels[sourceBand] * 0.70f +
+                    levels[previousIndex] * 0.15f +
+                    levels[nextIndex] * 0.15f
+                ).coerceIn(0f, 1f)
+            val onset = (localEnergy - previousBandEnergy[sourceBand]).coerceAtLeast(0f)
+            val resting = heightDp[index] <= 0.05f && velocityYDp[index] <= 0f
+            val sinceLaunch = timeSeconds - lastLaunchSeconds[index]
+            val threshold = 0.055f + launchBias[index] * 0.09f
+            val localTrigger =
+                localEnergy > threshold &&
+                    (
+                        onset > 0.014f + launchBias[index] * 0.026f ||
+                            (sinceLaunch > 0.12f + launchBias[index] * 0.14f && localEnergy > 0.19f)
+                        )
+            val bassTrigger =
+                sourceBand < 34 &&
+                    bass > 0.11f &&
+                    bassOnset > 0.025f + launchBias[index] * 0.035f
+
+            if (playing && resting && (localTrigger || bassTrigger)) {
+                val frequencyTaper = 1f - (sourceBand / (MONO_BAND_COUNT - 1f)) * 0.18f
+                val jumpVelocity = (
+                    64f +
+                        224f * localEnergy.pow(0.68f) +
+                        310f * onset +
+                        if (sourceBand < 34) 72f * bass else 0f
+                    ) * frequencyTaper * (0.78f + depth[index] * 0.32f)
+                velocityYDp[index] = jumpVelocity.coerceIn(58f, 370f)
+                velocityXDp[index] +=
+                    driftDirection[index] * (10f + 56f * onset + 18f * bassOnset)
+                lastLaunchSeconds[index] = timeSeconds
+            } else if (
+                playing &&
+                !resting &&
+                onset > 0.07f &&
+                velocityYDp[index] > -80f
+            ) {
+                velocityYDp[index] += (34f + onset * 92f) * (0.7f + depth[index] * 0.3f)
+                velocityXDp[index] += driftDirection[index] * onset * 20f
+            }
+
+            velocityYDp[index] -= gravityDpPerSecond2 * dt
+            heightDp[index] += velocityYDp[index] * dt
+            velocityXDp[index] *= horizontalDrag
+            offsetXDp[index] += velocityXDp[index] * dt
+
+            if (heightDp[index] <= 0f) {
+                heightDp[index] = 0f
+                if (velocityYDp[index] < 0f) velocityYDp[index] = 0f
+                offsetXDp[index] *= 0.90f
+            }
+            if (offsetXDp[index] > 24f) {
+                offsetXDp[index] = 24f
+                velocityXDp[index] = -abs(velocityXDp[index]) * 0.45f
+            } else if (offsetXDp[index] < -24f) {
+                offsetXDp[index] = -24f
+                velocityXDp[index] = abs(velocityXDp[index]) * 0.45f
+            }
+        }
+
+        for (index in 0 until MONO_BAND_COUNT) {
+            previousBandEnergy[index] = levels[index]
+        }
+        trailCursor = (trailCursor + 1) % PARTICLE_TRAIL_HISTORY
+        val trailBase = trailCursor * PARTICLE_COUNT
+        for (index in 0 until PARTICLE_COUNT) {
+            trailHeightDp[trailBase + index] = heightDp[index]
+            trailOffsetXDp[trailBase + index] = offsetXDp[index]
+        }
+    }
+
+    fun trailHeight(index: Int, framesAgo: Int): Float {
+        val slot = (trailCursor - framesAgo + PARTICLE_TRAIL_HISTORY) % PARTICLE_TRAIL_HISTORY
+        return trailHeightDp[slot * PARTICLE_COUNT + index]
+    }
+
+    fun trailOffsetX(index: Int, framesAgo: Int): Float {
+        val slot = (trailCursor - framesAgo + PARTICLE_TRAIL_HISTORY) % PARTICLE_TRAIL_HISTORY
+        return trailOffsetXDp[slot * PARTICLE_COUNT + index]
+    }
+
+    fun hasMotion(): Boolean {
+        for (index in 0 until PARTICLE_COUNT) {
+            if (
+                heightDp[index] > 0.15f ||
+                abs(velocityYDp[index]) > 1f ||
+                abs(velocityXDp[index]) > 1f
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+}
+
+private const val PULSE_RING_COUNT = 7
+
+private class PulseRingState {
+    val ageSeconds = FloatArray(PULSE_RING_COUNT) { -1f }
+    val strength = FloatArray(PULSE_RING_COUNT)
+    val originX = FloatArray(PULSE_RING_COUNT) { 0.5f }
+    val colorArgb = IntArray(PULSE_RING_COUNT) { Color.White.toArgb() }
+
+    private var previousBass = 0f
+    private var lastTimeSeconds = Float.NaN
+    private var lastSpawnTimeSeconds = -10f
+    private var cursor = 0
+
+    fun advance(timeSeconds: Float, levels: FloatArray, playing: Boolean) {
+        val rawDt = if (lastTimeSeconds.isNaN() || timeSeconds < lastTimeSeconds) {
+            1f / 60f
+        } else {
+            timeSeconds - lastTimeSeconds
+        }
+        lastTimeSeconds = timeSeconds
+        val dt = rawDt.coerceIn(1f / 240f, 1f / 20f)
+        for (index in 0 until PULSE_RING_COUNT) {
+            if (ageSeconds[index] >= 0f) {
+                ageSeconds[index] += dt
+                if (ageSeconds[index] > 1.05f) ageSeconds[index] = -1f
+            }
+        }
+        if (!playing) {
+            previousBass *= 0.92f
+            return
+        }
+
+        var bass = 0f
+        var strongestBand = 0
+        var strongest = 0f
+        val lowCount = min(28, levels.size)
+        for (index in 0 until lowCount) {
+            val level = levels[index].coerceIn(0f, 1f)
+            bass += level
+            if (level > strongest) {
+                strongest = level
+                strongestBand = index
+            }
+        }
+        bass = if (lowCount > 0) bass / lowCount else 0f
+        val onset = (bass - previousBass).coerceAtLeast(0f)
+        previousBass = bass
+        if (
+            bass > 0.10f &&
+            onset > 0.018f &&
+            timeSeconds - lastSpawnTimeSeconds > 0.085f
+        ) {
+            val slot = cursor
+            cursor = (cursor + 1) % PULSE_RING_COUNT
+            ageSeconds[slot] = 0f
+            strength[slot] = (0.32f + bass * 0.90f + onset * 2.8f).coerceIn(0.32f, 1f)
+            originX[slot] = (0.22f + strongestBand / 27f * 0.56f).coerceIn(0.18f, 0.82f)
+            colorArgb[slot] = Color.hsv(
+                hue = 8f + strongestBand / 27f * 78f,
+                saturation = 0.88f,
+                value = 1f,
+            ).toArgb()
+            lastSpawnTimeSeconds = timeSeconds
+        }
+    }
+
+    fun hasMotion(): Boolean = ageSeconds.any { it >= 0f }
+}
+
+private const val RIPPLE_EVENT_COUNT = 10
+
+private class RippleFieldState {
+    val ageSeconds = FloatArray(RIPPLE_EVENT_COUNT) { -1f }
+    val strength = FloatArray(RIPPLE_EVENT_COUNT)
+    val originX = FloatArray(RIPPLE_EVENT_COUNT) { 0.5f }
+    val colorArgb = IntArray(RIPPLE_EVENT_COUNT) { Color.White.toArgb() }
+
+    private val previousBandEnergy = FloatArray(MONO_BAND_COUNT)
+    private var lastTimeSeconds = Float.NaN
+    private var lastSpawnTimeSeconds = -10f
+    private var cursor = 0
+
+    fun advance(timeSeconds: Float, levels: FloatArray, playing: Boolean) {
+        val rawDt = if (lastTimeSeconds.isNaN() || timeSeconds < lastTimeSeconds) {
+            1f / 60f
+        } else {
+            timeSeconds - lastTimeSeconds
+        }
+        lastTimeSeconds = timeSeconds
+        val dt = rawDt.coerceIn(1f / 240f, 1f / 20f)
+        for (index in 0 until RIPPLE_EVENT_COUNT) {
+            if (ageSeconds[index] >= 0f) {
+                ageSeconds[index] += dt
+                if (ageSeconds[index] > 0.82f) ageSeconds[index] = -1f
+            }
+        }
+        if (!playing) {
+            for (index in 0 until min(levels.size, MONO_BAND_COUNT)) {
+                previousBandEnergy[index] = levels[index]
+            }
+            return
+        }
+
+        var strongestOnset = 0f
+        var strongestBand = 0
+        val count = min(levels.size, MONO_BAND_COUNT)
+        for (index in 0 until count) {
+            val level = levels[index].coerceIn(0f, 1f)
+            val onset = (level - previousBandEnergy[index]).coerceAtLeast(0f)
+            if (onset > strongestOnset && level > 0.08f) {
+                strongestOnset = onset
+                strongestBand = index
+            }
+            previousBandEnergy[index] = level
+        }
+        if (
+            strongestOnset > 0.032f &&
+            timeSeconds - lastSpawnTimeSeconds > 0.070f
+        ) {
+            val slot = cursor
+            cursor = (cursor + 1) % RIPPLE_EVENT_COUNT
+            ageSeconds[slot] = 0f
+            strength[slot] = (0.30f + strongestOnset * 4.2f).coerceIn(0.30f, 1f)
+            originX[slot] = strongestBand / (MONO_BAND_COUNT - 1f)
+            colorArgb[slot] = Color.hsv(
+                hue = 8f + originX[slot] * 312f,
+                saturation = 0.86f,
+                value = 1f,
+            ).toArgb()
+            lastSpawnTimeSeconds = timeSeconds
+        }
+    }
+
+    fun hasMotion(): Boolean = ageSeconds.any { it >= 0f }
+}
+
+/**
+ * Direct draw-frame owner for one visualizer surface. The old path incremented Snapshot state every
+ * display frame just to invalidate Canvas, forcing Recomposer work at 90/120 Hz. Keep spectrum
+ * motion as plain render data and invalidate only this DrawModifierNode from Choreographer.
+ */
+private class AudioVisualizerFrameNode(
+    var motion: DisplaySpectrumMotion,
+    var spectrum: FloatArray,
+    var spectrumState: State<FloatArray>?,
+    var visible: Boolean,
+    var playing: Boolean,
+    var extraAnimationActive: (() -> Boolean)?,
+) : Modifier.Node(), DrawModifierNode, Choreographer.FrameCallback {
+    override val shouldAutoInvalidate: Boolean
+        get() = false
+
+    private var choreographer: Choreographer? = null
+    private var callbackPosted = false
+    private var lastFrameNs = 0L
+
+    override fun onAttach() {
+        super.onAttach()
+        motion.updateTarget(currentSpectrum(), enabled = visible && playing)
+        invalidateDraw()
+        ensureFrameCallback()
+    }
+
+    override fun onDetach() {
+        cancelFrameCallback()
+        super.onDetach()
+    }
+
+    fun update(
+        motion: DisplaySpectrumMotion,
+        spectrum: FloatArray,
+        spectrumState: State<FloatArray>?,
+        visible: Boolean,
+        playing: Boolean,
+        extraAnimationActive: (() -> Boolean)?,
+    ) {
+        this.motion = motion
+        this.spectrum = spectrum
+        this.spectrumState = spectrumState
+        this.visible = visible
+        this.playing = playing
+        this.extraAnimationActive = extraAnimationActive
+        motion.updateTarget(currentSpectrum(), enabled = visible && playing)
+        invalidateDraw()
+        if (shouldRun()) ensureFrameCallback() else cancelFrameCallback()
+    }
+
+    override fun ContentDrawScope.draw() = drawContent()
+
+    override fun doFrame(frameTimeNanos: Long) {
+        callbackPosted = false
+        if (!isAttached || !shouldRun()) return
+        val deltaSeconds = if (lastFrameNs == 0L) {
+            1f / 60f
+        } else {
+            ((frameTimeNanos - lastFrameNs) / 1_000_000_000f).coerceIn(1f / 240f, 1f / 20f)
+        }
+        lastFrameNs = frameTimeNanos
+        // The FFT buffer is intentionally plain mutable render data. Re-sample it on the
+        // Choreographer clock so a stable FloatArray reference does not require a Snapshot write.
+        // A paused stream targets zero and releases to rest instead of keeping a 120 Hz loop alive.
+        motion.updateTarget(currentSpectrum(), enabled = visible && playing)
+        motion.advance(deltaSeconds, playing)
+        invalidateDraw()
+        ensureFrameCallback()
+    }
+
+    private fun shouldRun(): Boolean =
+        (visible && playing) ||
+            motion.hasVisibleEnergy() ||
+            (extraAnimationActive?.invoke() == true)
+
+    private fun currentSpectrum(): FloatArray = spectrumState?.value ?: spectrum
+
+    private fun ensureFrameCallback() {
+        if (!isAttached || callbackPosted || !shouldRun()) return
+        val scheduler = choreographer ?: Choreographer.getInstance().also { choreographer = it }
+        callbackPosted = true
+        scheduler.postFrameCallback(this)
+    }
+
+    private fun cancelFrameCallback() {
+        if (callbackPosted) {
+            choreographer?.removeFrameCallback(this)
+            callbackPosted = false
+        }
+        lastFrameNs = 0L
+    }
+}
+
+private data class AudioVisualizerFrameElement(
+    val motion: DisplaySpectrumMotion,
+    val spectrum: FloatArray,
+    val spectrumState: State<FloatArray>?,
+    val visible: Boolean,
+    val playing: Boolean,
+    val extraAnimationActive: (() -> Boolean)?,
+) : ModifierNodeElement<AudioVisualizerFrameNode>() {
+    override fun create() =
+        AudioVisualizerFrameNode(
+            motion,
+            spectrum,
+            spectrumState,
+            visible,
+            playing,
+            extraAnimationActive,
+        )
+    override fun update(node: AudioVisualizerFrameNode) =
+        node.update(
+            motion,
+            spectrum,
+            spectrumState,
+            visible,
+            playing,
+            extraAnimationActive,
+        )
+    override fun InspectorInfo.inspectableProperties() { name = "audioVisualizerFrame" }
+}
+
+internal fun Modifier.audioVisualizerFrame(
+    motion: DisplaySpectrumMotion,
+    spectrum: FloatArray,
+    visible: Boolean,
+    playing: Boolean,
+    spectrumState: State<FloatArray>? = null,
+    extraAnimationActive: (() -> Boolean)? = null,
+): Modifier = this then AudioVisualizerFrameElement(
+    motion = motion,
+    spectrum = spectrum,
+    spectrumState = spectrumState,
+    visible = visible,
+    playing = playing,
+    extraAnimationActive = extraAnimationActive,
+)
 
 enum class AudioVisualizerLayer {
     BehindArtwork,
@@ -113,8 +570,6 @@ fun AlbumArtworkSpectrumOverlay(
     visible: Boolean,
     isPlaying: Boolean,
     layer: AudioVisualizerLayer,
-    showControls: Boolean = false,
-    onDismiss: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val reveal by animateFloatAsState(
@@ -126,43 +581,22 @@ fun AlbumArtworkSpectrumOverlay(
         label = "album-spectrum-layer"
     )
     val motion = remember { DisplaySpectrumMotion() }
-    val latestPlaying by rememberUpdatedState(isPlaying)
-    val latestVisible by rememberUpdatedState(visible)
-    var frameSerial by remember { mutableStateOf(0L) }
-
-    SideEffect {
-        motion.updateTarget(spectrum, enabled = visible)
-    }
-
-    LaunchedEffect(visible) {
-        var previousFrameNs = 0L
-        while (isActive) {
-            withFrameNanos { frameNs ->
-                val deltaSeconds = if (previousFrameNs == 0L) {
-                    1f / 60f
-                } else {
-                    ((frameNs - previousFrameNs) / 1_000_000_000f)
-                        .coerceIn(1f / 240f, 1f / 20f)
-                }
-                previousFrameNs = frameNs
-                motion.advance(deltaSeconds, latestPlaying)
-                frameSerial++
-            }
-            if (!latestVisible && !motion.hasVisibleEnergy()) break
-        }
-    }
 
     if (reveal <= 0.001f && !visible && !motion.hasVisibleEnergy()) return
 
     Box(
-        modifier = modifier.graphicsLayer {
-            alpha = reveal
-        }
+        modifier = modifier.graphicsLayer { alpha = reveal }
     ) {
-        val drawFrameSerial = frameSerial
-        Canvas(modifier = Modifier.matchParentSize()) {
-            @Suppress("UNUSED_VARIABLE")
-            val frameInvalidationToken = drawFrameSerial
+        Canvas(
+            modifier = Modifier
+                .matchParentSize()
+                .audioVisualizerFrame(
+                    motion = motion,
+                    spectrum = spectrum,
+                    visible = visible,
+                    playing = isPlaying,
+                )
+        ) {
             if (size.width <= 0f || size.height <= 0f) return@Canvas
 
             val foreground = layer == AudioVisualizerLayer.Foreground
@@ -258,192 +692,447 @@ fun AlbumArtworkSpectrumOverlay(
             )
         }
 
-        if (showControls && layer == AudioVisualizerLayer.Foreground && visible) {
-            AudioVisualizerLockControls(
-                onDismiss = onDismiss,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(12.dp)
-            )
-        }
     }
 }
 
-/** Animated open/closed lock used by the player menu and the foreground overlay. */
+/**
+ * Bottom particle field driven by the same smoothed 112-band spectrum as the original visualizer.
+ *
+ * Particle topology is allocated once. The display hot path only samples Float arrays and issues
+ * Canvas draw calls, so 90/120 Hz animation stays outside Compose Snapshot/recomposition.
+ */
 @Composable
-fun AudioVisualizerToggleGlyph(
-    locked: Boolean,
-    tint: Color,
+fun BottomParticleSpectrumOverlay(
+    spectrum: FloatArray,
+    spectrumState: State<FloatArray>? = null,
+    visible: Boolean,
+    isPlaying: Boolean,
+    showTrails: Boolean = false,
     modifier: Modifier = Modifier,
-    animateOnEnter: Boolean = false
 ) {
-    val entered = remember { Animatable(if (animateOnEnter) 0f else if (locked) 1f else 0f) }
-    LaunchedEffect(locked, animateOnEnter) {
-        val target = if (locked) 1f else 0f
-        if (animateOnEnter && locked && entered.value == 0f) {
-            entered.animateTo(target, tween(430, easing = FastOutSlowInEasing))
-        } else {
-            entered.animateTo(target, tween(330, easing = FastOutSlowInEasing))
-        }
+    val reveal by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = if (visible) 240 else 170,
+            easing = FastOutSlowInEasing,
+        ),
+        label = "bottom-particle-visualizer",
+    )
+    val motion = remember { DisplaySpectrumMotion() }
+    val particles = remember { ParticleFieldLayout() }
+    val particleColorMode = LocalAudioVisualizerParticleColorMode.current
+
+    if (
+        reveal <= 0.001f &&
+        !visible &&
+        !motion.hasVisibleEnergy() &&
+        !particles.hasMotion()
+    ) {
+        return
     }
-    val progress = entered.value.coerceIn(0f, 1f)
 
-    Canvas(modifier = modifier) {
-        val width = size.width
-        val height = size.height
-        val stroke = max(1.7f * density, width * 0.075f)
-        val bodyTop = height * 0.47f
-        val bodyLeft = width * 0.18f
-        val bodyWidth = width * 0.64f
-        val bodyHeight = height * 0.40f
+    Canvas(
+        modifier = modifier
+            .graphicsLayer { alpha = reveal }
+            .audioVisualizerFrame(
+                motion = motion,
+                spectrum = spectrum,
+                visible = visible,
+                playing = isPlaying,
+                spectrumState = spectrumState,
+                extraAnimationActive = particles::hasMotion,
+            ),
+    ) {
+        if (size.width <= 0f || size.height <= 0f) return@Canvas
 
-        drawRoundRect(
-            color = tint,
-            topLeft = Offset(bodyLeft, bodyTop),
-            size = Size(bodyWidth, bodyHeight),
-            cornerRadius = CornerRadius(width * 0.12f, width * 0.12f)
+        particles.advance(
+            timeSeconds = motion.animationTimeSeconds,
+            levels = motion.levels,
+            playing = isPlaying,
         )
+        var bassSum = 0f
+        for (index in 0 until 18) bassSum += motion.levels[index]
+        val bass = (bassSum / 18f).coerceIn(0f, 1f)
+        val baseRadius = 0.68f * density
+        val floorY = size.height - 5f * density
 
-        // Three tiny spectrum columns keep the lock recognisable as the visualizer switch.
-        val innerColor = Color.Black.copy(alpha = if (tint.luminanceCompat() > 0.55f) 0.56f else 0.32f)
-        val columnWidth = width * 0.065f
-        val gap = width * 0.055f
-        val centerX = width * 0.5f
-        val columnBottom = bodyTop + bodyHeight * 0.72f
-        val heights = floatArrayOf(0.18f, 0.31f, 0.23f)
-        for (index in heights.indices) {
-            val x = centerX + (index - 1) * (columnWidth + gap) - columnWidth * 0.5f
-            val columnHeight = bodyHeight * heights[index] * (0.72f + 0.28f * progress)
-            drawRoundRect(
-                color = innerColor,
-                topLeft = Offset(x, columnBottom - columnHeight),
-                size = Size(columnWidth, columnHeight),
-                cornerRadius = CornerRadius(columnWidth * 0.5f, columnWidth * 0.5f)
-            )
-        }
+        for (index in 0 until PARTICLE_COUNT) {
+            val level = motion.levels[particles.band[index]].coerceIn(0f, 1f)
+            val depth = particles.depth[index]
+            val x = (
+                particles.baseX[index] * size.width +
+                    particles.offsetXDp[index] * density
+                ).coerceIn(0f, size.width)
+            val y = (
+                floorY -
+                    (particles.floorOffsetDp[index] + particles.heightDp[index]) * density
+                ).coerceIn(0f, floorY)
+            val shaped = sqrt(level)
+            val airborne = (particles.heightDp[index] / 96f).coerceIn(0f, 1f)
+            val radius = baseRadius *
+                particles.radiusScale[index] *
+                (0.88f + shaped * 1.10f + airborne * 0.10f)
+            val alpha = (
+                0.10f +
+                    depth * 0.12f +
+                    shaped * 0.38f +
+                    bass * 0.045f -
+                    airborne * 0.05f
+                ).coerceIn(0.08f, 0.68f)
+            val glowColor = if (particleColorMode == AudioVisualizerParticleColorMode.Rainbow) {
+                Color(particles.rainbowArgb[index])
+            } else {
+                Color.White
+            }
+            val glowStrength = (
+                shaped * 0.82f +
+                    bass * 0.10f +
+                    airborne * 0.08f
+                ).coerceIn(0f, 1f)
 
-        val shackleLeft = width * 0.31f
-        val shackleTop = height * 0.14f
-        val shackleSize = width * 0.38f
-        val unlockRotation = -34f * (1f - progress)
-        val unlockShiftX = -width * 0.055f * (1f - progress)
-        val unlockShiftY = -height * 0.045f * (1f - progress)
+            if (
+                showTrails &&
+                particles.heightDp[index] > 4f &&
+                (glowStrength > 0.12f || abs(particles.velocityYDp[index]) > 42f)
+            ) {
+                for (framesAgo in PARTICLE_TRAIL_HISTORY - 1 downTo 1) {
+                    val trailAlpha =
+                        alpha * (0.018f + (PARTICLE_TRAIL_HISTORY - framesAgo) * 0.020f)
+                    val trailX = (
+                        particles.baseX[index] * size.width +
+                            particles.trailOffsetX(index, framesAgo) * density
+                        ).coerceIn(0f, size.width)
+                    val trailY = (
+                        floorY -
+                            (
+                                particles.floorOffsetDp[index] +
+                                    particles.trailHeight(index, framesAgo)
+                                ) * density
+                        ).coerceIn(0f, floorY)
+                    drawCircle(
+                        color = glowColor.copy(alpha = trailAlpha),
+                        radius = radius * (0.66f + framesAgo * 0.07f),
+                        center = Offset(trailX, trailY),
+                        blendMode = BlendMode.Plus,
+                    )
+                }
+            }
 
-        withTransform({
-            rotate(
-                degrees = unlockRotation,
-                pivot = Offset(width * 0.67f, bodyTop + stroke * 0.5f)
-            )
-            translate(left = unlockShiftX, top = unlockShiftY)
-        }) {
-            drawArc(
-                color = tint,
-                startAngle = 180f,
-                sweepAngle = 180f,
-                useCenter = false,
-                topLeft = Offset(shackleLeft, shackleTop),
-                size = Size(shackleSize, shackleSize),
-                style = Stroke(width = stroke, cap = StrokeCap.Round)
-            )
-            drawLine(
-                color = tint,
-                start = Offset(shackleLeft, shackleTop + shackleSize * 0.5f),
-                end = Offset(shackleLeft, bodyTop + stroke * 0.2f),
-                strokeWidth = stroke,
-                cap = StrokeCap.Round
-            )
-            drawLine(
-                color = tint,
-                start = Offset(shackleLeft + shackleSize, shackleTop + shackleSize * 0.5f),
-                end = Offset(shackleLeft + shackleSize, bodyTop + stroke * 0.2f),
-                strokeWidth = stroke,
-                cap = StrokeCap.Round
+            if (glowStrength > 0.52f) {
+                drawCircle(
+                    color = glowColor.copy(alpha = alpha * 0.018f * glowStrength),
+                    radius = radius * 5.20f,
+                    center = Offset(x, y),
+                    blendMode = BlendMode.Plus,
+                )
+            }
+            if (glowStrength > 0.30f) {
+                drawCircle(
+                    color = glowColor.copy(alpha = alpha * 0.050f * glowStrength),
+                    radius = radius * 3.35f,
+                    center = Offset(x, y),
+                    blendMode = BlendMode.Plus,
+                )
+            }
+            if (glowStrength > 0.13f) {
+                drawCircle(
+                    color = glowColor.copy(alpha = alpha * 0.115f * glowStrength),
+                    radius = radius * 1.90f,
+                    center = Offset(x, y),
+                    blendMode = BlendMode.Plus,
+                )
+            }
+            val coreColor = if (particleColorMode == AudioVisualizerParticleColorMode.Rainbow) {
+                lerp(
+                    glowColor,
+                    Color.White,
+                    ((glowStrength - 0.34f) / 0.54f).coerceIn(0f, 1f),
+                )
+            } else {
+                Color.White
+            }
+            drawCircle(
+                color = coreColor.copy(alpha = alpha),
+                radius = radius,
+                center = Offset(x, y),
+                blendMode = BlendMode.SrcOver,
             )
         }
     }
 }
 
 @Composable
-fun AudioVisualizerLockControls(
-    onDismiss: () -> Unit,
-    modifier: Modifier = Modifier
+fun PulseRingSpectrumOverlay(
+    spectrum: FloatArray,
+    spectrumState: State<FloatArray>? = null,
+    visible: Boolean,
+    isPlaying: Boolean,
+    modifier: Modifier = Modifier,
 ) {
-    val eyePulse = remember { Animatable(0f) }
-    val lockPulse = remember { Animatable(0f) }
-    var showHint by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) {
-        eyePulse.animateTo(1f, tween(220, easing = FastOutSlowInEasing))
-        eyePulse.animateTo(0f, tween(420, easing = FastOutSlowInEasing))
-        delay(90)
-        lockPulse.animateTo(1f, tween(220, easing = FastOutSlowInEasing))
-        lockPulse.animateTo(0f, tween(420, easing = FastOutSlowInEasing))
-        delay(1900)
-        showHint = false
-    }
+    val reveal by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(if (visible) 180 else 150),
+        label = "pulse-ring-visualizer",
+    )
+    val motion = remember { DisplaySpectrumMotion() }
+    val rings = remember { PulseRingState() }
+    val colorMode = LocalAudioVisualizerParticleColorMode.current
 
-    Column(modifier = modifier, horizontalAlignment = Alignment.End) {
-        AnimatedVisibility(
-            visible = showHint,
-            enter = fadeIn(tween(220)),
-            exit = fadeOut(tween(280))
-        ) {
-            Text(
-                text = stringResource(R.string.audio_visualizer_controls_hint),
-                color = Color.White.copy(alpha = 0.96f),
-                fontSize = 11.sp,
-                modifier = Modifier
-                    .padding(bottom = 6.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.58f))
-                    .padding(horizontal = 10.dp, vertical = 5.dp)
+    if (reveal <= 0.001f && !visible && !motion.hasVisibleEnergy() && !rings.hasMotion()) return
+
+    Canvas(
+        modifier = modifier
+            .graphicsLayer { alpha = reveal }
+            .audioVisualizerFrame(
+                motion = motion,
+                spectrum = spectrum,
+                spectrumState = spectrumState,
+                visible = visible,
+                playing = isPlaying,
+                extraAnimationActive = rings::hasMotion,
+            ),
+    ) {
+        if (size.width <= 0f || size.height <= 0f) return@Canvas
+        rings.advance(motion.animationTimeSeconds, motion.levels, isPlaying)
+        val centerY = size.height - 7f * density
+        for (index in 0 until PULSE_RING_COUNT) {
+            val age = rings.ageSeconds[index]
+            if (age < 0f) continue
+            val progress = (age / 1.05f).coerceIn(0f, 1f)
+            val eased = 1f - (1f - progress) * (1f - progress)
+            val fade = (1f - progress).pow(1.7f)
+            val strength = rings.strength[index]
+            val radius = 10f * density + size.width * (0.16f + 0.60f * eased)
+            val center = Offset(rings.originX[index] * size.width, centerY)
+            val ringColor = if (colorMode == AudioVisualizerParticleColorMode.Rainbow) {
+                Color(rings.colorArgb[index])
+            } else {
+                Color.White
+            }
+            drawCircle(
+                color = ringColor.copy(alpha = 0.035f * fade * strength),
+                radius = radius,
+                center = center,
+                style = Stroke(width = (7.0f - progress * 3.0f) * density),
+                blendMode = BlendMode.Plus,
             )
-        }
-        Row(
-            modifier = Modifier
-                .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.42f))
-                .padding(horizontal = 5.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-        val interactionSource = remember { MutableInteractionSource() }
-        Box(
-            modifier = Modifier
-                .size(34.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.22f * eyePulse.value))
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    onClick = onDismiss
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Image(
-                painter = painterResource(R.drawable.ic_audio_visualizer_visibility),
-                contentDescription = stringResource(R.string.audio_visualizer_close),
-                colorFilter = ColorFilter.tint(Color.White.copy(alpha = 0.96f)),
-                modifier = Modifier.size(20.dp)
+            drawCircle(
+                color = lerp(
+                    ringColor,
+                    Color.White,
+                    (strength * 0.42f).coerceIn(0f, 0.42f),
+                ).copy(alpha = 0.26f * fade * strength),
+                radius = radius,
+                center = center,
+                style = Stroke(width = (1.15f + strength * 0.8f) * density),
             )
-        }
-        Box(
-            modifier = Modifier
-                .size(34.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.22f * lockPulse.value)),
-            contentAlignment = Alignment.Center
-        ) {
-            AudioVisualizerToggleGlyph(
-                locked = true,
-                tint = Color.White.copy(alpha = 0.94f),
-                animateOnEnter = true,
-                modifier = Modifier.size(20.dp)
-            )
-        }
         }
     }
 }
 
-private fun Color.luminanceCompat(): Float {
-    fun channel(value: Float): Float = if (value <= 0.03928f) value / 12.92f else ((value + 0.055f) / 1.055f).pow(2.4f)
-    return channel(red) * 0.2126f + channel(green) * 0.7152f + channel(blue) * 0.0722f
+@Composable
+fun EnergyRibbonSpectrumOverlay(
+    spectrum: FloatArray,
+    spectrumState: State<FloatArray>? = null,
+    visible: Boolean,
+    isPlaying: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val reveal by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(if (visible) 220 else 160),
+        label = "energy-ribbon-visualizer",
+    )
+    val motion = remember { DisplaySpectrumMotion() }
+    val path = remember { Path() }
+    val colorMode = LocalAudioVisualizerParticleColorMode.current
+    val rainbowBrush = remember {
+        Brush.horizontalGradient(
+            listOf(
+                Color.hsv(8f, 0.86f, 1f),
+                Color.hsv(55f, 0.84f, 1f),
+                Color.hsv(126f, 0.82f, 1f),
+                Color.hsv(190f, 0.84f, 1f),
+                Color.hsv(252f, 0.82f, 1f),
+                Color.hsv(320f, 0.84f, 1f),
+            )
+        )
+    }
+
+    if (reveal <= 0.001f && !visible && !motion.hasVisibleEnergy()) return
+
+    Canvas(
+        modifier = modifier
+            .graphicsLayer { alpha = reveal }
+            .audioVisualizerFrame(
+                motion = motion,
+                spectrum = spectrum,
+                spectrumState = spectrumState,
+                visible = visible,
+                playing = isPlaying,
+            ),
+    ) {
+        if (size.width <= 0f || size.height <= 0f) return@Canvas
+        val samples = 64
+        val baseline = size.height * 0.79f
+        val amplitude = size.height * 0.56f
+        val time = motion.animationTimeSeconds
+        path.reset()
+        for (sample in 0 until samples) {
+            val fraction = sample / (samples - 1f)
+            val band = (fraction * (MONO_BAND_COUNT - 1)).roundToInt()
+                .coerceIn(0, MONO_BAND_COUNT - 1)
+            val level = motion.levels[band].coerceIn(0f, 1f)
+            val shaped = level.pow(0.72f)
+            val microMotion = sin(time * 2.0f + sample * 0.31f) *
+                2.0f * density * shaped
+            val x = fraction * size.width
+            val y = baseline - shaped * amplitude - microMotion
+            if (sample == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+
+        if (colorMode == AudioVisualizerParticleColorMode.Rainbow) {
+            drawPath(
+                path = path,
+                brush = rainbowBrush,
+                alpha = 0.055f,
+                style = Stroke(width = 10f * density, cap = StrokeCap.Round),
+                blendMode = BlendMode.Plus,
+            )
+            drawPath(
+                path = path,
+                brush = rainbowBrush,
+                alpha = 0.32f,
+                style = Stroke(width = 3.8f * density, cap = StrokeCap.Round),
+            )
+        } else {
+            drawPath(
+                path = path,
+                color = Color.White.copy(alpha = 0.045f),
+                style = Stroke(width = 10f * density, cap = StrokeCap.Round),
+                blendMode = BlendMode.Plus,
+            )
+            drawPath(
+                path = path,
+                color = Color.White.copy(alpha = 0.42f),
+                style = Stroke(width = 3.2f * density, cap = StrokeCap.Round),
+            )
+        }
+        drawPath(
+            path = path,
+            color = Color.White.copy(alpha = 0.60f),
+            style = Stroke(width = 0.95f * density, cap = StrokeCap.Round),
+        )
+    }
+}
+
+@Composable
+fun RippleSpectrumOverlay(
+    spectrum: FloatArray,
+    spectrumState: State<FloatArray>? = null,
+    visible: Boolean,
+    isPlaying: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val reveal by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(if (visible) 180 else 150),
+        label = "ripple-visualizer",
+    )
+    val motion = remember { DisplaySpectrumMotion() }
+    val ripples = remember { RippleFieldState() }
+    val colorMode = LocalAudioVisualizerParticleColorMode.current
+
+    if (reveal <= 0.001f && !visible && !motion.hasVisibleEnergy() && !ripples.hasMotion()) return
+
+    Canvas(
+        modifier = modifier
+            .graphicsLayer { alpha = reveal }
+            .audioVisualizerFrame(
+                motion = motion,
+                spectrum = spectrum,
+                spectrumState = spectrumState,
+                visible = visible,
+                playing = isPlaying,
+                extraAnimationActive = ripples::hasMotion,
+            ),
+    ) {
+        if (size.width <= 0f || size.height <= 0f) return@Canvas
+        ripples.advance(motion.animationTimeSeconds, motion.levels, isPlaying)
+        val floorY = size.height - 8f * density
+        for (index in 0 until RIPPLE_EVENT_COUNT) {
+            val age = ripples.ageSeconds[index]
+            if (age < 0f) continue
+            val progress = (age / 0.82f).coerceIn(0f, 1f)
+            val fade = (1f - progress).pow(1.55f)
+            val strength = ripples.strength[index]
+            val center = Offset(
+                x = ripples.originX[index] * size.width,
+                y = floorY - progress * 18f * density,
+            )
+            val radius = (8f + progress * 92f) * density * (0.76f + strength * 0.34f)
+            val rippleColor = if (colorMode == AudioVisualizerParticleColorMode.Rainbow) {
+                Color(ripples.colorArgb[index])
+            } else {
+                Color.White
+            }
+            drawCircle(
+                color = rippleColor.copy(alpha = 0.045f * fade * strength),
+                radius = radius * 1.04f,
+                center = center,
+                style = Stroke(width = 5.2f * density),
+                blendMode = BlendMode.Plus,
+            )
+            drawCircle(
+                color = rippleColor.copy(alpha = 0.31f * fade * strength),
+                radius = radius,
+                center = center,
+                style = Stroke(width = 1.1f * density),
+            )
+        }
+    }
+}
+
+@Composable
+fun SharedRealtimeVisualizerOverlay(
+    style: AudioVisualizerStyle,
+    spectrum: FloatArray,
+    spectrumState: State<FloatArray>? = null,
+    visible: Boolean,
+    isPlaying: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier) {
+        BottomParticleSpectrumOverlay(
+            spectrum = spectrum,
+            spectrumState = spectrumState,
+            visible = visible &&
+                (style == AudioVisualizerStyle.Particle ||
+                    style == AudioVisualizerStyle.ParticleTrails),
+            isPlaying = isPlaying,
+            showTrails = style == AudioVisualizerStyle.ParticleTrails,
+            modifier = Modifier.matchParentSize(),
+        )
+        PulseRingSpectrumOverlay(
+            spectrum = spectrum,
+            spectrumState = spectrumState,
+            visible = visible && style == AudioVisualizerStyle.PulseRings,
+            isPlaying = isPlaying,
+            modifier = Modifier.matchParentSize(),
+        )
+        EnergyRibbonSpectrumOverlay(
+            spectrum = spectrum,
+            spectrumState = spectrumState,
+            visible = visible && style == AudioVisualizerStyle.EnergyRibbon,
+            isPlaying = isPlaying,
+            modifier = Modifier.matchParentSize(),
+        )
+        RippleSpectrumOverlay(
+            spectrum = spectrum,
+            spectrumState = spectrumState,
+            visible = visible && style == AudioVisualizerStyle.Ripple,
+            isPlaying = isPlaying,
+            modifier = Modifier.matchParentSize(),
+        )
+    }
 }

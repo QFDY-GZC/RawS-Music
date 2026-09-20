@@ -30,7 +30,11 @@ class PlayerSceneController {
         ALBUM_DETAIL
     }
 
-    var currentScene: Scene = Scene.MAIN
+    // The committed scene participates in mainPlayerSheetExpansionState. Keep it observable so
+    // silent endpoint commits (used by the immersive dismiss host) invalidate that derived state
+    // just like animated transitions do. A plain field leaves expansion cached at 1f after
+    // PLAYER -> MAIN silent commit, making the library alpha stay at zero while hit targets remain.
+    var currentScene by mutableStateOf(Scene.MAIN)
         private set
 
     var composeCurrentScene by mutableStateOf(Scene.MAIN)
@@ -48,6 +52,9 @@ class PlayerSceneController {
     var composeTransitionProgress by mutableFloatStateOf(0f)
         private set
 
+    /** Outer immersive dismiss progress used only to reveal retained MAIN underneath PLAYER. */
+    private var externalMainDismissProgress by mutableFloatStateOf(0f)
+
     /**
      * Stable state object for the persistent MAIN/PLAYER sheet.
      *
@@ -57,6 +64,10 @@ class PlayerSceneController {
      */
     val mainPlayerSheetExpansionState: State<Float> = derivedStateOf {
         currentMainPlayerExpansion()
+    }
+
+    fun updateExternalMainDismissProgress(progress: Float) {
+        externalMainDismissProgress = progress.coerceIn(0f, 1f)
     }
 
     /** True only while the finger drives the scene; release animations are not interactive. */
@@ -158,6 +169,10 @@ class PlayerSceneController {
         composeIsTransitioning = false
         composeTransitionProgress = 0f
         composeIsInteractiveGesture = false
+        externalMainDismissProgress = 0f
+        mainPlayerSheetDragActive = false
+        mainPlayerSheetDragStartExpansion = if (targetScene == Scene.PLAYER) 1f else 0f
+        mainPlayerSheetCommittedScene = targetScene
         playerLyricsTransitionCoordinator.finish()
         if (oldScene != targetScene) {
             onSceneChanged?.invoke(targetScene, oldScene)
@@ -401,12 +416,31 @@ class PlayerSceneController {
     fun setLyricAtTopBoundary(atTop: Boolean) = Unit
 
     fun resetInteractionState() {
+        sceneAnimGeneration++
         sceneAnimator?.cancel()
+        sceneAnimator = null
+
+        // Lifecycle/style changes may interrupt a settling animation while MainActivity is
+        // backgrounded by a settings screen. The committed scene is authoritative; leaving the
+        // Compose visual pair on PLAYER with progress reset to zero makes MAIN render underneath
+        // while the bottom chrome still believes the player sheet is fully expanded. Canonicalize
+        // every visual field to the committed scene before accepting new gestures.
+        val committed = currentScene
+        fromScene = committed
+        toScene = committed
+        composeFromScene = committed
+        composeToScene = committed
+        composeCurrentScene = committed
         transitionRatio = 0f
         isTransitioning = false
         composeIsTransitioning = false
         composeTransitionProgress = 0f
         composeIsInteractiveGesture = false
+        externalMainDismissProgress = 0f
+        mainPlayerSheetDragActive = false
+        mainPlayerSheetDragStartExpansion = if (committed == Scene.PLAYER) 1f else 0f
+        mainPlayerSheetCommittedScene = committed
+        playerReturnPreparationActive = false
         playerLyricsTransitionCoordinator.cancel()
     }
 
@@ -438,6 +472,27 @@ class PlayerSceneController {
             onPrepareMainToPlayer?.invoke()
         }
         beginMainPlayerSheetDrag()
+    }
+
+    fun hasMainPlayerSheetBackTarget(): Boolean =
+        isMainPlayerSheetAvailable() && currentMainPlayerExpansion() > 0f
+
+    fun startMainPlayerPredictiveBack(): Boolean {
+        if (!hasMainPlayerSheetBackTarget()) return false
+        beginMainPlayerSheetDrag()
+        return true
+    }
+
+    fun updateMainPlayerPredictiveBack(progress: Float) {
+        if (!mainPlayerSheetDragActive) return
+        updateMainPlayerSheetExpansion(
+            mainPlayerSheetDragStartExpansion * (1f - progress.coerceIn(0f, 1f))
+        )
+    }
+
+    fun finishMainPlayerPredictiveBack(commit: Boolean) {
+        if (!mainPlayerSheetDragActive) return
+        settleMainPlayerSheet(expanded = !commit, velocity = 0f)
     }
 
     fun updateMainToPlayerDrag(ratio: Float) {
@@ -546,11 +601,16 @@ class PlayerSceneController {
     }
 
     private fun currentMainPlayerExpansion(): Float = when {
+        externalMainDismissProgress > 0f && !composeIsTransitioning && currentScene != Scene.MAIN ->
+            (1f - externalMainDismissProgress).coerceIn(0f, 1f)
         composeIsTransitioning && composeFromScene == Scene.MAIN && composeToScene == Scene.PLAYER ->
             composeTransitionProgress.coerceIn(0f, 1f)
         composeIsTransitioning && composeFromScene == Scene.PLAYER && composeToScene == Scene.MAIN ->
             (1f - composeTransitionProgress).coerceIn(0f, 1f)
-        currentScene == Scene.PLAYER || composeCurrentScene == Scene.PLAYER -> 1f
+        // currentScene is the committed anchor. composeCurrentScene is a drawing mirror and can
+        // temporarily be stale if a lifecycle/style change interrupted a visual transition. Never
+        // let that stale mirror keep MAIN's MiniPlayer/navigation hidden.
+        currentScene == Scene.PLAYER -> 1f
         else -> 0f
     }
 
@@ -764,6 +824,15 @@ class PlayerSceneController {
                         return
                     }
                     currentScene = targetScene
+                    if (playerLyricsSessionId != null &&
+                        playerLyricsTransitionCoordinator.activeSession?.id == playerLyricsSessionId
+                    ) {
+                        // ValueAnimator normally delivers the terminal update before onAnimationEnd,
+                        // but make the endpoint explicit. The session keeps this value after
+                        // finish() so any retained old graphicsLayer still draws the committed
+                        // target until Compose applies the settled scene tree.
+                        playerLyricsTransitionCoordinator.updateProgress(endRatio)
+                    }
                     transitionRatio = 0f
                     isTransitioning = false
                     composeCurrentScene = targetScene

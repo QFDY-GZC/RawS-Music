@@ -203,7 +203,12 @@ object LyricParserBase {
 
     fun isRomajiText(text: String): Boolean {
         if (text.isBlank()) return false
-        val romajiPattern = Regex("""^[a-zA-Z\s'.\-？?！!「」『』()（）\[\]]+$""")
+        // Provider-enhanced LRC often keeps musical/counting notation in the romanized lane
+        // (for example "6/8 no ri zu mu", "Drums : fu ji...", or bracketed credits).
+        // Treat those ASCII notation characters as romanization too; otherwise the first such
+        // extra line occupies LyricLine.translation and the real CJK translation that follows at
+        // the same timestamp is discarded by mergeRawLines().
+        val romajiPattern = Regex("""^[a-zA-Z0-9\s'.\-/:&,+%#？?！!：:「」『』()（）\[\]]+$""")
         if (!romajiPattern.matches(text)) return false
         return text.any { it.isLetter() }
     }

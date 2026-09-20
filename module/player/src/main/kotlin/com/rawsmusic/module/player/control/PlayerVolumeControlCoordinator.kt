@@ -2,9 +2,9 @@ package com.rawsmusic.module.player.control
 
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.module.player.PlaybackVolumePlanner
-import com.rawsmusic.module.player.usb.UsbHardwareVolumeModel
 import com.rawsmusic.module.player.usb.UsbOutputProfile
 import com.rawsmusic.module.player.usb.UsbVolumePlan
+import com.rawsmusic.module.player.usb.UsbVolumePath
 
 /**
  * Owns replay-gain state and composed Android/USB volume routing.
@@ -26,6 +26,7 @@ internal class PlayerVolumeControlCoordinator(
         val transportTransitioning: () -> Boolean,
         val currentUsbProfile: () -> UsbOutputProfile?,
         val userVolume: () -> Float,
+        val usbSoftwarePcmGain: (Float) -> Float,
         val duckFactor: () -> Float,
         val setAndroidSoftwareGain: (Float) -> Unit,
         val setUsbPcmGain: (Float) -> Unit,
@@ -54,18 +55,21 @@ internal class PlayerVolumeControlCoordinator(
 
     fun applyUsbVolume(profile: UsbOutputProfile, reason: String): UsbVolumePlan {
         val uiVolume = callbacks.userVolume().coerceIn(0f, 1f)
+        val plannedUserVolume = if (profile.volumePath == UsbVolumePath.Software) {
+            callbacks.usbSoftwarePcmGain(uiVolume).coerceIn(0f, 1f)
+        } else {
+            uiVolume
+        }
         val plan = PlaybackVolumePlanner.usbVolumePlan(
             profile = profile,
-            userVolume = uiVolume,
+            userVolume = plannedUserVolume,
             replayGain = replayGainModifier,
             duck = callbacks.duckFactor(),
             reason = reason,
         )
-        val displayedHardwareDb = UsbHardwareVolumeModel.uiVolumeToHardwareDb(uiVolume)
         callbacks.logWarning(
-            "APPLY_USB_VOLUME volume=$uiVolume hwDb=$displayedHardwareDb " +
-                "planPcm=${plan.pcmGain} planHwDb=${plan.hardwareDb} " +
-                "useHw=${plan.useHardwareVolume} reason=$reason"
+            "APPLY_USB_VOLUME volume=$uiVolume plannedUserVolume=$plannedUserVolume " +
+                "planPcm=${plan.pcmGain} useHw=${plan.useHardwareVolume} reason=$reason"
         )
 
         if (!callbacks.isReleased()) {
@@ -75,8 +79,8 @@ internal class PlayerVolumeControlCoordinator(
                 // The hardware target is initialized once per physical DAC attachment session and is changed only
                 // by an explicit user-volume command.
                 callbacks.logDebug(
-                    "applyUsbVolume: keep hardware Feature Unit unchanged reason=$reason " +
-                        "targetDb=${plan.hardwareDb}"
+                    "applyUsbVolume: keep hardware Feature Unit unchanged reason=$reason; " +
+                        "device dB is owned by FU raw/readback"
                 )
             }
         }

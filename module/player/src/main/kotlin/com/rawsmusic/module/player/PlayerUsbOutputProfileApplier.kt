@@ -3,7 +3,6 @@ package com.rawsmusic.module.player
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.usb.UsbOutputProfile
-import com.rawsmusic.module.player.usb.UsbPcmOutputMode
 
 /** Commits a resolved USB profile without owning the playback lifecycle. */
 internal class PlayerUsbOutputProfileApplier(
@@ -12,12 +11,8 @@ internal class PlayerUsbOutputProfileApplier(
 ) {
     data class Callbacks(
         val setFfmpegBitPerfect: (Boolean) -> Unit,
-        val setPcmOutputMode: (UsbPcmOutputMode) -> Unit,
-        val setDacSettings: (Boolean, Boolean, Boolean, Boolean, Boolean) -> Unit,
         val setNativePolicy: (Boolean, Boolean, Boolean) -> Unit,
-        val setDsdConversion: (Boolean, Int, Int, Boolean, Boolean) -> Unit,
-        val setLastGoodProfile: (Int, Int, Int, Int, Int) -> Unit,
-        val setCompatFlags: (Boolean, Boolean, Boolean, Boolean, Boolean) -> Unit,
+        val stageNativeSessionPolicy: (UsbOutputProfile, Int, Int, Boolean) -> Unit,
         val currentDsdRate: () -> Int,
         val currentSongIsDsdSource: () -> Boolean,
     )
@@ -27,47 +22,28 @@ internal class PlayerUsbOutputProfileApplier(
         val effectiveNoFeedback = profile.noFeedback
         val effectiveFeedbackEndpoint = if (effectiveNoFeedback) 0 else profile.lastGoodFeedbackEndpoint
 
-        callbacks.setPcmOutputMode(profile.pcmOutputMode)
-        callbacks.setDacSettings(false, false, false, false, profile.force1msPacket)
-
-        // Keep the requested hardware-volume bit here. Native init must probe
-        // the Feature Unit before the effective state can become true.
+        // Keep the requested hardware-volume bit live for the current handle. Native session init,
+        // however, receives the rest of the transport profile atomically through one transaction.
         callbacks.setNativePolicy(
             profile.exclusive,
-            profile.bitPerfect || profile.fixedDigitalVolume,
+            profile.bitPerfect || profile.fixedDigitalVolume || profile.dsdSourceDirect,
             profile.hardwareVolumeRequested,
         )
 
         val dsdRate = callbacks.currentDsdRate()
         val sourceIsDsd = callbacks.currentSongIsDsdSource()
-        callbacks.setDsdConversion(
-            profile.dsdConversionEnabled,
+        callbacks.stageNativeSessionPolicy(
+            profile.copy(lastGoodFeedbackEndpoint = effectiveFeedbackEndpoint),
             dsdRate,
             AppPreferences.Player.dsdConversionType,
             AppPreferences.Player.dsdDitherEnabled,
-            profile.dsdConversionEnabled && profile.dsdDoPEnabled,
         )
         AppLogger.i(
             tag,
-            "USB DSD transport apply: sourceDsd=$sourceIsDsd " +
+            "USB DSD transport staged: sourceDsd=$sourceIsDsd " +
                 "pcmToDsd=${AppPreferences.Player.dsdConversionEnabled && !sourceIsDsd} " +
                 "active=${profile.dsdConversionEnabled} rate=DSD$dsdRate " +
                 "transport=${if (profile.dsdDoPEnabled) "DoP" else "Native"}",
-        )
-
-        callbacks.setLastGoodProfile(
-            profile.lastGoodAlt,
-            profile.lastGoodSampleRate,
-            profile.lastGoodBitDepth,
-            profile.lastGoodSubslot,
-            effectiveFeedbackEndpoint,
-        )
-        callbacks.setCompatFlags(
-            profile.noClockSet,
-            effectiveNoFeedback,
-            profile.noFeatureUnit,
-            profile.preferSafeAlt,
-            profile.safeMode,
         )
         AppLogger.i(
             tag,

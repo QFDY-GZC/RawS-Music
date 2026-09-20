@@ -22,6 +22,7 @@ data class AiSeparationJobProgress(
     val modelVersion: String = "",
     val modelName: String = "",
     val sourceName: String = "",
+    val sourceIdentity: String = "",
     val phase: AiSeparationJobPhase = AiSeparationJobPhase.IDLE,
     val processedFrames: Long = 0L,
     val totalFrames: Long = 0L,

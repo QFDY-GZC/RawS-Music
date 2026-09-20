@@ -45,11 +45,19 @@ internal class AndroidDvcController(
 
     fun applyRoute(usbExclusive: Boolean, reason: String) {
         val active = isActive(usbExclusive)
-        val logical = logicalVolume()
 
         if (active) {
-            applyActiveVolume(logical, reason)
-            AppPreferences.Player.volume = logical
+            if (!routeActive) {
+                // Route acquisition is observational, not a user volume command. Another player,
+                // Bluetooth absolute volume, or a process restart may have changed STREAM_MUSIC
+                // while our cached logical DVC value was stale. Adopt the routed system value
+                // without writing a coarse system step back to Android.
+                syncFromSystemVolume("route_acquire:$reason")
+            } else {
+                val logical = logicalVolume()
+                applyActiveVolume(logical, reason)
+                AppPreferences.Player.volume = logical
+            }
         } else {
             applyNative(false, 1f)
         }
@@ -82,6 +90,12 @@ internal class AndroidDvcController(
             TAG,
             "DVC_SYSTEM_SYNC systemStep=$systemStep logical=$logical nativeGain=1.0 reason=$reason"
         )
+    }
+
+    fun prepareForPlaybackTakeover(usbExclusive: Boolean, reason: String) {
+        if (!isActive(usbExclusive)) return
+        syncFromSystemVolume("playback_takeover:$reason")
+        routeActive = true
     }
 
     fun adjust(direction: Int, reason: String) {

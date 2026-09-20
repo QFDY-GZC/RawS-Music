@@ -33,6 +33,16 @@ internal class FfmpegGaplessRequestCoordinator(
         clearGaplessDecoder("closeNextDecoder")
     }
 
+    fun armManualCrossfadeRequest(targetPath: String, generation: Int) {
+        setManualRequested(true)
+        setManualTargetPath(targetPath)
+        setManualGeneration(generation)
+        AppLogger.d(
+            tag,
+            "Manual crossfade request armed: target=$targetPath gen=$generation",
+        )
+    }
+
     fun clearManualCrossfadeRequest(reason: String) {
         if (manualRequested() || manualTargetPath() != null || manualGeneration() >= 0) {
             AppLogger.d(

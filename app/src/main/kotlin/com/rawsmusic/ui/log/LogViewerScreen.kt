@@ -115,27 +115,7 @@ fun LogViewerScreen(onBack: () -> Unit) {
                             Text(stringResource(R.string.ui_clear), color = Color(0xFFC62828), fontSize = 13.sp, fontFamily = appFontFamily())
                         }
                         TextButton(onClick = {
-                            val file = AppLogger.getLogFile()
-                            if (file != null && file.exists()) {
-                                try {
-                                    val uri = FileProvider.getUriForFile(
-                                        context,
-                                        "${context.packageName}.fileprovider",
-                                        file
-                                    )
-                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(Intent.EXTRA_STREAM, uri)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }
-                                    context.startActivity(
-                                        Intent.createChooser(
-                                            shareIntent,
-                                            context.getString(R.string.ui_log_share_title)
-                                        )
-                                    )
-                                } catch (_: Exception) {}
-                            }
+                            com.rawsmusic.helper.LogExportHelper(context).shareCurrentLog()
                         }) {
                             Text(stringResource(R.string.ui_log_share), color = colors.primary, fontSize = 13.sp, fontFamily = appFontFamily())
                         }

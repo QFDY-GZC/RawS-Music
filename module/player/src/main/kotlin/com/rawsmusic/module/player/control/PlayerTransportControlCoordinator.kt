@@ -19,6 +19,8 @@ internal interface PlayerTransportEventQueue {
     fun submitPause(handler: suspend () -> Unit)
     fun submitResume(handler: suspend () -> Unit)
     fun submitStop(handler: suspend () -> Unit)
+
+    fun submitGeneric(eventType: String, handler: suspend () -> Unit)
 }
 
 internal class PlaybackEventQueueTransportAdapter(
@@ -43,6 +45,10 @@ internal class PlaybackEventQueueTransportAdapter(
 
     override fun submitStop(handler: suspend () -> Unit) {
         delegate.submit(PE.StopEvent(handler))
+    }
+
+    override fun submitGeneric(eventType: String, handler: suspend () -> Unit) {
+        delegate.submit(PE.GenericEvent(eventType, handler))
     }
 }
 
@@ -74,14 +80,16 @@ internal class PlayerTransportControlCoordinator(
         val isReleased: () -> Boolean,
         val clearAutomaticFocusResume: (String) -> Unit,
         val resolveExplicitPlayQueue: (AudioFile, List<AudioFile>, Int) -> Pair<List<AudioFile>, Int>,
+        val onExplicitQueueSelection: (List<AudioFile>, Int) -> Unit = { _, _ -> },
         val primeSongSelectionForUi: (AudioFile) -> Unit,
         val shouldRouteExplicitPlayThroughManualSwitch: (AudioFile) -> Boolean,
-        val playManualSwitchFromStartLocked: suspend (AudioFile, List<AudioFile>, Int, String) -> Unit,
+        val playManualSwitchFromStartLocked: suspend (AudioFile, List<AudioFile>, Int, String, () -> Boolean) -> Unit,
         val playInternal: (AudioFile, List<AudioFile>, Int) -> Unit,
         val backendState: () -> BackendState,
         val backendStateAgeMs: () -> Long,
         val backendStateSummary: () -> String,
         val resolvePlayPauseSeedSong: () -> AudioFile?,
+        val hasPausedSelectionPendingStart: () -> Boolean = { false },
         val transitionPlayState: (PlayState, String) -> Unit,
         val forcePlayState: (PlayState, String) -> Unit,
         val isUsbExclusiveActive: () -> Boolean,
@@ -129,6 +137,7 @@ internal class PlayerTransportControlCoordinator(
                     queuedQueue,
                     queuedIndex,
                 )
+                callbacks.onExplicitQueueSelection(resolvedQueue, resolvedIndex)
                 if (callbacks.shouldRouteExplicitPlayThroughManualSwitch(queuedSong)) {
                     callbacks.logWarn(
                         "play(): routing explicit song selection through manual switch " +
@@ -140,12 +149,64 @@ internal class PlayerTransportControlCoordinator(
                         resolvedQueue,
                         resolvedIndex,
                         "manual_select",
-                    )
+                    ) { isLatestPlayRequest(token) }
                 } else {
                     callbacks.playInternal(queuedSong, resolvedQueue, resolvedIndex)
                 }
             }
         }
+    }
+
+    /**
+     * Renderer-completion continuation lane.
+     *
+     * Unlike [play], this is not an explicit user selection: it must not prime selection UI,
+     * clear focus-resume intent, or enter the manual fade/crossfade policy. The request still uses
+     * the same serialized PLAY queue and latest-request token, so a newer user command safely wins.
+     */
+    fun automaticAdvance(song: AudioFile, queue: List<AudioFile>, index: Int): Boolean {
+        if (callbacks.isReleased() || index !in queue.indices || queue[index] != song) return false
+        val token = latestPlayRequestToken.incrementAndGet()
+        eventQueue.submitPlay(song, queue, index) autoAdvanceHandler@{ queuedSong, queuedQueue, queuedIndex ->
+            if (!isLatestPlayRequest(token)) return@autoAdvanceHandler
+            transportMutex.withLock {
+                if (!isLatestPlayRequest(token)) return@withLock
+                callbacks.playInternal(queuedSong, queuedQueue, queuedIndex)
+            }
+        }
+        return true
+    }
+
+    /**
+     * Internal renderer restart used after an output-policy rebuild.
+     *
+     * This is deliberately not [play]: a settings transaction must never create a newer user-play
+     * token or prime selection UI with the song that happened to be current when the transaction
+     * started. If the user selected another row while USB was rebuilding, that explicit request
+     * owns a newer token and this continuation simply disappears.
+     */
+    fun restartAfterSettingsIfUncontested(
+        song: AudioFile,
+        queue: List<AudioFile>,
+        index: Int,
+        expectedPlayRequestToken: Long,
+    ): Boolean {
+        if (callbacks.isReleased() || index !in queue.indices || queue[index] != song) return false
+        if (latestPlayRequestToken.get() != expectedPlayRequestToken) return false
+        eventQueue.submitGeneric("SETTINGS_RESTART") restartHandler@{
+            if (latestPlayRequestToken.get() != expectedPlayRequestToken) {
+                callbacks.logWarn(
+                    "settings restart dropped: explicit play superseded target=${song.title} " +
+                        "expectedToken=$expectedPlayRequestToken latest=${latestPlayRequestToken.get()}"
+                )
+                return@restartHandler
+            }
+            transportMutex.withLock {
+                if (latestPlayRequestToken.get() != expectedPlayRequestToken) return@withLock
+                callbacks.playInternal(song, queue, index)
+            }
+        }
+        return true
     }
 
     fun playQueue(songs: List<AudioFile>, startIndex: Int = 0) {
@@ -160,7 +221,13 @@ internal class PlayerTransportControlCoordinator(
         callbacks.logWarn("playPause called, state=$state")
         when (state) {
             BackendState.PLAYING -> pause()
-            BackendState.PAUSED -> resume()
+            BackendState.PAUSED -> {
+                if (callbacks.hasPausedSelectionPendingStart()) {
+                    startFromSeedOrIdle()
+                } else {
+                    resume()
+                }
+            }
             BackendState.PREPARING -> handlePreparingPlayPause()
             else -> startFromSeedOrIdle()
         }
@@ -185,6 +252,11 @@ internal class PlayerTransportControlCoordinator(
 
     fun resume() {
         if (callbacks.isReleased()) return
+        if (callbacks.hasPausedSelectionPendingStart()) {
+            callbacks.logWarn("resume(): selected track differs from paused renderer; starting selection")
+            startFromSeedOrIdle()
+            return
+        }
         callbacks.clearAutomaticFocusResume("explicit_resume")
         callbacks.markAppForegroundForResume()
         callbacks.logWarn("resume() called, ${callbacks.backendStateSummary()}")

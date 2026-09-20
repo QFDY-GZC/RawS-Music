@@ -9,8 +9,8 @@ import com.rawsmusic.module.player.PlayerService
 /**
  * 统一歌词发布出口。
  *
- * 每次切歌先发布当前歌曲的空歌词身份，立即淘汰上一首的词幕状态；
- * 完整歌词加载完成后再用同一歌曲身份覆盖。
+ * 每次切歌先通过 Lyricon 的纯文本通道同步清空旧词幕；
+ * 完整歌词加载完成后只发送一次结构化 Song，避免空 Song 与完整 Song 异步解析乱序。
  */
 class LyricsPublisher(
     private val getCurrentPositionMs: () -> Long = { 0L },
@@ -31,9 +31,10 @@ class LyricsPublisher(
         PlayerService.updateLyrics(null, song)
         pushServiceLyrics()
 
-        // LyriconProviderManager 的签名包含 stable song id 和歌词数量。先发送
-        // lyrics=0 可立即废弃上一首；稍后完整歌词到达时会产生不同签名并覆盖。
-        LyriconProviderManager.setSong(song, null)
+        // Lyricon 中央端会异步解析 setSong。切歌时若连续发送“空 Song → 完整 Song”，
+        // 两次解析可能乱序，最终反而被空 Song 覆盖。这里改走同步的 sendText(null) 清场，
+        // 完整歌词加载完成后再发送唯一一次结构化 Song。
+        LyriconProviderManager.beginSong(song)
         LyriconProviderManager.setPosition(0L)
         LyriconProviderManager.setPlaybackState(isPlaying())
     }

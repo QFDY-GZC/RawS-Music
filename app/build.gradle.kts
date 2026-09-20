@@ -14,8 +14,8 @@ android {
         applicationId = "com.rawsmusic"
         minSdk = 24
         targetSdk = 37
-        versionCode = 80
-        versionName = "0.9.80 beta"
+        versionCode = 100
+        versionName = "1.0.0-release"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -61,6 +61,7 @@ android {
         compose = true
     }
 
+
     androidResources {
         noCompress += listOf("ttf")
     }
@@ -75,10 +76,6 @@ android {
             // copy only inflated every arm64 APK.
             excludes += "**/libc++_shared.so"
             excludes += listOf(
-                "**/libavcodec.so",
-                "**/libavformat.so",
-                "**/libavutil.so",
-                "**/libswresample.so",
                 "**/libswscale.so",
                 // The 27 MB core is installed on demand from the signed AI repository.
                 // Keep libonnxruntime4j_jni.so: it is the small Java/JNI loader bridge.
@@ -111,6 +108,8 @@ configurations.all {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+
     implementation(project(":core:common"))
     implementation(project(":core:ui"))
     implementation(project(":module:player"))
@@ -151,15 +150,14 @@ dependencies {
 
     implementation(project(":backdrop"))
     implementation(libs.gson)
-    implementation("io.coil-kt:coil-compose:2.7.0")
 
     // Miuix UI 库
     implementation(libs.miuix.ui)
     implementation(libs.miuix.icons)
     implementation(libs.miuix.preference)
-    implementation("com.xzakota.hyper.notification:focus-api:1.4")
-    implementation("dev.rikka.shizuku:api:13.1.5")
-    implementation("dev.rikka.shizuku:provider:13.1.5")
+    implementation(libs.focus.api)
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
     // navigationevent-compose (miuix SearchBar 内部需要 LocalNavigationEventDispatcherOwner)
     implementation("androidx.navigationevent:navigationevent-compose:1.1.1")
 }

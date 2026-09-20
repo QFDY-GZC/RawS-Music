@@ -47,6 +47,7 @@ add_library(
     experimental_gain.cpp
     loudness_balance_processor.cpp
     mono_bass_processor.cpp
+    mono_output_processor.cpp
     dynamic_eq_processor.cpp
     moog_ladder_filter.cpp
     realtime_stem_separator.cpp
@@ -60,6 +61,7 @@ add_library(
     raw_fft_convolver.cpp
     raw_fft_convolver_jni.cpp
     pcm_dither.cpp
+    raw_pcm_neon_codec.cpp
 )
 
 target_include_directories(
@@ -120,6 +122,70 @@ add_library(
     raw_usb_audio_schedule_bootstrap.cpp
     raw_usb_native_guardian.cpp
     raw_usb_submit_scheduler.cpp
+            raw_usb_session_state.cpp
+            raw_usb_session_lifecycle.cpp
+            raw_usb_session_request.cpp
+            raw_usb_event_owner.cpp
+            raw_usb_submit_owner.cpp
+    raw_usb_feedback.cpp
+    raw_usb_clock_model.cpp
+    raw_usb_feature_unit_model.cpp
+    raw_usb_dsd_model.cpp
+    raw_usb_pcm_adapter_model.cpp
+    raw_usb_pcm_transport_codec.cpp
+    raw_usb_format_trace.cpp
+    raw_usb_pcm_ring_writer.cpp
+    raw_usb_handle_token_table.cpp
+    raw_usb_handle_registry_state.cpp
+    raw_usb_quarantine_reaper.cpp
+    raw_usb_stats_formatter.cpp
+    raw_usb_audible_state_formatter.cpp
+    raw_usb_volume_policy_formatter.cpp
+    raw_usb_device_policy.cpp
+    raw_usb_protocol_utils.cpp
+    raw_usb_profile_risk.cpp
+    raw_usb_audio_stream_candidate.cpp
+    raw_usb_service_interval_math.cpp
+    raw_usb_dsd_math.cpp
+    raw_usb_dsd_diagnostics.cpp
+      raw_usb_dsd_session.cpp
+      raw_usb_dsd_route.cpp
+      raw_usb_dsd_worker.cpp
+    raw_usb_dsd_pcm_writer.cpp
+    raw_usb_dsd_raw_writer.cpp
+    raw_usb_dsd_transport_codec.cpp
+    raw_usb_dsd_transport_policy.cpp
+    raw_usb_ac_topology.cpp
+    raw_usb_standard_control_probe.cpp
+    raw_usb_standard_control_write.cpp
+    raw_usb_vendor_control_inventory.cpp
+    raw_usb_vendor_control_transport.cpp
+    raw_usb_pcm_sample_codec.cpp
+    raw_usb_feature_unit_control.cpp
+    raw_usb_transfer_status.cpp
+    raw_usb_transport_model.cpp
+    raw_usb_audio_gain.cpp
+    raw_usb_spsc_ring.cpp
+    raw_usb_transfer_geometry.cpp
+    raw_usb_transfer_pool_policy.cpp
+    raw_usb_session_volume_envelope.cpp
+    raw_usb_transition_gain_owner.cpp
+    raw_usb_swr_context.cpp
+    raw_pcm_channel_matrix.cpp
+    raw_usb_iso_packet_policy.cpp
+    raw_usb_iso_pacer_policy.cpp
+    raw_usb_iso_runtime_model.cpp
+    raw_usb_runtime_format_model.cpp
+    raw_usb_pcm_output_mode.cpp
+    raw_usb_dsd_write_plan.cpp
+    raw_usb_hardware_volume_policy.cpp
+    raw_usb_capabilities_formatter.cpp
+    raw_usb_stop_fade.cpp
+    raw_usb_playback_mode.cpp
+    raw_usb_stats_counter.cpp
+    raw_usb_pending_counter.cpp
+    raw_usb_submit_policy.cpp
+    raw_usb_progressive_pool_policy.cpp
     raw_audio_format_policy.cpp
     raw_pcm_pipeline.cpp
     pcm_to_dsd_converter.cpp
@@ -146,9 +212,9 @@ set_source_files_properties(
 )
 
 # Android 16 exposes OpenSL callback policy as FIFO|SCHED_RESET_ON_FORK;
-# the child pthread is therefore reset to SCHED_OTHER. UAPP also falls back to
+# the child pthread is therefore reset to SCHED_OTHER. The player also falls back to
 # its normal event pthread when the callback policy is not exactly FIFO. Keep
-# this experimental bootstrap compiled out and rely on the UAPP-style Android
+# this experimental bootstrap compiled out and rely on the normal Android
 # media identity + foreground/wakelock path for background process exemption.
 target_compile_definitions(rawsmusic_usb PRIVATE RAWS_ENABLE_OPENSL_RT_BOOTSTRAP=0)
 
@@ -168,6 +234,63 @@ set_target_properties(
     PROPERTIES IMPORTED_LOCATION ${JNI_LIBS_DIR}/librawsmusic_ffmpeg.so
 )
 
+# The checked-in librawsmusic_ffmpeg.so owns the large FFmpeg/codec payload, but its JNI
+# bridge can lag behind FFmpegBridge.kt because it is a prebuilt binary. Compile the live JNI
+# bridge from the current source tree on every app build and link it against that payload.
+# This keeps the Java/Kotlin <-> JNI ABI in lockstep without rebuilding the monolithic codec lib.
+add_library(
+    rawsmusic_ffmpeg_live
+    SHARED
+    ffmpeg_bridge.cpp
+    raw_waveform_scan.cpp
+)
+
+target_include_directories(
+    rawsmusic_ffmpeg_live
+    PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${FFMPEG_DIR}
+)
+
+target_compile_options(
+    rawsmusic_ffmpeg_live
+    PRIVATE
+    -O2
+    -fomit-frame-pointer
+    -std=c++17
+)
+
+target_link_libraries(
+    rawsmusic_ffmpeg_live
+    rawsmusic_ffmpeg
+    android
+    log
+)
+
+# The offline transcoder deliberately uses the encoder-enabled split FFmpeg build.
+# Keep these libraries separate from the playback bridge above: playback continues to
+# load librawsmusic_ffmpeg.so unchanged, while format conversion owns the encoder build.
+add_library(rawsmusic_transcode_avutil SHARED IMPORTED)
+add_library(rawsmusic_transcode_swresample SHARED IMPORTED)
+add_library(rawsmusic_transcode_avcodec SHARED IMPORTED)
+add_library(rawsmusic_transcode_avformat SHARED IMPORTED)
+set_target_properties(
+    rawsmusic_transcode_avutil
+    PROPERTIES IMPORTED_LOCATION ${JNI_LIBS_DIR}/libavutil.so
+)
+set_target_properties(
+    rawsmusic_transcode_swresample
+    PROPERTIES IMPORTED_LOCATION ${JNI_LIBS_DIR}/libswresample.so
+)
+set_target_properties(
+    rawsmusic_transcode_avcodec
+    PROPERTIES IMPORTED_LOCATION ${JNI_LIBS_DIR}/libavcodec.so
+)
+set_target_properties(
+    rawsmusic_transcode_avformat
+    PROPERTIES IMPORTED_LOCATION ${JNI_LIBS_DIR}/libavformat.so
+)
+
 
 # ==========================================
 # Native Audio 引擎 (AAudio / OpenSL ES / Direct)
@@ -177,6 +300,28 @@ add_library(
     OBJECT
     native_audio_engine.cpp
     raw_android_audio_identity.cpp
+    raw_transition_trace.cpp
+    raw_transition_trace_jni.cpp
+    raw_transition_capabilities.cpp
+    raw_transition_capabilities_jni.cpp
+    raw_track_slot_state.cpp
+    raw_track_slot_state_jni.cpp
+    raw_track_render_timeline.cpp
+    raw_track_render_timeline_jni.cpp
+    raw_pcm_slot_queue.cpp
+    raw_pcm_slot_queue_jni.cpp
+    raw_render_handoff_barrier.cpp
+    raw_render_handoff_barrier_jni.cpp
+    raw_transport_fade.cpp
+    raw_transport_fade_jni.cpp
+    raw_manual_crossfade.cpp
+    raw_manual_crossfade_jni.cpp
+    raw_auto_crossfade.cpp
+    raw_auto_crossfade_jni.cpp
+    raw_gapless_stitcher.cpp
+    raw_gapless_stitcher_jni.cpp
+    raw_seek_barrier.cpp
+    raw_seek_barrier_jni.cpp
 )
 
 target_include_directories(
@@ -393,7 +538,12 @@ add_library(
     ai_separation_engine.cpp
     ai_separation_engine_jni.cpp
     ai_separation_audio_encoder.cpp
+    raw_flac_encoder.cpp
     ai_separation_wav.cpp
+    ai_vocal_activity.cpp
+    ai_vocal_activity_jni.cpp
+    ai_spleeter_activity.cpp
+    ai_spleeter_activity_jni.cpp
 )
 
 target_include_directories(
@@ -414,6 +564,45 @@ target_compile_options(
 target_link_libraries(
     rawsmusic_ai_separation
     rawsmusic_ffmpeg
+    android
+    log
+)
+
+# ==========================================
+# Offline audio format conversion
+# ==========================================
+# Keep offline transcoding out of the playback/USB objects. It may block on file IO and encoder
+# work, while the realtime engine remains callback-owned and allocation-bounded.
+add_library(
+    rawsmusic_audio_transcode
+    SHARED
+    audio_transcode_engine.cpp
+    dsf_writer.cpp
+    offline_dsd_encoder.cpp
+    pcm_to_dsd_converter.cpp
+)
+
+target_include_directories(
+    rawsmusic_audio_transcode
+    PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${FFMPEG_DIR}
+)
+
+target_compile_options(
+    rawsmusic_audio_transcode
+    PRIVATE
+    -O2
+    -fomit-frame-pointer
+    -std=c++17
+)
+
+target_link_libraries(
+    rawsmusic_audio_transcode
+    rawsmusic_transcode_avformat
+    rawsmusic_transcode_avcodec
+    rawsmusic_transcode_swresample
+    rawsmusic_transcode_avutil
     android
     log
 )

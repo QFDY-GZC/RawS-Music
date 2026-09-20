@@ -15,10 +15,11 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect as ComposeRect
@@ -26,12 +27,13 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkAspectPolicy
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
-import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.core.ui.widget.player.HOME_HORIZONTAL_CAROUSEL_CORNER_RADIUS_DP
 import kotlin.math.abs
@@ -76,7 +78,7 @@ private data class CanvasLane(
 internal fun HomeArtworkCarouselCanvas(
     songs: List<AudioFile>,
     centerIndex: Int,
-    progress: Float,
+    progressProvider: () -> Float,
     hideCenterLane: Boolean = false,
     centerReflectionAlpha: Float = 1f,
     centerReflectionArtworkKey: String = "",
@@ -105,13 +107,22 @@ internal fun HomeArtworkCarouselCanvas(
                 }.joinToString("|")
         )
     }
+    val artworkKeys = laneSongs.map { song ->
+        song?.resolvePlaybackArtworkKey(null).orEmpty()
+    }
     val laneBitmaps = laneSongs.mapIndexed { laneIndex, song ->
         val artworkKey = song?.resolvePlaybackArtworkKey(null).orEmpty()
         val logicalOffset = laneIndex - CanvasLaneRadius
-        // The lane is the physical holder. Only its source key changes as the queue moves; using
-        // the song identity here destroys the holder on every commit and briefly releases the old
-        // bitmap before the next source callback arrives.
-        key("home-canvas-lane-$logicalOffset") {
+        val occurrence = artworkKeys.take(laneIndex).count { it == artworkKey }
+        // Keep the decoded holder attached to the artwork rather than to a physical rail. After a
+        // gesture commit the selected cover moves from a side rail to the new centre rail; a rail
+        // key would clear that holder for one frame while the confirmed queue is rebound.
+        val holderKey = if (artworkKey.isNotBlank()) {
+            "home-canvas-artwork:$artworkKey:$occurrence"
+        } else {
+            "home-canvas-empty-lane:$logicalOffset"
+        }
+        key(holderKey) {
             rememberHomeCarouselBitmap(artworkKey)
         }
     }
@@ -145,7 +156,7 @@ internal fun HomeArtworkCarouselCanvas(
     Canvas(
         modifier = modifier.onGloballyPositioned { coordinates ->
             centerArtworkBoundsHandle?.update(coordinates)
-            if (abs(progress) < 0.02f) {
+            if (abs(progressProvider()) < 0.02f) {
                 (centerArtworkBoundsHandle?.resolveInRoot()
                     ?: resolveHomeCanvasCenterArtworkBoundsInRoot(coordinates))?.let(
                     onCenterArtworkBoundsChanged
@@ -153,6 +164,7 @@ internal fun HomeArtworkCarouselCanvas(
             }
         }
     ) {
+        val progress = progressProvider()
         val nativeCanvas = drawContext.canvas.nativeCanvas
         val slotWidth = size.width
         val slotHeight = size.width
@@ -227,20 +239,59 @@ internal fun HomeArtworkCarouselCanvas(
 
 @Composable
 private fun rememberHomeCarouselBitmap(key: String): Bitmap? {
-    val context = LocalContext.current
-    val bitmap by produceState<Bitmap?>(initialValue = null, key1 = key, key2 = context) {
-        value = CoilArtworkRuntime.executeBitmap(
-            context = context,
-            key = key,
-            width = CanvasDecodeSizePx,
-            height = CanvasDecodeSizePx,
-            surface = ArtworkSurface.Playback
+    var handle by remember(key) {
+        mutableStateOf(
+            if (key.isBlank()) {
+                null
+            } else {
+                BitmapProvider.acquireBestThumbnail(
+                    key = key,
+                    targetWidth = CanvasDecodeSizePx,
+                    targetHeight = CanvasDecodeSizePx,
+                    surface = ArtworkSurface.Playback,
+                    aspectPolicy = ArtworkAspectPolicy.Crop,
+                ) ?: BitmapProvider.acquireAny(
+                    key = key,
+                    surface = ArtworkSurface.Playback,
+                    minimumSide = 1,
+                    aspectPolicy = ArtworkAspectPolicy.Crop,
+                )
+            }
         )
-        if (value == null && key.isNotBlank()) {
-            AppLogger.w("HOME_CAROUSEL_ART", "Coil load miss key=${key.takeLast(64)}")
+    }
+
+    DisposableEffect(key) {
+        var active = true
+        val request = if (key.isBlank()) {
+            null
+        } else {
+            BitmapProvider.loadHandle(
+                key = key,
+                targetWidth = CanvasDecodeSizePx,
+                targetHeight = CanvasDecodeSizePx,
+                priority = BitmapRequest.Priority.LOADING_WIDGET,
+                surface = ArtworkSurface.Playback,
+                aspectPolicy = ArtworkAspectPolicy.Crop,
+            ) { delivered ->
+                if (!active) {
+                    delivered?.release()
+                    return@loadHandle
+                }
+                if (delivered !== handle) {
+                    handle?.release()
+                    handle = delivered
+                }
+            }
+        }
+        onDispose {
+            active = false
+            request?.let(BitmapProvider::cancel)
+            handle?.release()
+            handle = null
         }
     }
-    return bitmap
+
+    return handle?.takeIf { it.isValid }?.bitmap?.takeIf { !it.isRecycled }
 }
 
 

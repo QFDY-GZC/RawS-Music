@@ -52,11 +52,15 @@ internal class PlayerUsbAutoRearmCoordinator(
 
         val device = callbacks.currentDevice() ?: callbacks.findDevice() ?: return false
         val prefetched = callbacks.prefetchedDeviceId() == device.deviceId
-        if (!callbacks.requested() && !prefetched) {
+        if (!callbacks.requested()) {
+            // Device discovery, an old Android USB permission grant, or an attach-prefetch are
+            // metadata only. None of them may turn shared Android USB Audio into exclusive mode.
+            if (prefetched) callbacks.clearPrefetchedDevice()
             AppLogger.i(
                 tag,
-                "USB exclusive auto-rearm skipped: requested=false lastExclusive=${callbacks.lastExclusiveActive()} " +
-                    "prefetchDeviceId=${callbacks.prefetchedDeviceId()} device=${device.deviceName} song=${song.title}",
+                "USB exclusive auto-rearm skipped: explicit request is off " +
+                    "lastExclusive=${callbacks.lastExclusiveActive()} prefetch=$prefetched " +
+                    "device=${device.deviceName} song=${song.title}",
             )
             return false
         }

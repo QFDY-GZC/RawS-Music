@@ -16,6 +16,8 @@ import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.Shadow
 import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -30,6 +32,7 @@ fun LiquidGlassMiniPlayerBg(
 ) {
     val scheme = MiuixTheme.colorScheme
     val performanceMode by PersonalizationPreferences.performanceMode.collectAsState()
+    val glassSettings by PersonalizationPreferences.globalLiquidGlassSettings.collectAsState()
     val resolvedIsLight = isLight || scheme.background.luminance() > 0.5f
     val shape = RoundedCornerShape(32.dp)
     val containerColor = if (resolvedIsLight) {
@@ -47,9 +50,21 @@ fun LiquidGlassMiniPlayerBg(
                         backdrop = backdrop,
                         shape = { shape },
                         effects = {
-                            vibrancy()
-                            blur(8f.dp.toPx())
-                            lens(24f.dp.toPx(), 24f.dp.toPx())
+                            val minDimension = size.minDimension
+                            vibrancy(glassSettings.vibrancyStrength)
+                            blur(glassSettings.blurRadiusDp.dp.toPx())
+                            lens(
+                                refractionHeight = glassSettings.refractionHeightFraction * minDimension * 0.5f,
+                                refractionAmount = glassSettings.refractionAmountFraction * minDimension,
+                                depthEffect = true,
+                                chromaticAberration = glassSettings.chromaticAberration > 0.001f,
+                            )
+                        },
+                        highlight = {
+                            Highlight.Default.copy(alpha = (0.30f * glassSettings.highlightStrength).coerceIn(0f, 1f))
+                        },
+                        shadow = {
+                            Shadow(alpha = (0.10f * glassSettings.shadowStrength).coerceIn(0f, 1f))
                         },
                         onDrawSurface = { drawRect(containerColor) },
                     )

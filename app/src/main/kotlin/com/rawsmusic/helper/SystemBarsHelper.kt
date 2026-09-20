@@ -14,6 +14,12 @@ class SystemBarsHelper(
     fun setStatusBarHidden(hidden: Boolean) {
         val controller = WindowInsetsControllerCompat(activity.window, activity.window.decorView)
         if (hidden) {
+            // Treat a top-edge swipe as a temporary system reveal rather than a permanent policy
+            // change. This matches the immersive activities in the app: a peek can expose the
+            // status bar/notification affordance, then the controller restores the requested
+            // hidden state automatically when the transient system UI is dismissed.
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller.hide(WindowInsetsCompat.Type.statusBars())
         } else {
             controller.show(WindowInsetsCompat.Type.statusBars())

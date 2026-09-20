@@ -1,5 +1,6 @@
 package com.rawsmusic.core.ui.widget.player
 
+import com.rawsmusic.core.ui.widget.bitmaps.AlbumArtTiers
 import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.min
@@ -102,13 +103,19 @@ internal fun resolveFullscreenArtworkLaneTransform(
     )
 }
 
-internal fun fullscreenCarouselDecodeSide(logicalOffset: Int): Int = when (abs(logicalOffset)) {
-    0 -> 1440
-    1 -> 1280
-    2 -> 1024
-    3 -> 768
-    4 -> 512
-    else -> 384
+internal fun fullscreenCarouselDecodeSide(
+    logicalOffset: Int,
+    providerHighSide: Int = AlbumArtTiers.FULL_RES_SIDE,
+): Int {
+    val preferred = when (abs(logicalOffset)) {
+        0 -> AlbumArtTiers.FULL_RES_SIDE
+        1 -> 1280
+        2 -> AlbumArtTiers.HI_RES_SIDE
+        3 -> 768
+        4 -> 512
+        else -> 384
+    }
+    return min(preferred, providerHighSide.coerceAtLeast(1))
 }
 
 internal fun wrapFullscreenCarouselIndex(index: Int, size: Int): Int {

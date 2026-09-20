@@ -13,6 +13,7 @@ enum class AiSeparationStem {
 data class AiSeparationLiveStreamState(
     val taskId: String = "",
     val sourceName: String = "",
+    val sourceIdentity: String = "",
     val sampleRate: Int = 0,
     val vocalsPath: String = "",
     val instrumentalPath: String = "",
@@ -47,6 +48,7 @@ object AiSeparationLiveStreamBus {
     fun begin(
         taskId: String,
         sourceName: String,
+        sourceIdentity: String,
         sampleRate: Int,
         vocalsFile: File,
         instrumentalFile: File,
@@ -54,6 +56,7 @@ object AiSeparationLiveStreamBus {
         mutable.value = AiSeparationLiveStreamState(
             taskId = taskId,
             sourceName = sourceName,
+            sourceIdentity = sourceIdentity,
             sampleRate = sampleRate,
             vocalsPath = vocalsFile.absolutePath,
             instrumentalPath = instrumentalFile.absolutePath,

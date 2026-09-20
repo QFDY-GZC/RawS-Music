@@ -2,9 +2,12 @@ package com.rawsmusic.ui.folderfilter
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.widget.Toast
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
@@ -89,6 +92,7 @@ fun MusicFoldersDialog(
     var folderUriByPath by remember {
         mutableStateOf(AppPreferences.Scanner.folderDialogUriByPath)
     }
+    var standaloneFolderUris by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     val visibleNodes by remember(roots, refreshTick) {
         derivedStateOf {
@@ -163,7 +167,7 @@ fun MusicFoldersDialog(
         val file = File(normalized)
 
         if (!file.exists() || !file.isDirectory) {
-            Toast.makeText(context, context.getString(R.string.folder_filter_folder_unavailable), Toast.LENGTH_SHORT).show()
+            AppNoticeBus.error(context.getString(R.string.folder_filter_folder_unavailable))
             return
         }
 
@@ -183,31 +187,53 @@ fun MusicFoldersDialog(
         }
 
         selectedPaths = addPathSelection(selectedPaths, normalized)
-        Toast.makeText(context, context.getString(R.string.folder_filter_folder_added, file.name.ifBlank { normalized }), Toast.LENGTH_SHORT).show()
+        AppNoticeBus.post(
+            message = context.getString(
+                R.string.folder_filter_folder_added,
+                file.name.ifBlank { normalized },
+            ),
+            icon = AppNoticeIcon.FOLDER,
+        )
     }
 
     fun handleFolderUri(uri: Uri?) {
         uri ?: return
 
-        try {
+        val persisted = try {
             context.contentResolver.takePersistableUriPermission(
                 uri,
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
+            true
         } catch (e: Exception) {
-            AppLogger.w(TAG, "takePersistableUriPermission failed", e)
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }.onFailure { AppLogger.w(TAG, "takePersistableUriPermission failed", it) }
+                .isSuccess
+        }
+        if (!persisted) {
+            AppNoticeBus.error(context.getString(R.string.folder_filter_saf_unsupported))
+            return
         }
 
         val realPath = extractRealPathFromUri(context, uri)
             ?: SafUtils.uriToPath(uri)
 
         if (realPath == null) {
-            Toast.makeText(
-                context,
-                context.getString(R.string.folder_filter_saf_unsupported),
-                Toast.LENGTH_LONG
-            ).show()
-            AppLogger.w(TAG, "Unsupported SAF uri: $uri")
+            // A valid document tree does not need to map to a physical path. Keep the URI as an
+            // authoritative source, matching Reference's separate SAF path model.
+            standaloneFolderUris = standaloneFolderUris + uri.toString()
+            AppNoticeBus.post(
+                message = context.getString(
+                    R.string.folder_filter_folder_added,
+                    uri.lastPathSegment.orEmpty(),
+                ),
+                icon = AppNoticeIcon.FOLDER,
+            )
             return
         }
 
@@ -219,8 +245,21 @@ fun MusicFoldersDialog(
     fun saveAndScan() {
         val pathsToSave = normalizedSelected.toList()
 
-        if (pathsToSave.isEmpty()) {
-            Toast.makeText(context, context.getString(R.string.folder_filter_select_at_least_one), Toast.LENGTH_SHORT).show()
+        if (pathsToSave.isEmpty() && standaloneFolderUris.isEmpty()) {
+            AppNoticeBus.error(context.getString(R.string.folder_filter_select_at_least_one))
+            return
+        }
+
+        val pathsRequiringSaf = SelectedFolderAccessPolicy.pathsRequiringSaf(
+            sdkInt = Build.VERSION.SDK_INT,
+            hasAllFilesAccess = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager(),
+            selectedPaths = pathsToSave,
+            uriByGrantedPath = folderUriByPath,
+            directlyReadablePaths = pathsToSave.filter(::isDirectlyReadableFolder)
+        )
+        if (pathsRequiringSaf.isNotEmpty()) {
+            AppNoticeBus.error(context.getString(R.string.folder_filter_saf_required))
+            onFolderPickerLauncher()
             return
         }
 
@@ -239,13 +278,12 @@ fun MusicFoldersDialog(
             selectedPaths = pathsToSave
         )
         AppPreferences.Scanner.folderDialogUriByPath = folderUriByPath
-        AppPreferences.Scanner.musicFolderUris = reconciledUris
+        AppPreferences.Scanner.musicFolderUris = reconciledUris + standaloneFolderUris
 
-        Toast.makeText(
-            context,
-            context.getString(R.string.folder_filter_saved_start_scan, pathsToSave.size),
-            Toast.LENGTH_SHORT
-        ).show()
+        AppNoticeBus.post(
+            message = context.getString(R.string.folder_filter_saved_start_scan, pathsToSave.size),
+            icon = AppNoticeIcon.SCAN,
+        )
 
         onDismiss()
         ScanScheduler.requestDirScan(context, "folders selected")
@@ -323,7 +361,7 @@ fun MusicFoldersDialog(
                 .heightIn(min = 380.dp, max = 620.dp)
         ) {
             FolderPickerHeader(
-                selectedCount = normalizedSelected.size,
+                selectedCount = normalizedSelected.size + standaloneFolderUris.size,
                 rootCount = roots.size,
                 loading = loading
             )
@@ -402,10 +440,11 @@ fun MusicFoldersDialog(
             Spacer(Modifier.height(14.dp))
 
             FolderPickerActions(
-                canSave = normalizedSelected.isNotEmpty() && !loading && !saving,
+                canSave = (normalizedSelected.isNotEmpty() || standaloneFolderUris.isNotEmpty()) && !loading && !saving,
                 onAddFolder = onFolderPickerLauncher,
                 onClear = {
                     selectedPaths = emptySet()
+                    standaloneFolderUris = emptySet()
                 },
                 onCancel = onDismiss,
                 onSaveAndScan = { saveAndScan() }
@@ -1039,4 +1078,11 @@ private fun documentIdToStoragePath(
     } else {
         "$basePath/$subPath"
     }
+}
+
+/** Uses the same probe as the scanner before deciding that SAF is necessary. */
+private fun isDirectlyReadableFolder(path: String): Boolean {
+    val folder = File(path)
+    return folder.exists() && folder.isDirectory &&
+        runCatching { folder.listFiles() }.getOrNull() != null
 }

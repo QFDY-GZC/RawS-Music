@@ -1,5 +1,6 @@
 package com.rawsmusic.core.ui.widget.player
 
+import android.os.SystemClock
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -36,6 +37,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,6 +48,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.style.TextAlign
@@ -56,12 +59,13 @@ import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
-import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
+import com.rawsmusic.core.ui.widget.bitmaps.artworkHighTargetSide
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
 import com.rawsmusic.core.ui.widget.bitmaps.RawArtworkPolicy
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import io.github.proify.lyricon.lyric.model.Song
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.max
@@ -69,6 +73,7 @@ import kotlin.math.max
 private const val FullCoverZoomEpsilon = 0.002f
 private const val FullCoverCarouselCommitRatio = 0.33f
 private const val FullCoverCarouselFlingPxPerSecond = 1_050f
+private const val FullCoverPendingSelectionTimeoutMs = 4_000L
 
 private enum class FullCoverGestureMode {
     Undecided,
@@ -105,8 +110,13 @@ fun FullCoverPage(
     renderBackdrop: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
-    val songs = remember(queueSongs, currentSong) {
-        if (queueSongs.isNotEmpty()) queueSongs else listOfNotNull(currentSong)
+    val incomingSongs = if (queueSongs.isNotEmpty()) queueSongs else listOfNotNull(currentSong)
+    val fullscreenArtworkTargetSide = artworkHighTargetSide(LocalContext.current)
+    var songs by remember { mutableStateOf(incomingSongs.toList()) }
+    SideEffect {
+        if (!sameFullscreenCarouselQueue(songs, incomingSongs)) {
+            songs = incomingSongs.toList()
+        }
     }
     fun resolveCurrentIndex(): Int {
         if (queueCurrentIndex in songs.indices) return queueCurrentIndex
@@ -130,13 +140,16 @@ fun FullCoverPage(
     var carouselProgress by remember { mutableFloatStateOf(0f) }
     var settleJob by remember { mutableStateOf<Job?>(null) }
     var settleGeneration by remember { mutableIntStateOf(0) }
-    var settleVisualSong by remember { mutableStateOf<AudioFile?>(null) }
+    var pendingSelectionIndex by remember(songs) { mutableIntStateOf(-1) }
+    var pendingSelectionIdentity by remember(songs) { mutableStateOf<String?>(null) }
+    var pendingSelectionDeadlineMs by remember(songs) { mutableStateOf(0L) }
     val scope = rememberCoroutineScope()
     val latestScale by rememberUpdatedState(scale)
     val latestOffsetX by rememberUpdatedState(offsetX)
     val latestOffsetY by rememberUpdatedState(offsetY)
     val latestSongs by rememberUpdatedState(songs)
     val latestCenterIndex by rememberUpdatedState(visualCenterIndex)
+    val latestCurrentSong by rememberUpdatedState(currentSong)
     val latestOnQueueSongClick by rememberUpdatedState(onQueueSongClick)
     val latestOnCurrentArtworkLongPress by rememberUpdatedState(onCurrentArtworkLongPress)
     val latestOnBack by rememberUpdatedState(onBack)
@@ -145,6 +158,7 @@ fun FullCoverPage(
         targetValue: Float,
         commitDirection: Int,
         durationMillis: Int,
+        dispatchPlayback: Boolean = true,
     ) {
         val generation = settleGeneration + 1
         settleGeneration = generation
@@ -159,17 +173,29 @@ fun FullCoverPage(
                 ) {
                     carouselProgress = value
                 }
-                if (commitDirection != 0 && latestSongs.isNotEmpty()) {
-                    val nextIndex = wrapFullscreenCarouselIndex(
-                        latestCenterIndex + commitDirection,
-                        latestSongs.size,
-                    )
-                    val selected = latestSongs[nextIndex]
-                    visualCenterIndex = nextIndex
+                if (latestSongs.isNotEmpty()) {
+                    val targetIndex = if (commitDirection != 0) {
+                        wrapFullscreenCarouselIndex(
+                            latestCenterIndex + commitDirection,
+                            latestSongs.size,
+                        )
+                    } else {
+                        latestCenterIndex.coerceIn(0, latestSongs.lastIndex)
+                    }
+                    val selected = latestSongs[targetIndex]
+                    visualCenterIndex = targetIndex
                     carouselProgress = 0f
-                    latestOnQueueSongClick(selected, nextIndex)
-                } else {
-                    carouselProgress = targetValue
+                    if (dispatchPlayback) {
+                        val selectedIdentity = fullscreenCarouselSongIdentity(selected)
+                        val committedIdentity = latestCurrentSong?.let(::fullscreenCarouselSongIdentity)
+                        if (selectedIdentity != committedIdentity) {
+                            pendingSelectionIndex = targetIndex
+                            pendingSelectionIdentity = selectedIdentity
+                            pendingSelectionDeadlineMs =
+                                SystemClock.uptimeMillis() + FullCoverPendingSelectionTimeoutMs
+                            latestOnQueueSongClick(selected, targetIndex)
+                        }
+                    }
                 }
             } finally {
                 if (settleGeneration == generation) {
@@ -192,12 +218,8 @@ fun FullCoverPage(
         val generation = settleGeneration + 1
         settleGeneration = generation
         settleJob?.cancel()
-        settleVisualSong = selectionSongs.getOrNull(startIndex) ?: currentSong
         settling = true
         queueVisible = false
-        // Submit playback once at tap time. Visual metadata/backdrop stay frozen until the target
-        // reaches centre, so engine state changes cannot flash intermediate carousel frames.
-        latestOnQueueSongClick(selectionSongs[targetIndex], targetIndex)
         settleJob = scope.launch {
             val animation = Animatable(0f)
             try {
@@ -221,9 +243,18 @@ fun FullCoverPage(
                 if (settleGeneration != generation) return@launch
                 visualCenterIndex = targetIndex
                 carouselProgress = 0f
+                val selected = selectionSongs[targetIndex]
+                val selectedIdentity = fullscreenCarouselSongIdentity(selected)
+                val committedIdentity = latestCurrentSong?.let(::fullscreenCarouselSongIdentity)
+                if (selectedIdentity != committedIdentity) {
+                    pendingSelectionIndex = targetIndex
+                    pendingSelectionIdentity = selectedIdentity
+                    pendingSelectionDeadlineMs =
+                        SystemClock.uptimeMillis() + FullCoverPendingSelectionTimeoutMs
+                    latestOnQueueSongClick(selected, targetIndex)
+                }
             } finally {
                 if (settleGeneration == generation) {
-                    settleVisualSong = null
                     settling = false
                     settleJob = null
                 }
@@ -236,19 +267,60 @@ fun FullCoverPage(
 
     LaunchedEffect(queueCurrentIndex, currentSong, songs) {
         if (!gestureActive && !settling && songs.isNotEmpty()) {
-            visualCenterIndex = resolveCurrentIndex().coerceIn(0, songs.lastIndex)
-            carouselProgress = 0f
+            val pendingIdentity = pendingSelectionIdentity
+            if (pendingSelectionIndex >= 0 && pendingIdentity != null) {
+                val committedIdentity = currentSong?.let(::fullscreenCarouselSongIdentity)
+                if (committedIdentity == pendingIdentity) {
+                    pendingSelectionIndex = -1
+                    pendingSelectionIdentity = null
+                    pendingSelectionDeadlineMs = 0L
+                    carouselProgress = 0f
+                    return@LaunchedEffect
+                }
+                val remaining = pendingSelectionDeadlineMs - SystemClock.uptimeMillis()
+                if (remaining > 0L) {
+                    delay(remaining)
+                    if (pendingSelectionIdentity == pendingIdentity && !gestureActive && !settling) {
+                        pendingSelectionIndex = -1
+                        pendingSelectionIdentity = null
+                        pendingSelectionDeadlineMs = 0L
+                    } else {
+                        return@LaunchedEffect
+                    }
+                } else {
+                    pendingSelectionIndex = -1
+                    pendingSelectionIdentity = null
+                    pendingSelectionDeadlineMs = 0L
+                }
+            }
+            val resolvedIndex = resolveCurrentIndex().coerceIn(0, songs.lastIndex)
+            val direction = resolveFullscreenCarouselDirection(
+                oldIndex = visualCenterIndex,
+                newIndex = resolvedIndex,
+                size = songs.size,
+            )
+            when {
+                direction == 0 -> carouselProgress = 0f
+                direction == Int.MIN_VALUE -> {
+                    visualCenterIndex = resolvedIndex
+                    carouselProgress = 0f
+                }
+                else -> launchCarouselSettle(
+                    targetValue = direction.toFloat(),
+                    commitDirection = direction,
+                    durationMillis = 220,
+                    dispatchPlayback = false,
+                )
+            }
         }
     }
 
     // Keep backdrop and metadata tied to the playing song while a far-lane tap traverses
     // intermediate queue positions. The Canvas still moves continuously, but background artwork
     // and text switch only once when the target actually reaches centre and playback is committed.
-    val displayedSong = if (settling) {
-        settleVisualSong ?: currentSong
-    } else {
-        songs.getOrNull(visualCenterIndex) ?: currentSong
-    }
+    // Preview centre is not playback truth. Keep backdrop/metadata on the committed player song
+    // through drag, multi-rail preview and visual settle; they update once when transport confirms.
+    val displayedSong = currentSong ?: songs.getOrNull(resolveCurrentIndex())
     val displayedCoverKey = displayedSong.resolvePlaybackArtworkKey(coverPath)
     val neutralTransform = abs(scale - 1f) <= FullCoverZoomEpsilon &&
         abs(offsetX) <= 0.5f && abs(offsetY) <= 0.5f
@@ -399,9 +471,26 @@ fun FullCoverPage(
 
                                     FullCoverGestureMode.Carousel -> {
                                         if (abs(workingScale - 1f) <= FullCoverZoomEpsilon) {
-                                            val next = (carouselProgress - centroidDelta.x / dragExtentPx)
-                                                .coerceIn(-1f, 1f)
-                                            carouselProgress = next
+                                            var next = carouselProgress - centroidDelta.x / dragExtentPx
+                                            // Keep the pointer gesture alive across rail boundaries.
+                                            // +/-1 is the exact geometry of the adjacent centre at 0,
+                                            // so rebasing the virtual centre here is visually seamless
+                                            // and does not submit playback.
+                                            while (next >= 1f && latestSongs.size > 1) {
+                                                visualCenterIndex = wrapFullscreenCarouselIndex(
+                                                    visualCenterIndex + 1,
+                                                    latestSongs.size,
+                                                )
+                                                next -= 1f
+                                            }
+                                            while (next <= -1f && latestSongs.size > 1) {
+                                                visualCenterIndex = wrapFullscreenCarouselIndex(
+                                                    visualCenterIndex - 1,
+                                                    latestSongs.size,
+                                                )
+                                                next += 1f
+                                            }
+                                            carouselProgress = next.coerceIn(-0.999f, 0.999f)
                                             event.changes.forEach { it.consume() }
                                         }
                                     }
@@ -488,7 +577,7 @@ fun FullCoverPage(
             FullscreenArtworkCarouselCanvas(
                 songs = songs,
                 centerIndex = visualCenterIndex,
-                progress = carouselProgress,
+                progressProvider = { carouselProgress },
                 hideCenterLane = !neutralTransform || hideCenterForSceneTransition,
                 sideLaneAlpha = sideLaneAlpha,
                 sceneRevealProgress = resolvedSceneReveal,
@@ -510,9 +599,9 @@ fun FullCoverPage(
                             shape = RoundedCornerShape(22.dp)
                             clip = true
                         },
-                    contentScale = ContentScale.Crop,
-                    targetWidth = 1440,
-                    targetHeight = 1440,
+                    contentScale = ContentScale.Fit,
+                    targetWidth = fullscreenArtworkTargetSide,
+                    targetHeight = fullscreenArtworkTargetSide,
                     surface = ArtworkSurface.Fullscreen,
                     priority = BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
                     fadeInMillis = RawArtworkPolicy.HERO_FADE_MS,
@@ -618,4 +707,25 @@ private fun FullCoverQueuePosition(
             .background(Color.Black.copy(alpha = 0.42f), RoundedCornerShape(14.dp))
             .padding(horizontal = 12.dp, vertical = 7.dp),
     )
+}
+
+private fun sameFullscreenCarouselQueue(
+    left: List<AudioFile>,
+    right: List<AudioFile>,
+): Boolean = left.size == right.size && left.indices.all { index ->
+    fullscreenCarouselSongIdentity(left[index]) == fullscreenCarouselSongIdentity(right[index])
+}
+
+private fun fullscreenCarouselSongIdentity(song: AudioFile): String =
+    "${song.path}|${song.cueOffsetMs}|${song.cueTrackIndex}"
+
+private fun resolveFullscreenCarouselDirection(
+    oldIndex: Int,
+    newIndex: Int,
+    size: Int,
+): Int {
+    if (size <= 1 || oldIndex == newIndex) return 0
+    if ((oldIndex + 1) % size == newIndex) return 1
+    if ((oldIndex - 1 + size) % size == newIndex) return -1
+    return Int.MIN_VALUE
 }

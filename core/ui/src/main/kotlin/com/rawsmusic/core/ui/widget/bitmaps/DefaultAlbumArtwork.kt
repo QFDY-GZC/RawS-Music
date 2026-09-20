@@ -18,7 +18,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import com.rawsmusic.core.common.R
 import com.rawsmusic.module.data.prefs.AppPreferences
-import android.util.Log
 
 /** Shared policy and renderer for songs that have no real embedded or external artwork. */
 object DefaultAlbumArtworkPolicy {
@@ -28,7 +27,6 @@ object DefaultAlbumArtworkPolicy {
     fun updateEnabled(value: Boolean) {
         enabled = value
         AppPreferences.AlbumArt.useDefaultArtwork = value
-        Log.i("RawArt", "DEFAULT_ARTWORK_PREF enabled=$value")
     }
 }
 
@@ -38,7 +36,7 @@ fun shouldShowDefaultAlbumArtwork(key: String?, targetWidth: Int, targetHeight: 
     @Suppress("UNUSED_VARIABLE")
     val requestedSize = targetWidth to targetHeight
     return normalizedKey.isBlank() ||
-        CoilArtworkRuntime.isKnownNoArtwork(FileArtworkId.fromCoverKey(normalizedKey).value)
+        BitmapProvider.isKnownNoArtwork(normalizedKey, targetWidth, targetHeight)
 }
 
 fun decodeDefaultAlbumArtwork(resources: Resources, targetSide: Int): Bitmap? {
@@ -54,12 +52,11 @@ fun decodeDefaultAlbumArtwork(resources: Resources, targetSide: Int): Bitmap? {
 fun DefaultAlbumArtwork(
     modifier: Modifier = Modifier,
     contentDescription: String? = null,
-    contentScale: ContentScale = ContentScale.Crop
+    contentScale: ContentScale = ContentScale.Fit
 ) {
     if (!DefaultAlbumArtworkPolicy.enabled) return
     val alpha = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
-        Log.d("RawArt", "DEFAULT_ARTWORK_SHOW")
         alpha.animateTo(
             targetValue = 1f,
             animationSpec = tween(durationMillis = RawArtworkPolicy.VIEW_FADE_MS)

@@ -19,9 +19,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.rawsmusic.R
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.dsp.BassBoostController
 import com.rawsmusic.module.player.dsp.CompressorController
@@ -70,6 +73,8 @@ fun LiquidGlassAudioEffectsScreen(
     val dimensions = AudioEffectDimension.entries
     val pagerState = rememberPagerState(pageCount = { dimensions.size })
     val pagerScope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val importedGraphicEqName = stringResource(R.string.settings_graphic_eq_imported_autoeq_name)
 
     val parametricListState = rememberLazyListState()
     val graphicListState = rememberLazyListState()
@@ -110,6 +115,29 @@ fun LiquidGlassAudioEffectsScreen(
                                 onImportFromFile = onImportPeqFromFile,
                                 importedFileContent = importedPeqFileContent,
                                 onImportedFileContentConsumed = onImportedPeqFileContentConsumed,
+                                onImportGraphicEq = graphicEqController?.let { graphicController ->
+                                    { parsedGraphicEq ->
+                                        val targetBands = graphicController.bandCount.value
+                                        graphicController.applyPreset(
+                                            parsedGraphicEq.toGraphicEqPreset(
+                                                bandCount = targetBands,
+                                                name = importedGraphicEqName,
+                                            )
+                                        )
+                                        AppNoticeBus.post(
+                                            message = context.getString(
+                                                R.string.settings_graphic_eq_autoeq_import_success,
+                                                parsedGraphicEq.points.size,
+                                                targetBands
+                                            ),
+                                            icon = AppNoticeIcon.EQUALIZER,
+                                        )
+                                        val graphicPage = dimensions.indexOf(AudioEffectDimension.GRAPHIC_EQ)
+                                        if (graphicPage >= 0 && graphicPage != pagerState.currentPage) {
+                                            pagerScope.launch { pagerState.animateScrollToPage(graphicPage) }
+                                        }
+                                    }
+                                },
                                 showSectionHeader = false
                             )
                         } else {
@@ -124,6 +152,7 @@ fun LiquidGlassAudioEffectsScreen(
                                 SettingsNavigationEntry(
                                     title = stringResource(R.string.settings_effects_peq_title),
                                     description = stringResource(R.string.settings_effects_peq_desc),
+                                    iconRes = R.drawable.ic_settings_effects,
                                     onClick = onNavigateToPEQ
                                 )
                             }

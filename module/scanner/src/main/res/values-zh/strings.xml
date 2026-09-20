@@ -3,4 +3,17 @@
     <string name="library_scan_notification_title">RawS Music 正在扫描音乐</string>
     <string name="library_scan_notification_text">正在扫描音乐库</string>
     <string name="common_cancel">取消</string>
+    <string name="library_scan_toast_result">扫描完成：%1$s，用时 %2$.1f 秒</string>
+    <string name="library_scan_toast_full">全量扫描 %1$d 首</string>
+    <string name="library_scan_toast_incremental">增量核对 %1$d 首</string>
+    <string name="library_scan_toast_scanned">扫描 %1$d 首</string>
+    <string name="library_scan_toast_added">新增 %1$d 首</string>
+    <string name="library_scan_toast_reused">复用 %1$d 首</string>
+    <string name="library_scan_toast_parsed">重新解析 %1$d 首</string>
+    <string name="library_scan_toast_skipped_directories">跳过 %1$d 个未变化目录</string>
+    <string name="library_scan_toast_updated">更新 %1$d 首</string>
+    <string name="library_scan_toast_removed">移除 %1$d 首</string>
+    <string name="library_scan_toast_empty">未发现歌曲</string>
+    <string name="library_scan_toast_unchanged">没有变化</string>
+    <string name="library_scan_toast_separator">，</string>
 </resources>

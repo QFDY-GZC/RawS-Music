@@ -1,16 +1,21 @@
 package com.rawsmusic.module.data.repository
 
 import android.content.Context
+import android.os.Process
+import android.os.SystemClock
 import androidx.room.withTransaction
 import com.rawsmusic.core.common.model.Album
 import com.rawsmusic.core.common.model.Artist
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.Folder
+import com.rawsmusic.core.common.model.FolderHierarchyNode
 import com.rawsmusic.core.common.model.Genre
 import com.rawsmusic.core.common.model.PlayStats
 import com.rawsmusic.core.common.model.SortOrder
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.utils.CjkSortUtils
+import com.rawsmusic.core.common.utils.MetadataNameSplitConfig
+import com.rawsmusic.core.common.utils.MetadataNameSplitter
 import com.rawsmusic.core.common.utils.PowerTraceLogger
 import com.rawsmusic.module.data.db.MusicDatabase
 import com.rawsmusic.module.data.db.converter.EntityConverter
@@ -23,10 +28,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.asCoroutineDispatcher
+import java.util.concurrent.Executors
 
 /**
  * 音乐仓库 — 数据库层。
@@ -36,14 +42,25 @@ import kotlinx.coroutines.withContext
 object MusicRepository {
 
     private const val TAG = "MusicRepo"
-    private const val SNAPSHOT_WARM_START_DB_DELAY_MS = 5_000L
-
     @Volatile
     private var db: MusicDatabase? = null
 
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Metadata edits should never compete at normal IO priority with a PLAYER <-> LYRIC frame.
+    // Keep full-library index rebuilds and snapshot serialization on one background-priority lane.
+    private val libraryMaintenanceDispatcher = Executors
+        .newSingleThreadExecutor { worker ->
+            Thread({
+                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+                worker.run()
+            }, "RawS-LibraryMaintenance").apply { isDaemon = true }
+        }
+        .asCoroutineDispatcher()
+    private val libraryMaintenanceScope = CoroutineScope(SupervisorJob() + libraryMaintenanceDispatcher)
     private val startupSnapshotSaveLock = Any()
     private var startupSnapshotSaveJob: Job? = null
+    private val metadataIndexRefreshLock = Any()
+    private var metadataIndexRefreshJob: Job? = null
 
     @Volatile
     private var cachedSongs: List<AudioFile>? = null
@@ -53,6 +70,13 @@ object MusicRepository {
 
     @Volatile
     private var startupSnapshotPublished = false
+
+    /** A snapshot is a warm fallback, never the normal first visible library state. */
+    @Volatile
+    private var startupSnapshotCandidate: List<AudioFile> = emptyList()
+
+    private val _startupState = MutableStateFlow(LibraryStartupState())
+    val startupState: StateFlow<LibraryStartupState> = _startupState.asStateFlow()
 
     @Volatile
     private var warmStartRequested = false
@@ -74,8 +98,17 @@ object MusicRepository {
     private val _folders = MutableStateFlow<List<Folder>>(emptyList())
     val folders: StateFlow<List<Folder>> = _folders.asStateFlow()
 
+    private val _folderHierarchy = MutableStateFlow<List<FolderHierarchyNode>>(emptyList())
+    val folderHierarchy: StateFlow<List<FolderHierarchyNode>> = _folderHierarchy.asStateFlow()
+
     fun init(context: Context) {
         val appContext = context.applicationContext
+        val generation = _startupState.value.generation + 1L
+        _startupState.value = LibraryStartupState(
+            phase = LibraryStartupPhase.LOADING,
+            generation = generation,
+            startedAtElapsedMs = SystemClock.elapsedRealtime(),
+        )
         startupSnapshotContext = appContext
         db = MusicDatabase.getInstance(appContext)
         AppLogger.d(TAG, "init: Room database initialized")
@@ -85,7 +118,6 @@ object MusicRepository {
             songs = _songs.value.size,
             elapsedMs = 0L
         )
-        publishStartupSnapshotIfAvailable(appContext)
         warmStartCacheAsync("repository_init")
     }
 
@@ -101,31 +133,60 @@ object MusicRepository {
                 elapsedMs = 0L
             )
             try {
+                // Snapshot parsing is a full JSON/entity conversion. reference player keeps this kind of
+                // provider state off the Activity thread; loading it here prevents the snapshot
+                // from stealing the first Compose frame during Application.onCreate().
+                if (!startupSnapshotPublished && startupSnapshotCandidate.isEmpty()) {
+                    startupSnapshotContext?.let { publishStartupSnapshotIfAvailable(it) }
+                }
                 val hasRealSongs = _songs.value.isNotEmpty() && !startupSnapshotPublished
                 if (hasRealSongs) return@launch
-
-                if (startupSnapshotPublished) {
-                    // Project-style startup: show the compact snapshot first, then hydrate Room after
-                    // the first UI frames / capsule bar are already visible. This avoids a large
-                    // collection immediately competing with player restore and album-art drawing.
-                    delay(SNAPSHOT_WARM_START_DB_DELAY_MS)
-                }
 
                 val loaded = loadSongsFromStorageSuspend(invalidate = false)
                 if (loaded.isEmpty()) {
                     val elapsed = System.currentTimeMillis() - t0
-                    AppLogger.d(TAG, "warmStartCacheAsync: empty reason=$reason time=${elapsed}ms")
+                    val fallback = startupSnapshotCandidate
+                    if (fallback.isNotEmpty()) {
+                        val sortedFallback = sortSongs(fallback, AppPreferences.Sort.songSortOrder)
+                        _songs.value = sortedFallback
+                        scheduleLibraryIndexRefresh(sortedFallback, "warm_start_snapshot_fallback")
+                        startupSnapshotCandidate = emptyList()
+                        startupSnapshotPublished = false
+                        _startupState.value = _startupState.value.copy(
+                            phase = LibraryStartupPhase.FAILED,
+                            songs = sortedFallback.size,
+                            fromSnapshotFallback = true,
+                        )
+                        AppLogger.w(TAG, "warmStartCacheAsync: Room empty, using snapshot fallback songs=${sortedFallback.size}")
+                    } else {
+                        refreshLibraryIndexes(emptyList())
+                        _startupState.value = _startupState.value.copy(
+                            phase = LibraryStartupPhase.EMPTY,
+                            songs = 0,
+                        )
+                        AppLogger.d(TAG, "warmStartCacheAsync: empty reason=$reason time=${elapsed}ms")
+                    }
                     PowerTraceLogger.repositoryStartup(
                         stage = "warm_start_empty",
                         reason = reason,
-                        songs = 0,
+                        songs = _startupState.value.songs,
                         elapsedMs = elapsed
                     )
                     return@launch
                 }
                 val sorted = sortSongs(loaded, AppPreferences.Sort.songSortOrder)
                 startupSnapshotPublished = false
+                startupSnapshotCandidate = emptyList()
                 _songs.value = sorted
+                // The song list is the first useful cold-start surface. Derived category/index
+                // maps are lower priority and can be built after the list is visible, matching
+                // reference player's separately-owned provider metadata instead of blocking first paint.
+                scheduleLibraryIndexRefresh(sorted, "warm_start_room")
+                _startupState.value = _startupState.value.copy(
+                    phase = LibraryStartupPhase.READY,
+                    songs = sorted.size,
+                    fromSnapshotFallback = false,
+                )
                 saveStartupSnapshotAsync(sorted, "warm_start_room")
                 val publishElapsed = System.currentTimeMillis() - t0
                 AppLogger.d(TAG, "warmStartCacheAsync: published real ${sorted.size} songs reason=$reason time=${publishElapsed}ms")
@@ -135,20 +196,29 @@ object MusicRepository {
                     songs = sorted.size,
                     elapsedMs = publishElapsed
                 )
-                repositoryScope.launch {
-                    val idxStart = System.currentTimeMillis()
-                    refreshLibraryIndexes(sorted)
-                    val indexElapsed = System.currentTimeMillis() - idxStart
-                    AppLogger.d(TAG, "warmStartCacheAsync: indexes ${sorted.size} songs time=${indexElapsed}ms")
-                    PowerTraceLogger.repositoryStartup(
-                        stage = "warm_start_indexes",
-                        reason = reason,
-                        songs = sorted.size,
-                        elapsedMs = indexElapsed
-                    )
-                }
+                PowerTraceLogger.repositoryStartup(
+                    stage = "warm_start_indexes",
+                    reason = reason,
+                    songs = sorted.size,
+                    elapsedMs = publishElapsed
+                )
             } catch (e: Exception) {
                 AppLogger.e(TAG, "warmStartCacheAsync failed reason=$reason", e)
+                val fallback = startupSnapshotCandidate
+                if (fallback.isNotEmpty()) {
+                    val sortedFallback = sortSongs(fallback, AppPreferences.Sort.songSortOrder)
+                    _songs.value = sortedFallback
+                    scheduleLibraryIndexRefresh(sortedFallback, "warm_start_exception_fallback")
+                    startupSnapshotCandidate = emptyList()
+                    startupSnapshotPublished = false
+                    _startupState.value = _startupState.value.copy(
+                        phase = LibraryStartupPhase.FAILED,
+                        songs = sortedFallback.size,
+                        fromSnapshotFallback = true,
+                    )
+                } else {
+                    _startupState.value = _startupState.value.copy(phase = LibraryStartupPhase.FAILED)
+                }
             }
         }
     }
@@ -156,16 +226,44 @@ object MusicRepository {
     private fun publishStartupSnapshotIfAvailable(context: Context) {
         val t0 = System.currentTimeMillis()
         val snapshot = StartupSongSnapshotStore.load(context, AppPreferences.Sort.songSortOrder) ?: return
+        startupSnapshotCandidate = snapshot
         startupSnapshotPublished = true
-        _songs.value = snapshot
         val elapsed = System.currentTimeMillis() - t0
-        AppLogger.d(TAG, "startup snapshot published: songs=${snapshot.size} time=${elapsed}ms")
+        AppLogger.d(TAG, "startup snapshot cached: songs=${snapshot.size} time=${elapsed}ms")
         PowerTraceLogger.repositoryStartup(
-            stage = "snapshot_publish",
+            stage = "snapshot_cache",
             reason = "startup_snapshot",
             songs = snapshot.size,
             elapsedMs = elapsed
         )
+    }
+
+    /**
+     * Build category metadata after the authoritative song list has been published. The list is
+     * what the first library/player frame needs; artist/album/folder indexes are an independent
+     * provider cache and must not duplicate the cold-start critical path.
+     */
+    private fun scheduleLibraryIndexRefresh(songs: List<AudioFile>, reason: String) {
+        synchronized(metadataIndexRefreshLock) {
+            metadataIndexRefreshJob?.cancel()
+            metadataIndexRefreshJob = libraryMaintenanceScope.launch {
+                if (_songs.value !== songs) return@launch
+                val started = SystemClock.elapsedRealtime()
+                refreshLibraryIndexes(songs)
+                AppLogger.d(
+                    TAG,
+                    "background library indexes ready: reason=$reason songs=${songs.size} " +
+                        "time=${SystemClock.elapsedRealtime() - started}ms",
+                )
+            }
+        }
+    }
+
+    private fun cancelPendingLibraryIndexRefresh() {
+        synchronized(metadataIndexRefreshLock) {
+            metadataIndexRefreshJob?.cancel()
+            metadataIndexRefreshJob = null
+        }
     }
 
     private fun saveStartupSnapshotAsync(songs: List<AudioFile>, reason: String) {
@@ -173,7 +271,7 @@ object MusicRepository {
         if (songs.isEmpty()) return
         synchronized(startupSnapshotSaveLock) {
             startupSnapshotSaveJob?.cancel()
-            startupSnapshotSaveJob = repositoryScope.launch {
+            startupSnapshotSaveJob = libraryMaintenanceScope.launch {
                 StartupSongSnapshotStore.save(context, songs, AppPreferences.Sort.songSortOrder)
                 AppLogger.d(TAG, "startup snapshot save completed: reason=$reason songs=${songs.size}")
             }
@@ -301,6 +399,7 @@ object MusicRepository {
 
     suspend fun refreshAllSuspend() {
         val t0 = System.currentTimeMillis()
+        cancelPendingLibraryIndexRefresh()
         val allSongs = refreshSongsOnlySuspend(invalidate = true)
         val tLoad = System.currentTimeMillis()
         refreshLibraryIndexes(allSongs)
@@ -322,6 +421,7 @@ object MusicRepository {
         val tLoad = System.currentTimeMillis()
         val sortedSongs = sortSongs(allSongs, AppPreferences.Sort.songSortOrder)
         startupSnapshotPublished = false
+        startupSnapshotCandidate = emptyList()
         _songs.value = sortedSongs
         saveStartupSnapshotAsync(sortedSongs, "refresh_songs_only")
         AppLogger.d(TAG, "refreshSongsOnly: ${sortedSongs.size} songs, load=${tLoad - t0}ms, sort=${System.currentTimeMillis() - tLoad}ms, total=${System.currentTimeMillis() - t0}ms")
@@ -335,6 +435,7 @@ object MusicRepository {
         _albums.value = buildAlbums(sortedSongs)
         _genres.value = buildGenres(sortedSongs)
         _folders.value = buildFolders(sortedSongs)
+        _folderHierarchy.value = buildFolderHierarchyIndex(sortedSongs)
         AppLogger.d(TAG, "refreshLibraryIndexes: ${sortedSongs.size} songs, total=${System.currentTimeMillis() - t0}ms")
     }
 
@@ -364,9 +465,19 @@ object MusicRepository {
             ?: loadSongsFromStorage().firstOrNull { it.path == path }
     }
 
-    fun getSongsByArtist(artist: String): List<AudioFile> = loadSongsFromStorage().filter { it.artist == artist }
+    fun getSongsByArtist(artist: String): List<AudioFile> {
+        val config = metadataNameSplitConfig()
+        return loadSongsFromStorage().filter {
+            MetadataNameSplitter.matchesArtistName(it.artist, artist, config)
+        }
+    }
     fun getSongsByAlbum(album: String): List<AudioFile> = loadSongsFromStorage().filter { it.album == album }
-    fun getSongsByGenre(genre: String): List<AudioFile> = loadSongsFromStorage().filter { it.genre == genre }
+    fun getSongsByGenre(genre: String): List<AudioFile> {
+        val config = metadataNameSplitConfig()
+        return loadSongsFromStorage().filter {
+            MetadataNameSplitter.matchesGenreName(it.genre, genre, config)
+        }
+    }
     fun getSongsByFolder(folderPath: String): List<AudioFile> = loadSongsFromStorage().filter { it.path.startsWith(folderPath) }
     fun getFavorites(): List<AudioFile> = loadSongsFromStorage().filter { it.isFavorite }
 
@@ -595,8 +706,11 @@ object MusicRepository {
             val sorted = sortSongs(replaced, AppPreferences.Sort.songSortOrder)
             startupSnapshotPublished = false
             _songs.value = sorted
+            // Rebuilding artists/albums/genres plus serializing the full startup snapshot can be
+            // noticeably CPU/allocation heavy on large libraries. Keep both off the normal IO pool
+            // so an immediate PLAYER <-> LYRIC gesture after a metadata save retains UI priority.
+            scheduleLibraryIndexRefresh(sorted, "metadata_update")
             saveStartupSnapshotAsync(sorted, "metadata_update")
-            repositoryScope.launch { refreshLibraryIndexes(sorted) }
             AppLogger.d(TAG, "updateSong: lightweight publish key=$targetKey")
         }
     }
@@ -663,8 +777,21 @@ object MusicRepository {
     // ────────────────────── 分类聚合 ──────────────────────
 
     private fun buildArtists(songs: List<AudioFile>): List<Artist> {
-        return songs.filter { it.artist.isNotBlank() }
-            .groupBy { it.artist }
+        val config = metadataNameSplitConfig()
+        val grouped = linkedMapOf<String, Pair<String, MutableList<AudioFile>>>()
+        songs.filter { it.artist.isNotBlank() }.forEach { song ->
+            MetadataNameSplitter.splitArtistNames(song.artist, config)
+                .forEach { name ->
+                    val key = MetadataNameSplitter.identityKey(name, config.ignoreCase)
+                    val bucket = grouped[key]
+                    if (bucket == null) {
+                        grouped[key] = name to mutableListOf(song)
+                    } else if (song !in bucket.second) {
+                        bucket.second += song
+                    }
+                }
+        }
+        return grouped.values
             .map { (name, list) ->
                 Artist(
                     name = name,
@@ -692,11 +819,32 @@ object MusicRepository {
     }
 
     private fun buildGenres(songs: List<AudioFile>): List<Genre> {
-        return songs.filter { it.genre.isNotBlank() }
-            .groupBy { it.genre }
+        val config = metadataNameSplitConfig()
+        val grouped = linkedMapOf<String, Pair<String, MutableList<AudioFile>>>()
+        songs.filter { it.genre.isNotBlank() }.forEach { song ->
+            MetadataNameSplitter.splitGenreNames(song.genre, config)
+                .forEach { name ->
+                    val key = MetadataNameSplitter.identityKey(name, config.ignoreCase)
+                    val bucket = grouped[key]
+                    if (bucket == null) {
+                        grouped[key] = name to mutableListOf(song)
+                    } else if (song !in bucket.second) {
+                        bucket.second += song
+                    }
+                }
+        }
+        return grouped.values
             .map { (name, list) -> Genre(name = name, songCount = list.size) }
             .sortedBy { CjkSortUtils.sortKey(it.name) }
     }
+
+    private fun metadataNameSplitConfig(): MetadataNameSplitConfig = MetadataNameSplitConfig(
+        artistSeparators = MetadataNameSplitter.parseSetting(AppPreferences.Library.artistSeparators),
+        artistProtectedNames = MetadataNameSplitter.parseSetting(AppPreferences.Library.artistProtectedNames),
+        genreSeparators = MetadataNameSplitter.parseSetting(AppPreferences.Library.genreSeparators),
+        genreProtectedNames = MetadataNameSplitter.parseSetting(AppPreferences.Library.genreProtectedNames),
+        ignoreCase = AppPreferences.Library.tagIgnoreCase
+    )
 
     private fun buildFolders(songs: List<AudioFile>): List<Folder> {
         return songs.map { it.path.substringBeforeLast("/") }
@@ -704,6 +852,7 @@ object MusicRepository {
             .map { (path, list) -> Folder(path = path, name = path.substringAfterLast("/"), songCount = list.size) }
             .sortedBy { CjkSortUtils.sortKey(it.name) }
     }
+
 
     // ────────────────────── 排序 ──────────────────────
 
@@ -735,6 +884,8 @@ object MusicRepository {
             SortOrder.ALBUM_DESC -> songs.sortedByDescending { CjkSortUtils.sortKey(it.album) }
             SortOrder.DATE_ADDED_ASC -> songs.sortedBy { it.dateAdded }
             SortOrder.DATE_ADDED_DESC -> songs.sortedByDescending { it.dateAdded }
+            SortOrder.DATE_MODIFIED_ASC -> songs.sortedBy { it.dateModified }
+            SortOrder.DATE_MODIFIED_DESC -> songs.sortedByDescending { it.dateModified }
             SortOrder.DURATION_ASC -> songs.sortedBy { it.duration }
             SortOrder.DURATION_DESC -> songs.sortedByDescending { it.duration }
             SortOrder.YEAR_ASC -> songs.sortedWith(compareBy<AudioFile> { if (it.year <= 0) Int.MAX_VALUE else it.year }.thenBy { CjkSortUtils.sortKey(it.displayName) })

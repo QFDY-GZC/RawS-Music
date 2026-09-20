@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cstring>
 #include <sstream>
+#include <vector>
+
+#include "raw_pcm_channel_matrix.h"
 
 extern "C" {
 #include <libavutil/channel_layout.h>
@@ -137,6 +140,17 @@ bool RawPcmPipeline::configureResamplerLocked() {
     if (swr_ == nullptr) {
         stats_.lastError = "swr_alloc_set_opts-failed";
         return false;
+    }
+
+    std::vector<double> channelMatrix;
+    if (buildExplicitChannelMatrix(sourceChannels, deviceChannels, &channelMatrix)) {
+        const int matrixResult = swr_set_matrix(
+                swr_, channelMatrix.data(), sourceChannels);
+        if (matrixResult < 0) {
+            stats_.lastError = "swr_set_matrix-failed:" + std::to_string(matrixResult);
+            closeResamplerLocked();
+            return false;
+        }
     }
 
     // Same quality choices as the original native engine: larger filter, more

@@ -1,11 +1,14 @@
 package com.rawsmusic.core.ui.widget.bitmaps
 
+import java.util.concurrent.ConcurrentHashMap
+
 /**
  * Runs audio artwork source selection exactly once for every provider path.
  *
- * BitmapProvider supplies the concrete decoders; this class owns only ordering, same-key
- * serialization, and the folder-fallback commit barrier. Primary requests and sibling-tier
- * coalescing therefore cannot silently diverge into different source orders.
+ * BitmapProvider supplies the concrete decoders; this class owns only ordering, exact-key
+ * single-flight admission, and the folder-fallback commit barrier. Heavy decoder work must never
+ * run while holding a Java monitor: visible 384/512/1024 requests can arrive together and a
+ * monitor-held decode otherwise parks the whole artwork worker pool behind one slow extractor.
  */
 internal object AudioArtworkDecodeCoordinator {
     sealed interface DecodeResult<out T> {
@@ -19,7 +22,7 @@ internal object AudioArtworkDecodeCoordinator {
         val sourcePath: String
     )
 
-    private val sourceSelectionLocks = Array(64) { Any() }
+    private val sourceSelectionsInFlight = ConcurrentHashMap<String, Any>()
 
     fun <T> decode(
         providerKey: String,
@@ -27,8 +30,14 @@ internal object AudioArtworkDecodeCoordinator {
         decodeFolder: () -> FolderCandidate<T>?,
         discardRejectedFolder: (T) -> Unit = {}
     ): DecodeResult<T> {
-        val lock = sourceSelectionLocks[(providerKey.hashCode() and Int.MAX_VALUE) % sourceSelectionLocks.size]
-        return synchronized(lock) {
+        val flight = Any()
+        if (sourceSelectionsInFlight.putIfAbsent(providerKey, flight) != null) {
+            // The owner is still resolving embedded-vs-folder authority. Do not block another
+            // BitmapWorker and do not race a folder commit. The request remains retryable; once
+            // the owner publishes source authority, a later request takes the indexed fast path.
+            return DecodeResult.TransientFailure
+        }
+        return try {
             val embeddedState = ArtworkSourceIndex.embeddedStateFor(providerKey)
             val embeddedWasKnownPresent = embeddedState == ArtworkSourceAuthority.EmbeddedState.Present
             var transientFailure = false
@@ -38,15 +47,11 @@ internal object AudioArtworkDecodeCoordinator {
                         decodeEmbedded(stage)
                     } catch (error: Exception) {
                         transientFailure = true
-                        android.util.Log.d(
-                            "RawArt",
-                            "EMBEDDED_PROBE_TRANSIENT stage=$stage key=${providerKey.takeLast(72)} error=${error.javaClass.simpleName}"
-                        )
                         null
                     }
                     if (decoded != null) {
                         ArtworkSourceIndex.markEmbeddedPresent(providerKey)
-                        return@synchronized DecodeResult.Found(decoded)
+                        return DecodeResult.Found(decoded)
                     }
                 }
             }
@@ -57,7 +62,7 @@ internal object AudioArtworkDecodeCoordinator {
             val permit = ArtworkSourceIndex.beginFolderFallback(
                 providerKey = providerKey,
                 confirmsEmbeddedAbsent = !transientFailure
-            ) ?: return@synchronized when {
+            ) ?: return when {
                 transientFailure || embeddedWasKnownPresent -> {
                     // A previously successful embedded source is evidence that the file has
                     // artwork. A later null probe can be a temporary extractor/permission race,
@@ -73,7 +78,7 @@ internal object AudioArtworkDecodeCoordinator {
             } catch (error: Exception) {
                 transientFailure = true
                 null
-            } ?: return@synchronized if (transientFailure) {
+            } ?: return if (transientFailure) {
                 ArtworkSourceIndex.resetEmbeddedAuthority(providerKey)
                 DecodeResult.TransientFailure
             } else {
@@ -88,6 +93,8 @@ internal object AudioArtworkDecodeCoordinator {
                 discardRejectedFolder(folder.value)
                 DecodeResult.ConfirmedAbsent
             }
+        } finally {
+            sourceSelectionsInFlight.remove(providerKey, flight)
         }
     }
 }

@@ -1,32 +1,68 @@
 package com.rawsmusic.core.ui.widget.bitmaps
 
+import com.rawsmusic.core.common.artwork.ArtworkResolutionPolicy
+
 /**
  * Album art resolution tiers used across the app.
  *
  * LowRes  – 384–512px: lists, notifications, mini covers.
- * HiRes   – 1024px: playback screen cover.
- * FullRes – 1440px: fullscreen / pinch-zoom cover.
+ * HiRes   – adaptive high tier: 512/1024px normally, 1024/1536px with Labs.
+ * FullRes – 1536px: large-display experimental ceiling.
  *
  * v5: extracted from BitmapProvider so every caller uses
  * the same constants instead of ad-hoc magic numbers.
  */
 object AlbumArtTiers {
 
+    /**
+     * Playback artwork is the active media surface. reference player gives its bound artwork request the
+     * image-loader front lane so list artwork cannot delay a track switch or the first player
+     * frame. Quality is still carried by the requested target tier.
+     */
+    val PLAYBACK_PROVIDER_PRIORITY: BitmapRequest.Priority = BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH
+
     /** Smallest normal low-res tier; used for notification icon and normal thumbnails. */
     const val LOW_RES_MIN_SIDE = 384
 
-    /** Small PowerList rows use a much smaller cover; keep this separate from playback tiers. */
+    /** Small VirtualList rows use a much smaller cover; keep this separate from playback tiers. */
     const val LIST_SMALL_MIN_SIDE = 96
     const val LIST_SMALL_MAX_SIDE = 192
 
     /** Upper bound for the low-res tier; lists and mini covers cap at this size. */
     const val LOW_RES_NORMAL_CAP = 512
 
-    /** Hi-res tier for the playback screen. */
-    const val HI_RES_SIDE = 1024
+    /** Large-display normal high tier. */
+    const val HI_RES_SIDE = ArtworkResolutionPolicy.LARGE_DISPLAY_NORMAL_HIGH_SIDE
 
-    /** Full-res tier for fullscreen / pinch-zoom covers. */
-    const val FULL_RES_SIDE = 1440
+    /** Large-display experimental high tier. */
+    const val FULL_RES_SIDE = ArtworkResolutionPolicy.LARGE_DISPLAY_INCREASED_HIGH_SIDE
+
+    /** Compatibility aliases for existing UI/provider call sites. */
+    const val LARGE_DISPLAY_MIN_SIDE_PX = ArtworkResolutionPolicy.LARGE_DISPLAY_MIN_SIDE_PX
+    const val QUALITY_MIN_HEAP_MIB = ArtworkResolutionPolicy.QUALITY_MIN_HEAP_MIB
+    const val SMALL_NORMAL_HIGH_SIDE = ArtworkResolutionPolicy.SMALL_DISPLAY_NORMAL_HIGH_SIDE
+    const val SMALL_INCREASED_HIGH_SIDE = ArtworkResolutionPolicy.SMALL_DISPLAY_INCREASED_HIGH_SIDE
+
+    /**
+     * Experimental larger-artwork policy.
+     *
+     * The preference does not multiply an arbitrary requested size. It changes the authoritative
+     * high-tier side:
+     * - short display side >= 1000px: 1024 -> 1536
+     * - short display side < 1000px: 512 -> 1024
+     * - heap < 128MiB: Labs preference is ignored and the normal side is used
+     */
+    fun playbackTargetSide(
+        increaseResolution: Boolean,
+        displayShortSidePx: Int = LARGE_DISPLAY_MIN_SIDE_PX,
+        maxMemoryBytes: Long = 256L * 1024L * 1024L,
+    ): Int {
+        return ArtworkResolutionPolicy.highTargetSide(
+            increaseResolution = increaseResolution,
+            displayShortSidePx = displayShortSidePx,
+            maxMemoryBytes = maxMemoryBytes,
+        )
+    }
 
     /** A resolved decode target. */
     data class Target(
@@ -79,7 +115,7 @@ object AlbumArtTiers {
         // Notification and normal list priorities use the low-res tier.  LOADING_NOTIFICATION_HIGH
         // is only a queue priority: when a playback/fullscreen caller passes allowHiRes=true it must
         // still resolve to the hi-res tier, matching the separate low/high artwork wrapper paths.
-        // The only exception is PowerList's 32dp small-row cover: decoding it at 384/512px creates a
+        // The only exception is VirtualList's 32dp small-row cover: decoding it at 384/512px creates a
         // large amount of wasted native heap with no visible benefit, so keep that tiny list tier tiny.
         if (priority == BitmapRequest.Priority.LOADING_NOTIFICATION ||
             priority == BitmapRequest.Priority.LOADING_LIST ||
@@ -89,7 +125,7 @@ object AlbumArtTiers {
                 val smallTarget = maxSide.coerceIn(LIST_SMALL_MIN_SIDE, LIST_SMALL_MAX_SIDE)
                 return Target(smallTarget, smallTarget)
             }
-            // Large PowerList grids deliberately request their visual size. The old list clamp
+            // Large VirtualList grids deliberately request their visual size. The old list clamp
             // silently turned GRID_2's 784px request into 512px, while the holder still judged
             // completion against 784px and requeued the same source forever.
             if (priority == BitmapRequest.Priority.LOADING_LIST && maxSide >= 768) {

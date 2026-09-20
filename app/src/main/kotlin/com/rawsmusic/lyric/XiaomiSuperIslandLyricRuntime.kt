@@ -5,15 +5,19 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricLine
 import com.rawsmusic.core.common.model.LyricWord
+import com.rawsmusic.core.common.net.RemoteHttpStreamRegistry
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.prefs.XiaomiSuperIslandSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.json.JSONArray
+import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 
 /** Converts the bounded player event into the app-owned vendor bridge. */
@@ -23,6 +27,9 @@ internal object XiaomiSuperIslandLyricRuntime {
     private var artworkPath: String = ""
     private var artworkBitmap: Bitmap? = null
     private val eventGeneration = AtomicLong(0L)
+    private var enabled = false
+    private var playbackCleared = true
+    private var appliedSettings: XiaomiSuperIslandSettings? = null
 
     fun handle(context: Context, intent: Intent) {
         val appContext = context.applicationContext
@@ -30,6 +37,8 @@ internal object XiaomiSuperIslandLyricRuntime {
             bridge = it
         }
         if (intent.action == "com.rawsmusic.action.SUPER_ISLAND_LYRIC_CLEAR") {
+            if (playbackCleared) return
+            playbackCleared = true
             eventGeneration.incrementAndGet()
             currentBridge.onPlaybackPaused()
             return
@@ -41,11 +50,22 @@ internal object XiaomiSuperIslandLyricRuntime {
 
         val settings = AppPreferences.Lyrics.xiaomiSuperIslandSettings
         if (!AppPreferences.Lyrics.xiaomiSuperIslandLyricEnabled) {
-            currentBridge.setEnabled(false)
+            if (enabled) {
+                currentBridge.setEnabled(false)
+                enabled = false
+            }
+            playbackCleared = true
             return
         }
-        currentBridge.setSettings(settings)
-        currentBridge.setEnabled(true)
+        if (appliedSettings != settings) {
+            currentBridge.setSettings(settings)
+            appliedSettings = settings
+        }
+        if (!enabled) {
+            currentBridge.setEnabled(true)
+            enabled = true
+        }
+        playbackCleared = false
 
         val path = intent.getStringExtra("path").orEmpty()
         val artworkKey = intent.getStringExtra("albumArtPath").orEmpty().ifBlank { path }
@@ -76,7 +96,8 @@ internal object XiaomiSuperIslandLyricRuntime {
         )
         val position = intent.getLongExtra("position", 0L)
         scope.launch(Dispatchers.IO) {
-            val artwork = loadArtwork(artworkKey)
+            XiaomiSuperIslandCapabilities.logOnce(appContext)
+            val artwork = loadArtwork(appContext, artworkKey)
             if (generation != eventGeneration.get()) return@launch
             currentBridge.sendLyric(song, line, position, song.duration, artwork)
         }
@@ -98,18 +119,40 @@ internal object XiaomiSuperIslandLyricRuntime {
         }.getOrDefault(emptyList())
     }
 
-    private fun loadArtwork(path: String): Bitmap? {
+    private fun loadArtwork(context: Context, path: String): Bitmap? {
         if (path.isBlank()) return null
         if (path == artworkPath) return artworkBitmap
+        val remoteHttp = path.startsWith("http://", true) || path.startsWith("https://", true)
         val bitmap = runCatching {
-            val retriever = MediaMetadataRetriever()
-            try {
-                retriever.setDataSource(path)
-                retriever.embeddedPicture?.let { bytes ->
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            if (remoteHttp) {
+                val remote = RemoteHttpStreamRegistry.lookup(path) ?: return@runCatching null
+                val cacheFile = File(context.cacheDir, "superisland/${path.hashCode()}.cover")
+                cacheFile.parentFile?.mkdirs()
+                if (!cacheFile.exists() || cacheFile.length() <= 1024L) {
+                    cacheFile.delete()
+                    val resolvedUrl = remote.resolveUrl(path)
+                    val result = FFmpegBridge.extractCover(
+                        inputPath = resolvedUrl,
+                        outputPath = cacheFile.absolutePath,
+                        headers = remote.resolveHeaders(path),
+                        userAgent = remote.userAgent,
+                    )
+                    if (result != 0 || cacheFile.length() <= 1024L) {
+                        cacheFile.delete()
+                        return@runCatching null
+                    }
                 }
-            } finally {
-                retriever.release()
+                BitmapFactory.decodeFile(cacheFile.absolutePath)
+            } else {
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(path)
+                    retriever.embeddedPicture?.let { bytes ->
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    }
+                } finally {
+                    retriever.release()
+                }
             }
         }.getOrNull() ?: BitmapFactory.decodeFile(path)
         val scaled = bitmap?.let { source ->

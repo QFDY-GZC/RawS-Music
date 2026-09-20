@@ -2,6 +2,8 @@ package com.rawsmusic.core.ui.widget.index
 
 import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import com.rawsmusic.core.ui.R
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.ColorFilter
@@ -21,13 +23,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,7 +40,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.graphicsLayer
+import com.rawsmusic.core.common.utils.CjkSortUtils
 import com.rawsmusic.core.ui.scene.LocalSceneChromeAlpha
+import com.rawsmusic.core.ui.scene.LocalExternalAlphabetIndexAlphaProvider
+import com.rawsmusic.module.data.prefs.PersonalizationPreferences
+import com.rawsmusic.core.ui.widget.virtuallist.LocalReferenceLibraryProviderScene
+import com.rawsmusic.core.ui.widget.virtuallist.LocalReferenceLibraryProviderRegistry
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -47,7 +57,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.Locale
 import kotlin.math.floor
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import top.yukonga.miuix.kmp.basic.Text
+import com.rawsmusic.core.ui.widget.flow.usesReferenceStaticForeground
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 // ─────────────── 标签表 ───────────────
@@ -207,22 +221,60 @@ fun RawAlphabetIndex(
     onTopSelect: (() -> Unit)? = null,
     onSelect: (letter: String, index: Int) -> Unit,
     allowSceneOverlay: Boolean = true,
+    scrollActiveProvider: (() -> Boolean)? = null,
 ) {
+    val alphabetIndexHidden by PersonalizationPreferences.alphabetIndexHidden.collectAsState()
     val sceneChrome = LocalSceneChromeAlpha.current
+    val externalAlphaProvider = LocalExternalAlphabetIndexAlphaProvider.current
     val overlayRegistry = LocalAlphabetIndexOverlayRegistry.current
+    val providerScene = LocalReferenceLibraryProviderScene.current
+    val providerSceneId = providerScene?.name.orEmpty()
+    val providerRegistry = LocalReferenceLibraryProviderRegistry.current
+    val resolvedScrollActiveProvider = scrollActiveProvider ?: remember(providerRegistry, providerScene) {
+        {
+            providerRegistry?.get(providerScene)?.state?.isListScrollInProgress == true
+        }
+    }
+    if (alphabetIndexHidden) return
+
+    val scrollAlpha = remember { Animatable(0f) }
+    LaunchedEffect(resolvedScrollActiveProvider) {
+        snapshotFlow { resolvedScrollActiveProvider.invoke() }
+            .distinctUntilChanged()
+            .collectLatest { scrolling ->
+                if (scrolling) {
+                    scrollAlpha.animateTo(
+                        targetValue = 1f,
+                        animationSpec = tween(durationMillis = 250),
+                    )
+                } else {
+                    delay(6_000L)
+                    scrollAlpha.animateTo(
+                        targetValue = 0f,
+                        animationSpec = tween(durationMillis = 250),
+                    )
+                }
+            }
+    }
+
     val overlayOwner = remember { Any() }
-    val detached = allowSceneOverlay &&
-        sceneChrome.detachAlphabetIndex &&
-        overlayRegistry != null
+    // index scroller in the reference UI is a sibling of VirtualList, not a child of the list's
+    // moving/layout owner. Raw's physical list is now hosted by RawVirtualListPresentationView;
+    // keeping the rail in the page-local Compose subtree can therefore place its pixels behind the
+    // persistent AndroidView even though semantics/input still exist. Whenever a scene overlay
+    // registry is available, publish the rail there and keep this local copy measured only.
+    val detached = allowSceneOverlay && overlayRegistry != null
     if (allowSceneOverlay && overlayRegistry != null) {
         SideEffect {
             overlayRegistry.publish(
                 AlphabetIndexOverlayEntry(
                     owner = overlayOwner,
+                    sceneId = providerSceneId,
                     data = data,
                     modifier = modifier,
                     enabled = enabled,
                     minCellHeightDp = minCellHeightDp,
+                    scrollActiveProvider = resolvedScrollActiveProvider,
                     onTopSelect = onTopSelect,
                     onSelect = onSelect,
                 )
@@ -232,23 +284,30 @@ fun RawAlphabetIndex(
             onDispose { overlayRegistry.remove(overlayOwner) }
         }
     }
-    if (detached) {
-        return
-    }
+    // Keep the local rail measured while the overlay owns its pixels. Returning early
+    // destroys its layout and pointer state, then recreates it at the scene endpoint.
+    val localInputEnabled = enabled && !detached
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
     val colorScheme = MiuixTheme.colorScheme
-    val isLight = colorScheme.background.luminance() > 0.5f
-    val railColor = colorScheme.background.copy(alpha = if (isLight) 0.28f else 0.34f)
+    val staticForeground = usesReferenceStaticForeground()
+    val isLight = !staticForeground && colorScheme.background.luminance() > 0.5f
+    val railColor = if (staticForeground) {
+        Color.Black.copy(alpha = 0.24f)
+    } else {
+        colorScheme.background.copy(alpha = if (isLight) 0.28f else 0.34f)
+    }
 
-    val selectedBgColor = colorScheme.primary.copy(alpha = 0.16f)
+    val selectedBgColor = if (staticForeground) Color.White.copy(alpha = 0.16f) else colorScheme.primary.copy(alpha = 0.16f)
 
-    val textColor = colorScheme.onSurfaceVariantSummary.copy(
-        alpha = if (isLight) 0.78f else 0.84f
-    )
+    val textColor = if (staticForeground) {
+        Color.White.copy(alpha = 0.84f)
+    } else {
+        colorScheme.onSurfaceVariantSummary.copy(alpha = if (isLight) 0.78f else 0.84f)
+    }
 
-    val disabledColor = colorScheme.onSurfaceVariantSummary.copy(alpha = 0.30f)
-    val activeColor = colorScheme.primary
+    val disabledColor = if (staticForeground) Color.White.copy(alpha = 0.30f) else colorScheme.onSurfaceVariantSummary.copy(alpha = 0.30f)
+    val activeColor = if (staticForeground) Color.White else colorScheme.primary
 
     var railHeightPx by remember { mutableIntStateOf(0) }
     var topButtonHeightPx by remember { mutableIntStateOf(0) }
@@ -282,7 +341,7 @@ fun RawAlphabetIndex(
     }
 
     fun selectByOffset(y: Float) {
-        if (!enabled || railHeightPx <= 0 || visibleLabels.isEmpty()) return
+        if (!localInputEnabled || railHeightPx <= 0 || visibleLabels.isEmpty()) return
 
         if (onTopSelect != null && topButtonHeightPx > 0 && y <= topButtonHeightPx) {
             selectedLetter = null
@@ -319,7 +378,10 @@ fun RawAlphabetIndex(
     BoxWithConstraints(
         modifier = modifier
             .graphicsLayer {
-                alpha = sceneChrome.alphabetIndex
+                alpha = if (detached) 0f else (sceneChrome.alphabetIndexProvider?.invoke()?.coerceIn(0f, 1f)
+                    ?: sceneChrome.alphabetIndex) *
+                    (externalAlphaProvider?.invoke()?.coerceIn(0f, 1f) ?: 1f) *
+                    scrollAlpha.value
             }
             .width(22.dp)
             .fillMaxHeight(),
@@ -347,12 +409,14 @@ fun RawAlphabetIndex(
                 modifier = Modifier
                     .size(42.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(activeColor),
+                    .background(if (staticForeground) Color.Black.copy(alpha = 0.72f) else activeColor),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = selectedLetter.orEmpty(),
-                    color = if (activeColor.luminance() > 0.5f) {
+                    color = if (staticForeground) {
+                        Color.White
+                    } else if (activeColor.luminance() > 0.5f) {
                         Color.Black
                     } else {
                         Color.White
@@ -378,8 +442,8 @@ fun RawAlphabetIndex(
                 .background(railColor)
                 .padding(vertical = 4.dp)
                 .onSizeChanged { railHeightPx = it.height }
-                .pointerInput(enabled, data, visibleLabels) {
-                    if (!enabled) return@pointerInput
+                .pointerInput(localInputEnabled, data, visibleLabels) {
+                    if (!localInputEnabled) return@pointerInput
 
                     detectTapGestures { offset ->
                         touching = true
@@ -390,8 +454,8 @@ fun RawAlphabetIndex(
                         lastDispatchedLetter = null
                     }
                 }
-                .pointerInput(enabled, data, visibleLabels) {
-                    if (!enabled) return@pointerInput
+                .pointerInput(localInputEnabled, data, visibleLabels) {
+                    if (!localInputEnabled) return@pointerInput
 
                     detectDragGestures(
                         onDragStart = { offset ->
@@ -747,6 +811,16 @@ private fun normalizeForAlphabetSort(
 ): String {
     val trimmed = raw.trim()
     if (trimmed.isEmpty()) return "#"
+
+    // Song/category TITLE sorting is owned by CjkSortUtils. The side index used
+    // to run a second ICU pipeline (Han-Latin; Latin-ASCII), which can assign a
+    // different initial/order for the same CJK title. That makes a letter such
+    // as T point into a list region whose actual sorted neighbors belong to a
+    // different section. Reuse the exact repository sort key for the pinyin
+    // lane so list order and index boundaries have one comparator.
+    if (mode == RawIndexMode.CHINESE_PINYIN) {
+        return CjkSortUtils.sortKey(trimmed).uppercase(Locale.ROOT)
+    }
 
     val first = trimmed.first()
 

@@ -16,7 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
-import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkBitmapRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -69,7 +69,7 @@ class ImmersiveBackgroundState : ImmersiveBackgroundHost {
         val gen = ++coverGeneration
         coverJob?.cancel()
         coverJob = artworkScope.launch {
-            val bitmap = CoilArtworkRuntime.executeBitmap(
+            val bitmap = ArtworkBitmapRuntime.executeBitmap(
                 key = path,
                 width = 1080,
                 height = 1080,

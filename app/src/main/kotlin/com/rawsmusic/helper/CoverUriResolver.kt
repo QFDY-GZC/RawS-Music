@@ -4,11 +4,13 @@ import android.content.Context
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import com.rawsmusic.core.common.artwork.EmbeddedArtworkRegion
+import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.isFileBackedArtworkSource
+import com.rawsmusic.core.common.net.RemoteHttpStreamRegistry
 import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.core.common.utils.AppLogger
-import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -47,16 +49,16 @@ class CoverUriResolver(
      * stable audio-file key so all 192/512/1024 requests share the same embedded/folder-cover source.
      */
     fun resolveCoverUri(song: AudioFile): String {
-        val cacheKey = stableSongCacheKey(song)
-
         // Check the real audio identity before any resolver cache. Legacy extraction callbacks and
         // scanner updates may have cached a file:// URI, but they must not replace the provider key
-        // for a song that still has a real audio source.
+        // for a song that still has a real audio source. This branch must also remain free of file
+        // stat calls because current/previous/next artwork keys are resolved repeatedly while a
+        // retained player is binding its holders.
         if (song.path.isFileBackedArtworkSource()) {
-            val stableKey = song.coverKey
-            coverKeyCache[cacheKey] = stableKey
-            return stableKey
+            return song.coverKey
         }
+
+        val cacheKey = stableSongCacheKey(song)
 
         coverKeyCache[cacheKey]?.let { cached ->
             if (cached.isNotBlank()) return cached
@@ -94,7 +96,7 @@ class CoverUriResolver(
         val resolvedKey = if (song.path.isFileBackedArtworkSource()) song.coverKey else coverUri
         val previous = coverKeyCache.put(stableKey, resolvedKey)
         if (previous != resolvedKey) {
-            CoilArtworkRuntime.invalidate(song.coverKey)
+            BitmapProvider.invalidateArtwork(song.coverKey)
         }
     }
 
@@ -130,7 +132,7 @@ class CoverUriResolver(
 
     fun invalidate(song: AudioFile) {
         coverKeyCache.remove(stableSongCacheKey(song))
-        CoilArtworkRuntime.invalidate(song.coverKey)
+        BitmapProvider.invalidateArtwork(song.coverKey)
     }
 
     /**
@@ -157,7 +159,7 @@ class CoverUriResolver(
 
             withContext(Dispatchers.Main) {
                 if (!result.isNullOrBlank()) {
-                    CoilArtworkRuntime.invalidate(song.coverKey)
+                    BitmapProvider.invalidateArtwork(song.coverKey)
                 }
                 _coverExtractedEvent.value = song.path to resolveCoverUri(song)
             }
@@ -166,13 +168,34 @@ class CoverUriResolver(
 
     private fun extractCoverToCacheFile(song: AudioFile): String? {
         val path = song.path
+        val remoteHttp = path.startsWith("http://", true) || path.startsWith("https://", true)
         val sourceFile = File(path)
-        val cacheName = "song_${path.hashCode()}_${sourceFile.length()}_${sourceFile.lastModified()}.jpg"
+        val cacheName = if (remoteHttp) {
+            "song_remote_${path.hashCode()}_${song.fileSize}.jpg"
+        } else {
+            "song_${path.hashCode()}_${sourceFile.length()}_${sourceFile.lastModified()}.jpg"
+        }
         val coverFile = File(context.cacheDir, "albumart/$cacheName")
         coverFile.parentFile?.mkdirs()
 
         if (coverFile.exists() && coverFile.length() > 1024) {
             return "file://${coverFile.absolutePath}"
+        }
+
+        if (remoteHttp) {
+            val remote = RemoteHttpStreamRegistry.lookup(path) ?: return null
+            val resolvedUrl = remote.resolveUrl(path)
+            val ret = FFmpegBridge.extractCover(
+                inputPath = resolvedUrl,
+                outputPath = coverFile.absolutePath,
+                headers = remote.resolveHeaders(path),
+                userAgent = remote.userAgent,
+            )
+            if (ret == 0 && coverFile.exists() && coverFile.length() > 1024) {
+                return "file://${coverFile.absolutePath}"
+            }
+            coverFile.delete()
+            return null
         }
 
         val ext = path.substringAfterLast(".", "").lowercase()
@@ -212,7 +235,7 @@ class CoverUriResolver(
         }
 
         if (useFfmpeg) {
-            val ret = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.extractCover(path, coverFile.absolutePath)
+            val ret = FFmpegBridge.extractCover(path, coverFile.absolutePath)
             if (ret == 0 && coverFile.exists() && coverFile.length() > 1024) {
                 return "file://${coverFile.absolutePath}"
             }

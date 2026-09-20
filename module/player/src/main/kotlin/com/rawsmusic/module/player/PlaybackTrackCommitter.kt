@@ -48,8 +48,11 @@ internal class PlaybackTrackCommitter(private val tag: String) {
 
         try {
             listener?.onStateChanged(FfmpegAudioPlayer.State.PLAYING)
-            listener?.onPositionChanged(position, duration)
-            listener?.onGaplessSongChanged(path)
+            // Publish the logical queue cursor before the new track's timeline. Reference makes
+            // this boundary a single current-track transaction; sending position first briefly
+            // pairs B's position/duration with A's identity and can render a full, frozen bar.
+            listener?.onGaplessSongChanged(path, position, duration)
+            listener?.onPositionChanged(position, duration, path)
         } catch (t: Throwable) {
             AppLogger.w(tag, "Track commit[$reason]: listener callback failed path=$path", t)
         }

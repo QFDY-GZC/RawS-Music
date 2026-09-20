@@ -14,8 +14,8 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.UserPlaylist
 import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.scene.pages.LibraryListScaffold
-import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
-import com.rawsmusic.core.ui.widget.powerlist.rememberComposePowerListState
+import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListFull
+import com.rawsmusic.core.ui.widget.virtuallist.rememberComposeVirtualListState
 import com.rawsmusic.module.data.prefs.PlaylistStore
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -30,12 +30,13 @@ fun PlaylistDetailScreen(
     onRemoveSong: (AudioFile) -> Unit
 ) {
     val songs = playlistStore.resolveSongs(playlist, librarySongs)
-    val state = rememberComposePowerListState("playlist-${playlist?.id.orEmpty()}")
+    val state = rememberComposeVirtualListState("playlist-${playlist?.id.orEmpty()}")
     LibraryListScaffold(
         title = playlist?.name ?: stringResource(R.string.playlist_fallback_name),
         sceneId = NavScene.PLAYLIST_DETAIL_PAGE.name,
+        statisticsText = stringResource(com.rawsmusic.core.ui.R.string.library_statistics_songs, songs.size),
         onBack = onBack,
-        powerListState = state,
+        virtualListState = state,
         onShuffle = { if (songs.isNotEmpty()) onPlaySong(songs.shuffled(), 0) },
         contentOverlap = 0.dp,
         modifier = Modifier.fillMaxSize()
@@ -52,7 +53,7 @@ fun PlaylistDetailScreen(
                 )
             }
         } else {
-            ComposePowerListFull(
+            ComposeVirtualListFull(
                 songs = songs,
                 playingSongId = playingSongId,
                 state = state,

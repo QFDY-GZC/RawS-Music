@@ -73,6 +73,7 @@ fun LiquidBottomTabs(
 ) {
     val isLightTheme = !isSystemInDarkTheme()
     val performanceMode by PersonalizationPreferences.performanceMode.collectAsState()
+    val glassSettings by PersonalizationPreferences.globalLiquidGlassSettings.collectAsState()
     val accentColor =
         if (isLightTheme) Color(0xFF0088FF)
         else Color(0xFF0091FF)
@@ -191,9 +192,15 @@ fun LiquidBottomTabs(
                                 backdrop = backdrop,
                                 shape = { Capsule() },
                                 effects = {
-                                    vibrancy()
-                                    blur(8f.dp.toPx())
-                                    lens(24f.dp.toPx(), 24f.dp.toPx())
+                                    val minDimension = size.minDimension
+                                    vibrancy(glassSettings.vibrancyStrength)
+                                    blur(glassSettings.blurRadiusDp.dp.toPx())
+                                    lens(
+                                        refractionHeight = glassSettings.refractionHeightFraction * minDimension * 0.5f,
+                                        refractionAmount = glassSettings.refractionAmountFraction * minDimension,
+                                        depthEffect = true,
+                                        chromaticAberration = glassSettings.chromaticAberration > 0.001f,
+                                    )
                                 },
                                 layerBlock = {
                                     val progress = dampedDragAnimation.pressProgress
@@ -237,15 +244,20 @@ fun LiquidBottomTabs(
                                 shape = { Capsule() },
                                 effects = {
                                     val progress = dampedDragAnimation.pressProgress
-                                    vibrancy()
-                                    blur(8f.dp.toPx())
+                                    val minDimension = size.minDimension
+                                    vibrancy(glassSettings.vibrancyStrength)
+                                    blur(glassSettings.blurRadiusDp.dp.toPx())
                                     lens(
-                                        24f.dp.toPx() * progress,
-                                        24f.dp.toPx() * progress,
+                                        refractionHeight = glassSettings.refractionHeightFraction * minDimension * 0.5f * progress,
+                                        refractionAmount = glassSettings.refractionAmountFraction * minDimension * progress,
+                                        depthEffect = true,
+                                        chromaticAberration = glassSettings.chromaticAberration > 0.001f,
                                     )
                                 },
                                 highlight = {
-                                    Highlight.Default.copy(alpha = dampedDragAnimation.pressProgress)
+                                    Highlight.Default.copy(
+                                        alpha = (dampedDragAnimation.pressProgress * glassSettings.highlightStrength).coerceIn(0f, 1f)
+                                    )
                                 },
                                 onDrawSurface = { drawRect(containerColor) },
                             )
@@ -294,23 +306,29 @@ fun LiquidBottomTabs(
                             shape = { Capsule() },
                             effects = {
                                 val progress = dampedDragAnimation.pressProgress
+                                val minDimension = size.minDimension
+                                val selectorHeightScale = glassSettings.refractionHeightFraction / 0.75f
+                                val selectorAmountScale = glassSettings.refractionAmountFraction / 0.375f
                                 lens(
-                                    10f.dp.toPx() * progress,
-                                    14f.dp.toPx() * progress,
-                                    chromaticAberration = true,
+                                    refractionHeight = minDimension * (10f / 56f) * selectorHeightScale * progress,
+                                    refractionAmount = minDimension * (14f / 56f) * selectorAmountScale * progress,
+                                    depthEffect = true,
+                                    chromaticAberration = glassSettings.chromaticAberration > 0.001f,
                                 )
                             },
                             highlight = {
-                                Highlight.Default.copy(alpha = dampedDragAnimation.pressProgress)
+                                Highlight.Default.copy(
+                                    alpha = (dampedDragAnimation.pressProgress * glassSettings.highlightStrength).coerceIn(0f, 1f)
+                                )
                             },
                             shadow = {
-                                Shadow(alpha = dampedDragAnimation.pressProgress)
+                                Shadow(alpha = (dampedDragAnimation.pressProgress * glassSettings.shadowStrength).coerceIn(0f, 1f))
                             },
                             innerShadow = {
                                 val progress = dampedDragAnimation.pressProgress
                                 InnerShadow(
                                     radius = 8f.dp * progress,
-                                    alpha = progress,
+                                    alpha = (progress * glassSettings.shadowStrength).coerceIn(0f, 1f),
                                 )
                             },
                             layerBlock = {

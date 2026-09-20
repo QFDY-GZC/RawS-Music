@@ -11,6 +11,8 @@ import com.rawsmusic.module.player.dsp.ParametricEQController
 import com.rawsmusic.R
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 
 class PEQActivity : BaseSettingsActivity() {
 
@@ -52,7 +54,7 @@ class PEQActivity : BaseSettingsActivity() {
                         exportLauncher.launch("PEQ_preset_${System.currentTimeMillis()}.peq.json")
                     },
                     onImportFromFile = {
-                        importLauncher.launch(arrayOf("application/json", "*/*"))
+                        importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
                     },
                     importedFileContent = importedFileContent,
                     onImportedFileContentConsumed = { importedFileContent = null }
@@ -64,10 +66,13 @@ class PEQActivity : BaseSettingsActivity() {
     private fun writeJsonToUri(uri: Uri, json: String) {
         try {
             contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
-            android.widget.Toast.makeText(this, getString(R.string.ui_preset_saved), android.widget.Toast.LENGTH_SHORT).show()
+            AppNoticeBus.post(
+                message = getString(R.string.ui_preset_saved),
+                icon = AppNoticeIcon.EQUALIZER,
+            )
         } catch (e: Exception) {
             Log.e("PEQActivity", "Failed to export", e)
-            android.widget.Toast.makeText(this, getString(R.string.ui_preset_save_failed, e.message.orEmpty()), android.widget.Toast.LENGTH_SHORT).show()
+            AppNoticeBus.error(getString(R.string.ui_preset_save_failed, e.message.orEmpty()))
         }
     }
 
@@ -78,7 +83,7 @@ class PEQActivity : BaseSettingsActivity() {
             }
         } catch (e: Exception) {
             Log.e("PEQActivity", "Failed to import", e)
-            android.widget.Toast.makeText(this, getString(R.string.ui_preset_read_failed, e.message.orEmpty()), android.widget.Toast.LENGTH_SHORT).show()
+            AppNoticeBus.error(getString(R.string.ui_preset_read_failed, e.message.orEmpty()))
             null
         }
     }

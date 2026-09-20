@@ -2,6 +2,7 @@ package com.rawsmusic
 
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.os.SystemClock
 import android.view.OrientationEventListener
 import androidx.activity.ComponentActivity
@@ -36,6 +37,20 @@ internal class MainActivityRotationCoordinator(
         orientationListener = object : OrientationEventListener(activity) {
             override fun onOrientationChanged(orientation: Int) {
                 if (orientation == ORIENTATION_UNKNOWN || activity.isFinishing || activity.isDestroyed) return
+                if (
+                    currentScene() != PlayerSceneController.Scene.PLAYER &&
+                    orientation.isClearlyLeavingPortraitOrientation() &&
+                    activity.requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                ) {
+                    // PLAYER advertises USER rotation so SystemUI can offer the normal landscape
+                    // proposal. Returning to a portrait MAIN used to immediately write PORTRAIT
+                    // at the animation endpoint, which makes ColorOS relayout the whole decor even
+                    // though the physical/configuration orientation never changed. Keep the USER
+                    // request while the phone is still portrait and only restore the MAIN lock once
+                    // the sensor actually leaves portrait territory.
+                    activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    return
+                }
                 if (!orientation.isPortraitOrientation()) return
                 if (!launchArmed) {
                     launchArmed = true
@@ -76,6 +91,12 @@ internal class MainActivityRotationCoordinator(
         } else {
             ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         }
+        val canKeepPortraitUserRequest =
+            scene != PlayerSceneController.Scene.PLAYER &&
+                target == ActivityInfo.SCREEN_ORIENTATION_PORTRAIT &&
+                activity.requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_USER &&
+                activity.resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+        if (canKeepPortraitUserRequest) return
         if (activity.requestedOrientation != target) {
             AppLogger.i(
                 TAG,
@@ -105,4 +126,6 @@ internal class MainActivityRotationCoordinator(
     }
 
     private fun Int.isPortraitOrientation(): Boolean = this in 0..28 || this in 332..359
+
+    private fun Int.isClearlyLeavingPortraitOrientation(): Boolean = this in 45..315
 }

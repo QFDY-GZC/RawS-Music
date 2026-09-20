@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -53,13 +52,17 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.shader.isRenderEffectSupported
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 private const val PROJECT_URL = "https://github.com/QFDY-GZC/RawS-Music"
 private const val LYRICO_URL = "https://github.com/Replica0110/Lyrico"
 private const val QQ_GROUP_URL = "https://qm.qq.com/q/bOvqTQPABi"
 
 @Composable
-fun AboutPage(onBack: () -> Unit) {
+fun AboutPage(
+    onBack: () -> Unit,
+    onSupportAuthor: () -> Unit = {}
+) {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val scheme = MiuixTheme.colorScheme
@@ -153,6 +156,11 @@ fun AboutPage(onBack: () -> Unit) {
                         summary = stringResource(R.string.about_qq_group_summary),
                         onClick = { uriHandler.openUri(QQ_GROUP_URL) }
                     )
+                    BasicComponent(
+                        title = stringResource(R.string.about_support_author),
+                        summary = stringResource(R.string.about_support_author_summary),
+                        onClick = onSupportAuthor
+                    )
                 }
             }
 
@@ -172,7 +180,7 @@ fun AboutPage(onBack: () -> Unit) {
             }
 
             item {
-                Spacer(Modifier.height(160.dp).navigationBarsPadding())
+                Spacer(Modifier.height(160.dp).rawStableNavigationBarsPadding())
             }
         }
 

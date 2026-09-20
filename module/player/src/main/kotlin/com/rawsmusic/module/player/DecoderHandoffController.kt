@@ -1,6 +1,5 @@
 package com.rawsmusic.module.player
 
-import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.utils.AppLogger
 import kotlin.concurrent.thread
 
@@ -91,7 +90,7 @@ internal class DecoderHandoffController(private val tag: String) {
             }
             else -> {
                 try {
-                    FFmpegBridge.closeDecoder(oldHandle)
+                    PlaybackDecoderBridge.closeDecoder(oldHandle)
                 } catch (t: Throwable) {
                     AppLogger.w(tag, "Decoder handoff: closeDecoder failed handle=$oldHandle", t)
                 }
@@ -111,7 +110,7 @@ internal class DecoderHandoffController(private val tag: String) {
     fun decoderDurationMs(handle: Long): Long {
         if (handle == 0L) return 0L
         return try {
-            FFmpegBridge.getDecoderDuration(handle).let { if (it <= 0L) 0L else it }
+            PlaybackDecoderBridge.getDecoderDuration(handle).let { if (it <= 0L) 0L else it }
         } catch (t: Throwable) {
             AppLogger.w(tag, "Decoder handoff: getDecoderDuration failed handle=$handle", t)
             0L

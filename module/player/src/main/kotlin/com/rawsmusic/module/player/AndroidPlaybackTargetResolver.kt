@@ -6,7 +6,6 @@ import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
-import com.rawsmusic.module.data.source.playback.MusicSourceResolvedStreamRegistry
 import com.rawsmusic.module.player.usb.isLikelyDsdSource
 
 /**
@@ -41,23 +40,23 @@ internal class AndroidPlaybackTargetResolver(
         val channelConfig = AudioFormat.CHANNEL_OUT_STEREO
         val outputMode = AudioOutputManager.getCurrentOutputMode(context)
         val sharedMixerMode = outputMode != AudioOutputMode.DIRECT
-        val onlineEntry = MusicSourceResolvedStreamRegistry.lookup(sourcePath)
+        val remoteOptions = RemotePlaybackOptionsResolver.lookup(sourcePath)
         // Online playback was moved into FfmpegAudioPlayer so its decoded PCM can share the
         // normal Android DSP chain. Do not perform separate remote sample-rate/bit-depth probes
         // before opening the decoder: those probes use optional JNI entry points and can block or
         // throw LinkageError before the real decoder is reached. The decoder already converts into
         // the selected Android output format, so a conservative source hint is sufficient here.
-        val rawSourceRate = if (onlineEntry != null) 0 else FFmpegBridge.probeSampleRate(sourcePath)
-        val sourceBits = if (onlineEntry != null) 0 else FFmpegBridge.probeBitsPerSample(sourcePath)
-        val sourceIsDsd = onlineEntry == null && isLikelyDsdSource(sourcePath, sourceBits, rawSourceRate)
+        val rawSourceRate = if (remoteOptions != null) 0 else FFmpegBridge.probeSampleRate(sourcePath)
+        val sourceBits = if (remoteOptions != null) 0 else FFmpegBridge.probeBitsPerSample(sourcePath)
+        val sourceIsDsd = remoteOptions == null && isLikelyDsdSource(sourcePath, sourceBits, rawSourceRate)
         val sourceRate = rawSourceRate.takeIf { it > 0 }
             ?: userTargetRate.takeIf { it > 0 }
             ?: 44_100
-        if (onlineEntry != null) {
+        if (remoteOptions != null) {
             AppLogger.i(
                 tag,
-                "ONLINE_PIPE TARGET_PROBE_BYPASS lane=android generation=${onlineEntry.generation} " +
-                    "sourceHint=${sourceRate}Hz quality=${onlineEntry.source.quality}"
+                "ONLINE_PIPE TARGET_PROBE_BYPASS lane=android owner=${remoteOptions.owner} " +
+                    "generation=${remoteOptions.generation ?: 0L} sourceHint=${sourceRate}Hz"
             )
         }
         val minRate = AudioOutputManager.getMinSampleRateForMode(outputMode)

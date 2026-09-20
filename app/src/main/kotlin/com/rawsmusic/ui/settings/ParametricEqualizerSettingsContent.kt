@@ -33,6 +33,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -58,9 +59,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import com.rawsmusic.R
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.core.ui.widget.PEQCurveColors
 import com.rawsmusic.core.ui.widget.PEQCurveView
 import com.rawsmusic.module.player.dsp.AutoEqCacheManager
@@ -86,15 +87,6 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 
 private val peqSuggestedBandCounts = listOf(10, 15, 20, 31, 40)
-private val peqGson = Gson()
-
-private data class ParsedPeqImport(
-    val name: String,
-    val preamp: Float,
-    val filters: List<PEQFilter>,
-    val sourceBandCount: Int,
-    val sourceLabel: String
-)
 
 private enum class PeqImportBandAction {
     KEEP_CURRENT,
@@ -115,6 +107,7 @@ internal fun ParametricEqualizerSettingsContent(
     onImportFromFile: () -> Unit = {},
     importedFileContent: String? = null,
     onImportedFileContentConsumed: () -> Unit = {},
+    onImportGraphicEq: ((ParsedAutoEqGraphicEq) -> Unit)? = null,
     showSectionHeader: Boolean = false
 ) {
     val context = LocalContext.current
@@ -166,19 +159,22 @@ internal fun ParametricEqualizerSettingsContent(
         if (switchToSourceCount && targetCount != controller.bandCount.value) {
             controller.setBandCount(targetCount)
         }
-        controller.setPreamp(parsed.preamp)
-        controller.importFilters(parsed.filters, parsed.name)
+        controller.importPreset(
+            preampDb = parsed.preamp,
+            filters = parsed.filters,
+            presetName = parsed.name,
+            preferOriginalOrder = parsed.preferOriginalOrder,
+        )
         val finalCount = controller.bandCount.value
-        Toast.makeText(
-            context,
-            context.getString(
+        AppNoticeBus.post(
+            message = context.getString(
                 R.string.settings_peq_import_applied_detail,
                 parsed.sourceLabel,
                 parsed.filters.size,
                 finalCount
             ),
-            Toast.LENGTH_SHORT
-        ).show()
+            icon = AppNoticeIcon.EQUALIZER,
+        )
     }
 
     SettingsCard {
@@ -231,6 +227,7 @@ internal fun ParametricEqualizerSettingsContent(
                     )
                 }
 
+                val preampRange = peqPreampSliderRange(preamp)
                 SliderPreference(
                     title = stringResource(R.string.settings_peq_preamp),
                     summary = if (autoHeadroomReduction > 0.05f) {
@@ -239,10 +236,10 @@ internal fun ParametricEqualizerSettingsContent(
                         stringResource(R.string.settings_peq_preamp_summary)
                     },
                     valueText = stringResource(R.string.settings_db_value_signed_one_decimal, preamp),
-                    value = preamp.coerceIn(-12f, 12f),
+                    value = preamp.coerceIn(preampRange.start, preampRange.endInclusive),
                     onValueChange = controller::setPreamp,
-                    valueRange = -12f..12f,
-                    steps = 47,
+                    valueRange = preampRange,
+                    steps = peqPreampHalfDbSteps(preampRange),
                     hapticEffect = SliderDefaults.SliderHapticEffect.Step
                 )
 
@@ -306,23 +303,25 @@ internal fun ParametricEqualizerSettingsContent(
                         cachedPresets.forEach { preset ->
                             add(
                                 PeqDropdownEntry(
-                                    key = "cached:${preset.name}",
+                                    key = "cached:${preset.cacheIdentity}",
                                     title = preset.name,
                                     summary = context.getString(
                                         R.string.settings_peq_cached_preset_summary,
                                         preset.filters.size,
-                                        preset.source.ifBlank { "AutoEq" }
+                                        listOf(preset.source, preset.deviceType)
+                                .filter { it.isNotBlank() }
+                                .joinToString(" • ")
+                                .ifBlank { "AutoEq" }
                                     ),
                                     onClick = {
                                         controller.importFromAutoEq(preset)
-                                        Toast.makeText(
-                                            context,
-                                            context.getString(
+                                        AppNoticeBus.post(
+                                            message = context.getString(
                                                 R.string.settings_peq_cached_preset_applied,
                                                 preset.name
                                             ),
-                                            Toast.LENGTH_SHORT
-                                        ).show()
+                                            icon = AppNoticeIcon.EQUALIZER,
+                                        )
                                     }
                                 )
                             )
@@ -401,6 +400,13 @@ internal fun ParametricEqualizerSettingsContent(
                     showBandChoice = true
                 } else {
                     applyImported(parsed, switchToSourceCount = false)
+                }
+            },
+            onGraphicEqDetected = onImportGraphicEq?.let { routeGraphicEq ->
+                { parsedGraphicEq ->
+                    onImportedFileContentConsumed()
+                    showImportDialog = false
+                    routeGraphicEq(parsedGraphicEq)
                 }
             },
             onDismiss = {
@@ -738,6 +744,7 @@ private fun PeqExportDialog(
             value = json,
             onValueChange = {},
             readOnly = true,
+            colors = peqMiuixOutlinedTextFieldColors(),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(180.dp)
@@ -780,6 +787,7 @@ private fun PeqImportDialog(
     initialText: String,
     onImportFromFile: () -> Unit,
     onParsed: (ParsedPeqImport) -> Unit,
+    onGraphicEqDetected: ((ParsedAutoEqGraphicEq) -> Unit)?,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -799,7 +807,7 @@ private fun PeqImportDialog(
     ) {
         Text(
             text = stringResource(R.string.settings_peq_import_formats),
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            color = MiuixTheme.colorScheme.onBackground.copy(alpha = 0.74f),
             fontSize = 12.sp
         )
         MiuixTextButton(
@@ -814,6 +822,7 @@ private fun PeqImportDialog(
                 error = null
             },
             placeholder = { Text(stringResource(R.string.settings_peq_import_desc)) },
+            colors = peqMiuixOutlinedTextFieldColors(),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(220.dp)
@@ -822,7 +831,7 @@ private fun PeqImportDialog(
         if (!error.isNullOrBlank()) {
             Text(
                 text = error.orEmpty(),
-                color = Color(0xFFE5484D),
+                color = MiuixTheme.colorScheme.error,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(top = 6.dp)
             )
@@ -836,6 +845,16 @@ private fun PeqImportDialog(
             MiuixTextButton(
                 text = stringResource(R.string.settings_import),
                 onClick = {
+                    val graphicEq = parseAutoEqGraphicEq(text)
+                    if (graphicEq != null) {
+                        if (onGraphicEqDetected != null) {
+                            onGraphicEqDetected(graphicEq)
+                        } else {
+                            error = context.getString(R.string.settings_peq_error_graphic_eq_target)
+                        }
+                        return@MiuixTextButton
+                    }
+
                     val parsed = parsePeqImport(text, context)
                     if (parsed == null) {
                         error = context.getString(R.string.settings_peq_error_invalid_preset)
@@ -867,11 +886,10 @@ private fun PeqAutoEqDialog(
 
     fun applyPreset(preset: AutoEqPreset) {
         controller.importFromAutoEq(preset)
-        Toast.makeText(
-            context,
-            context.getString(R.string.settings_peq_cached_preset_applied, preset.name),
-            Toast.LENGTH_SHORT
-        ).show()
+        AppNoticeBus.post(
+            message = context.getString(R.string.settings_peq_cached_preset_applied, preset.name),
+            icon = AppNoticeIcon.EQUALIZER,
+        )
         onDismiss()
     }
 
@@ -888,6 +906,7 @@ private fun PeqAutoEqDialog(
                 onValueChange = { query = it },
                 singleLine = true,
                 placeholder = { Text(stringResource(R.string.settings_autoeq_search_hint)) },
+                colors = peqMiuixOutlinedTextFieldColors(),
                 modifier = Modifier.weight(1f)
             )
             Spacer(Modifier.width(8.dp))
@@ -961,14 +980,14 @@ private fun PeqAutoEqDialog(
                             result.source,
                             result.deviceType
                         ),
-                        trailing = if (cacheManager.exists(result.headphoneName)) {
+                        trailing = if (cacheManager.exists(result)) {
                             stringResource(R.string.settings_downloaded)
                         } else {
                             stringResource(R.string.settings_download)
                         },
                         busy = isDownloading,
                         onClick = {
-                            val local = cacheManager.load(result.headphoneName)
+                            val local = cacheManager.load(result)
                             if (local != null) {
                                 applyPreset(local)
                             } else if (!isDownloading) {
@@ -1007,13 +1026,16 @@ private fun PeqAutoEqDialog(
                         modifier = Modifier.padding(top = 6.dp)
                     )
                 }
-                items(cached, key = { "cached:${it.name}" }) { preset ->
+                items(cached, key = { "cached:${it.cacheIdentity}" }) { preset ->
                     PeqAutoEqResultRow(
                         title = preset.name,
                         summary = stringResource(
                             R.string.settings_peq_cached_preset_summary,
                             preset.filters.size,
-                            preset.source.ifBlank { "AutoEq" }
+                            listOf(preset.source, preset.deviceType)
+                                .filter { it.isNotBlank() }
+                                .joinToString(" • ")
+                                .ifBlank { "AutoEq" }
                         ),
                         trailing = stringResource(R.string.settings_peq_apply),
                         busy = false,
@@ -1080,6 +1102,28 @@ private fun PeqAutoEqResultRow(
 }
 
 @Composable
+private fun peqMiuixOutlinedTextFieldColors() = MiuixTheme.colorScheme.let { colors ->
+    OutlinedTextFieldDefaults.colors(
+        focusedTextColor = colors.onBackground,
+        unfocusedTextColor = colors.onBackground,
+        disabledTextColor = colors.onBackground.copy(alpha = 0.42f),
+        cursorColor = colors.primary,
+        focusedBorderColor = colors.primary,
+        unfocusedBorderColor = colors.outline.copy(alpha = 0.72f),
+        disabledBorderColor = colors.outline.copy(alpha = 0.34f),
+        focusedPlaceholderColor = colors.onBackground.copy(alpha = 0.58f),
+        unfocusedPlaceholderColor = colors.onBackground.copy(alpha = 0.58f),
+        focusedContainerColor = Color.Transparent,
+        unfocusedContainerColor = Color.Transparent,
+        disabledContainerColor = Color.Transparent,
+        errorTextColor = colors.onBackground,
+        errorCursorColor = colors.error,
+        errorBorderColor = colors.error,
+        errorPlaceholderColor = colors.onBackground.copy(alpha = 0.58f),
+    )
+}
+
+@Composable
 private fun PeqDialogShell(
     title: String,
     onDismiss: () -> Unit,
@@ -1132,73 +1176,6 @@ private fun PeqDialogShell(
                 }
             }
         }
-    }
-}
-
-private fun parsePeqImport(text: String, context: Context): ParsedPeqImport? {
-    val trimmed = text.trim()
-    if (trimmed.isEmpty()) return null
-
-    if (trimmed.contains("Filter", ignoreCase = true) &&
-        trimmed.contains("Fc", ignoreCase = true)
-    ) {
-        val autoEq = AutoEqPreset.parse(
-            name = context.getString(R.string.settings_peq_imported_autoeq_name),
-            source = "file",
-            text = trimmed
-        ) ?: return null
-        val filters = autoEq.toPEQFilters()
-        return ParsedPeqImport(
-            name = autoEq.name,
-            preamp = autoEq.safePreamp,
-            filters = filters,
-            sourceBandCount = filters.size,
-            sourceLabel = "AutoEq"
-        )
-    }
-
-    if (trimmed.contains("\"fc\"") && trimmed.contains("\"q\"")) {
-        AutoEqPreset.fromJson(trimmed)?.let { preset ->
-            val filters = preset.toPEQFilters()
-            if (filters.isNotEmpty()) {
-                return ParsedPeqImport(
-                    name = preset.name,
-                    preamp = preset.safePreamp,
-                    filters = filters,
-                    sourceBandCount = filters.size,
-                    sourceLabel = "AutoEq JSON"
-                )
-            }
-        }
-    }
-
-    PEQPreset.fromJson(trimmed)?.let { preset ->
-        if (preset.filters.isNotEmpty()) {
-            return ParsedPeqImport(
-                name = preset.name,
-                preamp = preset.preamp.coerceIn(-12f, 12f),
-                filters = preset.filters.map { it.sanitized() },
-                sourceBandCount = preset.bandCount,
-                sourceLabel = "RawSMusic JSON"
-            )
-        }
-    }
-
-    return try {
-        val type = object : TypeToken<List<PEQFilter>>() {}.type
-        val filters = peqGson.fromJson<List<PEQFilter>>(trimmed, type)
-            .orEmpty()
-            .map { it.sanitized() }
-            .filter { it.frequency in PEQFilter.FREQUENCY_RANGE }
-        if (filters.isEmpty()) null else ParsedPeqImport(
-            name = context.getString(R.string.settings_peq_imported_list_name),
-            preamp = 0f,
-            filters = filters,
-            sourceBandCount = filters.size,
-            sourceLabel = "Filter JSON"
-        )
-    } catch (_: Throwable) {
-        null
     }
 }
 

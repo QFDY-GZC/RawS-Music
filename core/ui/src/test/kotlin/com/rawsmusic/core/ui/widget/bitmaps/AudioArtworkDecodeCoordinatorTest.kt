@@ -1,6 +1,10 @@
 package com.rawsmusic.core.ui.widget.bitmaps
 
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -40,7 +44,7 @@ class AudioArtworkDecodeCoordinatorTest {
             }
         )
 
-        assertEquals("embedded", result)
+        assertEquals(AudioArtworkDecodeCoordinator.DecodeResult.Found("embedded"), result)
         assertEquals(
             listOf(
                 RawArtworkPolicy.DecodeStage.RegionHandle,
@@ -65,7 +69,7 @@ class AudioArtworkDecodeCoordinatorTest {
             }
         )
 
-        assertEquals("folder", result)
+        assertEquals(AudioArtworkDecodeCoordinator.DecodeResult.Found("folder"), result)
         assertTrue(ArtworkSourceIndex.mayUseFolderFallback(key))
         assertEquals(
             folder.absolutePath,
@@ -83,7 +87,7 @@ class AudioArtworkDecodeCoordinatorTest {
         val folder = imageFile("concurrent-folder.jpg")
         val started = java.util.concurrent.CountDownLatch(1)
         val release = java.util.concurrent.CountDownLatch(1)
-        val results = java.util.concurrent.CopyOnWriteArrayList<String?>()
+        val results = java.util.concurrent.CopyOnWriteArrayList<AudioArtworkDecodeCoordinator.DecodeResult<String>>()
         var secondFolderCalled = false
 
         val first = Thread {
@@ -121,10 +125,61 @@ class AudioArtworkDecodeCoordinatorTest {
         first.join()
         second.join()
 
-        assertTrue(results.contains("embedded"))
-        assertTrue(results.contains(null))
+        assertTrue(results.contains(AudioArtworkDecodeCoordinator.DecodeResult.Found("embedded")))
+        assertTrue(results.contains(AudioArtworkDecodeCoordinator.DecodeResult.TransientFailure))
         assertFalse(secondFolderCalled)
         assertFalse(ArtworkSourceIndex.mayUseFolderFallback(key))
+    }
+
+    @Test
+    fun sameKeyFollowerDoesNotBlockAWorkerBehindSourceSelection() {
+        val key = "audio:///music/nonblocking-concurrent.flac|1|2"
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val followerReturned = CountDownLatch(1)
+        val followerResult = AtomicReference<AudioArtworkDecodeCoordinator.DecodeResult<String>?>(null)
+        val followerFolderCalled = AtomicBoolean(false)
+
+        val owner = Thread {
+            AudioArtworkDecodeCoordinator.decode(
+                providerKey = key,
+                decodeEmbedded = { stage ->
+                    if (stage == RawArtworkPolicy.DecodeStage.RegionHandle) {
+                        started.countDown()
+                        release.await()
+                        "embedded"
+                    } else {
+                        null
+                    }
+                },
+                decodeFolder = { null },
+            )
+        }
+        val follower = Thread {
+            started.await()
+            followerResult.set(AudioArtworkDecodeCoordinator.decode(
+                providerKey = key,
+                decodeEmbedded = { null },
+                decodeFolder = {
+                    followerFolderCalled.set(true)
+                    null
+                },
+            ))
+            followerReturned.countDown()
+        }
+
+        owner.start()
+        follower.start()
+
+        // VirtualList artwork workers must never stack up behind a Java monitor while another tier
+        // probes the same audio source. The follower is retryable and returns immediately.
+        assertTrue(followerReturned.await(500, TimeUnit.MILLISECONDS))
+        assertEquals(AudioArtworkDecodeCoordinator.DecodeResult.TransientFailure, followerResult.get())
+        assertFalse(followerFolderCalled.get())
+
+        release.countDown()
+        owner.join()
+        follower.join()
     }
 
     private fun imageFile(name: String): File = File(directory, name).apply {

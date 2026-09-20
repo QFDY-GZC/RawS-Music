@@ -3,4 +3,17 @@
     <string name="library_scan_notification_title">RawS Music is scanning music</string>
     <string name="library_scan_notification_text">Scanning the music library</string>
     <string name="common_cancel">Cancel</string>
+    <string name="library_scan_toast_result">Scan complete: %1$s, %2$.1f s</string>
+    <string name="library_scan_toast_full">Full scan: %1$d</string>
+    <string name="library_scan_toast_incremental">Incremental check: %1$d</string>
+    <string name="library_scan_toast_scanned">%1$d scanned</string>
+    <string name="library_scan_toast_added">%1$d added</string>
+    <string name="library_scan_toast_reused">%1$d reused</string>
+    <string name="library_scan_toast_parsed">%1$d reparsed</string>
+    <string name="library_scan_toast_skipped_directories">%1$d unchanged directories skipped</string>
+    <string name="library_scan_toast_updated">%1$d updated</string>
+    <string name="library_scan_toast_removed">%1$d removed</string>
+    <string name="library_scan_toast_empty">no songs found</string>
+    <string name="library_scan_toast_unchanged">no changes</string>
+    <string name="library_scan_toast_separator">, </string>
 </resources>

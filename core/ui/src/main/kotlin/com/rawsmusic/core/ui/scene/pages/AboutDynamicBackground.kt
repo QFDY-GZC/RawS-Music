@@ -8,16 +8,10 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.luminance
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import top.yukonga.miuix.kmp.blur.RuntimeShader
 import top.yukonga.miuix.kmp.blur.asBrush
 import top.yukonga.miuix.kmp.blur.isRuntimeShaderSupported
@@ -34,17 +28,14 @@ internal fun AboutDynamicBackground(
     val surface = MiuixTheme.colorScheme.surface
     val preset = remember(isDark) { if (isDark) AboutBgPreset.dark else AboutBgPreset.light }
     val painter = remember { AboutBgPainter() }
-    val time = rememberAboutFrameSeconds(supported)
+    // About is not a live visualizer. Keep its shader phase fixed after the one-shot entrance so
+    // an idle about page does not subscribe to the display clock forever.
+    val time = 0f
     val colorStage = remember { Animatable(0f) }
 
     LaunchedEffect(supported, preset) {
         if (!supported) return@LaunchedEffect
-        var target = 1f
-        while (isActive) {
-            delay((preset.colorPeriodSeconds * 500f).toLong())
-            colorStage.animateTo(target, spring(dampingRatio = 0.9f, stiffness = 35f))
-            target += 1f
-        }
+        colorStage.animateTo(1f, spring(dampingRatio = 0.9f, stiffness = 35f))
     }
 
     Box(modifier = modifier) {
@@ -62,7 +53,7 @@ internal fun AboutDynamicBackground(
                 painter.update(
                     width = size.width,
                     height = size.height,
-                    time = time(),
+                    time = time,
                     isDark = isDark,
                     preset = preset,
                     colors = colors
@@ -72,24 +63,6 @@ internal fun AboutDynamicBackground(
         }
         content()
     }
-}
-
-@Composable
-private fun rememberAboutFrameSeconds(playing: Boolean): () -> Float {
-    var time by remember { mutableFloatStateOf(0f) }
-    var offset by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(playing) {
-        if (!playing) {
-            offset = time
-            return@LaunchedEffect
-        }
-        val start = withFrameNanos { it }
-        while (isActive) {
-            val now = withFrameNanos { it }
-            time = offset + (now - start) / 1_000_000_000f
-        }
-    }
-    return { time }
 }
 
 private class AboutBgPainter {

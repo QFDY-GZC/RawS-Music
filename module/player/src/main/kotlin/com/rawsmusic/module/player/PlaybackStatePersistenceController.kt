@@ -24,6 +24,9 @@ internal class PlaybackStatePersistenceController(
     private val keepUsbExclusive: () -> Boolean,
     private val positionMs: () -> Long,
     private val queue: () -> PlayQueue,
+    private val priorityQueue: () -> List<AudioFile> = { emptyList() },
+    /** False until cold restore or an explicit user play owns the in-memory queue. */
+    private val shouldPersistQueue: () -> Boolean = { true },
 ) {
     private var saveStateJob: Job? = null
     private val persistenceLock = Any()
@@ -39,12 +42,22 @@ internal class PlaybackStatePersistenceController(
 
         val queueSnapshot = queue()
         val songsSnapshot = queueSnapshot.songs.toList()
+        val entryIdsSnapshot = queueSnapshot.entryIds.toList()
         val currentIndex = queueSnapshot.currentIndex
+        val prioritySnapshot = priorityQueue().toList()
+        val persistQueue = shouldPersistQueue()
         saveStateJob?.cancel()
         saveStateJob = scope.launch(Dispatchers.IO) {
             runCatching {
                 synchronized(persistenceLock) {
-                    persistence.saveQueue(songsSnapshot, currentIndex)
+                    if (persistQueue) {
+                        persistence.saveSnapshot(
+                            songs = songsSnapshot,
+                            currentIndex = currentIndex,
+                            entryIds = entryIdsSnapshot,
+                            prioritySongs = prioritySnapshot,
+                        )
+                    }
                 }
             }.onFailure { error ->
                 AppLogger.w(TAG, "async queue snapshot failed", error)
@@ -60,6 +73,7 @@ internal class PlaybackStatePersistenceController(
         }
         return runCatching {
             val queueSnapshot = queue()
+            val persistQueue = shouldPersistQueue()
             synchronized(persistenceLock) {
                 currentSong()?.let(persistence::saveSongSnapshot)
                 persistence.saveRuntime(
@@ -67,7 +81,14 @@ internal class PlaybackStatePersistenceController(
                     keepUsbExclusive = keepUsbExclusive(),
                 )
                 persistence.savePosition(positionMs())
-                persistence.saveQueue(queueSnapshot.songs.toList(), queueSnapshot.currentIndex)
+                if (persistQueue) {
+                    persistence.saveSnapshot(
+                        songs = queueSnapshot.songs.toList(),
+                        currentIndex = queueSnapshot.currentIndex,
+                        entryIds = queueSnapshot.entryIds.toList(),
+                        prioritySongs = priorityQueue().toList(),
+                    )
+                }
                 AppPreferences.sync()
             }
             true

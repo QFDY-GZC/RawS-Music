@@ -3,7 +3,6 @@ package com.rawsmusic.module.player
 import com.rawsmusic.core.common.model.PlayMode
 import com.rawsmusic.core.common.model.PlayQueue
 import com.rawsmusic.core.common.model.RepeatMode
-import com.rawsmusic.core.common.model.ShuffleMode
 import com.rawsmusic.module.data.prefs.AppPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,20 +43,55 @@ internal class PlaybackModeController(
     }
 
     fun setRepeatMode(mode: RepeatMode) {
+        // The app intentionally exposes four modes, while Reference keeps repeat and shuffle as
+        // orthogonal service flags.  Do not invent a fifth UI mode for the unsupported
+        // shuffle+one combination: collapse it to the nearest existing mode and keep all three
+        // observable values coherent.  Repeat OFF with shuffle OFF remains a valid service state
+        // even though the compact mode label is the sequential one.
+        val wasShuffle = _isShuffle.value
+        val nextShuffle = if (mode == RepeatMode.ONE) false else wasShuffle
+        _isShuffle.value = nextShuffle
         _repeatMode.value = mode
+        _playMode.value = when {
+            mode == RepeatMode.ONE -> PlayMode.REPEAT_ONE
+            nextShuffle && mode == RepeatMode.OFF -> PlayMode.SHUFFLE_ONCE
+            nextShuffle -> PlayMode.SHUFFLE_ALL
+            else -> PlayMode.SEQUENTIAL
+        }
+        AppPreferences.Player.isShuffle = nextShuffle
         AppPreferences.Player.repeatMode = mode
-        updateQueue(currentQueue().copy(repeatMode = mode))
-        persistState()
+        AppPreferences.Player.playMode = _playMode.value
+        updateQueue(
+            currentQueue().copy(
+                repeatMode = mode,
+                isShuffle = nextShuffle,
+                originalSongs = emptyList(),
+            )
+        )
+        if (nextShuffle != wasShuffle) {
+            if (nextShuffle) enableShuffle() else disableShuffle()
+        } else {
+            persistState()
+        }
     }
 
     fun toggleShuffle() {
         val newShuffle = !_isShuffle.value
         _isShuffle.value = newShuffle
+        if (newShuffle && _repeatMode.value == RepeatMode.ONE) {
+            // No extra shuffle+repeat-one mode is exposed in this product. Match the existing
+            // four-state picker by entering shuffle-all when shuffle is explicitly enabled.
+            _repeatMode.value = RepeatMode.ALL
+            AppPreferences.Player.repeatMode = RepeatMode.ALL
+        }
         AppPreferences.Player.isShuffle = newShuffle
-        _playMode.value = PlayMode.from(
-            ShuffleMode.fromBoolean(newShuffle),
-            _repeatMode.value,
-        )
+        _playMode.value = if (newShuffle) {
+            if (_repeatMode.value == RepeatMode.OFF) PlayMode.SHUFFLE_ONCE else PlayMode.SHUFFLE_ALL
+        } else if (_repeatMode.value == RepeatMode.ONE) {
+            PlayMode.REPEAT_ONE
+        } else {
+            PlayMode.SEQUENTIAL
+        }
         AppPreferences.Player.playMode = _playMode.value
         if (newShuffle) enableShuffle() else disableShuffle()
     }

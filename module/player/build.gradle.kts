@@ -43,4 +43,6 @@ dependencies {
     implementation(libs.mmkv)
 
     testImplementation("junit:junit:4.13.2")
+    // Several player policy tests use kotlin.test assertions/annotations alongside JUnit.
+    testImplementation(kotlin("test"))
 }

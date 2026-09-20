@@ -145,11 +145,7 @@ private fun SpeakerOutputModePreference(
     RawWindowDropdownPreference(
         entry = entry,
         title = stringResource(R.string.settings_speaker_output_mode),
-        summary = when (mode) {
-            SpeakerOutputEffectController.Mode.ELASTICITY -> elasticitySummary
-            SpeakerOutputEffectController.Mode.POWERFUL -> powerfulSummary
-            SpeakerOutputEffectController.Mode.WIDE -> wideSummary
-        },
+        summary = stringResource(R.string.settings_speaker_output_mode_summary),
         enabled = true,
         showValue = true,
         maxHeight = 420.dp,

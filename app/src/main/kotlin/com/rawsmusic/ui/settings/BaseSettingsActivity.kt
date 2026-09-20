@@ -11,7 +11,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
@@ -19,11 +21,22 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.rawsmusic.R
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
+import com.rawsmusic.core.ui.scene.AppNoticeHost
 import com.rawsmusic.core.ui.theme.RawSMusicTheme
 import com.rawsmusic.module.player.PlayerController
+import com.rawsmusic.module.player.UsbStatusNoticeBus
 import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import com.rawsmusic.ui.songs.PlayerHolder
+import com.rawsmusic.core.ui.widget.background.CustomMediaBackground
+import com.rawsmusic.core.ui.widget.background.CustomMediaBackgroundState
+import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
+import com.rawsmusic.core.ui.widget.flow.RawFlowBackground
+import com.rawsmusic.core.ui.widget.flow.rememberCurrentRawFlowMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
 /**
  * 所有设置子页面的基类。
@@ -39,6 +52,15 @@ abstract class BaseSettingsActivity : ComponentActivity() {
     private var nonPredictiveBackCallback: android.window.OnBackInvokedCallback? = null
     private var nonPredictiveBackRegistered = false
     private var activityWindowHasFocus = true
+    private val usbStatusNoticeListener: (UsbStatusNoticeBus.Notice) -> Unit = { notice ->
+        if (!isFinishing && !isDestroyed) {
+            AppNoticeBus.post(
+                message = notice.message,
+                icon = notice.icon,
+            )
+            UsbStatusNoticeBus.acknowledge(notice.id)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -48,7 +70,13 @@ abstract class BaseSettingsActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        UsbStatusNoticeBus.attach(usbStatusNoticeListener)
         refreshPredictiveBackPreference()
+    }
+
+    override fun onPause() {
+        UsbStatusNoticeBus.detach(usbStatusNoticeListener)
+        super.onPause()
     }
 
     @android.annotation.SuppressLint("NewApi")
@@ -100,6 +128,9 @@ abstract class BaseSettingsActivity : ComponentActivity() {
     fun setContent(content: @Composable () -> Unit) {
         setComposeContent {
             RawSMusicTheme {
+                CustomMediaBackgroundState.ensureInitialized(this@BaseSettingsActivity)
+                @Suppress("UNUSED_VARIABLE")
+                val customBackgroundRevision = CustomMediaBackgroundState.revision
                 val settingsBackground = MiuixTheme.colorScheme.background
                 val isDark = settingsBackground.luminance() < 0.5f
 
@@ -116,12 +147,47 @@ abstract class BaseSettingsActivity : ComponentActivity() {
                     }
                 }
 
+                val settingsBackdrop = rememberLayerBackdrop()
+                val rawFlowMode = rememberCurrentRawFlowMode()
+                val currentSong = playerController?.currentSong?.collectAsState()?.value
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(settingsBackground)
                 ) {
-                    content()
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(settingsBackground)
+                            // Match AppMainLayout's proven background recorder ordering exactly:
+                            // paint the fallback first, then let LayerBackdrop record the real
+                            // RawFlow/custom-media children drawn above it. Reversing these two
+                            // draw modifiers can leave the sampled layer effectively flattened to
+                            // the theme color on vendor RenderNode implementations.
+                            .layerBackdrop(settingsBackdrop)
+                    ) {
+                        // Settings live in a separate Activity, so they cannot sample the
+                        // MainActivity RenderNode used by LocalAppBackdrop. Re-create the same
+                        // persistent RawFlow layer inside this Activity and record it into the
+                        // settings backdrop. Without this source a default settings page only
+                        // records a flat theme color, so lens/refraction appears to do nothing.
+                        RawFlowBackground(
+                            mode = rawFlowMode,
+                            sourceCoverKey = currentSong.resolvePlaybackArtworkKey(null),
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        CustomMediaBackground(
+                            active = CustomMediaBackgroundState.showOnSettings,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                    CompositionLocalProvider(LocalSettingsBackdrop provides settingsBackdrop) {
+                        content()
+                    }
+                    AppNoticeHost(
+                        backdrop = settingsBackdrop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 }
             }
         }

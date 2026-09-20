@@ -16,7 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import com.rawsmusic.core.ui.systemui.rawStableStatusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -82,7 +82,7 @@ private val sideRailItems = listOf(
 )
 
 /**
- * Salt-style side rail: the rail and page are measured by the same Layout.
+ * Lyric-style side rail: the rail and page are measured by the same Layout.
  * Opening the rail moves both children instead of drawing a modal drawer over the page.
  */
 @Composable
@@ -266,7 +266,7 @@ private fun AppSideRail(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .statusBarsPadding()
+            .rawStableStatusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(start = 12.dp, end = 10.dp, top = 18.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp),

@@ -15,7 +15,7 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.core.common.utils.AppLogger
-import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.lyrico.LyricoCoverCandidate
 import com.rawsmusic.lyrico.LyricoPreferredSource
 import com.rawsmusic.lyrico.LyricoSourceEngine
@@ -164,7 +164,7 @@ class LibraryMetadataMatchService : Service() {
                 engine.clearTransientCache()
                 cleanupTransientFiles()
             }
-            CoilArtworkRuntime.invalidate()
+            BitmapProvider.notifyLibraryArtworkChanged("metadata_match_complete")
             LibraryMetadataMatchContract.deleteRequest(this, request.id)
             activeJob = null
             stopSelf(startId)
@@ -203,6 +203,20 @@ class LibraryMetadataMatchService : Service() {
 
         sources.forEach { source ->
             if ((!needLyrics || lyric != null) && (!needCover || cover != null)) return@forEach
+            val hasSongSearch = "searchSongs" in source.capabilities
+            if (!hasSongSearch) {
+                if (needCover && cover == null && "searchCovers" in source.capabilities) {
+                    cover = runCatching {
+                        engine.highestResolutionCover(engine.searchCovers(song, source.id, query))
+                    }.getOrNull()
+                }
+                if (needLyrics && lyric == null && "getLyrics" in source.capabilities) {
+                    lyric = runCatching { engine.getLyrics(song, source.id, query) }
+                        .getOrNull()
+                        ?.takeUnless { it.isEmpty }
+                }
+                return@forEach
+            }
             val candidates = engine.matchingCandidates(
                 song,
                 engine.searchSource(song, source.id, query)

@@ -6,7 +6,12 @@ import android.os.SystemClock
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Owns the USB Feature Unit volume runtime.
@@ -25,6 +30,27 @@ internal class UsbHardwareVolumeCoordinator(
     private val currentDevice: () -> UsbDevice?,
     private val isHardwareRouteActive: () -> Boolean,
 ) {
+    data class LiveVolumeSnapshot(
+        val handle: Long,
+        val raw: Int,
+        val minRaw: Int,
+        val maxRaw: Int,
+        val resolutionRaw: Int,
+    ) {
+        val db: Float get() = raw / 256.0f
+    }
+
+    private data class BoundaryFadeState(
+        val handle: Long,
+        val userRaw: Int,
+        val floorRaw: Int,
+        val deviceMinRaw: Int,
+        val deviceMaxRaw: Int,
+        val resolutionRaw: Int,
+        val durationMs: Int,
+        val generation: Long,
+    )
+
     @Volatile
     private var safeCommandHoldUntilMs = 0L
 
@@ -33,6 +59,16 @@ internal class UsbHardwareVolumeCoordinator(
 
     @Volatile
     private var initializedDeviceKey: String? = null
+
+    private val boundaryFadeLock = Any()
+
+    @Volatile
+    private var boundaryFadeGeneration = 0L
+
+    @Volatile
+    private var boundaryFadeState: BoundaryFadeState? = null
+
+    private var boundaryRestoreJob: Job? = null
 
     private val commandPump = UsbHardwareVolumeCommandPump(
         scope = scope,
@@ -81,6 +117,7 @@ internal class UsbHardwareVolumeCoordinator(
     }
 
     fun resetInitialization() {
+        cancelBoundaryFade("reset_initialization")
         initializedHandle = 0L
         initializedDeviceKey = null
         safeCommandHoldUntilMs = 0L
@@ -93,6 +130,7 @@ internal class UsbHardwareVolumeCoordinator(
     }
 
     fun close() {
+        cancelBoundaryFade("close")
         commandPump.close()
     }
 
@@ -118,39 +156,8 @@ internal class UsbHardwareVolumeCoordinator(
         return linearStep
     }
 
-    fun nextStepFromDevice(direction: Int, reason: String): Int {
-        val handle = engine.currentHandle
-        if (handle == 0L || !isHardwareRouteActive() || !engine.nativeCanControlVolume(handle)) {
-            return UsbHardwareVolumeMath.clampStep(currentStep() + direction.sign())
-        }
-        val minRaw = engine.nativeGetHardwareVolumeMinRaw(handle)
-        val maxRaw = engine.nativeGetHardwareVolumeMaxRaw(handle)
-        val resRaw = engine.nativeGetHardwareVolumeResRaw(handle).coerceAtLeast(1)
-        val currentRaw = engine.nativeGetHardwareVolumeCurrentRaw(handle)
-        if (minRaw >= maxRaw || currentRaw !in minRaw..maxRaw) {
-            return UsbHardwareVolumeMath.clampStep(currentStep() + direction.sign())
-        }
-
-        val alignedCurrent = UsbHardwareVolumeMath.quantizeRaw(currentRaw, minRaw, maxRaw, resRaw)
-        val targetRaw = (alignedCurrent + direction.sign() * resRaw).coerceIn(minRaw, maxRaw)
-        val currentStep = syncPreferencesFromRaw(
-            alignedCurrent,
-            minRaw,
-            maxRaw,
-            "read_before_adjust:$reason",
-        )
-        val targetStep = UsbHardwareVolumeMath.uiToStep(
-            UsbHardwareVolumeMath.rawToUi(targetRaw, minRaw, maxRaw),
-        )
-        AppLogger.i(
-            TAG,
-            "USB HW adjust from device raw: direction=$direction currentRaw=$alignedCurrent " +
-                "targetRaw=$targetRaw res=$resRaw currentStep=$currentStep targetStep=$targetStep reason=$reason",
-        )
-        return targetStep
-    }
-
     fun enqueueAdjustment(direction: Int, reason: String): Int {
+        cancelBoundaryFade("user_adjust:$reason")
         val device = currentDevice() ?: return UsbAudioEngine.ERR_NOT_INITIALIZED
         val handle = engine.currentHandle
         if (handle == 0L) return UsbAudioEngine.ERR_NOT_INITIALIZED
@@ -174,42 +181,290 @@ internal class UsbHardwareVolumeCoordinator(
         val boundedStep = UsbHardwareVolumeMath.clampStep(step)
         val db = UsbHardwareVolumeMath.stepToDb(boundedStep)
         val uiVolume = UsbHardwareVolumeMath.stepToUi(boundedStep)
+        AppLogger.i(TAG, "USB HW step input: step=$boundedStep nominalDb=${db}dB ui=$uiVolume reason=$reason")
+        return setUiVolume(uiVolume, reason, updateLegacyStep = false).also {
+            AppPreferences.Player.usbHardwareVolumeStep = boundedStep
+        }
+    }
+
+    /**
+     * Direct normalized hardware-volume path. Unlike setStep(), this keeps the
+     * caller's 0..1 value intact until it is mapped into the DAC-reported raw
+     * MIN..MAX range by setUiAndPersist().
+     */
+    fun setUiVolume(uiVolume: Float, reason: String): Int {
+        return setUiVolume(uiVolume, reason, updateLegacyStep = true)
+    }
+
+    private fun setUiVolume(uiVolume: Float, reason: String, updateLegacyStep: Boolean): Int {
+        if (
+            reason == "setUserVolume" ||
+            reason.startsWith("ui_button") ||
+            reason.startsWith("media_session")
+        ) {
+            cancelBoundaryFade("user_set:$reason")
+        }
+        val normalized = uiVolume.coerceIn(0f, 1f)
         if (reason.startsWith("system_volume_changed") && isHardwareRouteActive()) {
-            AppLogger.w(TAG, "Ignore system-volume bridge in USB hardware route: reason=$reason ui=$uiVolume")
+            AppLogger.w(TAG, "Ignore system-volume bridge in USB hardware route: reason=$reason ui=$normalized")
             return 0
         }
 
-        AppPreferences.Player.usbHardwareVolumeStep = boundedStep
-        AppPreferences.Player.usbHardwareVolume = uiVolume
-        if (isHardwareRouteActive()) AppPreferences.Player.volume = uiVolume
+        if (updateLegacyStep) {
+            AppPreferences.Player.usbHardwareVolumeStep = UsbHardwareVolumeMath.uiToStep(normalized)
+        }
+        AppPreferences.Player.usbHardwareVolume = normalized
+        if (isHardwareRouteActive()) AppPreferences.Player.volume = normalized
 
         val device = currentDevice()
         val handle = engine.currentHandle
         if (device == null || handle == 0L) {
-            AppLogger.w(TAG, "setUsbHardwareVolumeStep: target saved but no live device/handle " +
-                "step=$boundedStep db=$db reason=$reason")
+            AppLogger.w(TAG, "setUsbHardwareVolume: target saved but no live device/handle " +
+                "ui=$normalized reason=$reason")
             return UsbAudioEngine.ERR_NOT_INITIALIZED
         }
         if (!engine.nativeCanControlVolume(handle)) {
-            AppLogger.w(TAG, "setUsbHardwareVolumeStep: native cannot control volume step=$boundedStep db=$db reason=$reason")
+            AppLogger.w(TAG, "setUsbHardwareVolume: native cannot control volume ui=$normalized reason=$reason")
             return -2
         }
 
         val command = UsbHardwareVolumeCommand(
             deviceKey = UsbHardwareVolumeStore.deviceKey(device),
-            uiVolume = uiVolume,
+            uiVolume = normalized,
             reason = reason,
             userInitiated = reason == "setUserVolume" ||
                 reason.startsWith("ui_button") ||
                 reason.startsWith("media_session"),
         )
         val accepted = commandPump.enqueue(command)
+        AppLogger.i(TAG, "USB HW volume command queued: ui=$normalized accepted=$accepted reason=$reason")
+        return if (accepted) 0 else -3
+    }
+
+    /**
+     * Best-effort Feature Unit attenuation around one track boundary.
+     *
+     * Native exposes this only for validated UAC2 master-volume routes with asynchronous SET_CUR.
+     * Temporary raw values are never persisted as the user's volume. The USB transport-silence
+     * barrier remains authoritative; this layer only lowers DAC output while that cut is crossed.
+     */
+    suspend fun fadeOutForTrackBoundary(durationMs: Int, reason: String): Boolean {
+        val requestedDuration = durationMs.coerceAtLeast(0)
+        if (requestedDuration <= 0 || !isHardwareRouteActive()) return false
+        val handle = engine.currentHandle
+        if (handle == 0L || !engine.nativeCanUseHardwareBoundaryFade(handle)) return false
+
+        val minRaw = engine.nativeGetHardwareVolumeMinRaw(handle)
+        val maxRaw = engine.nativeGetHardwareVolumeMaxRaw(handle)
+        val resolutionRaw = engine.nativeGetHardwareVolumeResRaw(handle).coerceAtLeast(1)
+        if (minRaw >= maxRaw) return false
+
+        val storedRaw = currentDevice()
+            ?.let { UsbHardwareVolumeStore.read(it) }
+            ?.raw
+            ?.takeIf { it in minRaw..maxRaw }
+        val currentRaw = engine.nativeGetHardwareVolumeCurrentRaw(handle)
+            .takeIf { it in minRaw..maxRaw }
+            ?: storedRaw
+            ?: return false
+
+        val desiredFloor = (currentRaw - BOUNDARY_ATTENUATION_DB * 256).coerceAtLeast(minRaw)
+        val floorRaw = UsbHardwareVolumeMath.quantizeRaw(
+            desiredFloor,
+            minRaw,
+            maxRaw,
+            resolutionRaw,
+        )
+        if (floorRaw >= currentRaw - resolutionRaw) return false
+
+        val boundedDuration = requestedDuration.coerceIn(MIN_BOUNDARY_FADE_MS, MAX_BOUNDARY_FADE_MS)
+        val generation = synchronized(boundaryFadeLock) {
+            boundaryRestoreJob?.cancel()
+            boundaryRestoreJob = null
+            boundaryFadeGeneration += 1L
+            val nextGeneration = boundaryFadeGeneration
+            boundaryFadeState = BoundaryFadeState(
+                handle = handle,
+                userRaw = currentRaw,
+                floorRaw = floorRaw,
+                deviceMinRaw = minRaw,
+                deviceMaxRaw = maxRaw,
+                resolutionRaw = resolutionRaw,
+                durationMs = boundedDuration,
+                generation = nextGeneration,
+            )
+            nextGeneration
+        }
+
+        // Manual track switching already runs inside PlayerController's transportMutex.
+        // Kotlin Mutex is non-reentrant: trying to lock it again here deadlocks the PLAY event
+        // after the UI has already previewed the target song. That leaves the old decoder audible
+        // and permanently blocks every later PLAY command (player page, MiniPlayer and HOME
+        // carousel all share the same serialized event lane). Keep the outgoing hardware ramp on
+        // the caller-owned transport transaction; the asynchronous restore below still acquires
+        // transportMutex on its own after the new-track boundary has been committed.
+        val completed = runHardwareRamp(
+            handle = handle,
+            fromRaw = currentRaw,
+            toRaw = floorRaw,
+            deviceMinRaw = minRaw,
+            deviceMaxRaw = maxRaw,
+            resolutionRaw = resolutionRaw,
+            durationMs = boundedDuration,
+            generation = generation,
+            reason = "track_out:$reason",
+        )
+        if (!completed) {
+            synchronized(boundaryFadeLock) {
+                if (boundaryFadeState?.generation == generation) boundaryFadeState = null
+            }
+            // A BUSY result means the previous async SET_CUR callback missed the tight boundary
+            // deadline. Let that callback retire, then restore the exact user raw with the normal
+            // verified transaction so a failed transition can never strand the DAC attenuated.
+            delay(BOUNDARY_ABORT_DRAIN_MS)
+            runCatching {
+                engine.setHardwareVolumeRawVerified(
+                    handle = handle,
+                    raw = currentRaw,
+                    reason = "boundary_abort_restore:$reason",
+                )
+            }
+            return false
+        }
+
+        // One event-loop turn lets the final async SET_CUR reach the DAC before the PCM cut.
+        delay(BOUNDARY_SETTLE_MS)
         AppLogger.i(
             TAG,
-            "USB HW volume command queued: step=$boundedStep nominalDb=${db}dB ui=$uiVolume " +
-                "accepted=$accepted reason=$reason",
+            "USB HW boundary fade-out complete handle=0x${handle.toString(16)} " +
+                "user=${currentRaw / 256.0f}dB floor=${floorRaw / 256.0f}dB " +
+                "durationMs=$boundedDuration generation=$generation reason=$reason",
         )
-        return if (accepted) 0 else -3
+        return true
+    }
+
+    /** Restore the user's hardware volume after the next track begins feeding the live stream. */
+    fun restoreAfterTrackBoundary(reason: String) {
+        val state = boundaryFadeState ?: return
+        synchronized(boundaryFadeLock) {
+            if (boundaryFadeState?.generation != state.generation) return
+            boundaryRestoreJob?.cancel()
+            boundaryRestoreJob = scope.launch(Dispatchers.IO) {
+                try {
+                    if (
+                        engine.currentHandle != state.handle ||
+                        !isHardwareRouteActive() ||
+                        !engine.nativeCanUseHardwareBoundaryFade(state.handle)
+                    ) {
+                        AppLogger.i(
+                            TAG,
+                            "USB HW boundary restore skipped after session change " +
+                                "oldHandle=0x${state.handle.toString(16)} " +
+                                "newHandle=0x${engine.currentHandle.toString(16)} reason=$reason",
+                        )
+                        return@launch
+                    }
+
+                    delay(BOUNDARY_SETTLE_MS)
+                    val restored = transportMutex.withLock {
+                        runHardwareRamp(
+                            handle = state.handle,
+                            fromRaw = state.floorRaw,
+                            toRaw = state.userRaw,
+                            deviceMinRaw = state.deviceMinRaw,
+                            deviceMaxRaw = state.deviceMaxRaw,
+                            resolutionRaw = state.resolutionRaw,
+                            durationMs = state.durationMs,
+                            generation = state.generation,
+                            reason = "track_in:$reason",
+                        )
+                    }
+                    if (!restored) return@launch
+
+                    // Intermediate fade points are fire-and-forget async writes. Verify only the
+                    // final restored user value, keeping readback traffic out of the ramp itself.
+                    val verified = engine.setHardwareVolumeRawVerified(
+                        handle = state.handle,
+                        raw = state.userRaw,
+                        reason = "boundary_restore_verify:$reason",
+                    )
+                    AppLogger.i(
+                        TAG,
+                        "USB HW boundary fade-in complete verified=${verified.confirmed} " +
+                            "observed=${verified.observedRaw} user=${state.userRaw / 256.0f}dB " +
+                            "generation=${state.generation} reason=$reason",
+                    )
+                } finally {
+                    synchronized(boundaryFadeLock) {
+                        if (boundaryFadeState?.generation == state.generation) {
+                            boundaryFadeState = null
+                            boundaryRestoreJob = null
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun runHardwareRamp(
+        handle: Long,
+        fromRaw: Int,
+        toRaw: Int,
+        deviceMinRaw: Int,
+        deviceMaxRaw: Int,
+        resolutionRaw: Int,
+        durationMs: Int,
+        generation: Long,
+        reason: String,
+    ): Boolean {
+        val pointCount = (durationMs / TARGET_BOUNDARY_POINT_MS)
+            .coerceIn(MIN_BOUNDARY_POINTS, MAX_BOUNDARY_POINTS)
+        val intervalMs = (durationMs / pointCount).coerceAtLeast(MIN_BOUNDARY_POINT_INTERVAL_MS)
+        var lastRaw = fromRaw
+        for (point in 1..pointCount) {
+            if (boundaryFadeGeneration != generation || engine.currentHandle != handle) return false
+            val fraction = point.toDouble() / pointCount.toDouble()
+            val requested = (fromRaw + (toRaw - fromRaw) * fraction).toInt()
+            val targetRaw = UsbHardwareVolumeMath.quantizeRaw(
+                requested,
+                deviceMinRaw,
+                deviceMaxRaw,
+                resolutionRaw,
+            )
+            if (targetRaw != lastRaw) {
+                val result = engine.nativeSetHardwareBoundaryVolumeRaw(
+                    handle,
+                    targetRaw,
+                    "boundary_ramp:$reason:$point/$pointCount",
+                )
+                if (result != 0) {
+                    AppLogger.w(
+                        TAG,
+                        "USB HW boundary ramp write failed result=$result point=$point/$pointCount " +
+                            "target=$targetRaw generation=$generation reason=$reason",
+                    )
+                    return false
+                }
+                lastRaw = targetRaw
+            }
+            if (point < pointCount) delay(intervalMs.toLong())
+        }
+        return true
+    }
+
+    private fun cancelBoundaryFade(reason: String) {
+        val oldState = synchronized(boundaryFadeLock) {
+            boundaryFadeGeneration += 1L
+            boundaryRestoreJob?.cancel()
+            boundaryRestoreJob = null
+            boundaryFadeState.also { boundaryFadeState = null }
+        }
+        if (oldState != null) {
+            AppLogger.i(
+                TAG,
+                "USB HW boundary fade cancelled generation=${oldState.generation} reason=$reason",
+            )
+        }
     }
 
     fun initializeForHandle(device: UsbDevice, reason: String): Boolean {
@@ -277,7 +532,7 @@ internal class UsbHardwareVolumeCoordinator(
 
         val safeRaw = if (stored == null) {
             UsbHardwareVolumeMath.conservativeSafeRaw(minRaw, maxRaw, resRaw) ?: run {
-                AppLogger.e(TAG, "DAC has no automatically safe <= -30dB hardware step; " +
+                AppLogger.e(TAG, "DAC has no automatically safe <= -32dB hardware step; " +
                     "keep software volume: range=$minRaw..$maxRaw res=$resRaw reason=$reason")
                 return false
             }
@@ -288,33 +543,25 @@ internal class UsbHardwareVolumeCoordinator(
         if (stored != null) {
             AppLogger.i(TAG, "Restoring device hardware raw=${stored.raw} range=$minRaw..$maxRaw reason=$reason")
         } else {
-            AppLogger.w(TAG, "No compatible device hardware volume history; applying -30dB initial safety " +
+            AppLogger.w(TAG, "No compatible device hardware volume history; applying -32dB initial safety " +
                 "before ISO start reason=$reason")
         }
 
         UsbHardwareVolumeStore.markSessionActive(context, device)
-        // Always use the uncached write for a fresh native handle. The per-handle cache is not
-        // authoritative after reconnect/re-authorization and can otherwise leave the DAC at 0 dB.
-        val result = engine.nativeSetHardwareVolumeRawNoCache(
-            handle,
-            targetRaw,
-            if (hardwareResetToMaximum) "reattach_force:$targetReason" else "init_direct:$targetReason",
+        // Native owns SET_CUR + readback sequencing. Before nativeStart its async gate is closed,
+        // so this remains a synchronous safety write while Kotlin only owns device persistence.
+        val initResult = engine.setHardwareVolumeRawVerified(
+            handle = handle,
+            raw = targetRaw,
+            reason = if (hardwareResetToMaximum) "reattach_force:$targetReason" else "init_direct:$targetReason",
         )
-        if (result != 0) {
-            AppLogger.e(TAG, "Hardware volume initialization write failed result=$result reason=$reason")
+        if (!initResult.confirmed) {
+            AppLogger.e(TAG, "Hardware volume initialization transaction failed " +
+                "status=${initResult.status} observed=${initResult.observedRaw} reason=$reason")
             return false
         }
 
-        val readbackRaw = engine.nativeGetHardwareVolumeCurrentRaw(handle)
-        if (readbackRaw != Int.MIN_VALUE) {
-            val allowedDelta = (resRaw * 2).coerceAtLeast(256)
-            if (kotlin.math.abs(readbackRaw - targetRaw) > allowedDelta) {
-                AppLogger.e(TAG, "Hardware volume initialization readback mismatch; refuse ISO start: " +
-                    "target=$targetRaw readback=$readbackRaw allowed=$allowedDelta reason=$reason")
-                return false
-            }
-        }
-        val persistedRaw = readbackRaw.takeIf { it in minRaw..maxRaw } ?: targetRaw
+        val persistedRaw = initResult.observedRaw?.takeIf { it in minRaw..maxRaw } ?: targetRaw
         UsbHardwareVolumeStore.write(device, persistedRaw, minRaw, maxRaw, resRaw, "initialize:$reason")
         syncPreferencesFromRaw(persistedRaw, minRaw, maxRaw, "initialize:$reason")
         initializedHandle = handle
@@ -326,138 +573,81 @@ internal class UsbHardwareVolumeCoordinator(
     }
 
     fun setUiAndPersist(uiVolume: Float, reason: String): Int {
+        cancelBoundaryFade("execute_user_set:$reason")
         val handle = engine.currentHandle
         if (handle == 0L) return UsbAudioEngine.ERR_NOT_INITIALIZED
         if (!engine.nativeCanControlVolume(handle)) return -2
+
+        val normalized = uiVolume.coerceIn(0f, 1f)
+        val result = engine.setHardwareVolumeNormalizedVerified(
+            handle = handle,
+            normalized = normalized,
+            reason = "explicit_user:$reason",
+        )
+        val observedRaw = result.observedRaw
+        AppLogger.i(
+            TAG,
+            "HW_VOL_TRACE slider_native ui=$normalized status=${result.status} " +
+                "observed=$observedRaw reason=$reason",
+        )
+        if (!result.confirmed || observedRaw == null) return result.status
+
         val minRaw = engine.nativeGetHardwareVolumeMinRaw(handle)
         val maxRaw = engine.nativeGetHardwareVolumeMaxRaw(handle)
         val resRaw = engine.nativeGetHardwareVolumeResRaw(handle).coerceAtLeast(1)
-        if (minRaw >= maxRaw) return -3
-        val targetRaw = UsbHardwareVolumeMath.uiToRaw(uiVolume, minRaw, maxRaw, resRaw)
-        AppLogger.i(
-            TAG,
-            "HW_VOL_TRACE slider_input ui=$uiVolume targetRaw=$targetRaw " +
-                "range=$minRaw..$maxRaw res=$resRaw reason=$reason",
-        )
-        // A DAC may reset or ignore its Feature Unit value while the native
-        // cache still contains the requested value. User writes must always
-        // reach the device instead of being removed by that stale cache.
-        val result = engine.nativeSetHardwareVolumeRawNoCache(handle, targetRaw, "explicit_user:$reason")
-        if (result == 0) {
-            val readback = verifyHardwareWrite(targetRaw, minRaw, maxRaw, resRaw, reason)
-            if (readback == Int.MIN_VALUE) return UsbAudioEngine.ERR_HARDWARE_VOLUME_WRITE_UNCONFIRMED
-            currentDevice()?.let { device ->
-                UsbHardwareVolumeStore.write(device, readback, minRaw, maxRaw, resRaw, reason)
-                syncPreferencesFromRaw(readback, minRaw, maxRaw, "explicit_user:$reason")
-            }
+        if (minRaw >= maxRaw || observedRaw !in minRaw..maxRaw) {
+            return UsbAudioEngine.ERR_HARDWARE_VOLUME_WRITE_UNCONFIRMED
         }
-        return result
-    }
-
-    private fun verifyHardwareWrite(
-        targetRaw: Int,
-        minRaw: Int,
-        maxRaw: Int,
-        resRaw: Int,
-        reason: String,
-    ): Int {
-        var readback = Int.MIN_VALUE
-        repeat(5) { attempt ->
-            if (attempt > 0) Thread.sleep(8L shl (attempt - 1))
-            readback = engine.nativeGetHardwareVolumeCurrentRaw(engine.currentHandle)
-            val matches = readback in minRaw..maxRaw &&
-                kotlin.math.abs(readback - targetRaw) <= (resRaw * 2).coerceAtLeast(256)
-            AppLogger.i(
-                TAG,
-                "HW_VOL_TRACE slider_verify attempt=${attempt + 1} readback=$readback " +
-                    "target=$targetRaw matches=$matches reason=$reason",
-            )
-            if (matches) return readback
+        currentDevice()?.let { device ->
+            UsbHardwareVolumeStore.write(device, observedRaw, minRaw, maxRaw, resRaw, reason)
+            syncPreferencesFromRaw(observedRaw, minRaw, maxRaw, "explicit_user:$reason")
         }
-        AppLogger.e(
-            TAG,
-            "HW_VOL_TRACE slider_unconfirmed target=$targetRaw readback=$readback " +
-                "reason=$reason; keeping hardware route",
-        )
-        return Int.MIN_VALUE
+        return 0
     }
 
     fun adjustNativeAndPersist(direction: Int, reason: String): Int {
+        cancelBoundaryFade("execute_user_adjust:$reason")
         val handle = engine.currentHandle
         val device = currentDevice() ?: return UsbAudioEngine.ERR_NOT_INITIALIZED
         if (handle == 0L) return UsbAudioEngine.ERR_NOT_INITIALIZED
         if (!engine.nativeCanControlVolume(handle)) return -2
+
+        val result = engine.adjustHardwareVolumeVerified(
+            handle = handle,
+            direction = direction.sign(),
+            appStepRaw = APP_STEP_RAW,
+            reason = "step_direct:$reason",
+        )
+        val observedRaw = result.observedRaw
+        AppLogger.i(
+            TAG,
+            "HW_VOL_TRACE step_native direction=${direction.sign()} appStepRaw=$APP_STEP_RAW " +
+                "status=${result.status} observed=$observedRaw reason=$reason",
+        )
+        if (!result.confirmed || observedRaw == null) return result.status
+
         val minRaw = engine.nativeGetHardwareVolumeMinRaw(handle)
         val maxRaw = engine.nativeGetHardwareVolumeMaxRaw(handle)
         val deviceResRaw = engine.nativeGetHardwareVolumeResRaw(handle).coerceAtLeast(1)
-        val rawBefore = engine.nativeGetHardwareVolumeCurrentRaw(handle)
-        if (minRaw >= maxRaw || rawBefore !in minRaw..maxRaw) {
-            AppLogger.w(
-                TAG,
-                "HW_VOL_TRACE step_rejected invalid current raw=$rawBefore " +
-                    "range=$minRaw..$maxRaw res=$deviceResRaw reason=$reason",
-            )
+        if (minRaw >= maxRaw || observedRaw !in minRaw..maxRaw) {
             return UsbAudioEngine.ERR_HARDWARE_VOLUME_WRITE_UNCONFIRMED
         }
-
-        // Keep the old user-facing hardware step: 1 dB = 256 raw units. Some DACs report a
-        // finer 0.5 dB Feature Unit resolution, but accepting that reported resolution here
-        // makes the volume-key path asymmetric: one direction may be ignored while sliders,
-        // which write a full application step, still work.
-        val appStepRaw = APP_STEP_RAW
-        val targetRaw = UsbHardwareVolumeMath.quantizeRaw(
-            raw = rawBefore + direction.sign() * appStepRaw,
-            minRaw = minRaw,
-            maxRaw = maxRaw,
-            resRaw = deviceResRaw,
-        )
+        UsbHardwareVolumeStore.write(device, observedRaw, minRaw, maxRaw, deviceResRaw, reason)
+        syncPreferencesFromRaw(observedRaw, minRaw, maxRaw, "direct_step:$reason")
         AppLogger.i(
             TAG,
-            "HW_VOL_TRACE step_input direction=${direction.sign()} rawBefore=$rawBefore " +
-                "targetRaw=$targetRaw appStepRaw=$appStepRaw deviceResRaw=$deviceResRaw " +
-                "range=$minRaw..$maxRaw reason=$reason",
-        )
-
-        if (targetRaw == rawBefore) {
-            AppLogger.i(TAG, "HW_VOL_TRACE step_at_boundary raw=$rawBefore direction=${direction.sign()} reason=$reason")
-            return 0
-        }
-
-        val result = engine.nativeSetHardwareVolumeRawNoCache(
-            handle,
-            targetRaw,
-            "step_direct:$reason",
-        )
-        if (result != 0) {
-            AppLogger.w(
-                TAG,
-                "USB hardware step SET_CUR failed result=$result direction=${direction.sign()} " +
-                    "targetRaw=$targetRaw reason=$reason",
-            )
-            return result
-        }
-
-        val readback = verifyHardwareWrite(targetRaw, minRaw, maxRaw, deviceResRaw, "step:$reason")
-        if (readback == Int.MIN_VALUE || readback == rawBefore) {
-            AppLogger.e(
-                TAG,
-                "HW_VOL_TRACE step_unconfirmed before=$rawBefore target=$targetRaw " +
-                    "readback=$readback reason=$reason; hardware route kept",
-            )
-            return UsbAudioEngine.ERR_HARDWARE_VOLUME_WRITE_UNCONFIRMED
-        }
-
-        UsbHardwareVolumeStore.write(device, readback, minRaw, maxRaw, deviceResRaw, reason)
-        syncPreferencesFromRaw(readback, minRaw, maxRaw, "direct_step:$reason")
-        AppLogger.i(
-            TAG,
-            "USB HW direct step applied: direction=${direction.sign()} raw=$readback " +
-                "db=${readback / 256.0f} reason=$reason",
+            "USB HW native step applied: direction=${direction.sign()} raw=$observedRaw " +
+                "db=${observedRaw / 256.0f} reason=$reason",
         )
         return 0
     }
 
     fun readDisplayedStep(reason: String): Int? {
+        if (boundaryFadeState != null) {
+            // The transition attenuation is not a user-volume change. Keep MediaSession/UI on the
+            // persisted user value instead of publishing the temporary Feature Unit raw.
+            return currentStep()
+        }
         val handle = engine.currentHandle
         if (handle == 0L || !isHardwareRouteActive() || !engine.nativeCanControlVolume(handle)) return null
         val raw = engine.nativeGetHardwareVolumeCurrentRaw(handle)
@@ -471,13 +661,6 @@ internal class UsbHardwareVolumeCoordinator(
         return syncPreferencesFromRaw(raw, minRaw, maxRaw, reason)
     }
 
-    fun syncPreferencesFromRawForController(
-        raw: Int,
-        minRaw: Int,
-        maxRaw: Int,
-        reason: String,
-    ): Int = syncPreferencesFromRaw(raw, minRaw, maxRaw, reason)
-
     fun seedStepFromUiVolume(): Int {
         readDisplayedStep("seed_remote_volume")?.let { return it }
         val persistedLinear = AppPreferences.Player.usbHardwareVolume.coerceIn(0f, 1f)
@@ -490,10 +673,83 @@ internal class UsbHardwareVolumeCoordinator(
     }
 
     fun getVolumeDb(): Float {
+        boundaryFadeState?.let { return it.userRaw / 256.0f }
         val handle = engine.currentHandle
         if (handle == 0L || !isHardwareRouteActive()) return 0f
         val raw = engine.nativeGetHardwareVolumeCurrentRaw(handle)
         return if (raw == Int.MIN_VALUE) 0f else raw / 256.0f
+    }
+
+    fun captureLiveVolume(reason: String): LiveVolumeSnapshot? {
+        boundaryFadeState?.let { state ->
+            return LiveVolumeSnapshot(
+                handle = state.handle,
+                raw = state.userRaw,
+                minRaw = state.deviceMinRaw,
+                maxRaw = state.deviceMaxRaw,
+                resolutionRaw = state.resolutionRaw,
+            )
+        }
+        val handle = engine.currentHandle
+        if (handle == 0L || !engine.nativeCanControlVolume(handle)) return null
+        val minRaw = engine.nativeGetHardwareVolumeMinRaw(handle)
+        val maxRaw = engine.nativeGetHardwareVolumeMaxRaw(handle)
+        val resolutionRaw = engine.nativeGetHardwareVolumeResRaw(handle).coerceAtLeast(1)
+        if (minRaw >= maxRaw) return null
+        val nativeRaw = engine.nativeGetHardwareVolumeCurrentRaw(handle)
+        val storedRaw = currentDevice()
+            ?.let { UsbHardwareVolumeStore.read(it) }
+            ?.raw
+            ?.takeIf { it in minRaw..maxRaw }
+        val raw = nativeRaw.takeIf { it != Int.MIN_VALUE && it in minRaw..maxRaw } ?: storedRaw
+        if (raw == null) {
+            AppLogger.w(
+                TAG,
+                "captureLiveVolume failed nativeRaw=$nativeRaw storedRaw=$storedRaw " +
+                    "range=$minRaw..$maxRaw reason=$reason",
+            )
+            return null
+        }
+        AppLogger.i(
+            TAG,
+            "captureLiveVolume raw=$raw db=${raw / 256.0f} range=$minRaw..$maxRaw " +
+                "res=$resolutionRaw reason=$reason",
+        )
+        return LiveVolumeSnapshot(handle, raw, minRaw, maxRaw, resolutionRaw)
+    }
+
+    /**
+     * Release the physical Feature Unit only after the software owner is ready (or transport is
+     * stopped). This write is intentionally not persisted: [snapshot.raw] remains the user's DAC
+     * hardware-volume preference for the next time hardware ownership is selected.
+     */
+    fun releaseToUnityVerified(snapshot: LiveVolumeSnapshot, reason: String): Boolean {
+        if (engine.currentHandle != snapshot.handle || !engine.nativeCanControlVolume(snapshot.handle)) {
+            AppLogger.w(
+                TAG,
+                "releaseToUnityVerified rejected stale/unavailable handle old=0x${snapshot.handle.toString(16)} " +
+                    "live=0x${engine.currentHandle.toString(16)} reason=$reason",
+            )
+            return false
+        }
+        val unityRaw = UsbHardwareVolumeMath.quantizeRaw(
+            raw = 0.coerceIn(snapshot.minRaw, snapshot.maxRaw),
+            minRaw = snapshot.minRaw,
+            maxRaw = snapshot.maxRaw,
+            resRaw = snapshot.resolutionRaw,
+        )
+        val result = engine.setHardwareVolumeRawVerified(
+            handle = snapshot.handle,
+            raw = unityRaw,
+            reason = "hw_to_sw_release:$reason",
+        )
+        val ok = result.confirmed && result.observedRaw != null
+        AppLogger.i(
+            TAG,
+            "releaseToUnityVerified target=$unityRaw db=${unityRaw / 256.0f} status=${result.status} " +
+                "confirmed=${result.confirmed} observed=${result.observedRaw} reason=$reason",
+        )
+        return ok
     }
 
     fun canControl(): Boolean {
@@ -517,5 +773,14 @@ internal class UsbHardwareVolumeCoordinator(
     companion object {
         private const val TAG = "UsbHardwareVolumeCoordinator"
         private const val APP_STEP_RAW = 256
+        private const val BOUNDARY_ATTENUATION_DB = 48
+        private const val MIN_BOUNDARY_FADE_MS = 40
+        private const val MAX_BOUNDARY_FADE_MS = 600
+        private const val TARGET_BOUNDARY_POINT_MS = 24
+        private const val MIN_BOUNDARY_POINTS = 3
+        private const val MAX_BOUNDARY_POINTS = 12
+        private const val MIN_BOUNDARY_POINT_INTERVAL_MS = 12
+        private const val BOUNDARY_SETTLE_MS = 8L
+        private const val BOUNDARY_ABORT_DRAIN_MS = 40L
     }
 }

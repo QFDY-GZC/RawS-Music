@@ -3,7 +3,8 @@ package com.rawsmusic.ui.search
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.systemGestureExclusion
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,7 +15,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -38,8 +38,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.onClick as semanticsOnClick
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -50,13 +57,13 @@ import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.scene.GlobalSearchScope
 import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
-import com.rawsmusic.core.ui.widget.powerlist.ListZoomIndex
-import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListState
-import com.rawsmusic.core.ui.widget.powerlist.ComposeGenericPowerList
-import com.rawsmusic.core.ui.widget.powerlist.PowerListSectionHeader
-import com.rawsmusic.core.ui.widget.powerlist.PowerListVisualItem
-import com.rawsmusic.core.ui.widget.powerlist.rememberComposePowerListState
-import com.rawsmusic.core.ui.widget.powerlist.stablePowerListHash64
+import com.rawsmusic.core.ui.widget.virtuallist.ListZoomIndex
+import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListState
+import com.rawsmusic.core.ui.widget.virtuallist.ComposeGenericVirtualList
+import com.rawsmusic.core.ui.widget.virtuallist.VirtualListSectionHeader
+import com.rawsmusic.core.ui.widget.virtuallist.VirtualListVisualItem
+import com.rawsmusic.core.ui.widget.virtuallist.rememberComposeVirtualListState
+import com.rawsmusic.core.ui.widget.virtuallist.stableVirtualListHash64
 import com.rawsmusic.module.data.repository.MusicRepository
 import java.io.File
 import kotlinx.coroutines.delay
@@ -70,6 +77,7 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.icon.extended.Sort
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 private const val ALBUM_KEY_SEPARATOR = "␟"
 
@@ -88,10 +96,10 @@ private data class SearchEntry(
         .lowercase()
 }
 
-private data class SearchPowerListItem(
+private data class SearchVirtualListItem(
     val entry: SearchEntry
-) : PowerListVisualItem {
-    override val stableId: Long = stablePowerListHash64("${entry.scope.token}:${entry.key}")
+) : VirtualListVisualItem {
+    override val stableId: Long = stableVirtualListHash64("${entry.scope.token}:${entry.key}")
     override val stableKey: String = entry.key
     override val sharedCoverElementId: String = "cover:search:$stableId"
     override val coverKey: String = entry.coverKey
@@ -134,7 +142,7 @@ fun GlobalSearchScreen(
         SearchDimension(GlobalSearchScope.SONG, stringResource(R.string.global_search_category_songs))
     )
     val dimensionLabels = dimensions.associate { it.scope to it.label }
-    val powerListState = rememberComposePowerListState("global_search_results")
+    val virtualListState = rememberComposeVirtualListState("global_search_results")
     val catalog = remember(songs, dimensionLabels) {
         buildCatalog(
             songs = songs,
@@ -219,12 +227,12 @@ fun GlobalSearchScreen(
     val flattenedResults = remember(results, visibleDimensions) {
         visibleDimensions.flatMap { dimension -> results[dimension.scope].orEmpty() }
     }
-    val resultItems = remember(flattenedResults) { flattenedResults.map(::SearchPowerListItem) }
+    val resultItems = remember(flattenedResults) { flattenedResults.map(::SearchVirtualListItem) }
     val sectionHeaders = remember(results, visibleDimensions) {
         var itemOffset = 0
         visibleDimensions.map { dimension ->
             val count = results[dimension.scope].orEmpty().size
-            PowerListSectionHeader(
+            VirtualListSectionHeader(
                 stableKey = dimension.scope.token,
                 beforeItemIndex = itemOffset,
                 title = dimension.label,
@@ -254,7 +262,7 @@ fun GlobalSearchScreen(
 
     LaunchedEffect(restoreResultIndex, flattenedResults) {
         if (restoreResultIndex in flattenedResults.indices) {
-            powerListState.requestScrollToIndex(restoreResultIndex)
+            virtualListState.requestScrollToIndex(restoreResultIndex)
         }
     }
 
@@ -305,9 +313,7 @@ fun GlobalSearchScreen(
             }
 
             LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .systemGestureExclusion(),
+                modifier = Modifier.fillMaxWidth(),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 18.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -391,7 +397,9 @@ fun GlobalSearchScreen(
                     historyStore.clear()
                     history = emptyList()
                 },
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .clipToBounds()
             )
         } else if (visibleDimensions.isEmpty()) {
             Box(
@@ -405,9 +413,9 @@ fun GlobalSearchScreen(
                 )
             }
         } else {
-            ComposeGenericPowerList(
+            ComposeGenericVirtualList(
                 items = resultItems,
-                state = powerListState,
+                state = virtualListState,
                 sectionHeaders = sectionHeaders,
                 sectionHeaderHeight = 54.dp,
                 sectionHeaderContent = { header ->
@@ -417,9 +425,13 @@ fun GlobalSearchScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
+                    // VirtualList foreground holders intentionally allow transforms outside each
+                    // cell, so the owning screen must define the viewport boundary. Keep search
+                    // results below the fixed search/filter chrome instead of drawing through it.
+                    .clipToBounds()
                     .padding(horizontal = 14.dp),
                 onItemClick = { item, _, _ ->
-                    val entry = (item as? SearchPowerListItem)?.entry ?: return@ComposeGenericPowerList
+                    val entry = (item as? SearchVirtualListItem)?.entry ?: return@ComposeGenericVirtualList
                     val localIndex = results[entry.scope].orEmpty().indexOf(entry)
                     saveCurrentQuery()
                     session.saveFocusedEntry(entry.scope, entry.key, localIndex)
@@ -433,7 +445,7 @@ fun GlobalSearchScreen(
     GlobalSearchSortLayoutDialog(
         visible = showSortDialog,
         session = session,
-        powerListState = powerListState,
+        virtualListState = virtualListState,
         onDismiss = { showSortDialog = false }
     )
 }
@@ -450,7 +462,9 @@ private fun SearchFilterBubble(
         modifier = Modifier
             .clip(RoundedCornerShape(18.dp))
             .background(if (selected) scheme.primary.copy(alpha = 0.16f) else scheme.surface)
-            .clickable(onClick = onClick)
+            // Observe taps in Final without consuming the pointer stream. LazyRow keeps complete
+            // ownership of horizontal drags even when the gesture starts directly on a chip.
+            .searchFilterBubbleTap(onClick)
             .padding(
                 start = 14.dp,
                 end = if (showClose) 9.dp else 14.dp,
@@ -477,6 +491,45 @@ private fun SearchFilterBubble(
     }
 }
 
+private fun Modifier.searchFilterBubbleTap(onClick: () -> Unit): Modifier =
+    semantics {
+        role = Role.Button
+        semanticsOnClick {
+            onClick()
+            true
+        }
+    }.pointerInput(onClick) {
+        awaitEachGesture {
+            val down = awaitFirstDown(
+                requireUnconsumed = false,
+                pass = PointerEventPass.Final,
+            )
+            val pointerId = down.id
+            val start = down.position
+            val touchSlop = viewConfiguration.touchSlop
+            var cancelled = false
+
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Final)
+                val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                val dx = change.position.x - start.x
+                val dy = change.position.y - start.y
+                if (
+                    change.isConsumed ||
+                    event.changes.count { it.pressed } > 1 ||
+                    kotlin.math.abs(dx) > touchSlop ||
+                    kotlin.math.abs(dy) > touchSlop
+                ) {
+                    cancelled = true
+                }
+                if (!change.pressed) {
+                    if (!cancelled) onClick()
+                    break
+                }
+            }
+        }
+    }
+
 @Composable
 private fun SearchHistory(
     history: List<String>,
@@ -486,7 +539,7 @@ private fun SearchHistory(
 ) {
     val scheme = MiuixTheme.colorScheme
     LazyColumn(
-        modifier = modifier.fillMaxWidth().navigationBarsPadding(),
+        modifier = modifier.fillMaxWidth().rawStableNavigationBarsPadding(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 8.dp)
     ) {
         item {
@@ -585,7 +638,7 @@ private fun SearchSectionHeader(
 private fun GlobalSearchSortLayoutDialog(
     visible: Boolean,
     session: GlobalSearchSessionState,
-    powerListState: ComposePowerListState,
+    virtualListState: ComposeVirtualListState,
     onDismiss: () -> Unit
 ) {
     if (!visible) return
@@ -651,28 +704,28 @@ private fun GlobalSearchSortLayoutDialog(
             SearchDialogSectionTitle(stringResource(R.string.global_search_layout_section))
             SearchDialogRow(
                 title = stringResource(R.string.global_search_layout_compact),
-                selected = !powerListState.isGrid && powerListState.currentLevel == ListZoomIndex.SMALL
-            ) { scope.launch { powerListState.snapToLevel(ListZoomIndex.SMALL) } }
+                selected = !virtualListState.isGrid && virtualListState.currentLevel == ListZoomIndex.SMALL
+            ) { scope.launch { virtualListState.snapToLevel(ListZoomIndex.SMALL) } }
             SearchDialogRow(
                 title = stringResource(R.string.global_search_layout_standard),
-                selected = !powerListState.isGrid && powerListState.currentLevel == ListZoomIndex.NORMAL
-            ) { scope.launch { powerListState.snapToLevel(ListZoomIndex.NORMAL) } }
+                selected = !virtualListState.isGrid && virtualListState.currentLevel == ListZoomIndex.NORMAL
+            ) { scope.launch { virtualListState.snapToLevel(ListZoomIndex.NORMAL) } }
             SearchDialogRow(
                 title = stringResource(R.string.global_search_layout_large),
-                selected = !powerListState.isGrid && powerListState.currentLevel == ListZoomIndex.ZOOMED
-            ) { scope.launch { powerListState.snapToLevel(ListZoomIndex.ZOOMED) } }
+                selected = !virtualListState.isGrid && virtualListState.currentLevel == ListZoomIndex.ZOOMED
+            ) { scope.launch { virtualListState.snapToLevel(ListZoomIndex.ZOOMED) } }
             SearchDialogRow(
                 title = stringResource(R.string.global_search_layout_grid_4),
-                selected = powerListState.columns == 4
-            ) { scope.launch { powerListState.snapToColumns(4) } }
+                selected = virtualListState.columns == 4
+            ) { scope.launch { virtualListState.snapToColumns(4) } }
             SearchDialogRow(
                 title = stringResource(R.string.global_search_layout_grid_3),
-                selected = powerListState.columns == 3
-            ) { scope.launch { powerListState.snapToColumns(3) } }
+                selected = virtualListState.columns == 3
+            ) { scope.launch { virtualListState.snapToColumns(3) } }
             SearchDialogRow(
                 title = stringResource(R.string.global_search_layout_grid_2),
-                selected = powerListState.columns == 2
-            ) { scope.launch { powerListState.snapToColumns(2) } }
+                selected = virtualListState.columns == 2
+            ) { scope.launch { virtualListState.snapToColumns(2) } }
         }
     }
 }

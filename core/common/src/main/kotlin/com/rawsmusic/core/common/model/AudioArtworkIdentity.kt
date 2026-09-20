@@ -17,7 +17,13 @@ fun resolveAudioFirstArtworkKey(
     if (audioPath.isFileBackedArtworkSource()) {
         return "audio://$audioPath|$fileSize|$dateModified"
     }
-    return externalArtworkPath.takeIf { it.isNotBlank() }.orEmpty()
+    val external = externalArtworkPath.trim()
+    val remoteAudio = audioPath.startsWith("http://", ignoreCase = true) ||
+        audioPath.startsWith("https://", ignoreCase = true)
+    if (remoteAudio && external == audioPath.trim()) {
+        return ""
+    }
+    return external.takeIf { it.isNotBlank() }.orEmpty()
 }
 
 /** True only when BitmapProvider can open the audio source as a local file. */

@@ -9,7 +9,7 @@ enum class NavScene(
     HOME(0, "home", "主页", "home"),
     SONGS(1, "songs", "歌曲列表", "music_note"),
     FOLDERS(2, "folders", "文件夹", "folder"),
-    FOLDER_HIERARCHY(3, "folder_hierarchy", "文件夹层次", "folder_open"),
+    FOLDER_HIERARCHY(3, "folder_hierarchy", "文件夹层次结构", "folder_open"),
     ALBUMS(4, "albums", "专辑", "album"),
     ALBUM_DETAIL(5, "album_detail", "专辑详情", "album"),
     ARTISTS(6, "artists", "艺术家", "person"),
@@ -20,7 +20,7 @@ enum class NavScene(
     RECENTLY_ADDED(11, "recently_added", "最近添加", "schedule"),
     WEBDAV(12, "webdav", "WebDAV", "cloud"),
     ABOUT(13, "about", "关于", "info"),
-    SONG_STATS(14, "song_stats", "歌曲统计", "bar_chart"),
+    SONG_STATS(14, "song_stats", "曲库分析", "bar_chart"),
     LOG_VIEWER(15, "log_viewer", "日志分析", "bug_report"),
     ANALYTICS(16, "analytics", "听歌统计", "analytics"),
     PLAYLIST_LIST(17, "playlist_list", "歌单列表", "queue_music"),
@@ -54,14 +54,17 @@ enum class NavScene(
     SCAN_SETTINGS(45, "scan_settings", "扫描设置", "scanner"),
     TRANSITION_SETTINGS(46, "transition_settings", "淡入淡出", "transition"),
     PERSONALIZATION_SETTINGS(47, "personalization_settings", "个性化", "tune"),
-    SOURCE_IMPORT(48, "source_import", "音源导入", "cloud");
+    SOURCE_IMPORT(48, "source_import", "音源导入", "cloud"),
+    FOLDER_DETAIL(49, "folder_detail", "文件夹详情", "folder"),
+    LIBRARY_ANALYSIS_DETAIL(50, "library_analysis_detail", "曲库分析详情", "bar_chart"),
+    ARTIST_BIOGRAPHY(51, "artist_biography", "艺术家传记", "info");
 
     companion object {
         private val idMap = entries.associateBy { it.id }
 
         fun fromId(id: Int): NavScene? = idMap[id]
 
-        val topLevel = setOf(SONGS, FOLDERS, ALBUMS, ARTISTS, PLAYLISTS, QUEUE, RECENTLY_ADDED, WEBDAV)
+        val topLevel = setOf(SONGS, FOLDERS, FOLDER_HIERARCHY, ALBUMS, ARTISTS, PLAYLISTS, QUEUE, RECENTLY_ADDED, WEBDAV)
 
         val bottomNavigationEntries = listOf(
             HOME,
@@ -78,14 +81,16 @@ enum class NavScene(
             SETTINGS,
         )
 
-        val homeEntries = listOf(SONGS, FOLDERS, ALBUMS, ARTISTS, PLAYLISTS, QUEUE, RECENTLY_ADDED, WEBDAV, SETTINGS)
+        val homeEntries = listOf(SONGS, FOLDERS, FOLDER_HIERARCHY, ALBUMS, ARTISTS, PLAYLISTS, QUEUE, RECENTLY_ADDED, WEBDAV, SETTINGS)
     }
 
     fun isDetail(): Boolean = this in setOf(
+        LIBRARY_ANALYSIS_DETAIL,
         ALBUM_DETAIL,
         ARTIST_DETAIL,
+        ARTIST_BIOGRAPHY,
         PLAYLIST_DETAIL,
-        FOLDER_HIERARCHY,
+        FOLDER_DETAIL,
         GENRE_DETAIL,
         YEAR_DETAIL,
         COMPOSER_DETAIL

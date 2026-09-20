@@ -12,7 +12,7 @@ class PortraitDialArtworkPolicyTest {
         val near = resolvePortraitDialArtworkTier(1f)
 
         assertEquals(PortraitDialArtworkTier.Center, centre)
-        assertEquals(1440, centre.targetSidePx)
+        assertEquals(1536, centre.targetSidePx)
         assertEquals(PortraitDialArtworkTier.Near, near)
         assertTrue(near.targetSidePx < centre.targetSidePx)
     }

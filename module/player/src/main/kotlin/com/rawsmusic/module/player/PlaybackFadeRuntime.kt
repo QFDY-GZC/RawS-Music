@@ -13,7 +13,15 @@ internal class PlaybackFadeRuntime(
     private val useFloatOutput: () -> Boolean,
     private val usePacked24Output: () -> Boolean
 ) {
-    private val processor = PlaybackFadeController(tag)
+    private val processor: TransportFadeProcessor =
+        NativeTransportFadeProcessor.createOrNull(tag) ?: PlaybackFadeController(tag)
+
+    init {
+        AppLogger.i(
+            tag,
+            "PlaybackFade: processor=${if (processor.isNativeBacked) "native_render_clock" else "kotlin_fallback"}",
+        )
+    }
 
     @Volatile
     private var suppressNextStartFadeIn = false
@@ -27,15 +35,28 @@ internal class PlaybackFadeRuntime(
     }
 
     fun armNextStartFadeIn(durationMs: Int, reason: String) {
+        suppressNextStartFadeIn = false
         nextStartFadeOverrideMs = durationMs
         AppLogger.d(tag, "PlaybackFade: arm next start fade-in durationMs=$durationMs reason=$reason")
     }
 
-    fun fadeOutForTransitionBlocking(durationMs: Int, reason: String): Boolean {
-        if (durationMs <= 0 || !isPlayingState() || !isPlaying() || isReleased()) return false
+    fun fadeOutForTransitionBlocking(
+        durationMs: Int,
+        reason: String,
+        shouldContinue: () -> Boolean = { true },
+    ): Boolean {
+        if (durationMs <= 0 || !isPlayingState() || !isPlaying() || isReleased() || shouldBypass() || !shouldContinue()) {
+            return false
+        }
         processor.startFadeOut(durationMs, reason)
         val deadline = SystemClock.elapsedRealtime() + durationMs.coerceAtLeast(1) + 80L
-        while (SystemClock.elapsedRealtime() < deadline && processor.isActive && isPlaying() && !isReleased()) {
+        while (
+            SystemClock.elapsedRealtime() < deadline &&
+            processor.isActive &&
+            isPlaying() &&
+            !isReleased() &&
+            shouldContinue()
+        ) {
             try {
                 Thread.sleep(8L)
             } catch (_: InterruptedException) {
@@ -43,7 +64,21 @@ internal class PlaybackFadeRuntime(
                 break
             }
         }
-        return true
+        if (!shouldContinue()) {
+            processor.clear("fade_out_cancelled_stale:$reason")
+            AppLogger.d(tag, "PlaybackFade: fade-out cancelled by newer transport request reason=$reason")
+            return false
+        }
+        val completed = !processor.isActive
+        if (!completed) {
+            processor.clear("fade_out_timeout:$reason")
+            AppLogger.w(
+                tag,
+                "PlaybackFade: fade-out timed out reason=$reason durationMs=$durationMs " +
+                    "gain=${processor.currentGain}",
+            )
+        }
+        return completed
     }
 
     fun armConfiguredStartFade(reason: String) {
@@ -67,6 +102,13 @@ internal class PlaybackFadeRuntime(
     }
 
     fun armDefaultStartFadeIn(durationMs: Int, reason: String) {
+        if (nextStartFadeOverrideMs > 0) {
+            AppLogger.d(
+                tag,
+                "PlaybackFade: keep pending transition fade-in durationMs=$nextStartFadeOverrideMs reason=$reason"
+            )
+            return
+        }
         if (durationMs <= 0) {
             suppressNextStartFadeIn = true
             nextStartFadeOverrideMs = 0
@@ -93,6 +135,14 @@ internal class PlaybackFadeRuntime(
                     break
                 }
             }
+            if (processor.isActive) {
+                processor.clear("pause_fade_timeout:$reason")
+                AppLogger.w(
+                    tag,
+                    "pauseWithFadeBlocking: fade timed out reason=$reason durationMs=$durationMs " +
+                        "gain=${processor.currentGain}",
+                )
+            }
         }
         pause()
         AppLogger.d(tag, "pauseWithFadeBlocking: done reason=$reason durationMs=$durationMs")
@@ -108,7 +158,7 @@ internal class PlaybackFadeRuntime(
         outputIsFloat: Boolean = useFloatOutput(),
         outputIsPacked24: Boolean = usePacked24Output()
     ) {
-        if (!processor.isActive || shouldBypass() || bitsPerSample <= 1) return
+        if (shouldBypass() || bitsPerSample <= 1) return
         processor.processInPlace(
             buffer = buffer,
             offset = offset,
@@ -123,5 +173,9 @@ internal class PlaybackFadeRuntime(
 
     fun clear(reason: String) {
         processor.clear(reason)
+    }
+
+    fun close() {
+        processor.close()
     }
 }

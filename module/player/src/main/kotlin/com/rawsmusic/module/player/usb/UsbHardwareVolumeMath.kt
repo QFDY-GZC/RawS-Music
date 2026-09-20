@@ -8,7 +8,7 @@ object UsbHardwareVolumeMath {
     const val MIN_DB = -60
     const val MAX_DB = 0
     const val MAX_STEP = MAX_DB - MIN_DB
-    private const val SAFE_DB = -30
+    private const val SAFE_DB = -32
 
     fun clampStep(step: Int): Int = step.coerceIn(0, MAX_STEP)
 
@@ -45,9 +45,4 @@ object UsbHardwareVolumeMath {
             (maxRaw - minRaw).toFloat()).coerceIn(0f, 1f)
     }
 
-    fun uiToRaw(uiVolume: Float, minRaw: Int, maxRaw: Int, resRaw: Int): Int {
-        if (minRaw >= maxRaw) return minRaw
-        val target = minRaw + ((maxRaw - minRaw) * uiVolume.coerceIn(0f, 1f)).roundToInt()
-        return quantizeRaw(target, minRaw, maxRaw, resRaw)
-    }
 }

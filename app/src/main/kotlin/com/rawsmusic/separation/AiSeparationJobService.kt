@@ -63,6 +63,7 @@ class AiSeparationJobService : Service() {
         val taskId = intent?.getStringExtra(EXTRA_TASK_ID).orEmpty()
         val sourceUri = intent?.getStringExtra(EXTRA_SOURCE_URI).orEmpty()
         val sourceName = intent?.getStringExtra(EXTRA_SOURCE_NAME).orEmpty().ifBlank { "audio" }
+        val forceSharedStream = intent?.getBooleanExtra(EXTRA_FORCE_SHARED_STREAM, false) == true
         if (taskId.isBlank() || sourceUri.isBlank()) return START_NOT_STICKY
 
         val store = AiSeparationPluginStore.get(this)
@@ -73,6 +74,7 @@ class AiSeparationJobService : Service() {
                 AiSeparationJobProgress(
                     taskId = taskId,
                     sourceName = sourceName,
+                    sourceIdentity = sourceUri,
                     phase = AiSeparationJobPhase.FAILED,
                     message = "请先选择已安装的 schema 2/3 可执行模型",
                 )
@@ -85,6 +87,7 @@ class AiSeparationJobService : Service() {
             modelVersion = selected.catalog.version,
             modelName = selected.catalog.name,
             sourceName = sourceName,
+            sourceIdentity = sourceUri,
             phase = AiSeparationJobPhase.PREPARING,
             message = "准备 AI 分离任务",
         )
@@ -95,7 +98,7 @@ class AiSeparationJobService : Service() {
         acquireWakeLock()
         startProcessingForeground(buildNotification(initial, indeterminate = true))
         activeJob = scope.launch {
-            runTask(startId, taskId, Uri.parse(sourceUri), sourceName, selected, contract)
+            runTask(startId, taskId, Uri.parse(sourceUri), sourceUri, sourceName, selected, contract, forceSharedStream)
         }
         return START_NOT_STICKY
     }
@@ -123,9 +126,11 @@ class AiSeparationJobService : Service() {
         startId: Int,
         taskId: String,
         sourceUri: Uri,
+        sourceIdentity: String,
         sourceName: String,
         model: AiSeparationInstalledModel,
         contract: AiSeparationModelContract,
+        forceSharedStream: Boolean,
     ) {
         val jobsRoot = File(filesDir, "ai_separation/jobs").apply { mkdirs() }
         jobsRoot.listFiles().orEmpty()
@@ -144,6 +149,8 @@ class AiSeparationJobService : Service() {
         try {
             val taskStartedMs = android.os.SystemClock.elapsedRealtime()
             ensureNotCancelled(taskId)
+            val separationResultStore = AiSeparationResultStore.get(this)
+            val sourceModifiedEpochMs = separationResultStore.captureSourceModifiedEpochMs(sourceUri)
             if (AiOnnxRuntimeLoader.ensureLoaded(this).isFailure) {
                 update(taskId, AiSeparationJobPhase.PREPARING, "首次准备 AI 推理运行库")
                 AiSeparationPluginStore.get(this).downloadAndInstallRuntime(
@@ -190,23 +197,25 @@ class AiSeparationJobService : Service() {
             val totalFrames = pcmFile.length() / 8L
             ensureOutputSpace(totalFrames)
             ensureNotCancelled(taskId)
-            val liveStreamingEnabled = AiSeparationPreferences.isLiveStreamingEnabled(this)
-            if (liveStreamingEnabled) {
-                AiSeparationLiveStreamBus.begin(
-                    taskId = taskId,
-                    sourceName = sourceName,
-                    sampleRate = model.catalog.sampleRate,
-                    vocalsFile = vocalsFile,
-                    instrumentalFile = instrumentalFile,
-                )
-                AiSeparationLiveStreamBus.publish(taskId, 0L, totalFrames)
-                liveStreamStarted = true
-                Log.i(
-                    TAG,
-                    "AI_STEM_STREAM begin task=$taskId sampleRate=${model.catalog.sampleRate} " +
-                        "frames=$totalFrames denoiseForcedOff=true",
-                )
-            }
+            val liveStreamingEnabled =
+                AiSeparationPreferences.isLiveStreamingEnabled(this) || forceSharedStream
+            // Every separation job exposes the same growing stem files. AI performance can attach
+            // to a user-started separation instead of creating a second MDX pipeline.
+            AiSeparationLiveStreamBus.begin(
+                taskId = taskId,
+                sourceName = sourceName,
+                sourceIdentity = sourceIdentity,
+                sampleRate = model.catalog.sampleRate,
+                vocalsFile = vocalsFile,
+                instrumentalFile = instrumentalFile,
+            )
+            AiSeparationLiveStreamBus.publish(taskId, 0L, totalFrames)
+            liveStreamStarted = true
+            Log.i(
+                TAG,
+                "AI_STEM_STREAM begin task=$taskId sampleRate=${model.catalog.sampleRate} " +
+                    "frames=$totalFrames shared=true lowLatency=$liveStreamingEnabled",
+            )
 
             update(taskId, AiSeparationJobPhase.LOADING_MODEL, "正在加载 ONNX Runtime 模型") {
                 copy(totalFrames = totalFrames)
@@ -249,13 +258,11 @@ class AiSeparationJobService : Service() {
                                 message = "正在分离人声与伴奏",
                             )
                         }
-                        if (liveStreamingEnabled) {
-                            AiSeparationLiveStreamBus.publish(
-                                taskId = taskId,
-                                availableFrames = processedFrames,
-                                totalFrames = totalFrames,
-                            )
-                        }
+                        AiSeparationLiveStreamBus.publish(
+                            taskId = taskId,
+                            availableFrames = processedFrames,
+                            totalFrames = totalFrames,
+                        )
                         publishActiveNotificationThrottled()
                     }
                 }
@@ -309,7 +316,7 @@ class AiSeparationJobService : Service() {
                 ).getOrThrow()
                 ensureNotCancelled(taskId)
                 update(taskId, AiSeparationJobPhase.COMMITTING, "正在原子提交分离结果")
-                val result = AiSeparationResultStore.get(this).commit(
+                val result = separationResultStore.commit(
                     vocals = encodedVocals,
                     instrumental = encodedInstrumental,
                     sourceName = sourceName,
@@ -318,14 +325,16 @@ class AiSeparationJobService : Service() {
                     model = model,
                     sampleRate = OUTPUT_SAMPLE_RATE,
                     stats = stats,
+                    activityWav = vocalsFile,
+                    sourceModifiedEpochMs = sourceModifiedEpochMs,
                 )
                 if (liveStreamingEnabled) {
                     // The progressive preview reads temporary WAV files. Stop it before
                     // publishing the final FLAC/AAC files so the old reader cannot parse
                     // compressed audio as PCM.
                     AiSeparationLivePlayer.get(this).stop()
-                    AiSeparationLiveStreamBus.complete(taskId, result)
                 }
+                AiSeparationLiveStreamBus.complete(taskId, result)
                 Log.i(
                     TAG,
                     "AI_PERF total_ms=${android.os.SystemClock.elapsedRealtime() - taskStartedMs} " +
@@ -645,6 +654,7 @@ class AiSeparationJobService : Service() {
         private const val EXTRA_TASK_ID = "ai_task_id"
         private const val EXTRA_SOURCE_URI = "ai_source_uri"
         private const val EXTRA_SOURCE_NAME = "ai_source_name"
+        private const val EXTRA_FORCE_SHARED_STREAM = "ai_force_shared_stream"
         private const val CANCELLED_MESSAGE = "__AI_SEPARATION_CANCELLED__"
         private const val COPY_BUFFER_BYTES = 256 * 1024
         private const val NOTIFICATION_INTERVAL_MS = 250L
@@ -676,13 +686,49 @@ class AiSeparationJobService : Service() {
             "audio/x-aiff",
         )
 
-        fun start(context: Context, sourceUri: Uri, sourceName: String): Result<String> = runCatching {
+        data class SharedStartHandle(
+            val taskId: String,
+            val ownedByCaller: Boolean,
+        )
+
+        fun start(context: Context, sourceUri: Uri, sourceName: String): Result<String> =
+            startInternal(context, sourceUri, sourceName, forceSharedStream = false)
+
+        fun startOrAttachShared(
+            context: Context,
+            sourceUri: Uri,
+            sourceName: String,
+        ): Result<SharedStartHandle> = runCatching {
+            val identity = sourceUri.toString()
+            val current = AiSeparationJobProgressBus.state.value
+            if (current.active) {
+                require(current.sourceIdentity == identity) { "另一首歌曲正在分离" }
+                return@runCatching SharedStartHandle(current.taskId, ownedByCaller = false)
+            }
+            SharedStartHandle(
+                taskId = startInternal(
+                    context = context,
+                    sourceUri = sourceUri,
+                    sourceName = sourceName,
+                    forceSharedStream = true,
+                ).getOrThrow(),
+                ownedByCaller = true,
+            )
+        }
+
+        private fun startInternal(
+            context: Context,
+            sourceUri: Uri,
+            sourceName: String,
+            forceSharedStream: Boolean,
+        ): Result<String> = runCatching {
             require(!AiSeparationJobProgressBus.hasActiveTask()) { "已有 AI 分离任务正在运行" }
             val taskId = UUID.randomUUID().toString()
             val intent = Intent(context, AiSeparationJobService::class.java)
                 .putExtra(EXTRA_TASK_ID, taskId)
                 .putExtra(EXTRA_SOURCE_URI, sourceUri.toString())
                 .putExtra(EXTRA_SOURCE_NAME, sourceName)
+                .putExtra(EXTRA_FORCE_SHARED_STREAM, forceSharedStream)
             ContextCompat.startForegroundService(context, intent)
             taskId
         }

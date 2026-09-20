@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,8 +37,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.produceState
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.setValue
@@ -64,14 +63,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.scene.HomeFullCoverSourceAnchor
+import com.rawsmusic.core.ui.scene.LocalUiFrameAnimationActive
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.core.ui.widget.bitmaps.NativePlayerArtworkSwitchEasing
 import com.rawsmusic.core.ui.widget.flow.LocalRawFlowMode
 import com.rawsmusic.core.ui.widget.flow.RawFlowBackground
+import com.rawsmusic.core.ui.widget.flow.usesReferenceStaticForeground
 import com.rawsmusic.core.ui.widget.player.PORTRAIT_DIAL_VISIBLE_RADIUS
 import com.rawsmusic.core.ui.widget.player.HOME_PORTRAIT_DIAL_CORNER_RADIUS_DP
+import com.rawsmusic.core.ui.widget.player.rememberCoverAccentColor
 import com.rawsmusic.core.ui.widget.player.resolvePortraitDialLaneTransform
 import com.rawsmusic.core.ui.widget.player.resolvePortraitDialCardBoundsInRoot
 import com.rawsmusic.core.ui.widget.player.resolvePortraitDialMetrics
@@ -108,6 +110,28 @@ enum class HomeArtworkCarouselStyle(val value: Int) {
     }
 }
 
+private fun homeArtworkCarouselHorizontalLyricOffset(
+    style: HomeArtworkCarouselStyle,
+    showLyrics: Boolean,
+    fontScale: Float,
+): androidx.compose.ui.unit.Dp = if (
+    showLyrics && style == HomeArtworkCarouselStyle.CurrentCarousel
+) {
+    28.dp + (40.dp * (fontScale - 1f).coerceIn(0f, 0.5f))
+} else {
+    0.dp
+}
+
+internal fun homeArtworkCarouselHeight(
+    style: HomeArtworkCarouselStyle,
+    showLyrics: Boolean,
+    fontScale: Float,
+): androidx.compose.ui.unit.Dp = 340.dp + homeArtworkCarouselHorizontalLyricOffset(
+    style = style,
+    showLyrics = showLyrics,
+    fontScale = fontScale,
+)
+
 @Stable
 class HomeArtworkCarouselState internal constructor(
     initialSongs: List<AudioFile>,
@@ -115,6 +139,9 @@ class HomeArtworkCarouselState internal constructor(
 ) {
     internal var renderSongs by mutableStateOf(initialSongs)
     internal var centerIndex by mutableIntStateOf(initialCenterIndex.coerceAtLeast(0))
+    // Visual preview may move arbitrarily far from playback during one uninterrupted gesture.
+    // Keep the last player-confirmed queue slot separate so preview never becomes transport truth.
+    internal var committedIndex by mutableIntStateOf(initialCenterIndex.coerceAtLeast(0))
     internal var progress by mutableFloatStateOf(0f)
     internal var interactionActive by mutableStateOf(false)
     internal var hostTransitionActive by mutableStateOf(false)
@@ -131,9 +158,22 @@ internal fun rememberHomeArtworkCarouselState(
     currentSong: AudioFile?,
     reportedQueueIndex: Int
 ): HomeArtworkCarouselState {
-    val hostSongs = songs.ifEmpty { listOfNotNull(currentSong) }
-    val resolvedIndex = resolveCarouselCenterIndex(hostSongs, currentSong, reportedQueueIndex)
+    // Playback commit is authoritative. The queue cursor may move one emission before currentSong
+    // (or vice versa), so never let either half of that pair alone move the committed carousel.
+    // A preview gesture owns only centerIndex/progress; the player-confirmed song owns committedIndex.
+    val queueCurrentSong = songs.getOrNull(reportedQueueIndex)
+    val snapshotCurrentSong = currentSong ?: queueCurrentSong
+    val hostSongs = songs.ifEmpty { listOfNotNull(snapshotCurrentSong) }
+    val resolvedIndex = resolveCarouselCenterIndex(
+        hostSongs,
+        currentSong,
+        reportedQueueIndex,
+    )
     val currentSongIdentity = carouselSongIdentity(currentSong)
+    val queueSongIdentity = carouselSongIdentity(queueCurrentSong)
+    val committedSnapshotReady = currentSongIdentity == null ||
+        reportedQueueIndex !in songs.indices ||
+        queueSongIdentity == currentSongIdentity
     val state = remember { HomeArtworkCarouselState(hostSongs, resolvedIndex) }
     LaunchedEffect(
         resolvedIndex,
@@ -152,9 +192,11 @@ internal fun rememberHomeArtworkCarouselState(
         val awaiting = state.awaitingQueueIndex
         val awaitingIdentity = state.awaitingSongIdentity
         if (awaiting >= 0 && awaitingIdentity != null) {
-            val confirmedIndex = hostSongs.indexOfFirst {
-                    carouselSongIdentity(it) == awaitingIdentity
-                }
+            val confirmedIndex = reportedQueueIndex.takeIf { index ->
+                carouselSongIdentity(hostSongs.getOrNull(index)) == awaitingIdentity
+            } ?: hostSongs.indexOfFirst {
+                carouselSongIdentity(it) == awaitingIdentity
+            }
             val hostPointsAtConfirmedSong =
                 confirmedIndex >= 0 &&
                     resolvedIndex == confirmedIndex &&
@@ -177,6 +219,10 @@ internal fun rememberHomeArtworkCarouselState(
                     state.hostIndexGuardUntilMs = 0L
                     state.hostTransitionActive = false
                     state.centerIndex = confirmedIndex.coerceIn(
+                        0,
+                        hostSongs.lastIndex.coerceAtLeast(0)
+                    )
+                    state.committedIndex = confirmedIndex.coerceIn(
                         0,
                         hostSongs.lastIndex.coerceAtLeast(0)
                     )
@@ -209,8 +255,14 @@ internal fun rememberHomeArtworkCarouselState(
                             state.awaitingQueueIndex = -1
                             state.awaitingSongIdentity = null
                             state.hostIndexGuardUntilMs = 0L
-                            state.renderSongs = hostSongs
+                            if (!sameCarouselQueue(state.renderSongs, hostSongs)) {
+                                state.renderSongs = hostSongs
+                            }
                             state.centerIndex = resolvedIndex.coerceIn(
+                                0,
+                                hostSongs.lastIndex.coerceAtLeast(0)
+                            )
+                            state.committedIndex = resolvedIndex.coerceIn(
                                 0,
                                 hostSongs.lastIndex.coerceAtLeast(0)
                             )
@@ -230,75 +282,23 @@ internal fun rememberHomeArtworkCarouselState(
             }
         }
         if (!state.interactionActive) {
-            val previousIdentity = carouselSongIdentity(
-                state.renderSongs.getOrNull(
-                    state.centerIndex.coerceIn(0, state.renderSongs.lastIndex.coerceAtLeast(0))
-                )
-            )
-            val previousIndexInHost = hostSongs.indexOfFirst {
-                carouselSongIdentity(it) == previousIdentity
-            }
+            // Ignore a half-published player snapshot. This is the remaining B -> A -> B source:
+            // queueCurrentIndex can already point at B while currentSong is still A. The visual
+            // centre/background must remain on the last committed owner until both agree.
+            if (!committedSnapshotReady) return@LaunchedEffect
             val targetIndex = resolvedIndex.coerceIn(0, hostSongs.lastIndex.coerceAtLeast(0))
-            if (state.fullCoverTransitionActive) {
-                // The home scene remains alive below the portrait dial. Keep its hidden centre lane
-                // atomically aligned to the selected full-cover song so the final reveal cannot
-                // rebind from an older queue item after the shared artwork reaches its anchor.
-                Snapshot.withMutableSnapshot {
-                    state.hostTransitionActive = false
-                    state.renderSongs = hostSongs
-                    state.centerIndex = targetIndex
-                    state.progress = 0f
-                }
-                return@LaunchedEffect
-            }
-            if (previousIndexInHost < 0) {
-                Snapshot.withMutableSnapshot {
-                    state.renderSongs = hostSongs
-                    state.centerIndex = targetIndex
-                    state.progress = 0f
-                }
-                return@LaunchedEffect
-            }
-            state.renderSongs = hostSongs
-            state.centerIndex = previousIndexInHost
-            val direction = resolveCarouselHostDirection(
-                oldIndex = previousIndexInHost,
-                newIndex = targetIndex,
-                size = hostSongs.size
-            )
-            if (direction == 0 || hostSongs.size <= 1) {
-                Snapshot.withMutableSnapshot {
-                    state.centerIndex = targetIndex
-                    state.progress = 0f
-                }
-                return@LaunchedEffect
-            }
-            if (direction == Int.MIN_VALUE) {
-                Snapshot.withMutableSnapshot {
-                    state.centerIndex = targetIndex
-                    state.progress = 0f
-                }
-                return@LaunchedEffect
-            }
-
-            state.hostTransitionActive = true
-            try {
-                val animation = Animatable(0f)
-                animation.animateTo(
-                    targetValue = direction.toFloat(),
-                    animationSpec = tween(
-                        durationMillis = MINI_PLAYER_SYNC_DURATION_MS,
-                        easing = HomeCarouselHostSwitchEasing
-                    )
-                ) {
-                    state.progress = value
-                }
-                Snapshot.withMutableSnapshot {
-                    state.centerIndex = targetIndex
-                    state.progress = 0f
-                }
-            } finally {
+            // Gesture settle already animated the carousel before transport submission. Running a
+            // second host animation when the queue confirms the same selection briefly resurrects
+            // the retiring centre lane (target -> previous -> target). External button/natural
+            // changes also arrive as a committed queue snapshot, so bind them atomically here.
+            Snapshot.withMutableSnapshot {
                 state.hostTransitionActive = false
+                if (!sameCarouselQueue(state.renderSongs, hostSongs)) {
+                    state.renderSongs = hostSongs
+                }
+                state.centerIndex = targetIndex
+                state.committedIndex = targetIndex
+                state.progress = 0f
             }
         }
     }
@@ -314,79 +314,48 @@ internal fun HomeArtworkCarouselBackdrop(
     motionEnabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
-    val availableSongs = state.renderSongs
     val flowMode = LocalRawFlowMode.current
-    val direction = state.progress.sign.toInt()
-    val absoluteProgress = abs(state.progress)
-    val completedSteps = floor(absoluteProgress).toInt()
-    val baseIndex = if (availableSongs.isEmpty()) {
-        0
-    } else {
-        wrapCarouselIndex(
-            state.centerIndex + direction * completedSteps,
-            availableSongs.size
-        )
+    // Carousel drag is a visual preview only. The old implementation blended the background from
+    // state.progress, then the transport emitted its still-old current song, and finally committed
+    // the target: new -> old -> new. Keep the backdrop on the authoritative player song for the
+    // complete gesture/settle transaction. RawFlowBackground performs its own palette handoff once
+    // currentSong actually commits.
+    val committedSong = currentSong ?: state.renderSongs.getOrNull(state.committedIndex)
+    val committedKey = committedSong.resolvePlaybackArtworkKey(null)
+    val lastCommittedKey = remember { arrayOf<String?>(committedKey) }
+    val fallbackKey = remember(committedKey) {
+        val previous = lastCommittedKey[0]
+        lastCommittedKey[0] = committedKey
+        previous?.takeIf { it != committedKey }
     }
-    val centerSong = availableSongs.getOrNull(baseIndex)
-    val targetSong = if (
-        direction == 0 ||
-        availableSongs.size <= 1 ||
-        absoluteProgress == completedSteps.toFloat()
-    ) {
-        null
-    } else {
-        availableSongs[wrapCarouselIndex(baseIndex + direction, availableSongs.size)]
-    }
-    val baseKey = centerSong.resolvePlaybackArtworkKey(null)
-    val targetKey = targetSong.resolvePlaybackArtworkKey(null)
-    val sameBackdrop = targetSong != null && targetKey == baseKey
-    val blend = (absoluteProgress - completedSteps).coerceIn(0f, 1f)
-    val targetAlpha = blend
-    val nativeBlend = NativePlayerArtworkSwitchEasing.transform(targetAlpha)
 
     Box(modifier = modifier.fillMaxSize()) {
-        // Keep the two render surfaces physically stable while the source artwork changes.
-        // Re-keying by cover makes Compose tear down the background and recreate it during
-        // a carousel step, which exposes a transparent frame and resets the motion phase.
-        key("home-carousel-base-bg") {
-            RawFlowBackground(
-                mode = flowMode,
-                sourceCoverKey = baseKey,
-                sourceArtwork = null,
+        RawFlowBackground(
+            mode = flowMode,
+            sourceCoverKey = committedKey,
+            fallbackSourceCoverKey = fallbackKey,
+            sourceArtwork = null,
+            modifier = Modifier.fillMaxSize(),
+            active = active,
+            motionEnabled = motionEnabled,
+        )
+        // the retained-view implementation's static static-artwork/artwork background is one continuous renderer surface.  Do not add a
+        // HOME-only vignette in STATIC mode: removing that extra dark layer during HOME -> library
+        // navigation is perceived as a full-screen white/brightness flash even when artwork pixels did
+        // not change.
+        if (!usesReferenceStaticForeground()) {
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    // The current scene is the opaque fallback while the target texture is built.
-                    .graphicsLayer { alpha = 1f },
-                active = active,
-                motionEnabled = motionEnabled,
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Black.copy(alpha = 0.03f),
+                            0.56f to Color.Transparent,
+                            1f to Color.Black.copy(alpha = 0.12f)
+                        )
+                    )
             )
         }
-        if (targetSong != null && targetKey != baseKey) {
-            key("home-carousel-target-bg") {
-                RawFlowBackground(
-                    mode = flowMode,
-                    sourceCoverKey = targetKey,
-                    fallbackSourceCoverKey = baseKey,
-                sourceArtwork = null,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer { alpha = nativeBlend },
-                    active = active,
-                    motionEnabled = motionEnabled,
-                )
-            }
-        }
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        0f to Color.Black.copy(alpha = 0.03f),
-                        0.56f to Color.Transparent,
-                        1f to Color.Black.copy(alpha = 0.12f)
-                    )
-                )
-        )
     }
 }
 
@@ -397,35 +366,63 @@ internal fun HomeArtworkCarousel(
     state: HomeArtworkCarouselState,
     style: HomeArtworkCarouselStyle,
     showLyrics: Boolean,
+    gestureLocked: Boolean = false,
     currentLyric: String,
     currentLyricTranslation: String,
     lyricSong: Song?,
     playbackPositionMs: Long,
     isPlaying: Boolean,
-    onSelectSong: (List<AudioFile>, AudioFile, Int) -> Unit,
+    onNavigate: (Int) -> Unit,
+    onSelectSong: (AudioFile, Int) -> Unit = { _, _ -> },
     onCurrentArtworkLongPress: (HomeFullCoverSourceAnchor) -> Unit = {},
     onCurrentArtworkBoundsChanged: (AudioFile, Rect) -> Unit = { _, _ -> },
     hideCenterForFullscreenTransition: Boolean = false,
     centerReflectionAlpha: Float = 1f,
     centerReflectionArtworkKey: String = "",
+    hostFrozen: Boolean = false,
     modifier: Modifier = Modifier
 ) {
+    val frameAnimationActive = LocalUiFrameAnimationActive.current
     val availableSongs = state.renderSongs
     val scope = rememberCoroutineScope()
     var settleJob by remember { mutableStateOf<Job?>(null) }
     var settleGeneration by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
+    val fontScale = density.fontScale
+    val horizontalLyricArtworkOffset = homeArtworkCarouselHorizontalLyricOffset(
+        style = style,
+        showLyrics = showLyrics,
+        fontScale = fontScale,
+    )
+    val carouselHeight = homeArtworkCarouselHeight(
+        style = style,
+        showLyrics = showLyrics,
+        fontScale = fontScale,
+    )
     var currentArtworkBounds by remember { mutableStateOf<Rect?>(null) }
     val currentCanvasArtworkBoundsHandle = remember { HomeCanvasArtworkBoundsHandle() }
     var carouselHostBounds by remember { mutableStateOf<Rect?>(null) }
     SideEffect {
         state.fullCoverTransitionActive = hideCenterForFullscreenTransition
     }
-    val lyricPositionMs = rememberHomeCarouselTimelinePosition(
-        anchorPositionMs = playbackPositionMs,
-        isPlaying = isPlaying,
+    val lyricPositionMs = playbackPositionMs
+    val lyricRenderClock = com.rawsmusic.core.ui.widget.player.rememberLyricDirectRenderClock(
+        positionMs = playbackPositionMs,
+        isPlaying = isPlaying && !hostFrozen && frameAnimationActive,
         durationMs = currentSong?.duration ?: 0L
     )
+    val lyricAlbumAccent = rememberCoverAccentColor(
+        currentSong.resolvePlaybackArtworkKey(null),
+    )
+
+    LaunchedEffect(hostFrozen) {
+        if (hostFrozen) {
+            settleGeneration += 1
+            settleJob?.cancel()
+            settleJob = null
+            state.interactionActive = false
+        }
+    }
 
     LaunchedEffect(style) {
         settleGeneration += 1
@@ -470,32 +467,38 @@ internal fun HomeArtworkCarousel(
                     }
                 }
                 if (generation != settleGeneration) return@launch
-                if (commitDirection != 0 && availableSongs.size > 1) {
-                    val targetIndex = wrapCarouselIndex(
-                        state.centerIndex + commitDirection,
-                        availableSongs.size
-                    )
+                if (availableSongs.isNotEmpty()) {
+                    val targetIndex = if (commitDirection != 0 && availableSongs.size > 1) {
+                        wrapCarouselIndex(state.centerIndex + commitDirection, availableSongs.size)
+                    } else {
+                        state.centerIndex.coerceIn(0, availableSongs.lastIndex)
+                    }
                     val targetSong = availableSongs[targetIndex]
-                    // The geometry at progress +/-1 is identical to the new center at progress 0.
-                    // Updating both values together avoids the old two-step snap/rebind frame.
+                    val targetIdentity = carouselSongIdentity(targetSong)
+                    val committedSong = availableSongs.getOrNull(state.committedIndex)
+                    val committedIdentity = carouselSongIdentity(committedSong)
+                    // progress +/-1 and the rebased next centre at progress 0 are exactly the same
+                    // geometry. Rebase first, then submit only the final previewed item once.
                     Snapshot.withMutableSnapshot {
                         state.centerIndex = targetIndex
                         state.progress = 0f
-                        state.awaitingQueueIndex = targetIndex
-                        state.awaitingSongIdentity = carouselSongIdentity(targetSong)
-                        state.transactionId += 1L
-                        state.hostIndexGuardUntilMs =
-                            SystemClock.uptimeMillis() + HomeCarouselHostIndexGuardMs
+                        if (targetIdentity != committedIdentity) {
+                            state.awaitingQueueIndex = targetIndex
+                            state.awaitingSongIdentity = targetIdentity
+                            state.transactionId += 1L
+                            state.hostIndexGuardUntilMs =
+                                SystemClock.uptimeMillis() + HomeCarouselHostIndexGuardMs
+                        }
                     }
-                    AppLogger.i(
-                        HomeCarouselTraceTag,
-                        "drag_commit tx=${state.transactionId} direction=$commitDirection " +
-                            "target=$targetIndex identity=${state.awaitingSongIdentity?.takeLast(48)} " +
-                            "queue=${carouselQueueTrace(availableSongs)}"
-                    )
-                    onSelectSong(availableSongs, targetSong, targetIndex)
-                } else {
-                    state.progress = 0f
+                    if (targetIdentity != committedIdentity) {
+                        AppLogger.i(
+                            HomeCarouselTraceTag,
+                            "drag_commit tx=${state.transactionId} direction=$commitDirection " +
+                                "target=$targetIndex identity=${targetIdentity?.takeLast(48)} " +
+                                "queue=${carouselQueueTrace(availableSongs)}"
+                        )
+                        onSelectSong(targetSong, targetIndex)
+                    }
                 }
             } finally {
                 if (generation == settleGeneration) {
@@ -509,54 +512,78 @@ internal fun HomeArtworkCarousel(
     var dragExtentPx by remember { mutableFloatStateOf(1f) }
     val dragState = rememberDraggableState { deltaPx ->
         if (availableSongs.size <= 1) return@rememberDraggableState
-        state.progress = (state.progress - deltaPx / dragExtentPx.coerceAtLeast(1f))
-            .coerceIn(-1f, 1f)
+        var nextProgress = state.progress - deltaPx / dragExtentPx.coerceAtLeast(1f)
+        if (gestureLocked) {
+            // Locked mode preserves the centre identity for the entire pointer stream. The rail can
+            // approach either adjacent item but never rebases while the finger is still down, so a
+            // single long/fast swipe can commit at most one neighbour on release.
+            state.progress = nextProgress.coerceIn(-0.999f, 0.999f)
+            return@rememberDraggableState
+        }
+        // Rebase at every full rail without ending the pointer gesture. The centre identity changes
+        // only in the visual carousel; playback/background remain on committedIndex/currentSong.
+        // Because rail +/-1 is pixel-identical to the adjacent centre at progress 0, this rebase has
+        // no visible seam and permits one continuous swipe across an arbitrary number of songs.
+        while (nextProgress >= 1f) {
+            state.centerIndex = wrapCarouselIndex(state.centerIndex + 1, availableSongs.size)
+            nextProgress -= 1f
+        }
+        while (nextProgress <= -1f) {
+            state.centerIndex = wrapCarouselIndex(state.centerIndex - 1, availableSongs.size)
+            nextProgress += 1f
+        }
+        state.progress = nextProgress.coerceIn(-0.999f, 0.999f)
     }
+
+    fun Modifier.carouselDrag(orientation: Orientation): Modifier = draggable(
+        state = dragState,
+        orientation = orientation,
+        enabled = !state.hostTransitionActive && !hostFrozen,
+        onDragStarted = {
+            settleGeneration += 1
+            settleJob?.cancel()
+            settleJob = null
+            state.interactionActive = true
+        },
+        onDragStopped = { velocityPxPerSecond ->
+            val normalizedVelocity = -velocityPxPerSecond / dragExtentPx.coerceAtLeast(1f)
+            val direction = when {
+                state.progress >= 0.20f -> 1
+                state.progress <= -0.20f -> -1
+                normalizedVelocity >= 0.62f -> 1
+                normalizedVelocity <= -0.62f -> -1
+                else -> 0
+            }
+            settle(direction, normalizedVelocity)
+        },
+    )
 
     BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
-            .height(340.dp)
+            .height(carouselHeight)
             .onGloballyPositioned { coordinates ->
                 carouselHostBounds = coordinates.boundsInRoot()
             }
-            .draggable(
-                state = dragState,
-                orientation = if (style == HomeArtworkCarouselStyle.VerticalDial) {
-                    Orientation.Vertical
-                } else {
-                    Orientation.Horizontal
-                },
-                enabled = !state.hostTransitionActive,
-                onDragStarted = {
-                    settleGeneration += 1
-                    settleJob?.cancel()
-                    settleJob = null
-                    state.interactionActive = true
-                },
-                onDragStopped = { velocityPxPerSecond ->
-                    val normalizedVelocity =
-                        -velocityPxPerSecond / dragExtentPx.coerceAtLeast(1f)
-                    val direction = when {
-                        state.progress >= 0.20f -> 1
-                        state.progress <= -0.20f -> -1
-                        normalizedVelocity >= 0.62f -> 1
-                        normalizedVelocity <= -0.62f -> -1
-                        else -> 0
-                    }
-                    settle(direction, normalizedVelocity)
-                }
+            // The horizontal carousel intentionally owns its whole strip. The portrait dial does
+            // not: a vertical drag starting in the lyric/empty area used to switch tracks and made
+            // HOME feel globally swipe-sensitive. Its drag owner is attached to the centre artwork
+            // hit region inside the VerticalDial branch below.
+            .then(
+                if (style == HomeArtworkCarouselStyle.VerticalDial) Modifier
+                else Modifier.carouselDrag(Orientation.Horizontal)
             )
             .pointerInput(
                 style,
                 state.centerIndex,
-                state.progress,
                 currentSong,
                 currentArtworkBounds,
             ) {
                 detectTapGestures(
                     onLongPress = { position ->
-                        if (abs(state.progress) > 0.001f || state.interactionActive || state.hostTransitionActive) {
+                        if (hostFrozen || abs(state.progress) > 0.001f || state.interactionActive ||
+                            state.hostTransitionActive || state.awaitingQueueIndex >= 0
+                        ) {
                             return@detectTapGestures
                         }
                         val currentIndex = resolveCarouselCenterIndex(
@@ -617,7 +644,7 @@ internal fun HomeArtworkCarousel(
                         HomeArtworkCarouselCanvas(
                             songs = availableSongs,
                             centerIndex = state.centerIndex,
-                            progress = state.progress,
+                            progressProvider = { state.progress },
                             hideCenterLane = hideCenterForFullscreenTransition,
                             centerReflectionAlpha = centerReflectionAlpha,
                             centerReflectionArtworkKey = centerReflectionArtworkKey,
@@ -634,14 +661,17 @@ internal fun HomeArtworkCarousel(
                             modifier = Modifier
                                 .requiredWidth(containerWidth + 32.dp)
                                 .fillMaxHeight()
+                                .offset(y = horizontalLyricArtworkOffset)
                                 .align(Alignment.TopCenter)
                         )
                         if (showLyrics) {
                             HomeHorizontalCarouselLyric(
+                                renderClock = lyricRenderClock,
                                 song = lyricSong,
                                 positionMs = lyricPositionMs,
                                 fallbackPrimary = currentLyric,
                                 fallbackTranslation = currentLyricTranslation,
+                                albumAccent = lyricAlbumAccent,
                                 modifier = Modifier
                                     .align(Alignment.TopCenter)
                                     .fillMaxWidth()
@@ -664,12 +694,24 @@ internal fun HomeArtworkCarousel(
                             },
                             modifier = Modifier.fillMaxSize(),
                         )
+                        val dialGestureSide = with(density) {
+                            resolvePortraitDialMetrics(containerWidthPx, containerHeightPx).cardSidePx.toDp()
+                        }
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .size(dialGestureSide)
+                                .zIndex(90f)
+                                .carouselDrag(Orientation.Vertical),
+                        )
                         if (showLyrics) {
                             HomeVerticalDialLyric(
+                                renderClock = lyricRenderClock,
                                 song = lyricSong,
                                 positionMs = lyricPositionMs,
                                 fallbackPrimary = currentLyric,
                                 fallbackTranslation = currentLyricTranslation,
+                                albumAccent = lyricAlbumAccent,
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .zIndex(100f)
@@ -682,40 +724,6 @@ internal fun HomeArtworkCarousel(
     }
 }
 
-
-@Composable
-private fun rememberHomeCarouselTimelinePosition(
-    anchorPositionMs: Long,
-    isPlaying: Boolean,
-    durationMs: Long
-): Long {
-    val safeAnchor = anchorPositionMs.coerceAtLeast(0L)
-    val anchorRealtimeMs = remember(safeAnchor, isPlaying) { SystemClock.elapsedRealtime() }
-    val animatedPosition by produceState(
-        initialValue = safeAnchor,
-        key1 = safeAnchor,
-        key2 = isPlaying,
-        key3 = durationMs
-    ) {
-        fun clamp(positionMs: Long): Long = if (durationMs > 0L) {
-            positionMs.coerceIn(0L, durationMs)
-        } else {
-            positionMs.coerceAtLeast(0L)
-        }
-
-        value = clamp(safeAnchor)
-        if (!isPlaying) return@produceState
-
-        while (true) {
-            withFrameNanos { }
-            val elapsedMs = (SystemClock.elapsedRealtime() - anchorRealtimeMs).coerceAtLeast(0L)
-            val next = clamp(safeAnchor + elapsedMs)
-            if (next != value) value = next
-            if (durationMs > 0L && next >= durationMs) break
-        }
-    }
-    return animatedPosition
-}
 
 @Composable
 private fun HomeArtworkDial(
@@ -802,7 +810,10 @@ private fun HomeArtworkDial(
                             // Keep the physical dial lane mounted while its source changes. The
                             // provider replaces the bitmap atomically, preserving a stable
                             // artwork holder instead of exposing an empty transition frame.
-                            holdPreviousOnKeyChange = true,
+                    // Every physical lane is reused for another queue item while swiping. Keeping
+                    // its previous request as a placeholder produces target -> old -> target
+                    // frames even when the target is already cached.
+                    holdPreviousOnKeyChange = false,
                             fadeInMillis = 0,
                             filterQuality = FilterQuality.Medium,
                         )
@@ -811,19 +822,6 @@ private fun HomeArtworkDial(
             }
         }
     }
-}
-
-private const val MINI_PLAYER_SYNC_DURATION_MS = 360
-
-private fun resolveCarouselHostDirection(
-    oldIndex: Int,
-    newIndex: Int,
-    size: Int
-): Int {
-    if (size <= 1 || oldIndex == newIndex) return 0
-    if ((oldIndex + 1) % size == newIndex) return 1
-    if ((oldIndex - 1 + size) % size == newIndex) return -1
-    return Int.MIN_VALUE
 }
 
 private fun smoothStep(value: Float): Float {
@@ -841,22 +839,21 @@ private fun resolveCarouselCenterIndex(
     reportedQueueIndex: Int
 ): Int {
     if (songs.isEmpty()) return 0
-    // Queue selection is committed before the decoder-owned currentSong changes. During a manual
-    // switch the backend may briefly publish the retiring song again, so using currentSong first
-    // makes the carousel render target -> old -> target. The queue index is the transport's
-    // authoritative selection and remains stable throughout that hand-off.
-    if (reportedQueueIndex in songs.indices) return reportedQueueIndex
-    val exactIndex = currentSong?.let { current ->
-        songs.indexOfFirst { candidate ->
-            candidate.path == current.path &&
-                candidate.cueOffsetMs == current.cueOffsetMs &&
-                candidate.cueTrackIndex == current.cueTrackIndex
+    val currentIdentity = carouselSongIdentity(currentSong)
+    if (currentIdentity != null) {
+        // Fast path when both halves of the committed player snapshot already agree.
+        if (
+            reportedQueueIndex in songs.indices &&
+            carouselSongIdentity(songs[reportedQueueIndex]) == currentIdentity
+        ) {
+            return reportedQueueIndex
         }
-    } ?: -1
-    return when {
-        exactIndex in songs.indices -> exactIndex
-        else -> 0
+        // If queueIndex is one emission early/late, retain the committed song's logical slot.
+        val identityIndex = songs.indexOfFirst { carouselSongIdentity(it) == currentIdentity }
+        if (identityIndex >= 0) return identityIndex
     }
+    if (reportedQueueIndex in songs.indices) return reportedQueueIndex
+    return 0
 }
 
 private fun carouselSongIdentity(song: AudioFile?): String? {

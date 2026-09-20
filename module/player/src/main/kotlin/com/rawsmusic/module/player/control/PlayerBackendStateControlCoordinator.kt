@@ -44,11 +44,14 @@ class PlayerBackendStateControlCoordinator(
         val currentQueue: () -> PlayQueue,
         val currentSong: () -> AudioFile?,
         val currentRepeatMode: () -> RepeatMode,
+        /** Whether the active traversal has an item after the current one without wrapping. */
+        val hasAutomaticContinuation: () -> Boolean = { false },
         val consumePlaybackCompletion: () -> Boolean,
+        val onConsumedPlaybackCompletionStopped: () -> Unit = {},
         val playTransport: (song: AudioFile, queue: List<AudioFile>, index: Int) -> Unit,
-        val replayCurrentSong: (song: AudioFile) -> Unit,
         val pauseTransport: () -> Unit,
-        val nextTransport: () -> Unit,
+        val automaticReplayTransport: () -> Boolean,
+        val automaticAdvanceTransport: () -> Boolean,
         val stopTransport: () -> Unit,
         val clearUnavailableSong: (song: AudioFile) -> Unit,
         val logDebug: (message: String) -> Unit,
@@ -115,9 +118,10 @@ class PlayerBackendStateControlCoordinator(
 
             BackendState.ERROR -> handleErrorState()
             BackendState.COMPLETED -> {
-                callbacks.forcePlayState(PlayState.STOPPED, "recover_final_stop")
                 callbacks.stopProgressUpdate()
-                handlePlaybackComplete()
+                if (!handlePlaybackComplete()) {
+                    callbacks.forcePlayState(PlayState.STOPPED, "recover_final_stop")
+                }
             }
 
             BackendState.IDLE -> {
@@ -162,22 +166,31 @@ class PlayerBackendStateControlCoordinator(
         return OUTPUT_ERROR_MARKERS.none(normalized::contains)
     }
 
-    private fun handlePlaybackComplete() {
-        if (callbacks.isReleased()) return
+    private fun handlePlaybackComplete(): Boolean {
+        if (callbacks.isReleased()) return false
         if (callbacks.consumePlaybackCompletion()) {
             callbacks.pauseTransport()
-            return
+            callbacks.onConsumedPlaybackCompletionStopped()
+            return false
         }
 
-        when (callbacks.currentRepeatMode()) {
-            RepeatMode.ONE -> callbacks.currentSong()?.let(callbacks.replayCurrentSong)
-
-            RepeatMode.ALL -> callbacks.nextTransport()
+        val continuation = when (callbacks.currentRepeatMode()) {
+            RepeatMode.ONE -> callbacks.automaticReplayTransport
+            RepeatMode.ALL -> callbacks.automaticAdvanceTransport
             RepeatMode.OFF -> {
-                val queue = callbacks.currentQueue()
-                if (queue.currentIndex < queue.songs.lastIndex) callbacks.nextTransport()
+                if (callbacks.hasAutomaticContinuation()) {
+                    callbacks.automaticAdvanceTransport
+                } else {
+                    null
+                }
             }
         }
+        if (continuation == null) return false
+
+        // Publish PREPARING before dispatching the asynchronous PLAY event. Doing this afterwards
+        // can overwrite a very fast PLAYING callback and leave the public state stuck preparing.
+        callbacks.forcePlayState(PlayState.PREPARING, "natural_auto_advance")
+        return continuation()
     }
 
     private fun Int.floorMod(modulus: Int): Int = ((this % modulus) + modulus) % modulus

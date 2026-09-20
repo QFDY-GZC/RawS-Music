@@ -3,14 +3,17 @@ package com.rawsmusic.lyrico.runtime
 import android.util.Base64
 import android.util.Log
 import androidx.annotation.Keep
+import com.rawsmusic.lyrico.LyricoPluginStrings
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -35,6 +38,7 @@ class QuickJsHostApi(
     private val okHttpClient: OkHttpClient = OkHttpClient(),
     private val pluginId: String = "default",
     private val cacheRootDir: File? = null,
+    private val pluginStrings: LyricoPluginStrings = LyricoPluginStrings.empty(),
     private val json: Json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -56,6 +60,15 @@ class QuickJsHostApi(
             "app.userAgent" -> text(buildDefaultUserAgent(appInfo))
 
             "runtime.info" -> value(runtimeInfo.toJsonObject())
+
+            "i18n.getLocale" -> text(pluginStrings.localeTag)
+
+            "i18n.t" -> text(
+                pluginStrings.format(
+                    key = payload.string("key"),
+                    args = payload.arguments("args"),
+                )
+            )
 
             "cache.get" -> text(cacheGet(payload.string("key")))
 
@@ -702,6 +715,23 @@ private fun JsonObject.booleanOrNull(key: String): Boolean? {
 
 private fun JsonObject.obj(key: String): JsonObject? {
     return this[key] as? JsonObject
+}
+
+private fun JsonObject.arguments(key: String): List<Any?> {
+    val array = this[key] as? JsonArray ?: return emptyList()
+    return array.map { value ->
+        when (value) {
+            JsonNull -> null
+            is JsonPrimitive -> when {
+                value.isString -> value.contentOrNull.orEmpty()
+                value.booleanOrNull != null -> value.booleanOrNull
+                value.longOrNull != null -> value.longOrNull
+                value.doubleOrNull != null -> value.doubleOrNull
+                else -> value.contentOrNull
+            }
+            else -> value.toString()
+        }
+    }
 }
 
 private fun JsonObject.bytes(key: String): ByteArray {

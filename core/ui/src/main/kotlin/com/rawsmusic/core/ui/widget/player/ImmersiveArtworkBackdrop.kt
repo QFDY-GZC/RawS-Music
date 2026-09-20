@@ -47,9 +47,13 @@ internal fun ImmersiveBackdrop(
     videoCoverUri: String? = null,
     pageProgress: Float = 1f,
     artworkTransitionState: PlaybackArtworkTransitionState? = null,
-    clearArtworkVisible: Boolean = true
+    clearArtworkVisible: Boolean = true,
+    motionEnabled: Boolean = true,
 ) {
     val hasVideoCover = !videoCoverUri.isNullOrBlank()
+    val transitionMotionActive = artworkTransitionState?.isGestureActive == true ||
+        artworkTransitionState?.isSettling == true
+    val effectiveMotionEnabled = motionEnabled || transitionMotionActive
     val playerProgress = (1f - abs(pageProgress - 1f)).coerceIn(0f, 1f)
     val density = LocalDensity.current
     val clearArtworkPresence by animateFloatAsState(
@@ -67,6 +71,7 @@ internal fun ImmersiveBackdrop(
             coverPath = coverPath,
             accent = Color.Transparent,
             artworkTransitionState = artworkTransitionState,
+            motionEnabled = effectiveMotionEnabled,
             modifier = Modifier.fillMaxSize()
         )
 
@@ -92,36 +97,47 @@ internal fun ImmersiveBackdrop(
                     }
             ) {
                 val fadeHeightPx = with(density) { 118.dp.toPx() }
-                // A selected video owns the clear-artwork lane completely. Keeping bitmap
-                // transition layers underneath lets them show through the video's faded edge.
-                if (!hasVideoCover) {
-                    if (clearArtworkLayers.isEmpty()) {
-                        ImmersiveClearArtworkLayer(
-                            coverKey = coverPath.orEmpty(),
-                            alpha = 1f,
-                            fadeHeightPx = fadeHeightPx
+                val sideFadePx = with(density) { 11.dp.toPx() }
+                val topFadePx = with(density) { 7.dp.toPx() }
+                // Apply the feather to the composed artwork once. Applying it to every
+                // cross-fading layer made the bottom edge alpha multiply differently during a
+                // song switch, which produced a visible jump below the clear artwork.
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .immersiveArtworkEdgeFeather(
+                            bottomFadePx = fadeHeightPx,
+                            sideFadePx = sideFadePx,
+                            topFadePx = topFadePx
                         )
-                    } else {
-                        clearArtworkLayers.forEach { layer ->
-                            androidx.compose.runtime.key(layer.token) {
-                                ImmersiveClearArtworkLayer(
-                                    coverKey = layer.key,
-                                    alpha = layer.alpha,
-                                    fadeHeightPx = fadeHeightPx
-                                )
+                ) {
+                    // A selected video owns the clear-artwork lane completely. Keeping bitmap
+                    // transition layers underneath lets them show through the video's faded edge.
+                    if (!hasVideoCover) {
+                        if (clearArtworkLayers.isEmpty()) {
+                            ImmersiveClearArtworkLayer(
+                                coverKey = coverPath.orEmpty(),
+                            )
+                        } else {
+                            clearArtworkLayers.forEach { layer ->
+                                androidx.compose.runtime.key(layer.token) {
+                                    ImmersiveClearArtworkLayer(
+                                        coverKey = layer.key,
+                                        artworkTransitionState = artworkTransitionState,
+                                        backgroundRole = layer.role,
+                                    )
+                                }
                             }
                         }
                     }
-                }
-                if (hasVideoCover) {
-                    FfmpegVideoCover(
-                        uri = videoCoverUri,
-                        active = clearArtworkVisible && playerProgress > 0f,
-                        cornerRadiusDp = 0f,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .bottomEdgeTransparent(fadeHeightPx)
-                    )
+                    if (hasVideoCover) {
+                        FfmpegVideoCover(
+                            uri = videoCoverUri,
+                            active = effectiveMotionEnabled && clearArtworkVisible && playerProgress > 0f,
+                            cornerRadiusDp = 0f,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 }
             }
         }
@@ -131,17 +147,22 @@ internal fun ImmersiveBackdrop(
 @Composable
 private fun ImmersiveClearArtworkLayer(
     coverKey: String,
-    alpha: Float,
-    fadeHeightPx: Float
+    artworkTransitionState: PlaybackArtworkTransitionState? = null,
+    backgroundRole: com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkBackgroundRole? = null,
 ) {
-    if (coverKey.isBlank() || alpha <= 0f) return
+    if (coverKey.isBlank()) return
     BitmapImage(
         key = coverKey,
         contentDescription = null,
         modifier = Modifier
             .fillMaxSize()
-            .graphicsLayer { this.alpha = alpha.coerceIn(0f, 1f) }
-            .bottomEdgeTransparent(fadeHeightPx),
+            .graphicsLayer {
+                alpha = if (artworkTransitionState != null && backgroundRole != null) {
+                    artworkTransitionState.backgroundLayerAlpha(backgroundRole).coerceIn(0f, 1f)
+                } else {
+                    1f
+                }
+            },
         contentScale = ContentScale.Crop,
         targetWidth = 1080,
         targetHeight = 1080,
@@ -153,25 +174,63 @@ private fun ImmersiveClearArtworkLayer(
     )
 }
 
-private fun Modifier.bottomEdgeTransparent(widthPx: Float): Modifier = this
+private fun Modifier.immersiveArtworkEdgeFeather(
+    bottomFadePx: Float,
+    sideFadePx: Float,
+    topFadePx: Float
+): Modifier = this
     .graphicsLayer {
         compositingStrategy = CompositingStrategy.Offscreen
     }
     .drawWithContent {
         drawContent()
-        if (widthPx <= 0f) return@drawWithContent
 
-        drawRect(
-            brush = Brush.verticalGradient(
-                colorStops = arrayOf(
-                    0.00f to Color.Transparent,
-                    1.00f to Color.White
+        if (topFadePx > 0f) {
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(Color.White, Color.Transparent),
+                    startY = 0f,
+                    endY = topFadePx
                 ),
-                startY = size.height - widthPx,
-                endY = size.height
-            ),
-            topLeft = Offset(0f, size.height - widthPx),
-            size = Size(size.width, widthPx),
-            blendMode = BlendMode.DstOut
-        )
+                size = Size(size.width, topFadePx.coerceAtMost(size.height)),
+                blendMode = BlendMode.DstOut
+            )
+        }
+
+        if (sideFadePx > 0f) {
+            val width = sideFadePx.coerceAtMost(size.width * 0.12f)
+            drawRect(
+                brush = Brush.horizontalGradient(
+                    colors = listOf(Color.White, Color.Transparent),
+                    startX = 0f,
+                    endX = width
+                ),
+                size = Size(width, size.height),
+                blendMode = BlendMode.DstOut
+            )
+            drawRect(
+                brush = Brush.horizontalGradient(
+                    colors = listOf(Color.Transparent, Color.White),
+                    startX = size.width - width,
+                    endX = size.width
+                ),
+                topLeft = Offset(size.width - width, 0f),
+                size = Size(width, size.height),
+                blendMode = BlendMode.DstOut
+            )
+        }
+
+        if (bottomFadePx > 0f) {
+            val height = bottomFadePx.coerceAtMost(size.height)
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(Color.Transparent, Color.White),
+                    startY = size.height - height,
+                    endY = size.height
+                ),
+                topLeft = Offset(0f, size.height - height),
+                size = Size(size.width, height),
+                blendMode = BlendMode.DstOut
+            )
+        }
     }

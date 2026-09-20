@@ -9,6 +9,8 @@ import java.text.SimpleDateFormat
 import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToLong
 
 object FFmpegBridge {
     private const val TAG = "FFmpegBridge"
@@ -17,12 +19,70 @@ object FFmpegBridge {
     private val debugDateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
     private val debugLock = Any()
     private val recentDebugEntries = ArrayDeque<String>()
+    private val decoderSpeedStates = ConcurrentHashMap<Long, DecoderSpeedState>()
+
+    private data class RawFdInput(val fd: Int, val size: Long)
+
+    private class DecoderSpeedState(
+        val requestedSpeed: Float,
+        val requestedBits: Int,
+        val changePitch: Boolean,
+    ) {
+        @Volatile var effectiveSpeed: Float = if (requestedBits <= 1) 1f else requestedSpeed
+        @Volatile var processor: SpeedProcessor? = null
+        @Volatile var formatResolved = false
+    }
+
+    private interface SpeedProcessor {
+        val playbackSpeed: Float
+        fun reset()
+        fun decode(
+            destination: ByteArray,
+            offset: Int,
+            maxBytes: Int,
+            nativeRead: (ByteArray, Int) -> Int,
+        ): Int
+    }
+
+    private class PitchChangingProcessor(
+        speed: Float,
+        channels: Int,
+        bitsPerSample: Int,
+    ) : SpeedProcessor {
+        private val delegate = PcmPlaybackSpeedDecoder(speed, channels, bitsPerSample)
+        override val playbackSpeed: Float get() = delegate.playbackSpeed
+        override fun reset() = delegate.reset()
+        override fun decode(
+            destination: ByteArray,
+            offset: Int,
+            maxBytes: Int,
+            nativeRead: (ByteArray, Int) -> Int,
+        ): Int = delegate.decode(destination, offset, maxBytes, nativeRead)
+    }
+
+    private class PitchPreservingProcessor(
+        speed: Float,
+        sampleRate: Int,
+        channels: Int,
+        bitsPerSample: Int,
+    ) : SpeedProcessor {
+        private val delegate = PcmTimeStretchDecoder(speed, sampleRate, channels, bitsPerSample)
+        override val playbackSpeed: Float get() = delegate.playbackSpeed
+        override fun reset() = delegate.reset()
+        override fun decode(
+            destination: ByteArray,
+            offset: Int,
+            maxBytes: Int,
+            nativeRead: (ByteArray, Int) -> Int,
+        ): Int = delegate.decode(destination, offset, maxBytes, nativeRead)
+    }
 
     init {
         try {
-            // rawsmusic_ffmpeg is linked against split FFmpeg libs (avcodec, avformat, avutil, swresample)
-            // The dynamic linker loads them automatically — no need to load libffmpeg.so separately.
-            System.loadLibrary("rawsmusic_ffmpeg")
+            // The large codec payload remains in the prebuilt librawsmusic_ffmpeg.so, while the
+            // JNI surface is compiled from the current ffmpeg_bridge.cpp on every app build.
+            // Loading the live bridge also loads its rawsmusic_ffmpeg dependency automatically.
+            System.loadLibrary("rawsmusic_ffmpeg_live")
             loaded = true
             Log.d(TAG, "FFmpeg native libraries loaded")
             appendDebug("libraries loaded")
@@ -121,12 +181,22 @@ object FFmpegBridge {
 
     fun probeDuration(path: String): Long {
         if (!loaded) return 0L
+        rawFdInput(path)?.let { return nativeProbeDurationFd(it.fd, it.size) }
         return nativeProbeDuration(path)
     }
 
     fun probeDuration(path: String, headers: Map<String, String>, userAgent: String?): Long {
         if (!loaded) return 0L
         val startedAt = SystemClock.elapsedRealtime()
+        rawFdInput(path)?.let { input ->
+            val result = nativeProbeDurationFd(input.fd, input.size)
+            AppLogger.i(
+                TAG,
+                "${OnlinePlaybackDiagnostics.PREFIX} PROBE_FD kind=duration result=$result " +
+                    "fd=${input.fd} size=${input.size} elapsedMs=${SystemClock.elapsedRealtime() - startedAt}"
+            )
+            return result
+        }
         val options = serializeHttpOptions(headers, userAgent)
         val result = nativeProbeDurationWithOptions(path, options.first, options.second)
         AppLogger.i(
@@ -143,6 +213,7 @@ object FFmpegBridge {
             appendDebug("probeSampleRate skipped: bridge not loaded")
             return 0
         }
+        rawFdInput(path)?.let { return nativeProbeSampleRateFd(it.fd, it.size) }
         val result = nativeProbeSampleRate(path)
         appendDebug("probeSampleRate ${shortPath(path)} -> $result")
         return result
@@ -151,6 +222,11 @@ object FFmpegBridge {
     fun probeSampleRate(path: String, headers: Map<String, String>, userAgent: String?): Int {
         if (!loaded) return 0
         val startedAt = SystemClock.elapsedRealtime()
+        rawFdInput(path)?.let { input ->
+            val result = nativeProbeSampleRateFd(input.fd, input.size)
+            appendDebug("probeSampleRate fd=${input.fd} -> $result")
+            return result
+        }
         val options = serializeHttpOptions(headers, userAgent)
         val result = nativeProbeSampleRateWithOptions(path, options.first, options.second)
         appendDebug("probeSampleRate http ${shortPath(path)} headers=${headers.size} -> $result")
@@ -168,6 +244,7 @@ object FFmpegBridge {
             appendDebug("probeBitsPerSample skipped: bridge not loaded")
             return 0
         }
+        rawFdInput(path)?.let { return nativeProbeBitsPerSampleFd(it.fd, it.size) }
         val result = nativeProbeBitsPerSample(path)
         appendDebug("probeBitsPerSample ${shortPath(path)} -> $result")
         return result
@@ -176,6 +253,11 @@ object FFmpegBridge {
     fun probeBitsPerSample(path: String, headers: Map<String, String>, userAgent: String?): Int {
         if (!loaded) return 0
         val startedAt = SystemClock.elapsedRealtime()
+        rawFdInput(path)?.let { input ->
+            val result = nativeProbeBitsPerSampleFd(input.fd, input.size)
+            appendDebug("probeBitsPerSample fd=${input.fd} -> $result")
+            return result
+        }
         val options = serializeHttpOptions(headers, userAgent)
         val result = nativeProbeBitsPerSampleWithOptions(path, options.first, options.second)
         appendDebug("probeBitsPerSample http ${shortPath(path)} headers=${headers.size} -> $result")
@@ -193,6 +275,7 @@ object FFmpegBridge {
             appendDebug("probeChannelCount skipped: bridge not loaded")
             return 0
         }
+        rawFdInput(path)?.let { return nativeProbeChannelCountFd(it.fd, it.size) }
         val result = nativeProbeChannelCount(path)
         appendDebug("probeChannelCount ${shortPath(path)} -> $result")
         return result
@@ -201,6 +284,11 @@ object FFmpegBridge {
     fun probeChannelCount(path: String, headers: Map<String, String>, userAgent: String?): Int {
         if (!loaded) return 0
         val startedAt = SystemClock.elapsedRealtime()
+        rawFdInput(path)?.let { input ->
+            val result = nativeProbeChannelCountFd(input.fd, input.size)
+            appendDebug("probeChannelCount fd=${input.fd} -> $result")
+            return result
+        }
         val options = serializeHttpOptions(headers, userAgent)
         val result = nativeProbeChannelCountWithOptions(path, options.first, options.second)
         appendDebug("probeChannelCount http ${shortPath(path)} headers=${headers.size} -> $result")
@@ -215,12 +303,37 @@ object FFmpegBridge {
 
     fun extractCover(inputPath: String, outputPath: String): Int {
         if (!loaded) return -1
-        return nativeExtractCover(inputPath, outputPath)
+        rawFdInput(inputPath)?.let { return nativeExtractCoverFd(it.fd, it.size, outputPath) }
+        return nativeExtractCover(inputPath, outputPath, "", "")
+    }
+
+    fun extractCover(
+        inputPath: String,
+        outputPath: String,
+        headers: Map<String, String>,
+        userAgent: String?,
+    ): Int {
+        if (!loaded) return -1
+        rawFdInput(inputPath)?.let { return nativeExtractCoverFd(it.fd, it.size, outputPath) }
+        val options = serializeHttpOptions(headers, userAgent)
+        return nativeExtractCover(inputPath, outputPath, options.first, options.second)
     }
 
     fun getMediaInfo(filePath: String): Map<String, String>? {
         if (!loaded) return null
-        return nativeGetMediaInfo(filePath)
+        rawFdInput(filePath)?.let { return nativeGetMediaInfoFd(it.fd, it.size) }
+        return nativeGetMediaInfo(filePath, "", "")
+    }
+
+    fun getMediaInfo(
+        filePath: String,
+        headers: Map<String, String>,
+        userAgent: String?,
+    ): Map<String, String>? {
+        if (!loaded) return null
+        rawFdInput(filePath)?.let { return nativeGetMediaInfoFd(it.fd, it.size) }
+        val options = serializeHttpOptions(headers, userAgent)
+        return nativeGetMediaInfo(filePath, options.first, options.second)
     }
 
     /**
@@ -265,6 +378,17 @@ object FFmpegBridge {
      * @param channels         输出声道数
      */
     fun openDecoder(path: String, targetSampleRate: Int, bitsPerSample: Int, channels: Int): Long =
+        openDecoder(path, targetSampleRate, bitsPerSample, channels, 1f)
+
+    /** Opens a local streaming decoder with app-owned variable-speed PCM. */
+    fun openDecoder(
+        path: String,
+        targetSampleRate: Int,
+        bitsPerSample: Int,
+        channels: Int,
+        playbackSpeed: Float,
+        changePitch: Boolean = false,
+    ): Long =
         openDecoder(
             path = path,
             targetSampleRate = targetSampleRate,
@@ -272,6 +396,8 @@ object FFmpegBridge {
             channels = channels,
             headers = emptyMap(),
             userAgent = null,
+            playbackSpeed = playbackSpeed,
+            changePitch = changePitch,
         )
 
     /** Opens a streaming decoder with HTTP headers/options for resolved online sources. */
@@ -282,6 +408,8 @@ object FFmpegBridge {
         channels: Int,
         headers: Map<String, String>,
         userAgent: String?,
+        playbackSpeed: Float = 1f,
+        changePitch: Boolean = false,
     ): Long {
         if (!loaded) {
             appendDebug("openDecoder skipped: bridge not loaded")
@@ -289,9 +417,11 @@ object FFmpegBridge {
         }
         val startedAt = SystemClock.elapsedRealtime()
         val (headerBlock, safeUserAgent) = serializeHttpOptions(headers, userAgent)
+        val safePlaybackSpeed = if (playbackSpeed.isFinite()) playbackSpeed.coerceIn(0.25f, 3f) else 1f
         appendDebug(
             "openDecoder path=${shortPath(path)} targetSr=$targetSampleRate bits=$bitsPerSample " +
-                "ch=$channels httpHeaders=${headers.size} userAgent=${safeUserAgent.isNotBlank()}"
+                "ch=$channels speed=${"%.2f".format(safePlaybackSpeed)} changePitch=$changePitch " +
+                "httpHeaders=${headers.size} userAgent=${safeUserAgent.isNotBlank()}"
         )
         AppLogger.i(
             TAG,
@@ -299,15 +429,42 @@ object FFmpegBridge {
                 "headers=${OnlinePlaybackDiagnostics.headerNames(headers)} ua=${safeUserAgent.isNotBlank()} " +
                 "${OnlinePlaybackDiagnostics.urlShape(path)} url=${OnlinePlaybackDiagnostics.safeUrl(path)}"
         )
-        val handle = nativeOpenDecoder(
-            path,
-            targetSampleRate,
-            bitsPerSample,
-            channels,
-            headerBlock,
-            safeUserAgent,
+        // Variable-rate PCM stays app-owned in this Kotlin bridge; native decoding remains at
+        // 1.00x. Unlike the historical prebuilt JNI bridge, rawsmusic_ffmpeg_live is compiled
+        // from the matching source in this build, so HTTP headers/User-Agent and the full JNI
+        // signature are ABI-checked by the normal native build.
+        val rawFd = rawFdInput(path)
+        val handle = if (rawFd != null) {
+            nativeOpenDecoderFd(
+                rawFd.fd,
+                rawFd.size,
+                targetSampleRate,
+                bitsPerSample,
+                channels,
+                1f,
+            )
+        } else {
+            nativeOpenDecoder(
+                path,
+                targetSampleRate,
+                bitsPerSample,
+                channels,
+                headerBlock,
+                safeUserAgent,
+                1f,
+            )
+        }
+        if (handle != 0L) {
+            decoderSpeedStates[handle] = DecoderSpeedState(
+                requestedSpeed = safePlaybackSpeed,
+                requestedBits = bitsPerSample,
+                changePitch = changePitch,
+            )
+        }
+        appendDebug(
+            "openDecoder result=0x${handle.toString(16)} requestedSpeed=${"%.2f".format(safePlaybackSpeed)} " +
+                "changePitch=$changePitch rateOwner=${if (kotlin.math.abs(safePlaybackSpeed - 1f) > 0.0001f) "bridge_pcm" else "identity"}"
         )
-        appendDebug("openDecoder result=0x${handle.toString(16)}")
         AppLogger.i(
             TAG,
             "${OnlinePlaybackDiagnostics.PREFIX} BRIDGE_OPEN_END handle=0x${handle.toString(16)} " +
@@ -322,7 +479,17 @@ object FFmpegBridge {
      */
     fun decodeChunk(handle: Long, buffer: ByteArray, offset: Int, maxBytes: Int): Int {
         if (!loaded) return -2
-        return nativeDecodeChunk(handle, buffer, offset, maxBytes)
+        val state = decoderSpeedStates[handle]
+        if (state == null || kotlin.math.abs(state.effectiveSpeed - 1f) <= 0.0001f) {
+            return nativeDecodeChunk(handle, buffer, offset, maxBytes)
+        }
+        val processor = ensureSpeedProcessor(handle, state)
+            ?: return nativeDecodeChunk(handle, buffer, offset, maxBytes)
+        return synchronized(state) {
+            processor.decode(buffer, offset, maxBytes) { scratch, requested ->
+                nativeDecodeChunk(handle, scratch, 0, requested)
+            }
+        }
     }
 
     /**
@@ -333,8 +500,28 @@ object FFmpegBridge {
             appendDebug("seekDecoder skipped: bridge not loaded")
             return false
         }
-        val result = nativeSeekDecoder(handle, positionMs)
-        appendDebug("seekDecoder handle=0x${handle.toString(16)} posMs=$positionMs result=$result")
+        val state = decoderSpeedStates[handle]
+        val effectiveSpeed = state?.effectiveSpeed ?: 1f
+        val sourcePositionMs = if (kotlin.math.abs(effectiveSpeed - 1f) <= 0.0001f) {
+            positionMs
+        } else {
+            (positionMs.coerceAtLeast(0L).toDouble() * effectiveSpeed.toDouble())
+                .roundToLong()
+                .coerceAtLeast(0L)
+        }
+        val result = if (state != null) {
+            synchronized(state) {
+                val ok = nativeSeekDecoder(handle, sourcePositionMs)
+                if (ok) state.processor?.reset()
+                ok
+            }
+        } else {
+            nativeSeekDecoder(handle, sourcePositionMs)
+        }
+        appendDebug(
+            "seekDecoder handle=0x${handle.toString(16)} playbackMs=$positionMs " +
+                "sourceMs=$sourcePositionMs speed=${"%.2f".format(effectiveSpeed)} result=$result"
+        )
         return result
     }
 
@@ -350,18 +537,80 @@ object FFmpegBridge {
 
     fun getDecoderBitsPerSample(handle: Long): Int {
         if (!loaded) return 0
-        return nativeGetDecoderBitsPerSample(handle)
+        val bits = nativeGetDecoderBitsPerSample(handle)
+        decoderSpeedStates[handle]?.let { state ->
+            if (bits <= 1 && state.effectiveSpeed != 1f) {
+                synchronized(state) {
+                    state.effectiveSpeed = 1f
+                    state.processor = null
+                    state.formatResolved = true
+                }
+                appendDebug(
+                    "playbackSpeed clamped handle=0x${handle.toString(16)} reason=raw_dsd requested=${state.requestedSpeed}"
+                )
+            }
+        }
+        return bits
     }
 
     fun getDecoderDuration(handle: Long): Long {
         if (!loaded) return 0L
-        return nativeGetDecoderDuration(handle)
+        val nativeDurationMs = nativeGetDecoderDuration(handle)
+        val speed = decoderSpeedStates[handle]?.effectiveSpeed ?: 1f
+        return if (nativeDurationMs <= 0L || kotlin.math.abs(speed - 1f) <= 0.0001f) {
+            nativeDurationMs
+        } else {
+            (nativeDurationMs.toDouble() / speed.toDouble()).roundToLong().coerceAtLeast(1L)
+        }
     }
+
+    fun getDecoderPlaybackSpeed(handle: Long): Float =
+        decoderSpeedStates[handle]?.effectiveSpeed ?: 1f
 
     fun closeDecoder(handle: Long) {
         if (!loaded || handle == 0L) return
+        decoderSpeedStates.remove(handle)
         appendDebug("closeDecoder handle=0x${handle.toString(16)}")
         nativeCloseDecoder(handle)
+    }
+
+    private fun ensureSpeedProcessor(handle: Long, state: DecoderSpeedState): SpeedProcessor? {
+        state.processor?.let { return it }
+        return synchronized(state) {
+            state.processor?.let { return@synchronized it }
+            if (kotlin.math.abs(state.effectiveSpeed - 1f) <= 0.0001f) return@synchronized null
+            val channels = nativeGetDecoderChannels(handle).coerceAtLeast(1)
+            val bits = nativeGetDecoderBitsPerSample(handle)
+            if (bits <= 1) {
+                state.effectiveSpeed = 1f
+                state.formatResolved = true
+                appendDebug(
+                    "playbackSpeed clamped handle=0x${handle.toString(16)} reason=raw_dsd requested=${state.requestedSpeed}"
+                )
+                return@synchronized null
+            }
+            val created: SpeedProcessor = if (state.changePitch) {
+                PitchChangingProcessor(
+                    speed = state.effectiveSpeed,
+                    channels = channels,
+                    bitsPerSample = bits,
+                )
+            } else {
+                PitchPreservingProcessor(
+                    speed = state.effectiveSpeed,
+                    sampleRate = nativeGetDecoderSampleRate(handle).coerceAtLeast(8_000),
+                    channels = channels,
+                    bitsPerSample = bits,
+                )
+            }
+            state.processor = created
+            state.formatResolved = true
+            appendDebug(
+                "playbackSpeed processor handle=0x${handle.toString(16)} speed=${"%.2f".format(created.playbackSpeed)} " +
+                    "mode=${if (state.changePitch) "rate_pitch" else "wsola_pitch_preserving"} bits=$bits channels=$channels"
+            )
+            created
+        }
     }
 
     fun createVideoCoverSession(fileDescriptor: Int, surface: Surface): Long {
@@ -399,6 +648,23 @@ object FFmpegBridge {
         val normalized = path.replace('\\', '/')
         val name = normalized.substringAfterLast('/', normalized)
         return if (name.isNotBlank()) name else normalized
+    }
+
+    private fun rawFdInput(path: String): RawFdInput? {
+        if (!path.startsWith("rawfd://", ignoreCase = true)) return null
+        val fd = path.substringAfter("rawfd://")
+            .substringBefore('?')
+            .toIntOrNull()
+            ?.takeIf { it >= 0 }
+            ?: return null
+        val query = path.substringAfter('?', "")
+        val size = query.split('&')
+            .firstOrNull { it.startsWith("size=") }
+            ?.substringAfter('=')
+            ?.toLongOrNull()
+            ?.coerceAtLeast(0L)
+            ?: 0L
+        return RawFdInput(fd = fd, size = size)
     }
 
     private fun serializeHttpOptions(
@@ -442,8 +708,23 @@ object FFmpegBridge {
     private external fun nativeProbeSampleRateWithOptions(path: String, headersBlock: String, userAgent: String): Int
     private external fun nativeProbeBitsPerSampleWithOptions(path: String, headersBlock: String, userAgent: String): Int
     private external fun nativeProbeChannelCountWithOptions(path: String, headersBlock: String, userAgent: String): Int
-    private external fun nativeExtractCover(inputPath: String, outputPath: String): Int
-    private external fun nativeGetMediaInfo(filePath: String): Map<String, String>?
+    private external fun nativeProbeDurationFd(fd: Int, size: Long): Long
+    private external fun nativeProbeSampleRateFd(fd: Int, size: Long): Int
+    private external fun nativeProbeBitsPerSampleFd(fd: Int, size: Long): Int
+    private external fun nativeProbeChannelCountFd(fd: Int, size: Long): Int
+    private external fun nativeExtractCover(
+        inputPath: String,
+        outputPath: String,
+        headersBlock: String,
+        userAgent: String,
+    ): Int
+    private external fun nativeExtractCoverFd(fd: Int, size: Long, outputPath: String): Int
+    private external fun nativeGetMediaInfo(
+        filePath: String,
+        headersBlock: String,
+        userAgent: String,
+    ): Map<String, String>?
+    private external fun nativeGetMediaInfoFd(fd: Int, size: Long): Map<String, String>?
     private external fun nativeWriteMetadata(filePath: String, metadata: Map<String, String>, cacheDir: String): Int
     private external fun nativeScanWaveform(path: String, startMs: Long, endMs: Long, sampleCount: Int): FloatArray?
 
@@ -455,6 +736,15 @@ object FFmpegBridge {
         channels: Int,
         headersBlock: String,
         userAgent: String,
+        playbackSpeed: Float,
+    ): Long
+    private external fun nativeOpenDecoderFd(
+        fd: Int,
+        size: Long,
+        targetRate: Int,
+        targetBits: Int,
+        channels: Int,
+        playbackSpeed: Float,
     ): Long
     private external fun nativeDecodeChunk(handle: Long, buffer: ByteArray, offset: Int, maxBytes: Int): Int
     private external fun nativeSeekDecoder(handle: Long, positionMs: Long): Boolean

@@ -2,20 +2,21 @@ package com.rawsmusic.module.player
 
 import android.os.Handler
 import android.os.Looper
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Sticky USB status notices delivered by the foreground Activity.
  *
- * USB permission sheets can temporarily stop MainActivity and several OEM builds suppress
- * Toasts created from a service/application Context during that window. Keep the latest notice
- * pending until a resumed Activity displays and acknowledges it.
+ * USB permission sheets can temporarily stop the foreground Activity. Keep the latest notice
+ * pending until a resumed RawSMusic Activity forwards it into AppNoticeHost and acknowledges it.
  */
 object UsbStatusNoticeBus {
     data class Notice(
         val id: Long,
         val message: String,
+        val icon: AppNoticeIcon,
     )
 
     private val nextId = AtomicLong(0L)
@@ -23,9 +24,12 @@ object UsbStatusNoticeBus {
     private val listener = AtomicReference<((Notice) -> Unit)?>(null)
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    fun post(message: String) {
+    fun post(
+        message: String,
+        icon: AppNoticeIcon = AppNoticeIcon.USB,
+    ) {
         if (message.isBlank()) return
-        pending.set(Notice(nextId.incrementAndGet(), message))
+        pending.set(Notice(nextId.incrementAndGet(), message, icon))
         dispatchPending()
     }
 

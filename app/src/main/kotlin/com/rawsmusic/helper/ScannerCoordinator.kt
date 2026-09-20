@@ -3,6 +3,7 @@ package com.rawsmusic.helper
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 
 /**
  * 扫描协调器。
@@ -19,7 +20,7 @@ class ScannerCoordinator(
 ) {
     private var startupScheduled = false
 
-    fun scheduleStartupScan(delayMs: Long = 1_000L) {
+    fun scheduleStartupScan(delayMs: Long = coldStartDelayMs()) {
         if (startupScheduled) return
         startupScheduled = true
         mainHandler.postDelayed({
@@ -39,5 +40,14 @@ class ScannerCoordinator(
 
     fun release() {
         startupScheduled = false
+    }
+
+    companion object {
+        private const val RECENT_BOOT_WINDOW_MS = 60_000L
+        private const val NORMAL_COLD_START_DELAY_MS = 2_000L
+        private const val RECENT_BOOT_DELAY_MS = 10_000L
+
+        internal fun coldStartDelayMs(uptimeMs: Long = SystemClock.uptimeMillis()): Long =
+            if (uptimeMs <= RECENT_BOOT_WINDOW_MS) RECENT_BOOT_DELAY_MS else NORMAL_COLD_START_DELAY_MS
     }
 }

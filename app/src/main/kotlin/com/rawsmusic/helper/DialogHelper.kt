@@ -12,19 +12,15 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -37,8 +33,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.res.stringResource
 import com.rawsmusic.R
-import com.rawsmusic.module.data.prefs.AppPreferences
-import com.rawsmusic.module.player.PlayerController
 import com.rawsmusic.core.ui.widget.predictiveDialogMotion
 import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 
@@ -46,20 +40,11 @@ class DialogHelper(
     private val onVisibilityChanged: (Boolean) -> Unit = {}
 ) {
     enum class DialogKind {
-        QQ_GROUP,
-        SLEEP_TIMER
+        QQ_GROUP
     }
 
     var activeDialog by mutableStateOf<DialogKind?>(null)
         private set
-
-    var sleepOptions by mutableStateOf<List<Int>>(emptyList())
-        private set
-
-    var checkedSleepIndex by mutableIntStateOf(-1)
-        private set
-
-    private var sleepController: PlayerController? = null
 
     val isShowing: Boolean
         get() = activeDialog != null
@@ -69,81 +54,10 @@ class DialogHelper(
         onVisibilityChanged(true)
     }
 
-    fun showSleepTimer(playerController: PlayerController?) {
-        val controller = playerController ?: return
-        sleepController = controller
-        sleepOptions = SLEEP_TIMER_OPTIONS.toList()
-        checkedSleepIndex = currentSleepTimerIndex(controller)
-        activeDialog = DialogKind.SLEEP_TIMER
-        onVisibilityChanged(true)
-    }
-
-    fun selectSleepTimer(index: Int) {
-        val controller = sleepController ?: return
-        when (index) {
-            0 -> controller.cancelSleepTimer()
-            1 -> controller.startSleepTimer(10)
-            2 -> controller.startSleepTimer(15)
-            3 -> controller.startSleepTimer(20)
-            4 -> controller.startSleepTimer(30)
-            5 -> controller.startSleepTimer(45)
-            6 -> controller.startSleepTimer(60)
-            7 -> controller.startSleepTimer(90)
-            8 -> controller.enableStopAfterCurrent()
-            9 -> controller.startSleepTimerSongs(3)
-            10 -> controller.startSleepTimerSongs(5)
-        }
-        dismiss()
-    }
-
     fun dismiss() {
         if (activeDialog == null) return
         activeDialog = null
-        sleepController = null
         onVisibilityChanged(false)
-    }
-
-    private fun currentSleepTimerIndex(controller: PlayerController): Int {
-        return when (controller.getSleepTimerMode()) {
-            1 -> {
-                when (AppPreferences.Player.sleepTimerMinutes) {
-                    10 -> 1
-                    15 -> 2
-                    20 -> 3
-                    30 -> 4
-                    45 -> 5
-                    60 -> 6
-                    90 -> 7
-                    else -> 4
-                }
-            }
-            3 -> 8
-            2 -> {
-                val songs = if (controller.isSleepTimerActive()) 3 else 0
-                when (songs) {
-                    3 -> 9
-                    5 -> 10
-                    else -> -1
-                }
-            }
-            else -> 0
-        }
-    }
-
-    companion object {
-        private val SLEEP_TIMER_OPTIONS = intArrayOf(
-            R.string.sleep_timer_off,
-            R.string.sleep_timer_10,
-            R.string.sleep_timer_15,
-            R.string.sleep_timer_20,
-            R.string.sleep_timer_30,
-            R.string.sleep_timer_45,
-            R.string.sleep_timer_60,
-            R.string.sleep_timer_90,
-            R.string.sleep_timer_current,
-            R.string.sleep_timer_3_songs,
-            R.string.sleep_timer_5_songs,
-        )
     }
 }
 
@@ -179,7 +93,6 @@ fun DialogOverlay(
             ) {
                 when (helper.activeDialog) {
                     DialogHelper.DialogKind.QQ_GROUP -> QqGroupDialog(helper)
-                    DialogHelper.DialogKind.SLEEP_TIMER -> SleepTimerDialog(helper)
                     null -> Unit
                 }
             }
@@ -204,62 +117,6 @@ private fun QqGroupDialog(helper: DialogHelper) {
         )
         Spacer(modifier = Modifier.height(20.dp))
         DialogTextButton(text = stringResource(R.string.dialog_confirm), modifier = Modifier.align(Alignment.End)) {
-            helper.dismiss()
-        }
-    }
-}
-
-@Composable
-private fun SleepTimerDialog(helper: DialogHelper) {
-    DialogCard {
-        Text(
-            text = stringResource(R.string.sleep_timer_title),
-            color = Color.White,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(10.dp))
-        helper.sleepOptions.forEachIndexed { index, option ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(42.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { helper.selectSleepTimer(index) }
-                    .padding(horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(18.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (helper.checkedSleepIndex == index) Color(0xFF4CAF50)
-                            else Color.White.copy(alpha = 0.18f)
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (helper.checkedSleepIndex == index) {
-                        Box(
-                            modifier = Modifier
-                                .size(7.dp)
-                                .clip(CircleShape)
-                                .background(Color.White)
-                        )
-                    }
-                }
-                Text(
-                    text = stringResource(option),
-                    color = Color.White.copy(alpha = if (helper.checkedSleepIndex == index) 0.95f else 0.72f),
-                    fontSize = 14.sp,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(start = 14.dp)
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(10.dp))
-        DialogTextButton(text = stringResource(R.string.sleep_timer_cancel), modifier = Modifier.align(Alignment.End)) {
             helper.dismiss()
         }
     }

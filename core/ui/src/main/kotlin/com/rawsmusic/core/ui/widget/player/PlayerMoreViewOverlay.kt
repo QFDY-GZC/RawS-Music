@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
@@ -28,12 +27,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.platform.LocalDensity
@@ -46,12 +48,12 @@ import top.yukonga.miuix.kmp.layout.DialogDefaults
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.rawsmusic.core.ui.widget.MiuixOverlayBackRuntime
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 private const val PLAYER_MORE_ENTER_MS = 300
 private const val PLAYER_MORE_EXIT_MS = 250
 private const val PLAYER_MORE_MAX_HEIGHT_DP = 600
 private const val PLAYER_MORE_OUTSIDE_MARGIN_DP = 12
-private const val PLAYER_MORE_SOURCE_ARTWORK_RADIUS_DP = 28f
 private const val PLAYER_MORE_TARGET_ARTWORK_RADIUS_DP = 8f
 
 private data class ArtworkTransitionSnapshot(
@@ -74,7 +76,7 @@ internal fun PlayerMoreViewOverlay(
     artwork: Bitmap?,
     onDismiss: () -> Unit,
     onMountedChange: (Boolean) -> Unit = {},
-    sourceArtworkRadiusDp: Float = PLAYER_MORE_SOURCE_ARTWORK_RADIUS_DP,
+    sourceArtworkRadiusDp: Float = STANDARD_PLAYER_ARTWORK_CORNER_RADIUS_DP,
     targetArtworkRadiusDp: Float = PLAYER_MORE_TARGET_ARTWORK_RADIUS_DP,
     content: @Composable (artworkAlpha: Float, onArtworkBoundsChanged: (Rect) -> Unit) -> Unit
 ) {
@@ -90,6 +92,7 @@ internal fun PlayerMoreViewOverlay(
     var dismissIssued by remember { mutableStateOf(false) }
     var exitStartProgress by remember { mutableFloatStateOf(1f) }
     var closeProgressOverride by remember { mutableStateOf<Float?>(null) }
+    var entranceComplete by remember { mutableStateOf(false) }
     val progress = remember { Animatable(0f) }
     val latestDismiss by rememberUpdatedState(onDismiss)
     val latestMountedChange by rememberUpdatedState(onMountedChange)
@@ -114,10 +117,12 @@ internal fun PlayerMoreViewOverlay(
             sourceArtworkSnapshot = sourceArtworkBounds
             targetArtworkSnapshot = null
             targetLayoutReady = false
+            entranceComplete = false
             transitionArtwork = artwork?.takeUnless { it.isRecycled }
             progress.snapTo(0f)
         } else if (mounted) {
             closing = true
+            entranceComplete = false
             // Predictive-back renders 1 - gestureProgress, while the settled Animatable normally
             // remains at 1. Continue from the exact frame released by the finger instead of
             // snapping back to the fully-open scene and replaying a second exit animation.
@@ -161,6 +166,7 @@ internal fun PlayerMoreViewOverlay(
                     easing = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)
                 )
             )
+            if (show && mounted && !closing) entranceComplete = true
         }
     }
 
@@ -185,6 +191,7 @@ internal fun PlayerMoreViewOverlay(
         if (show && !dismissIssued && !closing) {
             dismissIssued = true
             closing = true
+            entranceComplete = false
             exitStartProgress = if (predictiveBackActive) {
                 (1f - predictiveBackProgress).coerceIn(0f, 1f)
             } else {
@@ -216,10 +223,12 @@ internal fun PlayerMoreViewOverlay(
     // parent restores its artwork layer one frame before this actor is removed.
     if (!mounted && !show && !closing) return
 
-    val displayedProgress = closeProgressOverride ?: if (predictiveBackActive) {
-        (1f - predictiveBackProgress).coerceIn(0f, 1f)
-    } else {
-        progress.value.coerceIn(0f, 1f)
+    val displayedProgressProvider: () -> Float = {
+        closeProgressOverride ?: if (predictiveBackActive) {
+            (1f - predictiveBackProgress).coerceIn(0f, 1f)
+        } else {
+            progress.value.coerceIn(0f, 1f)
+        }
     }
     val transitionSnapshot = ArtworkTransitionSnapshot(
         bitmap = transitionArtwork?.takeUnless { it.isRecycled },
@@ -231,19 +240,11 @@ internal fun PlayerMoreViewOverlay(
     val source = transitionSnapshot.source ?: sourceArtworkBounds?.takeIf { it.isUsable }
     val target = transitionSnapshot.target
     val artworkActorReady = activeArtwork != null && source != null
-    val floatingBounds = if (target != null) {
-        interpolateArtworkBounds(source, target, displayedProgress)
-    } else {
-        source
-    }
-    // Do not cross-fade two album-art requests. The source actor owns the bitmap until
-    // it reaches the target slot, then the target actor takes over in the same frame. Keeping this
-    // as a binary hand-off avoids the transparent -> opaque flash on the reverse scene.
-    val sceneClosing = closing || !show
-    val targetReached = displayedProgress >= 0.999f
-    val floatingArtworkAlpha = if (artworkActorReady && (sceneClosing || !targetReached)) 1f else 0f
-    val headerArtworkAlpha = if (!artworkActorReady || (!sceneClosing && targetReached)) 1f else 0f
-    val cardCornerRadius = with(density) { 32.dp.toPx() }
+    // The shared-art actor is a retained presentation owner. Only its ownership handoff changes
+    // composition; the hundreds of intermediate progress values stay in layout/layer phases.
+    val floatingArtworkActive = artworkActorReady &&
+        (closing || !show || predictiveBackActive || !entranceComplete)
+    val headerArtworkAlpha = if (floatingArtworkActive) 0f else 1f
 
     Box(
         modifier = Modifier
@@ -254,11 +255,14 @@ internal fun PlayerMoreViewOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    scheme.windowDimming.copy(
-                        alpha = scheme.windowDimming.alpha * displayedProgress
+                .drawBehind {
+                    val amount = displayedProgressProvider().coerceIn(0f, 1f)
+                    drawRect(
+                        scheme.windowDimming.copy(
+                            alpha = scheme.windowDimming.alpha * amount
+                        )
                     )
-                )
+                }
                 .pointerInput(Unit) {
                     detectTapGestures { requestDismiss() }
                 }
@@ -267,7 +271,7 @@ internal fun PlayerMoreViewOverlay(
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
+                .rawStableNavigationBarsPadding()
                 .padding(
                     horizontal = PLAYER_MORE_OUTSIDE_MARGIN_DP.dp,
                     vertical = PLAYER_MORE_OUTSIDE_MARGIN_DP.dp
@@ -278,7 +282,7 @@ internal fun PlayerMoreViewOverlay(
                     // Compact-screen Miuix DialogContentLayout uses the full window height as
                     // its entrance travel distance and keeps alpha opaque.
                     translationY = if (targetLayoutReady) {
-                        (1f - displayedProgress) * windowHeightPx
+                        (1f - displayedProgressProvider()) * windowHeightPx
                     } else {
                         0f
                     }
@@ -305,27 +309,41 @@ internal fun PlayerMoreViewOverlay(
             }
         }
 
-        if (activeArtwork != null && floatingBounds != null && floatingArtworkAlpha > 0.001f) {
-            val bounds = floatingBounds
-            val width = with(density) { bounds.width.toDp().coerceAtLeast(1.dp) }
-            val height = with(density) { bounds.height.toDp().coerceAtLeast(1.dp) }
-            val radius = sourceArtworkRadiusDp.dp +
-                (targetArtworkRadiusDp.dp - sourceArtworkRadiusDp.dp) * displayedProgress
+        if (activeArtwork != null && source != null && floatingArtworkActive) {
             Image(
                 bitmap = activeArtwork.asImageBitmap(),
                 contentDescription = null,
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                 modifier = Modifier
                     .offset {
+                        val bounds = interpolateArtworkBounds(
+                            source,
+                            target,
+                            displayedProgressProvider()
+                        ) ?: source
                         IntOffset(
                             bounds.left.roundToInt(),
                             bounds.top.roundToInt()
                         )
                     }
-                    .size(width, height)
-                    .clip(RoundedCornerShape(radius))
+                    .layout { measurable, _ ->
+                        val bounds = interpolateArtworkBounds(
+                            source,
+                            target,
+                            displayedProgressProvider()
+                        ) ?: source
+                        val width = bounds.width.roundToInt().coerceAtLeast(1)
+                        val height = bounds.height.roundToInt().coerceAtLeast(1)
+                        val placeable = measurable.measure(Constraints.fixed(width, height))
+                        layout(width, height) { placeable.place(0, 0) }
+                    }
                     .graphicsLayer {
-                        alpha = floatingArtworkAlpha
+                        val p = displayedProgressProvider().coerceIn(0f, 1f)
+                        val radiusDp = sourceArtworkRadiusDp +
+                            (targetArtworkRadiusDp - sourceArtworkRadiusDp) * p
+                        shape = RoundedCornerShape(radiusDp.dp)
+                        clip = true
+                        alpha = 1f
                     }
                     .zIndex(31f)
             )

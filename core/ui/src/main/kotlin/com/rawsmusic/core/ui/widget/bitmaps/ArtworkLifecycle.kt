@@ -25,7 +25,7 @@ enum class ArtworkSurface(
         // A list holder is a cold, transient observer. A single null while the media provider,
         // native extractor, or storage mount is settling must not become a provider-wide
         // no-art decision. Commit the not-found wrapper only after the source record
-        // has completed its probe; list rows retry through the same source record instead.
+        // has completed its probe; a later holder bind/source-record revision may probe again.
         rememberNullAsNoArt = false,
         scheduleIndexerOnMiss = false,
         // A visible holder must not start JPEG compression while a fling is decoding rows. The
@@ -60,13 +60,16 @@ enum class ArtworkSurface(
         allowsSourceDecode = true,
         rememberNullAsNoArt = true,
         scheduleIndexerOnMiss = false,
-        allowDiskThumbnailWrite = true
+        // The active playback wrapper is already retained in memory. Writing a thumbnail for
+        // every manual/natural track switch duplicates source work and causes a visible power
+        // spike; persistent source artifacts are owned by the artwork indexer instead.
+        allowDiskThumbnailWrite = false
     ),
     Fullscreen(
         allowsSourceDecode = true,
         rememberNullAsNoArt = true,
         scheduleIndexerOnMiss = false,
-        allowDiskThumbnailWrite = true
+        allowDiskThumbnailWrite = false
     ),
     Widget(
         allowsSourceDecode = true,
@@ -137,7 +140,9 @@ class ArtworkHandle internal constructor(
 internal data class ArtworkDecodeResult(
     val bitmap: Bitmap?,
     val terminalNoArt: Boolean,
-    val coalesceSourceTiers: Boolean = false
+    val coalesceSourceTiers: Boolean = false,
+    /** Version-stable decoder source string used by the provider P-equivalent source map. */
+    val providerSourceString: String = "",
 ) {
     companion object {
         val LightweightMiss = ArtworkDecodeResult(bitmap = null, terminalNoArt = false)

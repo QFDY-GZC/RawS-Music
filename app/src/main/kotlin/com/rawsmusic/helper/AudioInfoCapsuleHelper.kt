@@ -35,6 +35,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,6 +50,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -70,6 +72,9 @@ import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.widget.predictiveDialogMotion
 import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.prefs.AudioInfoCapsuleContentStyle
+import com.rawsmusic.module.data.prefs.AudioInfoCapsulePreferences
+import com.rawsmusic.module.data.prefs.UsbBitPerfectMode
 import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.PlayerController
 import com.rawsmusic.module.player.dsp.PEQFilter
@@ -102,6 +107,9 @@ class AudioInfoCapsuleHelper(
         private set
 
     var capsuleText by mutableStateOf("")
+        private set
+
+    var playbackChainText by mutableStateOf("")
         private set
 
     /** 当前歌词文本，由外部设置 */
@@ -168,6 +176,7 @@ class AudioInfoCapsuleHelper(
     fun updateText() {
         val pc = getPlayerController()
         val song = pc?.currentSong?.value
+        playbackChainText = playbackChainText(pc, song)
         capsuleText = when (capsuleState) {
             1 -> getOutputDeviceInfo()
             2 -> outputFormatText(pc, song)
@@ -176,6 +185,67 @@ class AudioInfoCapsuleHelper(
                 ?: sourceFormatText(song)
             else -> sourceFormatText(song)
         }
+    }
+
+
+    /** Refresh only the fixed playback-chain style without disturbing the legacy cycle state. */
+    fun updatePlaybackChainText() {
+        if (AudioInfoCapsulePreferences.contentStyleValue != AudioInfoCapsuleContentStyle.PLAYBACK_CHAIN) return
+        val pc = getPlayerController()
+        playbackChainText = playbackChainText(pc, pc?.currentSong?.value)
+    }
+
+    private fun playbackChainText(
+        pc: PlayerController?,
+        song: com.rawsmusic.core.common.model.AudioFile?
+    ): String {
+        val output = if (pc?.isUsbExclusiveActive() == true) {
+            val status = runCatching { pc.getUsbDeviceStatus() }.getOrNull()
+            val dsd = status?.actualOutputFormat
+                ?.takeIf { it.startsWith("DSD", ignoreCase = true) }
+                ?.uppercase()
+            val rate = pc.getUsbOutputSampleRate().takeIf { it > 0 }
+            when {
+                !dsd.isNullOrBlank() -> "USB:$dsd"
+                rate != null -> "USB:${formatSampleRate(rate).uppercase()}"
+                else -> "USB"
+            }
+        } else {
+            val player = pc?.ffmpegPlayerRef
+            val backend = when (player?.currentRuntimeOutputMode()) {
+                AudioOutputMode.OPENSL_ES -> "OPENSL"
+                AudioOutputMode.AAUDIO -> "AAUDIO"
+                AudioOutputMode.DIRECT -> "DIRECT"
+                AudioOutputMode.AUDIO_TRACK -> "AUDIOTRACK"
+                null -> "AUDIO"
+            }
+            val rate = player?.currentRuntimeOutputSampleRate()?.takeIf { it > 0 }
+            if (rate != null) "$backend:${formatSampleRate(rate).uppercase()}" else backend
+        }
+
+        val format = when {
+            !song?.format.isNullOrBlank() -> song?.format?.uppercase()
+            song?.isDsdSourceFile() == true -> "DSD"
+            else -> null
+        }
+        val bits = when {
+            song?.isDsdSourceFile() == true -> "1 BIT"
+            song?.bitsPerSample?.let { it > 0 } == true -> "${song.bitsPerSample} BIT"
+            song != null && com.rawsmusic.module.scanner.AudioBitDepthResolver.isLossyDisplayFormat(song.format) -> "LOSSY"
+            else -> null
+        }
+        val sample = song?.sampleRate?.takeIf { it > 0 }?.let { formatSampleRate(it).uppercase() }
+        val bitrate = song?.bitRate?.takeIf { it > 0 }?.let {
+            com.rawsmusic.core.common.utils.BitrateNormalizer.formatKbps(it, song.duration, song.fileSize).uppercase()
+        }
+        val sourceHead = when {
+            format != null && bits != null -> "$format:$bits"
+            format != null -> format
+            bits != null -> bits
+            else -> "LOCAL AUDIO"
+        }
+        val source = listOfNotNull(sourceHead, sample, bitrate).joinToString("  ")
+        return "$output  $source"
     }
 
     private fun sourceFormatText(song: com.rawsmusic.core.common.model.AudioFile?): String {
@@ -214,7 +284,7 @@ class AudioInfoCapsuleHelper(
         val outputSr = if (usbSr > 0) usbSr else (ffmpegPlayer?.wavSampleRate ?: 0)
         val outputBits = ffmpegPlayer?.wavBitsPerSample ?: 0
         val bits = outputBits.takeIf { it > 0 }?.let { "$it BIT" }
-        val sample = outputSr.takeIf { it > 0 }?.let { "${it / 1000} KHZ" }
+        val sample = outputSr.takeIf { it > 0 }?.let { formatSampleRate(it).uppercase() }
         return listOfNotNull(bits, sample)
             .takeIf { it.isNotEmpty() }
             ?.joinToString("  ")
@@ -466,13 +536,13 @@ class AudioInfoCapsuleHelper(
         val outputApi = if (isUsbExclusive) "USB DAC 独占" else AudioOutputManager.getOutputModeLabel(actualOutputMode)
         val outputSettingsDest = if (isUsbExclusive) R.id.nav_usb_dac_settings else R.id.nav_audio_settings
         val trackIcon = resolveTrackFormatIcon(fmt, song.path)
-        val bitPerfectIconActive = isUsbExclusive && AppPreferences.Player.bitPerfectEnabled
+        val usbStatus = if (isUsbExclusive) runCatching { pc.getUsbDeviceStatus() }.getOrNull() else null
+        val bitPerfectIconActive = isUsbExclusive && usbStatus?.bitPerfect == true
         val outputIcon = resolveOutputProtocolIcon(
             isUsbExclusive = isUsbExclusive,
             outputMode = actualOutputMode,
             bitPerfectActive = bitPerfectIconActive
         )
-        val usbStatus = if (isUsbExclusive) runCatching { pc.getUsbDeviceStatus() }.getOrNull() else null
         val srChanged = ffmpegOutputSr > 0 && srcSr > 0 && srcSr != ffmpegOutputSr
         val bdChanged = ffmpegOutputBd > 0 && srcBd > 0 && srcBd != ffmpegOutputBd
         val targetSr = if (isUsbExclusive) AppPreferences.Player.usbTargetSampleRate else AppPreferences.Player.targetSampleRate
@@ -813,8 +883,19 @@ class AudioInfoCapsuleHelper(
         if (usbStatus?.dsdActive == true) {
             return if (usbStatus.dsdSourceDirect) "DSD源直通" else "关闭，当前为 PCM→DSD"
         }
-        if (!AppPreferences.Player.bitPerfectEnabled) return "关闭"
-        return if (!srChanged && !bdChanged) "开启，当前直通" else "开启，但当前发生格式转换"
+        return when (AppPreferences.Player.usbBitPerfectMode) {
+            UsbBitPerfectMode.OFF -> "关闭"
+            UsbBitPerfectMode.WHEN_POSSIBLE -> if (usbStatus?.bitPerfect == true) {
+                "当可能时：当前直通"
+            } else {
+                "当可能时：当前已降级"
+            }
+            UsbBitPerfectMode.STRICT -> if (usbStatus?.bitPerfect == true && !srChanged && !bdChanged) {
+                "严格：当前直通"
+            } else {
+                "严格：未建立直通"
+            }
+        }
     }
 
     private fun buildResampleLines(
@@ -1007,6 +1088,13 @@ fun AudioInfoCapsuleOverlay(
     modifier: Modifier = Modifier
 ) {
     val data = helper.popupDataForCompose() ?: return
+    val popupBackgroundArgb by AudioInfoCapsulePreferences.popupBackgroundColor.collectAsState()
+    val popupBackground = ComposeColor(popupBackgroundArgb)
+    val popupContentColor = if (popupBackground.luminance() >= 0.52f) {
+        ComposeColor.Black
+    } else {
+        ComposeColor.White
+    }
     val dismissProgress = rememberPredictiveDialogProgress(helper.isPopupShowing, helper::dismissPopup)
     LaunchedEffect(helper.isPopupShowing) {
         while (isActive && helper.isPopupShowing) {
@@ -1048,7 +1136,7 @@ fun AudioInfoCapsuleOverlay(
                             .heightIn(min = 320.dp, max = popupMaxHeight)
                             .wrapContentHeight()
                             .clip(RoundedCornerShape(22.dp))
-                            .background(ComposeColor(0xFF2D2D2D))
+                            .background(popupBackground)
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
@@ -1065,12 +1153,12 @@ fun AudioInfoCapsuleOverlay(
                         Image(
                             painter = painterResource(R.drawable.ic_info),
                             contentDescription = null,
-                            colorFilter = ColorFilter.tint(ComposeColor.White.copy(alpha = 0.7f)),
+                            colorFilter = ColorFilter.tint(popupContentColor.copy(alpha = 0.70f)),
                             modifier = Modifier.size(22.dp)
                         )
                         Text(
                             text = stringResource(R.string.audio_information_title),
-                            color = ComposeColor.White,
+                            color = popupContentColor,
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier
@@ -1080,7 +1168,7 @@ fun AudioInfoCapsuleOverlay(
                         Image(
                             painter = painterResource(R.drawable.ic_settings),
                             contentDescription = null,
-                            colorFilter = ColorFilter.tint(ComposeColor.White.copy(alpha = 0.7f)),
+                            colorFilter = ColorFilter.tint(popupContentColor.copy(alpha = 0.70f)),
                             modifier = Modifier
                                 .size(36.dp)
                                 .clip(CircleShape)
@@ -1102,6 +1190,7 @@ fun AudioInfoCapsuleOverlay(
                             AudioInfoSection(
                                 section = section,
                                 showConnector = index != data.sections.lastIndex,
+                                contentColor = popupContentColor,
                                 onNavigate = { link ->
                                     helper.dismissPopup()
                                     helper.navigateFromCompose(link)
@@ -1120,13 +1209,14 @@ fun AudioInfoCapsuleOverlay(
 private fun AudioInfoSection(
     section: TimelineSection,
     showConnector: Boolean,
+    contentColor: ComposeColor,
     onNavigate: (AudioInfoLink) -> Unit
 ) {
     var contentHeightPx by remember { mutableStateOf(0) }
     val density = LocalDensity.current
     val iconSizeDp = section.iconSizeDp.dp
     val iconGapDp = 8.dp
-    val connectorColor = ComposeColor.White.copy(alpha = 0.22f)
+    val connectorColor = contentColor.copy(alpha = 0.22f)
 
     Row(
         modifier = Modifier
@@ -1141,7 +1231,7 @@ private fun AudioInfoSection(
             Image(
                 painter = painterResource(section.iconRes),
                 contentDescription = null,
-                colorFilter = if (section.tintIcon) ColorFilter.tint(ComposeColor.White.copy(alpha = 0.7f)) else null,
+                colorFilter = if (section.tintIcon) ColorFilter.tint(contentColor.copy(alpha = 0.70f)) else null,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.size(iconSizeDp)
             )
@@ -1187,7 +1277,7 @@ private fun AudioInfoSection(
         ) {
             Text(
                 text = section.title,
-                color = ComposeColor.White,
+                color = contentColor,
                 fontSize = 17.sp,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(bottom = 6.dp)
@@ -1198,9 +1288,9 @@ private fun AudioInfoSection(
                 Text(
                     text = line.text,
                     color = when {
-                        clickable -> ComposeColor.White
-                        line.isLabel -> ComposeColor.White.copy(alpha = 0.4f)
-                        else -> ComposeColor.White.copy(alpha = 0.7f)
+                        clickable -> contentColor
+                        line.isLabel -> contentColor.copy(alpha = 0.42f)
+                        else -> contentColor.copy(alpha = 0.72f)
                     },
                     fontSize = if (line.isLabel) 12.sp else 13.5.sp,
                     lineHeight = 18.sp,

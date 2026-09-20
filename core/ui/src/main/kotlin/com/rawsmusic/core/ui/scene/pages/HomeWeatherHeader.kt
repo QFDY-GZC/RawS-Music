@@ -35,7 +35,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.airbnb.lottie.compose.LottieAnimation
 import com.airbnb.lottie.compose.LottieCompositionSpec
-import com.airbnb.lottie.compose.LottieConstants
 import com.airbnb.lottie.compose.rememberLottieComposition
 import com.rawsmusic.core.ui.R
 import java.net.HttpURLConnection
@@ -48,14 +47,13 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Text
+import com.rawsmusic.core.ui.widget.flow.referenceStaticForeground
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 private const val WEATHER_CACHE_VALID_MS = 30L * 60L * 1_000L
 private const val WEATHER_REFRESH_MS = 30L * 60L * 1_000L
-private const val WEATHER_ICON_ACTIVE_MS = 5_000L
-private const val WEATHER_ICON_PAUSE_MS = 2_000L
 
 private data class HomeWeatherSnapshot(
     val weatherCode: Int,
@@ -136,12 +134,9 @@ internal fun HomeWeatherHeader(
 
     LaunchedEffect(presentation.iconRes, composition) {
         if (composition == null) return@LaunchedEffect
-        while (true) {
-            iconAnimationPlaying = true
-            delay(WEATHER_ICON_ACTIVE_MS)
-            iconAnimationPlaying = false
-            delay(WEATHER_ICON_PAUSE_MS)
-        }
+        // Weather art is an event animation, not an ambient render loop. Keeping Lottie in an
+        // infinite play/pause cycle makes an otherwise idle home page redraw continuously.
+        iconAnimationPlaying = true
     }
 
     Row(
@@ -164,7 +159,7 @@ internal fun HomeWeatherHeader(
         ) {
             LottieAnimation(
                 composition = composition,
-                iterations = LottieConstants.IterateForever,
+                iterations = 1,
                 isPlaying = iconAnimationPlaying,
                 restartOnPlay = false,
                 modifier = Modifier.size(58.dp)
@@ -175,12 +170,12 @@ internal fun HomeWeatherHeader(
             Text(
                 text = presentation.title,
                 fontSize = 20.sp,
-                color = MiuixTheme.colorScheme.onBackground
+                color = referenceStaticForeground(MiuixTheme.colorScheme.onBackground)
             )
             Text(
                 text = presentation.message,
                 fontSize = 13.sp,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+                color = referenceStaticForeground(MiuixTheme.colorScheme.onSurfaceVariantSummary, 0.72f)
             )
         }
     }

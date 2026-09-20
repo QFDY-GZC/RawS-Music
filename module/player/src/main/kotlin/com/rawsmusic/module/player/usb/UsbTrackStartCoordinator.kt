@@ -2,6 +2,7 @@ package com.rawsmusic.module.player.usb
 
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.prefs.UsbBitPerfectMode
 
 /**
  * USB track cutover sequencing. Device discovery and native session ownership
@@ -32,7 +33,10 @@ internal class UsbTrackStartCoordinator(
             channels = channels,
             requestedTargetBits = AppPreferences.Player.usbTargetBitDepth,
             pcmMode = UsbPcmOutputMode.fromId(AppPreferences.Player.usbPcmOutputMode),
-            strictBitPerfect = AppPreferences.Player.bitPerfectEnabled && bits <= 32,
+            strictBitPerfect = UsbVolumeModeBitPerfectPolicy.shouldPreArmStrict(
+                AppPreferences.Player.usbBitPerfectMode,
+                AppPreferences.Player.usbVolumeMode,
+            ) && bits <= 32,
             pcmDsdActive = AppPreferences.Player.dsdConversionEnabled,
         )
         if (config == null) {

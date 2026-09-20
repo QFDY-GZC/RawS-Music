@@ -41,7 +41,8 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 fun TransitionSettingsScreen(onBack: () -> Unit) {
     var expandedCard by remember { mutableStateOf(TransitionCard.Manual) }
     var manualMode by remember { mutableStateOf(TransitionPreferences.manualTrackTransitionMode) }
-    var manualDurationMs by remember { mutableStateOf(TransitionPreferences.manualTrackFadeMs) }
+    var shortManualDurationMs by remember { mutableStateOf(TransitionPreferences.shortManualFadeMs) }
+    var fullCrossfadeDurationMs by remember { mutableStateOf(TransitionPreferences.fullManualCrossfadeMs) }
     var automaticCrossfadeEnabled by remember { mutableStateOf(AppPreferences.Player.automaticCrossfadeEnabled) }
     var transportEnabled by remember { mutableStateOf(TransitionPreferences.transportFadeEnabled) }
     var transportDurationMs by remember { mutableStateOf(TransitionPreferences.transportFadeMs) }
@@ -95,20 +96,37 @@ fun TransitionSettingsScreen(onBack: () -> Unit) {
                 }
             )
             Spacer(Modifier.height(8.dp))
-            DurationSlider(
-                title = stringResource(R.string.transition_manual_duration_title),
-                description = stringResource(R.string.transition_manual_duration_desc),
-                valueMs = manualDurationMs,
-                minMs = TransitionPreferences.MANUAL_DURATION_MIN_MS,
-                maxMs = TransitionPreferences.MANUAL_DURATION_MAX_MS,
-                stepMs = 10,
-                enabled = manualMode != TransitionPreferences.ManualTrackTransitionMode.NONE,
-                onValueChange = {
-                    manualDurationMs = it
-                    TransitionPreferences.manualTrackFadeMs = it
-                    notifyChanged()
-                }
-            )
+            when (manualMode) {
+                TransitionPreferences.ManualTrackTransitionMode.NONE -> Unit
+                TransitionPreferences.ManualTrackTransitionMode.SHORT_FADE -> DurationSlider(
+                    title = stringResource(R.string.transition_manual_short_duration_title),
+                    description = stringResource(R.string.transition_manual_short_duration_desc),
+                    valueMs = shortManualDurationMs,
+                    minMs = TransitionPreferences.SHORT_MANUAL_DURATION_MIN_MS,
+                    maxMs = TransitionPreferences.SHORT_MANUAL_DURATION_MAX_MS,
+                    stepMs = 10,
+                    enabled = true,
+                    onValueChange = {
+                        shortManualDurationMs = it
+                        TransitionPreferences.shortManualFadeMs = it
+                        notifyChanged()
+                    }
+                )
+                TransitionPreferences.ManualTrackTransitionMode.CROSSFADE -> DurationSlider(
+                    title = stringResource(R.string.transition_manual_full_duration_title),
+                    description = stringResource(R.string.transition_manual_full_duration_desc),
+                    valueMs = fullCrossfadeDurationMs,
+                    minMs = TransitionPreferences.FULL_CROSSFADE_DURATION_MIN_MS,
+                    maxMs = TransitionPreferences.FULL_CROSSFADE_DURATION_MAX_MS,
+                    stepMs = 50,
+                    enabled = true,
+                    onValueChange = {
+                        fullCrossfadeDurationMs = it
+                        TransitionPreferences.fullManualCrossfadeMs = it
+                        notifyChanged()
+                    }
+                )
+            }
         }
 
         ExpandableTransitionCard(

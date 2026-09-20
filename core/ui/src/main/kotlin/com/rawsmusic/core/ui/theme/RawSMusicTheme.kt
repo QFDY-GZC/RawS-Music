@@ -2,6 +2,8 @@ package com.rawsmusic.core.ui.theme
 
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
+import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
@@ -12,16 +14,21 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFontFamilyResolver
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.createFontFamilyResolver
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.em
 import com.rawsmusic.core.common.prefs.UIPreferences
 import com.rawsmusic.core.ui.scene.pages.PageColors
 import com.rawsmusic.module.data.prefs.AppPreferences
-import com.rawsmusic.module.data.prefs.FontManager
+import java.io.File
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
@@ -62,7 +69,18 @@ fun RawSMusicTheme(
 ) {
     val runtimeVersion = RawThemeRuntimeState.version
     val globalFontFamily = remember(runtimeVersion) {
-        FontManager.typeface?.let(::FontFamily) ?: FontFamily.Default
+        AppPreferences.UI.customFontPath
+            .takeIf { it.isNotBlank() }
+            ?.let { path ->
+                runCatching {
+                    // Register the selected file as its source face and let Compose resolve the
+                    // requested TextStyle weight. Wrapping a preloaded Android Typeface here
+                    // freezes many text paths to that one face and makes the global weight offset
+                    // appear to do nothing.
+                    FontFamily(Font(File(path), FontWeight.Normal))
+                }.getOrNull()
+            }
+            ?: FontFamily.Default
     }
     val globalFontWeight = remember(runtimeVersion) {
         AppPreferences.UI.fontWeight.coerceIn(100, 900)
@@ -71,13 +89,46 @@ fun RawSMusicTheme(
         AppPreferences.UI.fontItalic
     }
     val globalFontScale = remember(runtimeVersion) {
-        AppPreferences.UI.fontSizeScale.coerceIn(80, 130) / 100f
+        AppPreferences.UI.fontSizeScale.coerceIn(70, 160) / 100f
     }
-    val miuixTextStyles = remember(runtimeVersion, globalFontFamily, globalFontWeight, globalFontItalic) {
-        defaultTextStyles().withGlobalFont(globalFontFamily, globalFontWeight, globalFontItalic)
+    val globalLetterSpacingEm = remember(runtimeVersion) {
+        AppPreferences.UI.fontLetterSpacingEm.coerceIn(-0.05f, 0.20f)
     }
-    val materialTypography = remember(runtimeVersion, globalFontFamily, globalFontWeight, globalFontItalic) {
-        Typography().withGlobalFont(globalFontFamily, globalFontWeight, globalFontItalic)
+    // Android 12+ applies fontWeightAdjustment inside the platform font resolver, including
+    // Text calls that explicitly request Bold/Medium/SemiBold. Older releases retain the
+    // typography-level fallback.
+    val typographyFontWeight = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        400
+    } else {
+        globalFontWeight
+    }
+    val miuixTextStyles = remember(
+        runtimeVersion,
+        globalFontFamily,
+        typographyFontWeight,
+        globalFontItalic,
+        globalLetterSpacingEm,
+    ) {
+        defaultTextStyles().withGlobalFont(
+            globalFontFamily,
+            typographyFontWeight,
+            globalFontItalic,
+            globalLetterSpacingEm,
+        )
+    }
+    val materialTypography = remember(
+        runtimeVersion,
+        globalFontFamily,
+        typographyFontWeight,
+        globalFontItalic,
+        globalLetterSpacingEm,
+    ) {
+        Typography().withGlobalFont(
+            globalFontFamily,
+            typographyFontWeight,
+            globalFontItalic,
+            globalLetterSpacingEm,
+        )
     }
     val activeThemeMode = remember(runtimeVersion, themeMode) {
         ThemeManager.getCurrentTheme()
@@ -125,7 +176,7 @@ fun RawSMusicTheme(
                 divider = cs.onSurfaceVariantSummary.copy(alpha = if (isDark) 0.20f else 0.14f)
             )
             RawSystemBars(background = pageBg, isDark = isDark)
-            GlobalFontScope(globalFontScale, materialTypography, content)
+            GlobalFontScope(globalFontScale, globalFontWeight, materialTypography, content)
         }
     } else {
         RawMonetTheme(
@@ -171,7 +222,7 @@ fun RawSMusicTheme(
                     accent = monet.accent,
                     divider = monet.divider
                 )
-                GlobalFontScope(globalFontScale, materialTypography, content)
+                GlobalFontScope(globalFontScale, globalFontWeight, materialTypography, content)
             }
         }
     }
@@ -180,17 +231,36 @@ fun RawSMusicTheme(
 @Composable
 private fun GlobalFontScope(
     scale: Float,
+    fontWeight: Int,
     typography: Typography,
     content: @Composable () -> Unit
 ) {
+    val context = LocalContext.current
     val density = LocalDensity.current
+    val platformFontResolver = LocalFontFamilyResolver.current
     val scaledDensity = remember(density.density, density.fontScale, scale) {
         Density(
             density = density.density,
             fontScale = density.fontScale * scale
         )
     }
-    CompositionLocalProvider(LocalDensity provides scaledDensity) {
+    val weightedFontResolver = remember(context, platformFontResolver, fontWeight) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val configuration = Configuration(context.resources.configuration)
+            val systemAdjustment = configuration.fontWeightAdjustment
+                .takeUnless { it == Configuration.FONT_WEIGHT_ADJUSTMENT_UNDEFINED }
+                ?: 0
+            configuration.fontWeightAdjustment =
+                systemAdjustment + fontWeight.coerceIn(100, 900) - 400
+            createFontFamilyResolver(context.createConfigurationContext(configuration))
+        } else {
+            platformFontResolver
+        }
+    }
+    CompositionLocalProvider(
+        LocalDensity provides scaledDensity,
+        LocalFontFamilyResolver provides weightedFontResolver,
+    ) {
         MaterialTheme(typography = typography, content = content)
     }
 }
@@ -198,56 +268,60 @@ private fun GlobalFontScope(
 private fun top.yukonga.miuix.kmp.theme.TextStyles.withGlobalFont(
     family: FontFamily,
     weight: Int,
-    italic: Boolean
+    italic: Boolean,
+    letterSpacingEm: Float,
 ): top.yukonga.miuix.kmp.theme.TextStyles = copy(
-    main = main.withGlobalFont(family, weight, italic),
-    paragraph = paragraph.withGlobalFont(family, weight, italic),
-    body1 = body1.withGlobalFont(family, weight, italic),
-    body2 = body2.withGlobalFont(family, weight, italic),
-    button = button.withGlobalFont(family, weight, italic),
-    footnote1 = footnote1.withGlobalFont(family, weight, italic),
-    footnote2 = footnote2.withGlobalFont(family, weight, italic),
-    headline1 = headline1.withGlobalFont(family, weight, italic),
-    headline2 = headline2.withGlobalFont(family, weight, italic),
-    subtitle = subtitle.withGlobalFont(family, weight, italic),
-    title1 = title1.withGlobalFont(family, weight, italic),
-    title2 = title2.withGlobalFont(family, weight, italic),
-    title3 = title3.withGlobalFont(family, weight, italic),
-    title4 = title4.withGlobalFont(family, weight, italic)
+    main = main.withGlobalFont(family, weight, italic, letterSpacingEm),
+    paragraph = paragraph.withGlobalFont(family, weight, italic, letterSpacingEm),
+    body1 = body1.withGlobalFont(family, weight, italic, letterSpacingEm),
+    body2 = body2.withGlobalFont(family, weight, italic, letterSpacingEm),
+    button = button.withGlobalFont(family, weight, italic, letterSpacingEm),
+    footnote1 = footnote1.withGlobalFont(family, weight, italic, letterSpacingEm),
+    footnote2 = footnote2.withGlobalFont(family, weight, italic, letterSpacingEm),
+    headline1 = headline1.withGlobalFont(family, weight, italic, letterSpacingEm),
+    headline2 = headline2.withGlobalFont(family, weight, italic, letterSpacingEm),
+    subtitle = subtitle.withGlobalFont(family, weight, italic, letterSpacingEm),
+    title1 = title1.withGlobalFont(family, weight, italic, letterSpacingEm),
+    title2 = title2.withGlobalFont(family, weight, italic, letterSpacingEm),
+    title3 = title3.withGlobalFont(family, weight, italic, letterSpacingEm),
+    title4 = title4.withGlobalFont(family, weight, italic, letterSpacingEm)
 )
 
 private fun Typography.withGlobalFont(
     family: FontFamily,
     weight: Int,
-    italic: Boolean
+    italic: Boolean,
+    letterSpacingEm: Float,
 ): Typography = copy(
-    displayLarge = displayLarge.withGlobalFont(family, weight, italic),
-    displayMedium = displayMedium.withGlobalFont(family, weight, italic),
-    displaySmall = displaySmall.withGlobalFont(family, weight, italic),
-    headlineLarge = headlineLarge.withGlobalFont(family, weight, italic),
-    headlineMedium = headlineMedium.withGlobalFont(family, weight, italic),
-    headlineSmall = headlineSmall.withGlobalFont(family, weight, italic),
-    titleLarge = titleLarge.withGlobalFont(family, weight, italic),
-    titleMedium = titleMedium.withGlobalFont(family, weight, italic),
-    titleSmall = titleSmall.withGlobalFont(family, weight, italic),
-    bodyLarge = bodyLarge.withGlobalFont(family, weight, italic),
-    bodyMedium = bodyMedium.withGlobalFont(family, weight, italic),
-    bodySmall = bodySmall.withGlobalFont(family, weight, italic),
-    labelLarge = labelLarge.withGlobalFont(family, weight, italic),
-    labelMedium = labelMedium.withGlobalFont(family, weight, italic),
-    labelSmall = labelSmall.withGlobalFont(family, weight, italic)
+    displayLarge = displayLarge.withGlobalFont(family, weight, italic, letterSpacingEm),
+    displayMedium = displayMedium.withGlobalFont(family, weight, italic, letterSpacingEm),
+    displaySmall = displaySmall.withGlobalFont(family, weight, italic, letterSpacingEm),
+    headlineLarge = headlineLarge.withGlobalFont(family, weight, italic, letterSpacingEm),
+    headlineMedium = headlineMedium.withGlobalFont(family, weight, italic, letterSpacingEm),
+    headlineSmall = headlineSmall.withGlobalFont(family, weight, italic, letterSpacingEm),
+    titleLarge = titleLarge.withGlobalFont(family, weight, italic, letterSpacingEm),
+    titleMedium = titleMedium.withGlobalFont(family, weight, italic, letterSpacingEm),
+    titleSmall = titleSmall.withGlobalFont(family, weight, italic, letterSpacingEm),
+    bodyLarge = bodyLarge.withGlobalFont(family, weight, italic, letterSpacingEm),
+    bodyMedium = bodyMedium.withGlobalFont(family, weight, italic, letterSpacingEm),
+    bodySmall = bodySmall.withGlobalFont(family, weight, italic, letterSpacingEm),
+    labelLarge = labelLarge.withGlobalFont(family, weight, italic, letterSpacingEm),
+    labelMedium = labelMedium.withGlobalFont(family, weight, italic, letterSpacingEm),
+    labelSmall = labelSmall.withGlobalFont(family, weight, italic, letterSpacingEm)
 )
 
 private fun TextStyle.withGlobalFont(
     family: FontFamily,
     weight: Int,
-    italic: Boolean
+    italic: Boolean,
+    letterSpacingEm: Float,
 ): TextStyle {
     val adjustedWeight = ((fontWeight?.weight ?: 400) + weight - 400).coerceIn(100, 900)
     return copy(
         fontFamily = family,
         fontWeight = FontWeight(adjustedWeight),
-        fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal
+        fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal,
+        letterSpacing = letterSpacingEm.em,
     )
 }
 

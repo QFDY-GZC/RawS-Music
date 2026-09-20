@@ -390,19 +390,25 @@ Java_com_rawsmusic_lyrico_runtime_QuickJsNative_closeRuntime(
     }
 
     auto *state = reinterpret_cast<QuickJsRuntimeState *>(runtimePtr);
-    std::lock_guard<std::mutex> lock(state->mutex);
-    JNIEnv *env = getEnv(state);
-    if (state->context != nullptr) {
-        JS_FreeContext(state->context);
-        state->context = nullptr;
-    }
-    if (state->hostApi != nullptr && env != nullptr) {
-        env->DeleteGlobalRef(state->hostApi);
-        state->hostApi = nullptr;
-    }
-    if (state->runtime != nullptr) {
-        JS_FreeRuntime(state->runtime);
-        state->runtime = nullptr;
+    {
+        // The mutex is a member of state. It must be unlocked before state is deleted;
+        // otherwise lock_guard's destructor tries to unlock freed memory. Every Lyrico
+        // request closes a short-lived runtime, so that use-after-free surfaced as a
+        // probabilistic native crash when opening/searching the lyric page.
+        std::lock_guard<std::mutex> lock(state->mutex);
+        JNIEnv *env = getEnv(state);
+        if (state->context != nullptr) {
+            JS_FreeContext(state->context);
+            state->context = nullptr;
+        }
+        if (state->hostApi != nullptr && env != nullptr) {
+            env->DeleteGlobalRef(state->hostApi);
+            state->hostApi = nullptr;
+        }
+        if (state->runtime != nullptr) {
+            JS_FreeRuntime(state->runtime);
+            state->runtime = nullptr;
+        }
     }
     delete state;
 }

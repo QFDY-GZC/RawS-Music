@@ -36,6 +36,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -59,6 +61,8 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkKeyContinuity
+import com.rawsmusic.core.ui.widget.bitmaps.fileArtworkKeyOrNull
 import com.rawsmusic.module.data.repository.MusicRepository
 import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.PlayerController
@@ -147,12 +151,12 @@ class MetadataEditorHelper(
                         performMetadataUpdate(uri, values)
                     } else {
                         AppLogger.e("EditMetadata", "Write permission returned without pending metadata")
-                        Toast.makeText(activity, activity.getString(R.string.ui_metadata_save_state_expired), Toast.LENGTH_SHORT).show()
+                        AppNoticeBus.error(activity.getString(R.string.ui_metadata_save_state_expired))
                         isMetadataSaving = false
                     }
                 }
             } else {
-                Toast.makeText(activity, activity.getString(R.string.ui_metadata_write_permission_denied), Toast.LENGTH_SHORT).show()
+                AppNoticeBus.error(activity.getString(R.string.ui_metadata_write_permission_denied))
                 isMetadataSaving = false
             }
             clearPendingMetadataWrite()
@@ -284,7 +288,7 @@ class MetadataEditorHelper(
         AppLogger.d("EditMetadata", "Save clicked. FFmpeg write to: $filePath, meta=$ffmpegMeta")
 
         if (filePath.isBlank() || !File(filePath).exists()) {
-            Toast.makeText(activity, activity.getString(R.string.ui_metadata_file_missing, filePath), Toast.LENGTH_SHORT).show()
+            AppNoticeBus.error(activity.getString(R.string.ui_metadata_file_missing, filePath))
             return
         }
 
@@ -307,13 +311,15 @@ class MetadataEditorHelper(
             } catch (e: Exception) {
                 AppLogger.e("EditMetadata", "createWriteRequest failed", e)
                 clearPendingMetadataWrite()
-            Toast.makeText(activity, activity.getString(R.string.ui_metadata_permission_failed, e.message.orEmpty()), Toast.LENGTH_LONG).show()
+                AppNoticeBus.error(
+                    activity.getString(R.string.ui_metadata_permission_failed, e.message.orEmpty())
+                )
                 isMetadataSaving = false
             }
         } else {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !File(filePath).canWrite()) {
                 AppLogger.e("EditMetadata", "No MediaStore item and source is not directly writable: $filePath")
-            Toast.makeText(activity, activity.getString(R.string.ui_metadata_media_missing), Toast.LENGTH_LONG).show()
+                AppNoticeBus.error(activity.getString(R.string.ui_metadata_media_missing))
                 isMetadataSaving = false
                 return
             }
@@ -364,7 +370,7 @@ class MetadataEditorHelper(
             AppLogger.d("EditMetadata", "URI exists: $exists, URI: $uri")
 
             if (!exists) {
-            Toast.makeText(activity, activity.getString(R.string.ui_metadata_song_missing), Toast.LENGTH_SHORT).show()
+                AppNoticeBus.error(activity.getString(R.string.ui_metadata_song_missing))
                 return
             }
 
@@ -390,15 +396,18 @@ class MetadataEditorHelper(
             AppLogger.d("EditMetadata", "Updated rows: $rows")
 
             if (rows > 0) {
-                Toast.makeText(activity, activity.getString(R.string.ui_saved), Toast.LENGTH_SHORT).show()
+                AppNoticeBus.post(
+                    message = activity.getString(R.string.ui_saved),
+                    icon = AppNoticeIcon.METADATA,
+                )
                 finishMetadataSave(editingSong ?: getPlayerController()?.currentSong?.value)
             } else {
-                Toast.makeText(activity, activity.getString(R.string.ui_media_update_empty), Toast.LENGTH_SHORT).show()
+                AppNoticeBus.error(activity.getString(R.string.ui_media_update_empty))
                 isMetadataSaving = false
             }
         } catch (e: Exception) {
             AppLogger.e("EditMetadata", "Update failed", e)
-            Toast.makeText(activity, activity.getString(R.string.ui_save_failed, e.message.orEmpty()), Toast.LENGTH_SHORT).show()
+            AppNoticeBus.error(activity.getString(R.string.ui_save_failed, e.message.orEmpty()))
             isMetadataSaving = false
         }
     }
@@ -469,7 +478,7 @@ class MetadataEditorHelper(
                 if (ret != 0) {
                     tempFile.delete()
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(activity, activity.getString(R.string.ui_metadata_write_failed, ret), Toast.LENGTH_SHORT).show()
+                        AppNoticeBus.error(activity.getString(R.string.ui_metadata_write_failed, ret))
                         isMetadataSaving = false
                     }
                     return@launch
@@ -478,7 +487,7 @@ class MetadataEditorHelper(
                 if (!tempFile.exists() || tempFile.length() == 0L) {
                     AppLogger.e("EditMetadata", "Temp file missing or empty: ${tempFile.absolutePath}")
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(activity, activity.getString(R.string.ui_temp_file_missing), Toast.LENGTH_SHORT).show()
+                        AppNoticeBus.error(activity.getString(R.string.ui_temp_file_missing))
                         isMetadataSaving = false
                     }
                     return@launch
@@ -501,7 +510,7 @@ class MetadataEditorHelper(
                     AppLogger.e("EditMetadata", "Temp verification failed size=$tempSize duration=$tempDuration")
                     tempFile.delete()
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(activity, activity.getString(R.string.ui_temp_file_invalid), Toast.LENGTH_SHORT).show()
+                        AppNoticeBus.error(activity.getString(R.string.ui_temp_file_invalid))
                         isMetadataSaving = false
                     }
                     return@launch
@@ -509,7 +518,7 @@ class MetadataEditorHelper(
 
                 if (!replaceAudioFileAtomically(originalFile, tempFile)) {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(activity, activity.getString(R.string.ui_file_replace_failed), Toast.LENGTH_SHORT).show()
+                        AppNoticeBus.error(activity.getString(R.string.ui_file_replace_failed))
                         isMetadataSaving = false
                     }
                     return@launch
@@ -543,19 +552,30 @@ class MetadataEditorHelper(
                     fileSize = originalFile.length(),
                     dateModified = originalFile.lastModified()
                 )
+                // Text-tag writes replace the file and therefore change the versioned artwork key
+                // even though this save path never writes embedded/folder artwork. Publish the
+                // exact continuity proof before repository/current-song StateFlows so the player
+                // can retain its already-uploaded artwork holder instead of invalidating/redecoding it.
+                PlaybackArtworkKeyContinuity.markMetadataOnlyRewrite(
+                    previousKey = updatedSong.fileArtworkKeyOrNull(),
+                    committedKey = committedSong.fileArtworkKeyOrNull(),
+                )
                 MusicRepository.updateSong(committedSong)
                 getPlayerController()?.updateCurrentSongIfSamePath(committedSong)
                 outputRebuilt = guardedController
                     ?.rebuildCurrentOpenSlAfterMetadataWrite(filePath) == true
 
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(activity, activity.getString(R.string.ui_saved), Toast.LENGTH_SHORT).show()
+                    AppNoticeBus.post(
+                        message = activity.getString(R.string.ui_saved),
+                        icon = AppNoticeIcon.METADATA,
+                    )
                     finishMetadataSave(committedSong)
                 }
             } catch (e: Exception) {
                 AppLogger.e("EditMetadata", "doFfmpegWrite failed", e)
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(activity, activity.getString(R.string.ui_save_failed, e.message.orEmpty()), Toast.LENGTH_SHORT).show()
+                    AppNoticeBus.error(activity.getString(R.string.ui_save_failed, e.message.orEmpty()))
                     isMetadataSaving = false
                 }
             } finally {
@@ -656,7 +676,14 @@ class MetadataEditorHelper(
         } else {
             getPlayerController()?.next()
             val deleted = MusicRepository.deleteSongFromDevice(activity, song)
-            Toast.makeText(activity, activity.getString(if (deleted) R.string.ui_deleted else R.string.ui_delete_failed), Toast.LENGTH_SHORT).show()
+            if (deleted) {
+                AppNoticeBus.post(
+                    message = activity.getString(R.string.ui_deleted),
+                    icon = AppNoticeIcon.AUDIO,
+                )
+            } else {
+                AppNoticeBus.error(activity.getString(R.string.ui_delete_failed))
+            }
         }
     }
 

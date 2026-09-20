@@ -5,6 +5,7 @@ import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.usb.UsbHardwareVolumeStore
+import com.rawsmusic.module.player.usb.UsbVolumeModeBitPerfectPolicy
 import com.rawsmusic.module.player.usb.UsbPolicyRestartSource
 
 /** Rebuilds an exclusive USB policy without coupling policy changes to transport controls. */
@@ -101,7 +102,15 @@ internal class PlayerUsbPolicyRestartCoordinator(
             }
             AppPreferences.Player.hardwareFeatureUnitEnabled = false
             AppPreferences.Player.usbVolumeMode = 0
-            setNativePolicy(exclusive, bitPerfect, false)
+            // Hardware-volume initialization can fail after a strict session was requested.
+            // Once we fall back to explicit software volume, effective PCM bit-perfect must be
+            // dropped as well; otherwise native keeps the PCM gain pinned at unity.
+            val softwareFallbackBitPerfect = UsbVolumeModeBitPerfectPolicy.effectivePcmBitPerfect(
+                candidate = bitPerfect,
+                usbVolumeMode = AppPreferences.Player.usbVolumeMode,
+            )
+            setFfmpegBitPerfect(softwareFallbackBitPerfect)
+            setNativePolicy(exclusive, softwareFallbackBitPerfect, false)
         }
         return ok
     }

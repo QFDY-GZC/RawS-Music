@@ -170,13 +170,13 @@ object AiRealtimeSeparationController {
     private fun observeCompletedResults() {
         resultObserverJob?.cancel()
         val controller = PlayerController.getInstanceOrNull() ?: return
-        val resultStore = AiSeparationResultStore.get(appContext)
+        val dependencyResolver = AiStemDependencyResolver.get(appContext)
         resultObserverJob = scope.launch {
-            combine(controller.currentSong, resultStore.results) { song, _ -> song }
+            combine(controller.currentSong, dependencyResolver.resultChanges) { song, _ -> song }
                 .collect { song ->
-                    val result = song?.let(resultStore::findFor)
-                    AiRealtimeOnnxPcmProcessor.setCachedResult(
-                        result = result,
+                    val dependency = song?.let(dependencyResolver::resolve)
+                    AiRealtimeOnnxPcmProcessor.setCachedDependency(
+                        dependency = dependency,
                         songIdentity = song?.let(::playbackIdentity).orEmpty(),
                     )
                 }
@@ -185,9 +185,9 @@ object AiRealtimeSeparationController {
 
     private fun configureCachedResult() {
         val song = PlayerController.getInstanceOrNull()?.currentSong?.value
-        val result = song?.let { AiSeparationResultStore.get(appContext).findFor(it) }
-        AiRealtimeOnnxPcmProcessor.setCachedResult(
-            result = result,
+        val dependency = song?.let { AiStemDependencyResolver.get(appContext).resolve(it) }
+        AiRealtimeOnnxPcmProcessor.setCachedDependency(
+            dependency = dependency,
             songIdentity = song?.let(::playbackIdentity).orEmpty(),
         )
     }

@@ -246,7 +246,12 @@ namespace
     std::pair("WM/SubTitle", "SUBTITLE"),
     std::pair("WM/SetSubTitle", "DISCSUBTITLE"),
     std::pair("WM/TrackNumber", "TRACKNUMBER"),
+    // ASF has no fixed fields for these totals, but its extended-content attributes are
+    // lossless and round-trippable. Keep distinct names instead of folding the totals into
+    // TRACKNUMBER/DISCNUMBER, because strict migration verifies each source property.
+    std::pair("WM/TrackTotal", "TRACKTOTAL"),
     std::pair("WM/PartOfSet", "DISCNUMBER"),
+    std::pair("WM/PartOfSetTotal", "DISCTOTAL"),
     std::pair("WM/Genre", "GENRE"),
     std::pair("WM/BeatsPerMinute", "BPM"),
     std::pair("WM/Mood", "MOOD"),
@@ -258,6 +263,7 @@ namespace
     std::pair("WM/CatalogNo", "CATALOGNUMBER"),
     std::pair("WM/Barcode", "BARCODE"),
     std::pair("WM/EncodedBy", "ENCODEDBY"),
+    std::pair("WM/Encoder", "ENCODER"),
     std::pair("WM/EncodingSettings", "ENCODING"),
     std::pair("WM/EncodingTime", "ENCODINGTIME"),
     std::pair("WM/AudioFileURL", "FILEWEBPAGE"),
@@ -282,6 +288,11 @@ namespace
     std::pair("MusicIP/PUID", "MUSICIP_PUID"),
     std::pair("Acoustid/Id", "ACOUSTID_ID"),
     std::pair("Acoustid/Fingerprint", "ACOUSTID_FINGERPRINT"),
+    // ReplayGain and a separate literal YEAR are legal ASF attributes. Preserve their keys
+    // verbatim so a DATE plus YEAR source does not collapse into one property on read-back.
+    std::pair("REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_GAIN"),
+    std::pair("REPLAYGAIN_TRACK_PEAK", "REPLAYGAIN_TRACK_PEAK"),
+    std::pair("YEAR", "YEAR"),
   };
 
   String translateKey(const String &key)

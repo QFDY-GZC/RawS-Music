@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import com.rawsmusic.R
 import kotlin.math.abs
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 data class GraphicEQBandUi(
     val frequency: Float,
@@ -944,7 +945,7 @@ private fun GraphicEQBandEditorSheet(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 22.dp, vertical = 8.dp)
-            .navigationBarsPadding()
+            .rawStableNavigationBarsPadding()
     ) {
         Box(
             modifier = Modifier
@@ -1050,9 +1051,9 @@ private fun GraphicEQBandEditorSheet(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text("-12 dB", color = GraphicEQColors.Muted, style = MaterialTheme.typography.labelSmall)
-            Text("0 dB", color = GraphicEQColors.Muted, style = MaterialTheme.typography.labelSmall)
-            Text("+12 dB", color = GraphicEQColors.Muted, style = MaterialTheme.typography.labelSmall)
+            Text(stringResource(R.string.ui_geq_minus_12_db), color = GraphicEQColors.Muted, style = MaterialTheme.typography.labelSmall)
+            Text(stringResource(R.string.ui_geq_zero_db), color = GraphicEQColors.Muted, style = MaterialTheme.typography.labelSmall)
+            Text(stringResource(R.string.ui_geq_plus_12_db), color = GraphicEQColors.Muted, style = MaterialTheme.typography.labelSmall)
         }
 
         Spacer(Modifier.height(22.dp))
@@ -1218,7 +1219,7 @@ private fun GraphicEQQInfoSheet(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 22.dp, vertical = 10.dp)
-            .navigationBarsPadding()
+            .rawStableNavigationBarsPadding()
     ) {
         Box(
             modifier = Modifier

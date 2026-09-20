@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
@@ -22,6 +23,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.isActive
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,20 +52,49 @@ import com.rawsmusic.core.ui.widget.bitmaps.RawArtworkPolicy
 private const val MINI_PLAYER_PREFS = "mini_player_prefs"
 private const val KEY_ARTWORK_MODE = "artwork_mode"
 
+fun readStoredMiniPlayerArtworkMode(context: android.content.Context): MiniPlayerArtworkMode {
+    val prefs = context.applicationContext.getSharedPreferences(
+        MINI_PLAYER_PREFS,
+        android.content.Context.MODE_PRIVATE,
+    )
+    return MiniPlayerArtworkMode.fromPrefs(prefs.getString(KEY_ARTWORK_MODE, "normal"))
+}
+
+fun writeStoredMiniPlayerArtworkMode(
+    context: android.content.Context,
+    mode: MiniPlayerArtworkMode,
+) {
+    context.applicationContext
+        .getSharedPreferences(MINI_PLAYER_PREFS, android.content.Context.MODE_PRIVATE)
+        .edit()
+        .putString(KEY_ARTWORK_MODE, MiniPlayerArtworkMode.toPrefs(mode))
+        .apply()
+}
+
 @Composable
 fun rememberMiniPlayerArtworkMode(): MutableState<MiniPlayerArtworkMode> {
     val context = LocalContext.current.applicationContext
-    val state = remember {
-        val prefs = context.getSharedPreferences(MINI_PLAYER_PREFS, android.content.Context.MODE_PRIVATE)
-        mutableStateOf(
-            MiniPlayerArtworkMode.fromPrefs(prefs.getString(KEY_ARTWORK_MODE, "normal"))
-        )
-    }
-    LaunchedEffect(state.value) {
+    val prefs = remember(context) {
         context.getSharedPreferences(MINI_PLAYER_PREFS, android.content.Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_ARTWORK_MODE, MiniPlayerArtworkMode.toPrefs(state.value))
-            .apply()
+    }
+    val state = remember(prefs) {
+        mutableStateOf(MiniPlayerArtworkMode.fromPrefs(prefs.getString(KEY_ARTWORK_MODE, "normal")))
+    }
+    DisposableEffect(prefs) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { shared, key ->
+            if (key == KEY_ARTWORK_MODE) {
+                val stored = MiniPlayerArtworkMode.fromPrefs(shared.getString(KEY_ARTWORK_MODE, "normal"))
+                if (state.value != stored) state.value = stored
+            }
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+    LaunchedEffect(state.value, prefs) {
+        val stored = MiniPlayerArtworkMode.fromPrefs(prefs.getString(KEY_ARTWORK_MODE, "normal"))
+        if (stored != state.value) {
+            writeStoredMiniPlayerArtworkMode(context, state.value)
+        }
     }
     return state
 }
@@ -78,7 +109,9 @@ fun MiniPlayerArtwork(
     onDoubleTapToggleMode: () -> Unit,
     onSingleTap: () -> Unit,
     modifier: Modifier = Modifier,
-    animateArtwork: Boolean = false
+    animateArtwork: Boolean = false,
+    artworkSize: Dp = 44.dp,
+    originalArtworkCornerRadius: Dp = 8.dp,
 ) {
     val currentCoverKey = coverPath?.takeIf { it.isNotBlank() }
 
@@ -99,7 +132,11 @@ fun MiniPlayerArtwork(
                 onCoverBoundsChanged = onCoverBoundsChanged,
                 onDoubleTapToggleMode = onDoubleTapToggleMode,
                 onSingleTap = onSingleTap,
-                modifier = modifier.size(52.dp)
+                modifier = modifier.requiredSize(
+                    width = artworkSize + 8.dp,
+                    height = artworkSize,
+                ),
+                artworkSize = artworkSize,
             )
         }
         MiniPlayerArtworkMode.Vinyl -> {
@@ -110,7 +147,26 @@ fun MiniPlayerArtwork(
                 onCoverBoundsChanged = onCoverBoundsChanged,
                 onDoubleTapToggleMode = onDoubleTapToggleMode,
                 onSingleTap = onSingleTap,
-                modifier = modifier.requiredSize(width = 70.dp, height = 52.dp)
+                modifier = modifier.requiredSize(
+                    width = (70f * (artworkSize.value / 44f)).dp,
+                    height = (52f * (artworkSize.value / 44f)).dp,
+                ),
+                artworkScale = artworkSize.value / 44f,
+            )
+        }
+        MiniPlayerArtworkMode.Original -> {
+            OriginalMiniArtwork(
+                coverPath = currentCoverKey,
+                contentDescription = contentDescription,
+                onCoverBoundsChanged = onCoverBoundsChanged,
+                onDoubleTapToggleMode = onDoubleTapToggleMode,
+                onSingleTap = onSingleTap,
+                modifier = modifier.requiredSize(
+                    width = artworkSize + 8.dp,
+                    height = artworkSize,
+                ),
+                artworkSize = artworkSize,
+                cornerRadius = originalArtworkCornerRadius,
             )
         }
     }
@@ -125,7 +181,7 @@ private fun rememberMiniArtworkRotation(enabled: Boolean): Float {
             return@LaunchedEffect
         }
         var lastFrame = withFrameMillis { it }
-        while (true) {
+        while (isActive) {
             val now = withFrameMillis { it }
             val deltaMs = (now - lastFrame).coerceIn(0L, 250L)
             lastFrame = now
@@ -164,7 +220,7 @@ private fun NormalMiniArtwork(
             coverPath = coverPath,
             contentDescription = contentDescription,
             modifier = Modifier
-                .size(artworkSize)
+                .requiredSize(artworkSize)
                 .rotate(rotation)
                 .clip(CircleShape)
                 .onGloballyPositioned { coordinates ->
@@ -178,6 +234,44 @@ private fun NormalMiniArtwork(
 }
 
 @Composable
+private fun OriginalMiniArtwork(
+    coverPath: String?,
+    contentDescription: String?,
+    onCoverBoundsChanged: (RectF?) -> Unit,
+    onDoubleTapToggleMode: () -> Unit,
+    onSingleTap: () -> Unit,
+    modifier: Modifier = Modifier,
+    artworkSize: Dp = 44.dp,
+    cornerRadius: Dp = 8.dp,
+) {
+    val visualSize = originalMiniPlayerArtworkVisualSizeDp(artworkSize.value).dp
+    val safeCorner = minOf(cornerRadius, visualSize / 2f).coerceAtLeast(0.dp)
+    Box(
+        modifier = modifier.pointerInput(Unit) {
+            detectTapGestures(
+                onTap = { onSingleTap() },
+                onLongPress = { onDoubleTapToggleMode() },
+            )
+        },
+        contentAlignment = Alignment.Center,
+    ) {
+        CoverVisual(
+            coverPath = coverPath,
+            contentDescription = contentDescription,
+            modifier = Modifier
+                .requiredSize(visualSize)
+                .clip(RoundedCornerShape(safeCorner))
+                .onGloballyPositioned { coordinates ->
+                    val bounds = coordinates.boundsInRoot()
+                    onCoverBoundsChanged(RectF(bounds.left, bounds.top, bounds.right, bounds.bottom))
+                },
+            contentScale = ContentScale.Fit,
+            targetSize = 256,
+        )
+    }
+}
+
+@Composable
 private fun VinylMiniArtwork(
     coverPath: String?,
     rotation: Float,
@@ -185,7 +279,8 @@ private fun VinylMiniArtwork(
     onCoverBoundsChanged: (RectF?) -> Unit,
     onDoubleTapToggleMode: () -> Unit,
     onSingleTap: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    artworkScale: Float = 1f,
 ) {
     Box(
         modifier = modifier.pointerInput(Unit) {
@@ -199,8 +294,8 @@ private fun VinylMiniArtwork(
         // 黑胶唱片 + 中心小封面（一起旋转）
         Box(
             modifier = Modifier
-                .size(39.dp)
-                .offset(x = 18.dp)
+                .size((39f * artworkScale).dp)
+                .offset(x = (18f * artworkScale).dp)
                 .rotate(rotation)
                 .zIndex(0f),
             contentAlignment = Alignment.Center
@@ -214,7 +309,7 @@ private fun VinylMiniArtwork(
 
             Box(
                 modifier = Modifier
-                    .size(24.dp)
+                    .size((24f * artworkScale).dp)
                     .clip(CircleShape),
                 contentAlignment = Alignment.Center
             ) {
@@ -222,7 +317,7 @@ private fun VinylMiniArtwork(
                     coverPath = coverPath,
                     contentDescription = contentDescription,
                     modifier = Modifier
-                        .size(24.dp)
+                        .size((24f * artworkScale).dp)
                         .clip(CircleShape),
                     contentScale = ContentScale.Crop,
                     targetSize = 96
@@ -233,8 +328,8 @@ private fun VinylMiniArtwork(
         // 左侧大专辑图封套（不旋转）
         Box(
             modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .size((40f * artworkScale).dp)
+                .clip(RoundedCornerShape((10f * artworkScale).dp))
                 .zIndex(2f)
                 .onGloballyPositioned { coordinates ->
                     val bounds = coordinates.boundsInRoot()
@@ -248,8 +343,8 @@ private fun VinylMiniArtwork(
                 coverPath = coverPath,
                 contentDescription = contentDescription,
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(10.dp)),
+                    .size((40f * artworkScale).dp)
+                    .clip(RoundedCornerShape((10f * artworkScale).dp)),
                 contentScale = ContentScale.Crop,
                 targetSize = 256
             )

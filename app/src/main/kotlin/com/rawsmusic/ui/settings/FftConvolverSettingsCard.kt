@@ -27,6 +27,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.R
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.module.player.dsp.FftConvolverController
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.SliderDefaults
@@ -95,15 +97,14 @@ internal fun FftConvolverSettingsCard(
         val displayName = queryDisplayName(context, uri)
         scope.launch {
             val loaded = controller.loadIrFromUri(context, uri, displayName)
-            Toast.makeText(
-                context,
-                if (loaded) {
-                    context.getString(R.string.settings_fft_convolver_load_success)
-                } else {
-                    context.getString(R.string.settings_fft_convolver_load_failed)
-                },
-                Toast.LENGTH_SHORT
-            ).show()
+            if (loaded) {
+                AppNoticeBus.post(
+                    message = context.getString(R.string.settings_fft_convolver_load_success),
+                    icon = AppNoticeIcon.AUDIO_EFFECTS,
+                )
+            } else {
+                AppNoticeBus.error(context.getString(R.string.settings_fft_convolver_load_failed))
+            }
         }
     }
 
@@ -368,10 +369,6 @@ private fun openExternalIrResource(context: android.content.Context, url: String
             }
         )
     }.onFailure {
-        Toast.makeText(
-            context,
-            context.getString(R.string.settings_fft_convolver_resource_open_failed),
-            Toast.LENGTH_SHORT
-        ).show()
+        AppNoticeBus.error(context.getString(R.string.settings_fft_convolver_resource_open_failed))
     }
 }

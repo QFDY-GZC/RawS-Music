@@ -1,22 +1,21 @@
 package com.rawsmusic.core.ui.widget
 
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import androidx.navigationevent.NavigationEventInfo
 import androidx.navigationevent.NavigationEventTransitionState
 import androidx.navigationevent.compose.NavigationBackHandler
@@ -27,14 +26,19 @@ import androidx.navigationevent.compose.rememberNavigationEventState
 fun rememberPredictiveDialogProgress(
     enabled: Boolean,
     onDismissRequest: () -> Unit
-): Float {
-    var progress by remember { mutableFloatStateOf(0f) }
-    var gestureActive by remember { mutableStateOf(false) }
-    val latestDismiss by rememberUpdatedState(onDismissRequest)
+): State<Float> {
+    val progress = remember { Animatable(0f) }
+    val progressState = remember(progress) {
+        object : State<Float> {
+            override val value: Float
+                get() = progress.value
+        }
+    }
+    val scope = rememberCoroutineScope()
+    val latestDismiss = rememberUpdatedState(onDismissRequest)
 
     LaunchedEffect(enabled) {
-        gestureActive = false
-        progress = 0f
+        if (enabled) progress.snapTo(0f)
     }
 
     val navigationEventState = rememberNavigationEventState(currentInfo = NavigationEventInfo.None)
@@ -42,13 +46,18 @@ fun rememberPredictiveDialogProgress(
         state = navigationEventState,
         isBackEnabled = enabled,
         onBackCancelled = {
-            gestureActive = false
-            progress = 0f
+            scope.launch {
+                progress.animateTo(0f, tween(140))
+            }
         },
         onBackCompleted = {
-            gestureActive = false
-            progress = 1f
-            latestDismiss()
+            scope.launch {
+                // A non-gesture back can complete without ever publishing predictive progress.
+                // Leave that at zero so the owner performs its normal timed exit. A real edge
+                // gesture has already moved the visual; only that path commits directly to 1.
+                if (progress.value > 0.001f) progress.snapTo(1f)
+                latestDismiss.value()
+            }
         }
     )
 
@@ -58,30 +67,53 @@ fun rememberPredictiveDialogProgress(
                 transitionState is NavigationEventTransitionState.InProgress &&
                 transitionState.direction == NavigationEventTransitionState.TRANSITIONING_BACK
             ) {
-                gestureActive = true
-                progress = transitionState.latestEvent.progress.coerceIn(0f, 1f)
+                progress.snapTo(transitionState.latestEvent.progress.coerceIn(0f, 1f))
             }
         }
     }
 
-    val visualProgress by animateFloatAsState(
-        targetValue = progress,
-        animationSpec = if (gestureActive || progress == 0f) snap() else tween(140),
-        label = "predictive-dialog-progress"
-    )
-    return visualProgress
+    return progressState
 }
 
 fun Modifier.predictiveDialogMotion(
-    progress: Float,
+    progress: State<Float>,
     translationY: Dp = 64.dp,
     transformOrigin: TransformOrigin = TransformOrigin.Center
 ): Modifier = graphicsLayer {
-    val amount = progress.coerceIn(0f, 1f)
+    val amount = progress.value.coerceIn(0f, 1f)
     val scale = 1f - amount * 0.10f
     scaleX = scale
     scaleY = scale
     alpha = 1f - amount * 0.22f
+    compositingStrategy = CompositingStrategy.ModulateAlpha
     this.translationY = amount * translationY.toPx()
     this.transformOrigin = transformOrigin
+}
+
+/**
+ * Predictive-back motion tuned for bottom sheets.
+ *
+ * A bottom sheet should keep its lower edge visually anchored while the system back gesture is
+ * still in progress. Moving it down while applying only a very small scale change reads as the
+ * reverse of the 200 ms bottom-up entrance instead of the generic dialog shrink motion.
+ */
+fun Modifier.predictiveBottomSheetMotion(
+    progress: State<Float>,
+    translationY: Dp = 176.dp,
+): Modifier = graphicsLayer {
+    val amount = progress.value.coerceIn(0f, 1f)
+    val scale = 1f - amount * 0.025f
+    scaleX = scale
+    scaleY = scale
+    alpha = 1f - amount * 0.14f
+    compositingStrategy = CompositingStrategy.ModulateAlpha
+    this.translationY = amount * translationY.toPx()
+    transformOrigin = TransformOrigin(0.5f, 1f)
+}
+
+/** Predictive-back companion for the dim layer behind a bottom sheet. */
+fun Modifier.predictiveBottomSheetScrim(progress: State<Float>): Modifier = graphicsLayer {
+    val amount = progress.value.coerceIn(0f, 1f)
+    alpha = 1f - amount * 0.92f
+    compositingStrategy = CompositingStrategy.ModulateAlpha
 }

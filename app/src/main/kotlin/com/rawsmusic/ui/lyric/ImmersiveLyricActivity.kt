@@ -36,6 +36,7 @@ import com.rawsmusic.core.ui.widget.player.ComposeLyricView
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.module.player.PlayerController
+import com.rawsmusic.module.player.LyriconProviderManager
 import com.rawsmusic.module.player.PlayerService
 import com.rawsmusic.module.scanner.LyricReader
 import io.github.proify.lyricon.lyric.model.Song
@@ -90,13 +91,25 @@ class ImmersiveLyricActivity : ComponentActivity() {
                     val newState = !displayTranslation
                     displayTranslation = newState
                     displayRoma = !newState
-                    AppPreferences.Lyricon.displayTranslation = newState
-                    AppPreferences.Lyricon.displayRoma = !newState
-                }
+                    LyriconProviderManager.setDisplayTranslation(newState)
+                    LyriconProviderManager.setDisplayRoma(!newState)
+                },
+                onPlayPause = { playerController?.playPause() }
             )
         }
 
         loadLyrics()
+        lifecycleScope.launch {
+            LyriconProviderManager.displayTranslationState.collectLatest { enabled ->
+                displayTranslation = enabled
+            }
+        }
+        lifecycleScope.launch {
+            LyriconProviderManager.displayRomaState.collectLatest { enabled ->
+                displayRoma = enabled
+            }
+        }
+
         // 同步播放位置和播放态；歌词逐行拉动必须知道自然播放是否正在推进。
         observePlayback()
     }
@@ -110,7 +123,8 @@ class ImmersiveLyricActivity : ComponentActivity() {
         displayTranslation: Boolean,
         displayRoma: Boolean,
         onBack: () -> Unit,
-        onToggleTranslation: () -> Unit
+        onToggleTranslation: () -> Unit,
+        onPlayPause: () -> Unit
     ) {
         Box(
             modifier = Modifier
@@ -156,6 +170,23 @@ class ImmersiveLyricActivity : ComponentActivity() {
                     .clickable(onClick = onBack)
                     .padding(10.dp)
             )
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .offset(y = (-26).dp)
+                    .size(44.dp)
+                    .background(ComposeColor.White.copy(alpha = 0.12f), androidx.compose.foundation.shape.CircleShape)
+                    .clickable(onClick = onPlayPause),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(id = if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play),
+                    contentDescription = null,
+                    tint = ComposeColor.White.copy(alpha = 0.9f),
+                    modifier = Modifier.size(24.dp)
+                )
+            }
 
             Text(
                 text = stringResource(R.string.lyric_translation_short),

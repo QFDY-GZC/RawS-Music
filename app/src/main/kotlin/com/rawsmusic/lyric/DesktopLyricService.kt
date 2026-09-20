@@ -138,6 +138,7 @@ class DesktopLyricService : Service() {
         playbackJob?.cancel()
         playbackJob = serviceScope.launch {
             while (isActive) {
+                var pollDelayMs = PAUSED_POLL_MS
                 val controller = PlayerService.currentRuntimeController()
                 if (controller != null) {
                     val song = controller.currentSong.value
@@ -158,8 +159,12 @@ class DesktopLyricService : Service() {
                         if (playing) R.drawable.ic_pause else R.drawable.ic_play
                     )
                     updateVisibility(playing)
+                    pollDelayMs = if (playing) POSITION_POLL_MS else PAUSED_POLL_MS
                 }
-                delay(POSITION_POLL_MS)
+                // A paused overlay has no moving timeline to follow. Keep a slow heartbeat so a
+                // later play command is picked up without paying the 100 ms polling cost while
+                // the service is visually idle.
+                delay(pollDelayMs)
             }
         }
     }
@@ -652,6 +657,7 @@ class DesktopLyricService : Service() {
         private const val CHANNEL_ID = "raws_desktop_lyric"
         private const val NOTIFICATION_ID = 0x52444C59
         private const val POSITION_POLL_MS = 100L
+        private const val PAUSED_POLL_MS = 1_000L
         private const val CONTROLS_AUTO_HIDE_MS = 4_000L
         private const val DOUBLE_TAP_TIMEOUT_MS = 360L
         private const val LONG_PRESS_TIMEOUT_MS = 460L

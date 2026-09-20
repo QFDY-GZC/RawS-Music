@@ -10,7 +10,7 @@ import com.rawsmusic.module.player.PlayerController
  * 这样最近添加/搜索/列表页的队列规则不再散落在 Activity 内。
  */
 class MainPlaybackQueueHelper(
-    private val playerControllerProvider: () -> PlayerController?
+    private val playerControllerProvider: () -> PlayerController
 ) {
     fun playSongFromScene(song: AudioFile, scene: NavScene) {
         val queue = when (scene) {
@@ -26,7 +26,9 @@ class MainPlaybackQueueHelper(
 
     fun playQueue(songs: List<AudioFile>, startIndex: Int) {
         if (songs.isEmpty()) return
-        playerControllerProvider()?.setPlayQueue(songs, startIndex.coerceIn(0, songs.lastIndex))
+        // Resolve the runtime at the explicit play action, including a paused cold start.
+        // A nullable lookup silently discarded the first click before the mini player started it.
+        playerControllerProvider().setPlayQueue(songs, startIndex.coerceIn(0, songs.lastIndex))
     }
 
     private fun recentSongs(): List<AudioFile> {

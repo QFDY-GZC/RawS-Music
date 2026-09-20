@@ -10,6 +10,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import com.rawsmusic.core.ui.scene.NavigationState
+import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.widget.PlayerSceneController
 import kotlin.math.abs
 
@@ -46,7 +47,7 @@ internal class MainActivitySceneGestureCoordinator(
 
             // MAIN owns category-to-category and nested-page gestures in
             // SceneTransitionHost. Keep category-back recognition here because
-            // that host can be recomposed while a PowerList is measuring.
+            // that host can be recomposed while a VirtualList is measuring.
             if (
                 isAudioInfoSharedWindowActive() ||
                 playerScene.currentScene == PlayerSceneController.Scene.MAIN
@@ -75,6 +76,7 @@ internal class MainActivitySceneGestureCoordinator(
         val pointerId = down.id
         val widthPx = size.width.toFloat().coerceAtLeast(1f)
         val touchSlop = viewConfiguration.touchSlop
+        val edgeBackWidthPx = touchSlop * 4f
         val densityValue = pointerDensity.coerceAtLeast(0.1f)
         val velocityTracker = VelocityTracker().apply {
             addPosition(down.uptimeMillis, down.position)
@@ -115,10 +117,18 @@ internal class MainActivitySceneGestureCoordinator(
             if (!draggingBack && !rejected &&
                 (abs(dx) > touchSlop || abs(dy) > touchSlop)
             ) {
-                // MiniPlayerView gets first refusal at the Final pass. Never
-                // turn its horizontal song switch into a scene-back gesture.
+                // Child horizontal containers (for example SEARCH's filter LazyRow) get first
+                // refusal at Final. Never turn a drag they consumed into a scene transition.
                 val horizontal = abs(dx) > touchSlop && abs(dx) > abs(dy) * 1.15f
-                if (!horizontal || !mainNavigation.canNavigateBack()) {
+                val searchContentDrag = mainNavigation.currentScene == NavScene.SEARCH &&
+                    start.x > edgeBackWidthPx &&
+                    start.x < widthPx - edgeBackWidthPx
+                if (
+                    change.isConsumed ||
+                    searchContentDrag ||
+                    !horizontal ||
+                    !mainNavigation.canNavigateBack()
+                ) {
                     rejected = true
                 } else {
                     dragDirection = if (dx < 0f) -1f else 1f

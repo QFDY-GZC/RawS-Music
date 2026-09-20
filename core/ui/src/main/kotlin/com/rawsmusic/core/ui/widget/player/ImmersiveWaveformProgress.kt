@@ -1,6 +1,7 @@
 package com.rawsmusic.core.ui.widget.player
 
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -32,18 +34,22 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.common.waveform.RawWaveformCache
+import com.rawsmusic.module.data.prefs.PlayerProgressPreferences
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -57,11 +63,59 @@ import kotlinx.coroutines.withContext
 internal enum class ImmersiveProgressStyle(val value: Int) {
     Classic(0),
     Waveform(1),
-    Seconds(2);
+    Seconds(2),
+    MusicSpine(3);
 
     companion object {
         fun from(value: Int): ImmersiveProgressStyle = entries.firstOrNull { it.value == value } ?: Classic
     }
+}
+
+/**
+ * reference player keeps the playing clock alive while a new track identity is being committed.  The
+ * renderer may briefly publish the new duration/position before the play-state callback arrives;
+ * that is a handoff, not a pause.  Keep the last stable playing state for this short boundary so
+ * the waveform is not collapsed and expanded again on every track change.
+ */
+@Composable
+private fun rememberTrackHandoffPlaying(
+    trackKey: String,
+    isPlaying: Boolean,
+): Boolean {
+    var observedTrackKey by remember { mutableStateOf(trackKey) }
+    var observedPlaying by remember { mutableStateOf(isPlaying) }
+    var handoffPlaying by remember { mutableStateOf(false) }
+    val trackChanged = observedTrackKey != trackKey
+
+    // Capture the previous track's state before replacing the observed identity.  This is a
+    // composition boundary operation, not a second animation clock.
+    SideEffect {
+        if (trackChanged) {
+            observedTrackKey = trackKey
+            // Publish the handoff synchronously as well as from LaunchedEffect. A transport
+            // callback can publish the new duration and a transient paused state in adjacent
+            // frames; waiting for the coroutine to start made pauseMorph briefly collapse the
+            // waveform on every track change.
+            if (observedPlaying) handoffPlaying = true
+        } else {
+            observedPlaying = isPlaying
+        }
+    }
+
+    LaunchedEffect(trackKey) {
+        val keepClockAlive = trackChanged && observedPlaying
+        handoffPlaying = keepClockAlive
+        if (keepClockAlive) {
+            delay(550L)
+            if (observedTrackKey == trackKey) handoffPlaying = false
+        }
+    }
+
+    // LaunchedEffect starts after this composition has committed. Include the previous playing
+    // sample synchronously as well; otherwise the first frame of a transport commit sees the new
+    // track's temporary paused flag and pauseMorph shrinks the whole bar for one vsync. reference player's
+    // existing motion clock never enters a paused state on that identity boundary.
+    return isPlaying || handoffPlaying || (trackChanged && observedPlaying)
 }
 
 /** Fixed-width timeline: one bar represents one second instead of compressing a whole track. */
@@ -74,6 +128,7 @@ fun ImmersiveSecondProgressBar(
     colors: ImmersiveWaveformColors,
     onSeekStart: () -> Unit,
     onSeekStop: (Float) -> Unit,
+    horizontalExtension: Dp = 0.dp,
     modifier: Modifier = Modifier
 ) {
     var widthPx by remember { mutableIntStateOf(1) }
@@ -81,17 +136,13 @@ fun ImmersiveSecondProgressBar(
     var dragSecond by remember { mutableFloatStateOf(0f) }
     val densityValue = LocalDensity.current.density
     val touchSlop = LocalViewConfiguration.current.touchSlop
+    val holdWhenPaused by PlayerProgressPreferences.holdWhenPaused.collectAsState()
     val effectiveDurationMs = totalDurationMs.takeIf { it > 0L }
         ?: currentSong?.duration?.takeIf { it > 0L }
         ?: 0L
     val totalSeconds = (effectiveDurationMs / 1000f).coerceAtLeast(1f)
     val currentSecond = (currentPositionMs / 1000f).coerceIn(0f, totalSeconds)
     val endSnapSeconds = min(1f, totalSeconds * 0.004f)
-    val timelineSecond = if (isPlaying && totalSeconds - currentSecond <= endSnapSeconds) {
-        totalSeconds
-    } else {
-        currentSecond
-    }
     val context = LocalContext.current.applicationContext
     val songMotionKey = remember(currentSong?.path, currentSong?.fileSize, currentSong?.dateModified, effectiveDurationMs) {
         "${currentSong?.path}|${currentSong?.fileSize}|${currentSong?.dateModified}|$effectiveDurationMs"
@@ -107,13 +158,19 @@ fun ImmersiveSecondProgressBar(
         "${currentSong?.path}|${currentSong?.fileSize}|${currentSong?.dateModified}|" +
             "${currentSong?.cueOffsetMs}|${currentSong?.cueEndMs}|${currentSong?.cueTrackIndex}"
     }
+    val trackHandoffPlaying = rememberTrackHandoffPlaying(songMotionKey, isPlaying)
+    val timelineSecond = if (trackHandoffPlaying && totalSeconds - currentSecond <= endSnapSeconds) {
+        totalSeconds
+    } else {
+        currentSecond
+    }
     var lastMotionKey by remember { mutableStateOf(songMotionKey) }
     var lastTargetSecond by remember { mutableFloatStateOf(timelineSecond) }
     val shouldSnapSecond = lastMotionKey != songMotionKey || abs(timelineSecond - lastTargetSecond) > 2.4f
     val settledSecond by animateFloatAsState(
         targetValue = timelineSecond,
         animationSpec = tween(
-            durationMillis = if (shouldSnapSecond) 0 else if (isPlaying) 150 else 180,
+            durationMillis = if (shouldSnapSecond) 0 else if (trackHandoffPlaying) 150 else 180,
             easing = FastOutSlowInEasing
         ),
         label = "secondTimelineMotion"
@@ -123,9 +180,14 @@ fun ImmersiveSecondProgressBar(
         lastTargetSecond = timelineSecond
     }
     val pauseMorph by animateFloatAsState(
-        targetValue = if (isPlaying || isDragging) 0f else 1f,
+        targetValue = if (trackHandoffPlaying || isDragging || holdWhenPaused) 0f else 1f,
         animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
         label = "secondTimelinePauseMorph"
+    )
+    val pauseScale by animateFloatAsState(
+        targetValue = if (trackHandoffPlaying || isDragging) 1f else 0.95f,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        label = "secondTimelinePauseScale"
     )
     val needleAlpha by animateFloatAsState(
         targetValue = if (isDragging) 1f else 0f,
@@ -142,28 +204,22 @@ fun ImmersiveSecondProgressBar(
     val cachedPcmWaveform = remember(waveformSongKey, waveformSampleCount) {
         RawWaveformCache.tryReadCached(context, currentSong, waveformSampleCount)
     }
-    var staticPcmWaveform by remember(waveformSongKey, waveformSampleCount) {
+    // Keep the last physical waveform attached until the next track's PCM buckets are ready.
+    // Recreating this state with the song key first published a placeholder with reveal=0, which
+    // visually collapsed every bar even though playback never entered a paused state.
+    var staticPcmWaveform by remember {
         mutableStateOf(cachedPcmWaveform ?: RawWaveformCache.placeholder(waveformSampleCount, style = 1))
-    }
-    var realWaveformReady by remember(waveformSongKey, waveformSampleCount) {
-        mutableStateOf(false)
     }
     LaunchedEffect(waveformSongKey, waveformSampleCount) {
         if (cachedPcmWaveform != null) {
-            realWaveformReady = true
+            staticPcmWaveform = cachedPcmWaveform
         } else {
             val result = withContext(Dispatchers.IO) {
                 RawWaveformCache.loadOrScanResult(context, currentSong, waveformSampleCount)
             }
             staticPcmWaveform = result.values
-            realWaveformReady = result.isReal
         }
     }
-    val waveformReveal by animateFloatAsState(
-        targetValue = if (realWaveformReady) 1f else 0f,
-        animationSpec = tween(durationMillis = 620, easing = FastOutSlowInEasing),
-        label = "secondWaveformReveal"
-    )
     LaunchedEffect(pendingSeekSecond, timelineSecond, songMotionKey) {
         val pending = pendingSeekSecond ?: return@LaunchedEffect
         if (abs(timelineSecond - pending) <= 0.18f) {
@@ -183,7 +239,11 @@ fun ImmersiveSecondProgressBar(
     }
     val latestDisplaySecond by rememberUpdatedState(displaySecond)
 
-    Column(modifier = modifier.fillMaxWidth()) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .extendTimelineHorizontally(horizontalExtension)
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -195,40 +255,76 @@ fun ImmersiveSecondProgressBar(
                         if (effectiveDurationMs <= 0L || widthPx <= 1) return@awaitEachGesture
                         val barStep = 7.45f * densityValue
                         val startSecond = latestDisplaySecond
-                        val startX = down.position.x
+                        val start = down.position
+                        var lastPosition = start
                         var lastSecond = startSecond
+                        var axis = PlayerTimelineGestureAxis.Undecided
                         var started = false
-                        down.consume()
+                        var finishedNormally = false
                         try {
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Main)
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                val deltaX = change.position.x - startX
-                                if (!started && abs(deltaX) >= touchSlop) {
-                                    started = true
-                                    isDragging = true
-                                    dragSecond = startSecond
-                                    onSeekStart()
+                                lastPosition = change.position
+                                val deltaX = change.position.x - start.x
+                                if (axis == PlayerTimelineGestureAxis.Undecided && change.isConsumed) {
+                                    axis = PlayerTimelineGestureAxis.VerticalScene
                                 }
-                                if (started) {
-                                    lastSecond = (startSecond - deltaX / barStep).coerceIn(0f, totalSeconds)
+                                if (axis == PlayerTimelineGestureAxis.Undecided) {
+                                    axis = resolvePlayerTimelineGestureAxis(
+                                        dx = deltaX,
+                                        dy = change.position.y - start.y,
+                                        touchSlop = touchSlop,
+                                    )
+                                    if (axis == PlayerTimelineGestureAxis.HorizontalSeek) {
+                                        started = true
+                                        isDragging = true
+                                        dragSecond = startSecond
+                                        onSeekStart()
+                                    }
+                                }
+                                if (axis == PlayerTimelineGestureAxis.HorizontalSeek) {
+                                    lastSecond = (startSecond - deltaX / barStep)
+                                        .coerceIn(0f, totalSeconds)
                                     dragSecond = lastSecond
                                     change.consume()
                                 }
-                                if (!change.pressed) break
+                                if (!change.pressed) {
+                                    finishedNormally = true
+                                    break
+                                }
                             }
                         } finally {
                             if (started) {
                                 pendingSeekSecond = lastSecond
                                 isDragging = false
                                 onSeekStop((lastSecond / totalSeconds).coerceIn(0f, 1f))
+                            } else if (finishedNormally && axis == PlayerTimelineGestureAxis.Undecided) {
+                                val tapSecond = resolveSecondTimelineTapSecond(
+                                    currentSecond = startSecond,
+                                    tapX = lastPosition.x,
+                                    widthPx = widthPx.toFloat(),
+                                    barStepPx = barStep,
+                                    totalSeconds = totalSeconds,
+                                )
+                                pendingSeekSecond = tapSecond
+                                onSeekStart()
+                                onSeekStop((tapSecond / totalSeconds).coerceIn(0f, 1f))
                             }
                         }
                     }
                 },
             contentAlignment = Alignment.Center
         ) {
-            Canvas(modifier = Modifier.fillMaxWidth().height(72.dp)) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(72.dp)
+                    .graphicsLayer {
+                        scaleX = pauseScale
+                        scaleY = pauseScale
+                    },
+            ) {
             val step = (7.45f - pauseMorph * 1.25f) * density
             val barWidth = (4.9f - pauseMorph * 0.55f) * density
             val centerX = size.width * 0.5f
@@ -249,17 +345,12 @@ fun ImmersiveSecondProgressBar(
                 val realAmplitude = waveform[waveformIndex]
                     .coerceIn(0f, 1f)
                     .pow(2.15f)
-                val revealDelay = (abs(x - centerX) / size.width.coerceAtLeast(1f) * 0.30f)
-                    .coerceIn(0f, 0.24f)
-                val rawBarReveal = ((waveformReveal - revealDelay) / (1f - revealDelay))
-                    .coerceIn(0f, 1f)
-                val barReveal = rawBarReveal * rawBarReveal * (3f - 2f * rawBarReveal)
-                val amplitude = realAmplitude * barReveal
+                val amplitude = realAmplitude
                 val liveHeight = (7.5f * density + amplitude * size.height * 0.88f).coerceAtMost(size.height * 0.96f)
                 val idleHeight = (5.5f * density + amplitude * 7.0f * density).coerceAtMost(size.height * 0.26f)
                 val height = liveHeight * (1f - pauseMorph) + idleHeight * pauseMorph
                 val edgeAlpha = edgeFade(x = x, width = size.width, fade = step * 1.9f)
-                val activeAlpha = if (isDragging || isPlaying) 1f else 0.68f
+                val activeAlpha = if (isDragging || trackHandoffPlaying) 1f else 0.68f
                 val heightScale = 0.90f + 0.10f * edgeAlpha
                 val easedHeight = (height * heightScale).coerceAtMost(size.height * 0.88f)
                 val segmentBarWidth = (barWidth * segmentLength.coerceAtLeast(0.35f)).coerceAtLeast(density)
@@ -328,6 +419,26 @@ fun ImmersiveSecondProgressBar(
     }
 }
 
+private fun Modifier.extendTimelineHorizontally(extension: Dp): Modifier {
+    if (extension <= 0.dp) return this
+    return layout { measurable, constraints ->
+        val extraPx = extension.roundToPx().coerceAtLeast(0)
+        val viewportWidth = constraints.maxWidth.coerceAtLeast(constraints.minWidth)
+        val expandedWidth = (viewportWidth + extraPx * 2).coerceAtLeast(viewportWidth)
+        val placeable = measurable.measure(
+            constraints.copy(minWidth = expandedWidth, maxWidth = expandedWidth)
+        )
+        // The old implementation reported the expanded child width to the parent and then placed
+        // that same child at -extraPx. Inside the immersive player's centred/padded column this
+        // changed the layout coordinate system itself, so the seconds timeline was effectively
+        // shifted left and one edge could be clipped. Keep the parent's viewport width stable and
+        // let only the child paint symmetrically into the surrounding 30dp immersive padding.
+        layout(viewportWidth, placeable.height) {
+            placeable.place(-extraPx, 0)
+        }
+    }
+}
+
 private fun edgeFade(x: Float, width: Float, fade: Float): Float {
     if (fade <= 0f) return 1f
     val left = (x / fade).coerceIn(0f, 1f)
@@ -359,7 +470,7 @@ internal fun ImmersiveWaveformProgressBar(
     isPlaying: Boolean,
     colors: ImmersiveWaveformColors,
     climaxEnabled: Boolean,
-    showDebugPanel: Boolean,
+    waveformBarCount: Int = 160,
     onSeekStart: () -> Unit,
     onSeekStop: (Float) -> Unit,
     modifier: Modifier = Modifier,
@@ -369,6 +480,7 @@ internal fun ImmersiveWaveformProgressBar(
     var widthPx by remember { mutableIntStateOf(1) }
     var isDragging by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(0f) }
+    val holdWhenPaused by PlayerProgressPreferences.holdWhenPaused.collectAsState()
 
     val rawFraction = if (totalDurationMs > 0L) {
         currentPositionMs.toFloat() / totalDurationMs.toFloat()
@@ -380,8 +492,13 @@ internal fun ImmersiveWaveformProgressBar(
     } else {
         0f
     }
-    val realFraction = if (isPlaying && 1f - rawFraction <= endSnapFraction) 1f else rawFraction
-    val seedKey = remember(currentSong?.path, currentSong?.fileSize, currentSong?.dateModified, totalDurationMs) {
+    val seedKey = remember(
+        currentSong?.path,
+        currentSong?.fileSize,
+        currentSong?.dateModified,
+        currentSong?.bpm,
+        totalDurationMs,
+    ) {
         buildString {
             append(currentSong?.path.orEmpty())
             append('|')
@@ -389,9 +506,13 @@ internal fun ImmersiveWaveformProgressBar(
             append('|')
             append(currentSong?.dateModified ?: 0L)
             append('|')
+            append(currentSong?.bpm ?: 0)
+            append('|')
             append(totalDurationMs)
         }
     }
+    val trackHandoffPlaying = rememberTrackHandoffPlaying(seedKey, isPlaying)
+    val realFraction = if (trackHandoffPlaying && 1f - rawFraction <= endSnapFraction) 1f else rawFraction
     var pendingSeekFraction by remember(seedKey) { mutableStateOf<Float?>(null) }
     LaunchedEffect(pendingSeekFraction, realFraction, seedKey) {
         val pending = pendingSeekFraction ?: return@LaunchedEffect
@@ -402,22 +523,21 @@ internal fun ImmersiveWaveformProgressBar(
             if (pendingSeekFraction == pending) pendingSeekFraction = null
         }
     }
-    var forceTrackStart by remember { mutableStateOf(false) }
     LaunchedEffect(seedKey) {
         pendingSeekFraction = null
-        forceTrackStart = true
-        delay(180)
-        forceTrackStart = false
     }
     val pauseMorph by animateFloatAsState(
-        targetValue = if (isPlaying || isDragging) 0f else 1f,
+        targetValue = if (trackHandoffPlaying || isDragging || holdWhenPaused) 0f else 1f,
         animationSpec = tween(durationMillis = 460, easing = FastOutSlowInEasing),
         label = "immersiveWaveformPauseMorph"
     )
+    val pauseScale by animateFloatAsState(
+        targetValue = if (trackHandoffPlaying || isDragging) 1f else 0.95f,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        label = "immersiveWaveformPauseScale"
+    )
     val displayFraction = if (isDragging) {
         dragFraction
-    } else if (forceTrackStart) {
-        0f
     } else {
         pendingSeekFraction ?: realFraction
     }
@@ -434,16 +554,42 @@ internal fun ImmersiveWaveformProgressBar(
         "${currentSong?.path}|${currentSong?.fileSize}|${currentSong?.dateModified}|" +
             "${currentSong?.cueOffsetMs}|${currentSong?.cueEndMs}|${currentSong?.cueTrackIndex}"
     }
-    val waveformSampleCount = 160
-    var waveform by remember(waveformSongKey) {
-        mutableStateOf(RawWaveformCache.placeholder(waveformSampleCount))
-    }
-    LaunchedEffect(waveformSongKey) {
-        waveform = withContext(Dispatchers.IO) {
-            RawWaveformCache.loadOrScan(context, currentSong, waveformSampleCount)
+    // Climax analysis needs enough temporal resolution for beat/onset structure. Visible bar count
+    // remains independent, so raising the offline analysis resolution does not make the UI denser.
+    val analysisSampleCount = remember(totalDurationMs) {
+        if (totalDurationMs > 0L) {
+            (totalDurationMs / 100L).toInt().coerceIn(480, 3_600)
+        } else {
+            480
         }
     }
-    val climaxSegments = remember(seedKey, waveform) { detectPreviewClimaxSegments(waveform) }
+    val visibleWaveformBarCount = waveformBarCount.coerceIn(32, RawWaveformCache.MAX_SAMPLE_COUNT)
+    var waveform by remember(analysisSampleCount) {
+        mutableStateOf(RawWaveformCache.placeholder(analysisSampleCount))
+    }
+    var previousWaveform by remember { mutableStateOf<FloatArray?>(null) }
+    val waveformSwap = remember { Animatable(1f) }
+    LaunchedEffect(waveformSongKey) {
+        val nextWaveform = withContext(Dispatchers.IO) {
+            RawWaveformCache.tryReadCached(context, currentSong, analysisSampleCount)
+                ?: RawWaveformCache.loadOrScan(context, currentSong, analysisSampleCount)
+        }
+        previousWaveform = waveform
+        waveform = nextWaveform
+        waveformSwap.snapTo(0f)
+        waveformSwap.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        )
+        previousWaveform = null
+    }
+    val climaxSegments = remember(seedKey, waveform, totalDurationMs, currentSong?.bpm) {
+        analyzeImmersiveClimax(
+            peaks = waveform,
+            durationMs = totalDurationMs,
+            preferredBpm = currentSong?.bpm ?: 0,
+        ).segments
+    }
 
     Column(modifier = modifier) {
         Box(
@@ -457,46 +603,88 @@ internal fun ImmersiveWaveformProgressBar(
                             requireUnconsumed = false,
                             pass = PointerEventPass.Main
                         )
-                        if (totalDurationMs <= 0L || widthPx <= 1) {
-                            down.consume()
-                            return@awaitEachGesture
-                        }
-                        var lastFraction = (down.position.x / widthPx.toFloat()).coerceIn(0f, 1f)
-                        isDragging = true
-                        dragFraction = lastFraction
-                        onSeekStart()
-                        down.consume()
+                        if (totalDurationMs <= 0L || widthPx <= 1) return@awaitEachGesture
+
+                        val start = down.position
+                        var lastPosition = start
+                        var axis = PlayerTimelineGestureAxis.Undecided
+                        var seekStarted = false
+                        var lastFraction = (start.x / widthPx.toFloat()).coerceIn(0f, 1f)
+                        var finishedNormally = false
                         try {
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Main)
                                 val change = event.changes.firstOrNull { it.id == down.id }
                                     ?: event.changes.firstOrNull()
                                     ?: break
-                                lastFraction = (change.position.x / widthPx.toFloat()).coerceIn(0f, 1f)
-                                dragFraction = lastFraction
-                                change.consume()
-                                if (!change.pressed) break
+                                lastPosition = change.position
+                                if (axis == PlayerTimelineGestureAxis.Undecided && change.isConsumed) {
+                                    axis = PlayerTimelineGestureAxis.VerticalScene
+                                }
+                                if (axis == PlayerTimelineGestureAxis.Undecided) {
+                                    axis = resolvePlayerTimelineGestureAxis(
+                                        dx = change.position.x - start.x,
+                                        dy = change.position.y - start.y,
+                                        touchSlop = viewConfiguration.touchSlop,
+                                    )
+                                    if (axis == PlayerTimelineGestureAxis.HorizontalSeek) {
+                                        seekStarted = true
+                                        isDragging = true
+                                        onSeekStart()
+                                    }
+                                }
+                                if (axis == PlayerTimelineGestureAxis.HorizontalSeek) {
+                                    lastFraction = (change.position.x / widthPx.toFloat())
+                                        .coerceIn(0f, 1f)
+                                    dragFraction = lastFraction
+                                    change.consume()
+                                }
+                                if (!change.pressed) {
+                                    finishedNormally = true
+                                    break
+                                }
                             }
                         } finally {
-                            pendingSeekFraction = lastFraction
-                            isDragging = false
-                            onSeekStop(lastFraction)
+                            if (seekStarted) {
+                                pendingSeekFraction = lastFraction
+                                isDragging = false
+                                onSeekStop(lastFraction)
+                            } else if (finishedNormally &&
+                                axis == PlayerTimelineGestureAxis.Undecided
+                            ) {
+                                val tapFraction = (lastPosition.x / widthPx.toFloat())
+                                    .coerceIn(0f, 1f)
+                                pendingSeekFraction = tapFraction
+                                onSeekStart()
+                                onSeekStop(tapFraction)
+                            }
                         }
                     }
                 },
             contentAlignment = Alignment.Center
         ) {
-            Canvas(modifier = Modifier.fillMaxWidth().height(62.dp)) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(62.dp)
+                    .graphicsLayer {
+                        scaleX = pauseScale
+                        scaleY = pauseScale
+                    },
+            ) {
                 val barWidth = barWidthDp.dp.toPx().coerceAtLeast(1f)
                 val gap = gapDp.dp.toPx().coerceAtLeast(0.5f)
                 drawRoundedWaveform(
                     peaks = waveform,
+                    previousPeaks = previousWaveform,
+                    waveformSwapProgress = waveformSwap.value,
                     progress = displayFraction,
                     pauseMorph = pauseMorph,
                     colors = colors,
                     climaxSegments = if (climaxEnabled) climaxSegments else emptyList(),
                     barWidth = barWidth,
                     gap = gap,
+                    visibleBarCount = visibleWaveformBarCount,
                     isDragging = isDragging
                 )
             }
@@ -507,27 +695,31 @@ internal fun ImmersiveWaveformProgressBar(
             totalMs = totalDurationMs,
             textColor = colors.time
         )
-        @Suppress("UNUSED_EXPRESSION")
-        showDebugPanel
     }
 }
 
 private fun DrawScope.drawRoundedWaveform(
     peaks: FloatArray,
+    previousPeaks: FloatArray?,
+    waveformSwapProgress: Float,
     progress: Float,
     pauseMorph: Float,
     colors: ImmersiveWaveformColors,
     climaxSegments: List<ImmersiveClimaxSegment>,
     barWidth: Float,
     gap: Float,
+    visibleBarCount: Int,
     isDragging: Boolean
 ) {
     if (peaks.isEmpty() || size.width <= 0f || size.height <= 0f) return
 
-    val step = barWidth + gap
-    val visibleBars = max(8, (size.width / step).toInt())
+    @Suppress("UNUSED_VARIABLE")
+    val legacyPitch = barWidth + gap
+    val visibleBars = visibleBarCount.coerceIn(8, RawWaveformCache.MAX_SAMPLE_COUNT)
     val actualStep = size.width / visibleBars.toFloat()
-    val actualBarWidth = min(barWidth, actualStep * 0.88f).coerceAtLeast(1f)
+    // Density is now an explicit visible-bar count. Keep a consistent 70/30 bar/gap ratio
+    // so 100/160/200/280 remain visibly distinct without changing climax analysis.
+    val actualBarWidth = (actualStep * 0.70f).coerceAtLeast(0.55f * density)
     val centerY = size.height * 0.5f
     val maxHalfHeight = size.height * 0.50f
     val minHalfHeight = 2.4f * density
@@ -535,7 +727,15 @@ private fun DrawScope.drawRoundedWaveform(
 
     fun baseBarValue(index: Int): Float {
         val srcIndex = ((index + 0.5f) / visibleBars.toFloat() * peaks.size).toInt().coerceIn(0, peaks.lastIndex)
-        val live = emphasizeWaveValue(peaks[srcIndex].coerceIn(0f, 1f))
+        val currentValue = peaks[srcIndex].coerceIn(0f, 1f)
+        val previousValue = previousPeaks?.takeIf { it.isNotEmpty() }?.let { oldPeaks ->
+            val oldIndex = ((index + 0.5f) / visibleBars.toFloat() * oldPeaks.size)
+                .toInt()
+                .coerceIn(0, oldPeaks.lastIndex)
+            oldPeaks[oldIndex].coerceIn(0f, 1f)
+        } ?: currentValue
+        val swap = waveformSwapProgress.coerceIn(0f, 1f)
+        val live = emphasizeWaveValue(previousValue + (currentValue - previousValue) * swap)
         val idle = 0.020f + when (index % 4) {
             0 -> 0.006f
             1 -> 0.014f
@@ -657,44 +857,5 @@ private fun lerpColor(start: Color, end: Color, t: Float): Color {
         green = start.green + (end.green - start.green) * clamped,
         blue = start.blue + (end.blue - start.blue) * clamped,
         alpha = start.alpha + (end.alpha - start.alpha) * clamped
-    )
-}
-
-private fun detectPreviewClimaxSegments(peaks: FloatArray): List<ImmersiveClimaxSegment> {
-    if (peaks.size < 64) return emptyList()
-    val window = (peaks.size * 0.075f).toInt().coerceIn(32, 96)
-    var bestStart = 0
-    var bestScore = -1f
-    for (start in (peaks.size * 0.10f).toInt() until (peaks.size * 0.82f).toInt()) {
-        val end = (start + window).coerceAtMost(peaks.size)
-        if (end - start < window / 2) break
-        var sum = 0f
-        for (i in start until end) sum += peaks[i]
-        val avg = sum / (end - start).toFloat()
-        val beforeStart = (start - window).coerceAtLeast(0)
-        var beforeSum = 0f
-        var beforeCount = 0
-        for (i in beforeStart until start) {
-            beforeSum += peaks[i]
-            beforeCount++
-        }
-        val beforeAvg = if (beforeCount > 0) beforeSum / beforeCount else avg
-        val lift = (avg - beforeAvg).coerceAtLeast(0f)
-        val centerBias = 1f - abs((start + window * 0.5f) / peaks.size.toFloat() - 0.58f) * 0.42f
-        val score = (avg * 0.75f + lift * 0.55f) * centerBias
-        if (score > bestScore) {
-            bestScore = score
-            bestStart = start
-        }
-    }
-    if (bestScore <= 0f) return emptyList()
-    val start = (bestStart - window / 5).coerceAtLeast(0)
-    val end = (bestStart + window + window / 4).coerceAtMost(peaks.size)
-    return listOf(
-        ImmersiveClimaxSegment(
-            startFraction = start / peaks.size.toFloat(),
-            endFraction = end / peaks.size.toFloat(),
-            confidence = bestScore.coerceIn(0f, 1f)
-        )
     )
 }

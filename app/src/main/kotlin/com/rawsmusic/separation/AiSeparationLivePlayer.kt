@@ -300,7 +300,7 @@ class AiSeparationLivePlayer private constructor(context: Context) {
                     1L
                 } else {
                     minOf(
-                        (initial.sampleRate * PREBUFFER_SECONDS).toLong(),
+                        (initial.sampleRate.toLong() * PREBUFFER_MS / 1000L),
                         latest.totalFrames.takeIf { it > 0L } ?: Long.MAX_VALUE,
                     )
                 }
@@ -725,7 +725,7 @@ class AiSeparationLivePlayer private constructor(context: Context) {
         private const val WAV_HEADER_BYTES = 44L
         private const val S16_BYTES_PER_FRAME = CHANNELS * 2
         private const val READ_FRAMES = 4_096
-        private const val PREBUFFER_SECONDS = 2
+        private const val PREBUFFER_MS = 600L
         private const val DATA_POLL_MS = 30L
         private const val PAUSE_POLL_MS = 50L
 

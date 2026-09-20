@@ -11,19 +11,31 @@ internal class MainActivityVisualizerCoordinator(
     private val pipeline: RealtimeSpectrumPipeline,
     private val isActivityForeground: () -> Boolean,
     private val isUiRequested: () -> Boolean,
-    private val setUiRequested: (Boolean) -> Unit,
-    private val isEnabled: () -> Boolean,
     private val setEnabled: (Boolean) -> Unit,
     private val hasPermission: () -> Boolean,
     private val isPlaying: () -> Boolean,
     private val setSpectrum: (FloatArray) -> Unit,
 ) {
     private fun emptySpectrum() = FloatArray(NativeStereoSpectrumAnalyzer.OUTPUT_SIZE)
+    private var boundController: PlayerController? = null
 
     fun bind(controller: PlayerController) {
+        val previous = boundController
+        if (previous === controller) {
+            // Transport actions call ensureRuntimeController() even when the operational owner did
+            // not change. Never drop the PCM consumer on that idempotent rebind: doing so used to
+            // stop visualizer input after every next/previous command until PLAYER was re-entered.
+            updateRuntime("same_controller_rebind")
+            return
+        }
+        previous?.ffmpegPlayerRef?.setWaveformConsumerActive(false)
+        previous?.onPcmWaveformFrame = null
+        boundController = controller
         controller.onPcmWaveformFrame = waveform@{
                 buffer, read, channels, sampleRate, validBitsPerSample, sampleEncoding ->
-            if (!isEnabled() || !isActivityForeground() || !isUiRequested()) {
+            // Realtime spectrum consumers are not limited to the optional visualizer overlay.
+            // Music Spine uses the same internal PCM analysis even when that overlay is disabled.
+            if (!isActivityForeground() || !isUiRequested()) {
                 return@waveform
             }
             pipeline.submit(
@@ -35,15 +47,14 @@ internal class MainActivityVisualizerCoordinator(
                 validBitsPerSample = validBitsPerSample,
             )
         }
+        updateRuntime("controller_bind")
     }
 
     fun applyEnabled(enabled: Boolean, reason: String) {
         setEnabled(enabled)
         AppPreferences.UI.isAudioVisualizerEnabled = enabled
-        if (!enabled) {
-            setUiRequested(false)
-            setSpectrum(emptySpectrum())
-        }
+        // Compose owns whether any realtime-spectrum consumer is still visible. Do not tear down
+        // the shared PCM analysis merely because the optional visualizer overlay was disabled.
         updateRuntime(reason)
     }
 
@@ -53,12 +64,12 @@ internal class MainActivityVisualizerCoordinator(
         if (!enabled && AppPreferences.UI.isAudioVisualizerEnabled) {
             AppPreferences.UI.isAudioVisualizerEnabled = false
         }
-        if (!enabled) setUiRequested(false)
         updateRuntime(reason)
     }
 
     fun updateRuntime(reason: String) {
-        val active = isEnabled() && isActivityForeground() && isUiRequested()
+        val active = isActivityForeground() && isUiRequested()
+        boundController?.ffmpegPlayerRef?.setWaveformConsumerActive(active)
         pipeline.setPlaying(isPlaying())
         pipeline.setActive(active)
         if (!active) {
@@ -68,6 +79,7 @@ internal class MainActivityVisualizerCoordinator(
     }
 
     fun stopAndReset() {
+        boundController?.ffmpegPlayerRef?.setWaveformConsumerActive(false)
         pipeline.setActive(false)
         setSpectrum(emptySpectrum())
     }

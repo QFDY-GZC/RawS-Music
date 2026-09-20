@@ -14,6 +14,7 @@
 #include "experimental_gain.h"
 #include "loudness_balance_processor.h"
 #include "mono_bass_processor.h"
+#include "mono_output_processor.h"
 #include "dynamic_eq_processor.h"
 #include "moog_ladder_filter.h"
 #include "realtime_stem_separator.h"
@@ -1518,6 +1519,7 @@ class DSPChain {
     std::unique_ptr<ExperimentalGainProcessor> m_experimentalGain;
     std::unique_ptr<LoudnessBalanceProcessor> m_loudnessBalance;
     std::unique_ptr<MonoBassProcessor> m_monoBass;
+    std::unique_ptr<MonoOutputProcessor> m_monoOutput;
     std::unique_ptr<DynamicEqProcessor> m_dynamicEq;
     std::unique_ptr<MoogLadderFilter> m_moogLadder;
     std::vector<float> m_floatBuf;
@@ -1543,6 +1545,7 @@ public:
                  m_experimentalGain(std::make_unique<ExperimentalGainProcessor>()),
                  m_loudnessBalance(std::make_unique<LoudnessBalanceProcessor>()),
                  m_monoBass(std::make_unique<MonoBassProcessor>()),
+                 m_monoOutput(std::make_unique<MonoOutputProcessor>()),
                  m_dynamicEq(std::make_unique<DynamicEqProcessor>()),
                  m_moogLadder(std::make_unique<MoogLadderFilter>()) {}
 
@@ -1658,6 +1661,12 @@ public:
         if (m_experimentalGain->isEnabled()) {
             m_experimentalGain->process(samples, numFrames * channels);
         }
+
+        // Mono output is deliberately last: no later stereo/spatial stage can
+        // undo the user's explicit mono-output choice.
+        if (m_monoOutput->isEnabled()) {
+            m_monoOutput->process(samples, numFrames, channels);
+        }
     }
 
     void setDoublePrecisionProcessing(bool enabled) {
@@ -1700,6 +1709,7 @@ public:
                m_speakerOutputEffect->isEnabled() ||
                m_loudnessBalance->isEnabled() ||
                m_monoBass->isEnabled() ||
+               m_monoOutput->isEnabled() ||
                m_dynamicEq->isEnabled() ||
                m_moogLadder->isEnabled() ||
                m_experimentalGain->isEnabled() ||
@@ -1743,6 +1753,7 @@ public:
     ExperimentalGainProcessor* getExperimentalGain() { return m_experimentalGain.get(); }
     LoudnessBalanceProcessor* getLoudnessBalance() { return m_loudnessBalance.get(); }
     MonoBassProcessor* getMonoBass() { return m_monoBass.get(); }
+    MonoOutputProcessor* getMonoOutput() { return m_monoOutput.get(); }
     DynamicEqProcessor* getDynamicEq() { return m_dynamicEq.get(); }
     MoogLadderFilter* getMoogLadder() { return m_moogLadder.get(); }
 };
@@ -2064,6 +2075,15 @@ Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetMonoBassParameters
         JNIEnv*, jobject, jlong handle, jfloat crossoverHz, jfloat amountPercent) {
     if (handle == 0) return;
     reinterpret_cast<DSPChain*>(handle)->getMonoBass()->setParameters(crossoverHz, amountPercent);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetMonoOutputEnabled(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    reinterpret_cast<DSPChain*>(handle)->getMonoOutput()->setEnabled(enabled == JNI_TRUE);
+    LOGD("CORE_DSP mono_output enabled=%d", enabled == JNI_TRUE);
 }
 
 extern "C"

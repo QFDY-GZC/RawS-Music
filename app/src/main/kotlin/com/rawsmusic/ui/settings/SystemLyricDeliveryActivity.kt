@@ -31,7 +31,7 @@ class SystemLyricDeliveryActivity : BaseSettingsActivity() {
         runCatching {
             startService(
                 Intent(this, PlayerService::class.java)
-                    .setAction(PlayerService.ACTION_REFRESH_NOTIFICATION)
+                    .setAction(PlayerService.ACTION_REFRESH_LYRIC_METADATA)
             )
         }
     }
@@ -47,6 +47,8 @@ private fun SystemLyricDeliveryScreen(
     var liveMode by remember { mutableStateOf(Lyrics.liveUpdateLyricMode) }
     var liveDisplayMode by remember { mutableStateOf(Lyrics.liveUpdateLyricDisplayMode) }
     var liveSecondary by remember { mutableStateOf(Lyrics.liveUpdateLyricSecondaryMode) }
+    var colorOsBridgeEnabled by remember { mutableStateOf(Lyrics.colorOsBridgeLyricEnabled) }
+    var colorOsDeliveryMode by remember { mutableStateOf(Lyrics.colorOsBridgeDeliveryMode) }
     var xiaomiEnabled by remember { mutableStateOf(Lyrics.xiaomiSuperIslandLyricEnabled) }
     var notificationButtons by remember { mutableStateOf(Lyrics.mediaNotificationButtonIds) }
 
@@ -78,6 +80,14 @@ private fun SystemLyricDeliveryScreen(
         stringResource(R.string.settings_media_notification_buttons_playback_desktop),
         stringResource(R.string.settings_media_notification_buttons_playback_favorite),
         stringResource(R.string.settings_media_notification_buttons_desktop_favorite)
+    )
+    val colorOsDeliveryValues = listOf(
+        Lyrics.COLOROS_DELIVERY_MODE_MODULE,
+        Lyrics.COLOROS_DELIVERY_MODE_NON_MODULE
+    )
+    val colorOsDeliveryLabels = listOf(
+        stringResource(R.string.settings_coloros_bridge_mode_module),
+        stringResource(R.string.settings_coloros_bridge_mode_non_module)
     )
 
     SettingsPage(
@@ -154,6 +164,38 @@ private fun SystemLyricDeliveryScreen(
             SettingsInfoEntry(
                 title = stringResource(R.string.settings_media_notification_buttons),
                 description = stringResource(R.string.settings_media_notification_buttons_summary)
+            )
+        }
+
+        SettingsSection(stringResource(R.string.settings_coloros_bridge_section)) {
+            SwitchRow(
+                stringResource(R.string.settings_coloros_bridge_enabled),
+                colorOsBridgeEnabled
+            ) {
+                colorOsBridgeEnabled = it
+                Lyrics.colorOsBridgeLyricEnabled = it
+                onSettingsChanged()
+            }
+            SettingsInfoEntry(
+                title = stringResource(R.string.settings_coloros_bridge_enabled),
+                description = stringResource(R.string.settings_coloros_bridge_enabled_summary)
+            )
+            val deliveryIndex = colorOsDeliveryValues.indexOf(colorOsDeliveryMode).coerceAtLeast(0)
+            WindowSpinnerPreference(
+                title = stringResource(R.string.settings_coloros_bridge_mode),
+                summary = colorOsDeliveryLabels[deliveryIndex],
+                items = colorOsDeliveryLabels.map { DropdownItem(title = it) },
+                selectedIndex = deliveryIndex,
+                enabled = colorOsBridgeEnabled,
+                onSelectedIndexChange = { index ->
+                    colorOsDeliveryMode = colorOsDeliveryValues[index]
+                    Lyrics.colorOsBridgeDeliveryMode = colorOsDeliveryValues[index]
+                    onSettingsChanged()
+                }
+            )
+            SettingsInfoEntry(
+                title = stringResource(R.string.settings_coloros_bridge_mode),
+                description = stringResource(R.string.settings_coloros_bridge_mode_summary)
             )
         }
 

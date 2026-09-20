@@ -10,10 +10,9 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import com.rawsmusic.core.ui.systemui.rawStableStatusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -53,6 +52,7 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 /** Ordinary-player visual shell backed by the independent online queue. */
 @Composable
@@ -112,8 +112,8 @@ internal fun SourceOnlinePlayerPage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
+                .rawStableStatusBarsPadding()
+                .rawStableNavigationBarsPadding()
                 .padding(horizontal = 22.dp, vertical = 8.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -154,7 +154,7 @@ internal fun SourceOnlinePlayerPage(
                 PlaybackArtworkTransition(
                     state = transitionState,
                     animationStyle = animationStyle,
-                    contentScale = ContentScale.Crop,
+                    contentScale = ContentScale.Fit,
                     cornerRadius = 30.dp,
                     modifier = Modifier
                         .fillMaxWidth()

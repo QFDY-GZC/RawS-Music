@@ -3,10 +3,12 @@ package com.rawsmusic.module.player
 import android.util.Log
 import com.rawsmusic.core.common.model.AudioFile
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 /**
@@ -54,7 +56,12 @@ internal class PlaybackProgressController(
 
     fun start() {
         stop()
-        progressJob = scope.launch {
+        // reference player keeps renderer/progress work off the UI Looper and only hands low-frequency
+        // presentation/service events back to main. Raw previously inherited PlayerController's
+        // Dispatchers.Main.immediate scope here, so audio playback woke the main thread at 20 Hz
+        // even when no PLAYER UI was visible. Keep the same lifecycle Job, but run the clock on the
+        // shared background dispatcher instead of creating another dedicated thread.
+        progressJob = scope.launch(Dispatchers.Default) {
             var saveCounter = 0
             var logCounter = 0
             var lastLoggedPositionMs = -1L
@@ -95,10 +102,12 @@ internal class PlaybackProgressController(
                     }
 
                     if (callbacks.shouldSyncUsbMediaIdentity() && logCounter == 0) {
-                        callbacks.syncUsbMediaIdentity(
-                            callbacks.currentSong(),
-                            displayPositionMs.coerceAtLeast(0L),
-                        )
+                        withContext(Dispatchers.Main.immediate) {
+                            callbacks.syncUsbMediaIdentity(
+                                callbacks.currentSong(),
+                                displayPositionMs.coerceAtLeast(0L),
+                            )
+                        }
                     }
 
                     saveCounter++
@@ -113,7 +122,9 @@ internal class PlaybackProgressController(
                             "CUE track end reached: pos=$playerPositionMs >= " +
                                 "cueEndMs=$cueEndMs, advancing to next",
                         )
-                        callbacks.onCueTrackEnd()
+                        withContext(Dispatchers.Main.immediate) {
+                            callbacks.onCueTrackEnd()
+                        }
                         break
                     }
                 } catch (_: Exception) {

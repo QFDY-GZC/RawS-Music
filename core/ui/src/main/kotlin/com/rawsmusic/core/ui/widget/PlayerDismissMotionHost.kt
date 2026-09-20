@@ -17,10 +17,12 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -72,8 +74,11 @@ fun PlayerDismissMotionHost(
     val view = LocalView.current
     val scope = rememberCoroutineScope()
     val latestOnDismiss by rememberUpdatedState(onDismiss)
+    val latestOnDismissProgressChange by rememberUpdatedState(onDismissProgressChange)
     val latestGestureBlocked by rememberUpdatedState(gestureBlocked)
     val dragDismissOffset = remember { Animatable(0f) }
+    var directDragActive by remember { mutableStateOf(false) }
+    var directDragOffset by remember { mutableFloatStateOf(0f) }
     var dismissingPlayer by remember { mutableStateOf(false) }
     val topDragLimitPx = with(density) { 132.dp.toPx() }
     val dismissThresholdPx = with(density) { 240.dp.toPx() }
@@ -81,8 +86,14 @@ fun PlayerDismissMotionHost(
     val dismissTargetPx = remember(view.height) {
         view.height.takeIf { it > 0 }?.toFloat() ?: with(density) { 760.dp.toPx() }
     }
-    val dismissProgress = (dragDismissOffset.value / dismissThresholdPx).coerceIn(0f, 1f)
-    val dragCornerRadius = 30.dp * dismissProgress
+    val renderedDismissOffset = if (directDragActive) directDragOffset else dragDismissOffset.value
+    // Commit threshold and visual handoff are different coordinates. The 240dp threshold decides
+    // whether the gesture closes, but MAIN should recover over the player's complete physical
+    // travel. Publishing threshold progress made the retained page finish its alpha/scale far too
+    // early and visually looked like there was no return animation at all.
+    val visualDismissProgress = (renderedDismissOffset / dismissTargetPx.coerceAtLeast(1f))
+        .coerceIn(0f, 1f)
+    val dragCornerRadius = 30.dp * visualDismissProgress
 
     fun dismissWithMotion() {
         if (dismissingPlayer) return
@@ -100,11 +111,23 @@ fun PlayerDismissMotionHost(
 
     LaunchedEffect(openToken) {
         dismissingPlayer = false
+        directDragActive = false
+        directDragOffset = 0f
         dragDismissOffset.snapTo(0f)
         onDismissProgressChange(0f)
     }
-    SideEffect {
-        onDismissProgressChange(dismissProgress)
+    // Animatable owns only settle/back-button motion. Finger-driven motion is published directly
+    // from onDrag so a quick direction reversal cannot queue stale snapTo coroutines behind the
+    // pointer. This collector mirrors settle frames into the MAIN reveal clock without forcing the
+    // entire player tree through a second scene animator.
+    LaunchedEffect(dragDismissOffset, dismissTargetPx) {
+        snapshotFlow { dragDismissOffset.value }.collect { offset ->
+            if (!directDragActive) {
+                latestOnDismissProgressChange(
+                    (offset / dismissTargetPx.coerceAtLeast(1f)).coerceIn(0f, 1f)
+                )
+            }
+        }
     }
     DisposableEffect(Unit) {
         onDispose { onDismissProgressChange(0f) }
@@ -126,10 +149,20 @@ fun PlayerDismissMotionHost(
                                 closeGesture = !dismissingPlayer &&
                                     !latestGestureBlocked &&
                                     offset.y <= topDragLimitPx
-                                gestureOffset = dragDismissOffset.value
+                                gestureOffset = if (directDragActive) {
+                                    directDragOffset
+                                } else {
+                                    dragDismissOffset.value
+                                }
                                 velocityTracker.resetTracking()
                                 velocityTracker.addPosition(SystemClock.uptimeMillis(), offset)
                                 if (closeGesture) {
+                                    directDragOffset = gestureOffset
+                                    directDragActive = true
+                                    latestOnDismissProgressChange(
+                                        (gestureOffset / dismissTargetPx.coerceAtLeast(1f))
+                                            .coerceIn(0f, 1f)
+                                    )
                                     scope.launch { dragDismissOffset.stop() }
                                 }
                             },
@@ -137,7 +170,10 @@ fun PlayerDismissMotionHost(
                                 if (latestGestureBlocked) {
                                     if (closeGesture) {
                                         closeGesture = false
+                                        val settleStart = directDragOffset
                                         scope.launch {
+                                            dragDismissOffset.snapTo(settleStart)
+                                            directDragActive = false
                                             dragDismissOffset.animateTo(
                                                 targetValue = 0f,
                                                 animationSpec = spring(
@@ -150,18 +186,31 @@ fun PlayerDismissMotionHost(
                                     return@detectDragGestures
                                 }
                                 if (!closeGesture) return@detectDragGestures
-                                gestureOffset = (gestureOffset + if (dragAmount.y > 0f) {
-                                    dragAmount.y
-                                } else {
-                                    dragAmount.y * 0.36f
-                                }).coerceIn(0f, dismissTargetPx)
+                                // Once the dismiss gesture is captured, vertical motion belongs to
+                                // this host in both directions. Applying extra resistance only when
+                                // the finger reverses makes the sheet lag behind the pointer and is
+                                // especially visible after a partial downward drag. Keep the motion
+                                // physically reversible and 1:1; the release threshold still decides
+                                // whether the gesture commits or springs back.
+                                gestureOffset = (gestureOffset + dragAmount.y)
+                                    .coerceIn(0f, dismissTargetPx)
                                 velocityTracker.addPosition(change.uptimeMillis, change.position)
-                                scope.launch { dragDismissOffset.snapTo(gestureOffset) }
+                                // Pointer owns the physical offset synchronously. Do not dispatch a
+                                // coroutine per event: reversing direction must update this frame,
+                                // not after older snapTo jobs have drained.
+                                directDragOffset = gestureOffset
+                                latestOnDismissProgressChange(
+                                    (gestureOffset / dismissTargetPx.coerceAtLeast(1f))
+                                        .coerceIn(0f, 1f)
+                                )
                                 if (gestureOffset > 0f) change.consume()
                             },
                             onDragCancel = {
                                 closeGesture = false
+                                val settleStart = directDragOffset
                                 scope.launch {
+                                    dragDismissOffset.snapTo(settleStart)
+                                    directDragActive = false
                                     dragDismissOffset.animateTo(
                                         targetValue = 0f,
                                         animationSpec = spring(
@@ -174,7 +223,10 @@ fun PlayerDismissMotionHost(
                             onDragEnd = {
                                 if (latestGestureBlocked) {
                                     closeGesture = false
+                                    val settleStart = directDragOffset
                                     scope.launch {
+                                        dragDismissOffset.snapTo(settleStart)
+                                        directDragActive = false
                                         dragDismissOffset.animateTo(
                                             targetValue = 0f,
                                             animationSpec = spring(
@@ -188,7 +240,10 @@ fun PlayerDismissMotionHost(
                                 if (!closeGesture) return@detectDragGestures
                                 closeGesture = false
                                 val velocityY = velocityTracker.calculateVelocity().y
+                                val settleStart = directDragOffset
                                 scope.launch {
+                                    dragDismissOffset.snapTo(settleStart)
+                                    directDragActive = false
                                     if (gestureOffset >= dismissThresholdPx || velocityY >= dismissVelocityThresholdPx) {
                                         if (!dismissingPlayer) {
                                             dismissingPlayer = true
@@ -220,7 +275,7 @@ fun PlayerDismissMotionHost(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    translationY = dragDismissOffset.value
+                    translationY = if (directDragActive) directDragOffset else dragDismissOffset.value
                     scaleX = 1f
                     scaleY = 1f
                     transformOrigin = TransformOrigin(0.5f, 0f)

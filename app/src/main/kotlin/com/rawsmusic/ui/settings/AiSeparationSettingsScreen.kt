@@ -18,8 +18,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import com.rawsmusic.R
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
+import com.rawsmusic.ai.melody.AiMelodyModelStore
+import com.rawsmusic.ai.melody.AiRecommendedMelodyModels
+import com.rawsmusic.ai.instrument.AiRecommendedPianoPack
+import com.rawsmusic.ai.instrument.AiRecommendedPianoPackInstaller
+import com.rawsmusic.ai.instrument.AiInstrumentPackStore
 import com.rawsmusic.separation.AiSeparationDownloadPhase
 import com.rawsmusic.separation.AiSeparationDownloadService
+import com.rawsmusic.separation.AiFastVocalAlignmentModel
+import com.rawsmusic.separation.AiFastVocalAlignmentBundle
 import com.rawsmusic.separation.AiSeparationJobPhase
 import com.rawsmusic.separation.AiSeparationJobProgressBus
 import com.rawsmusic.separation.AiSeparationJobService
@@ -35,7 +44,9 @@ import com.rawsmusic.separation.AiSeparationLivePlayer
 import com.rawsmusic.separation.AiSeparationLiveStreamBus
 import com.rawsmusic.separation.AiSeparationStem
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun AiSeparationSettingsScreen(
@@ -48,7 +59,12 @@ fun AiSeparationSettingsScreen(
     val store = remember(context) { AiSeparationPluginStore.get(context) }
     val resultStore = remember(context) { AiSeparationResultStore.get(context) }
     val livePlayer = remember(context) { AiSeparationLivePlayer.get(context) }
+    val melodyModelStore = remember(context) { AiMelodyModelStore.get(context) }
+    val instrumentPackStore = remember(context) { AiInstrumentPackStore.get(context) }
+    val recommendedPianoInstaller = remember(context) { AiRecommendedPianoPackInstaller.get(context) }
     val state by store.state.collectAsState()
+    val melodyStoreRevision by melodyModelStore.revision.collectAsState()
+    val instrumentPackRevision by instrumentPackStore.revision.collectAsState()
     val downloadProgress by AiSeparationProgressBus.state.collectAsState()
     val jobProgress by AiSeparationJobProgressBus.state.collectAsState()
     val liveStream by AiSeparationLiveStreamBus.state.collectAsState()
@@ -57,6 +73,8 @@ fun AiSeparationSettingsScreen(
     var runtimeStatus by remember { mutableStateOf(AiSeparationRuntimeBridge.status(context)) }
     var deleteTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var deleteResultTarget by remember { mutableStateOf<String?>(null) }
+    var repositoryUrlDialog by remember { mutableStateOf(false) }
+    var repositoryUrl by remember { mutableStateOf("") }
     var selectedAudioUri by remember(initialAudioUri) { mutableStateOf(initialAudioUri) }
     var selectedAudioName by remember(initialAudioName) {
         mutableStateOf(initialAudioName.ifBlank { initialAudioUri?.lastPathSegment.orEmpty() })
@@ -72,19 +90,133 @@ fun AiSeparationSettingsScreen(
             AiRecommendedModels.UVR_9482_ID to AiRecommendedModels.UVR_9482_VERSION
         )
     }
+    var melodyModelInstalled by remember { mutableStateOf<Boolean?>(null) }
+    var melodyModelRevision by remember { mutableStateOf(0) }
+    var recommendedPianoInstalled by remember { mutableStateOf<Boolean?>(null) }
+    var recommendedPianoRevision by remember { mutableStateOf(0) }
+    var observedMelodyStoreRevision by remember { mutableStateOf(-1L) }
+    var observedInstrumentPackRevision by remember { mutableStateOf(-1L) }
+
+    LaunchedEffect(
+        downloadProgress.modelId,
+        downloadProgress.modelVersion,
+        downloadProgress.phase,
+        melodyModelRevision,
+        melodyStoreRevision,
+    ) {
+        val recommended = AiRecommendedMelodyModels.RMVPE_Q8
+        val storeChanged = melodyStoreRevision != observedMelodyStoreRevision
+        if (
+            melodyModelInstalled == null || storeChanged ||
+            downloadProgress.modelId == recommended.id &&
+            downloadProgress.modelVersion == recommended.version
+        ) {
+            melodyModelInstalled = withContext(Dispatchers.IO) {
+                melodyModelStore.resolveRecommended() != null
+            }
+        }
+        observedMelodyStoreRevision = melodyStoreRevision
+    }
+
+    LaunchedEffect(
+        downloadProgress.modelId,
+        downloadProgress.modelVersion,
+        downloadProgress.phase,
+        recommendedPianoRevision,
+        instrumentPackRevision,
+    ) {
+        val storeChanged = instrumentPackRevision != observedInstrumentPackRevision
+        if (
+            recommendedPianoInstalled == null || storeChanged ||
+            downloadProgress.modelId == AiRecommendedPianoPack.ID &&
+            downloadProgress.modelVersion == AiRecommendedPianoPack.VERSION
+        ) {
+            recommendedPianoInstalled = withContext(Dispatchers.IO) {
+                recommendedPianoInstaller.resolveInstalled() != null
+            }
+        }
+        observedInstrumentPackRevision = instrumentPackRevision
+    }
+
+    suspend fun repositoryImportMessage(
+        result: Result<com.rawsmusic.separation.AiModelRepositoryDescriptor>,
+    ): String {
+        val descriptor = result.getOrNull()
+        if (descriptor == null) {
+            return result.exceptionOrNull()?.message
+                ?: context.getString(R.string.settings_ai_repository_import_failed)
+        }
+        val refresh = store.refreshCatalog()
+        return refresh.fold(
+            onSuccess = {
+                context.getString(
+                    R.string.settings_ai_repository_imported_and_refreshed,
+                    descriptor.name,
+                    it.size,
+                )
+            },
+            onFailure = {
+                context.getString(R.string.settings_ai_repository_imported, descriptor.name) +
+                    "\n" + (it.message
+                    ?: context.getString(R.string.settings_ai_repository_refresh_failed))
+            },
+        )
+    }
+
+    fun downloadFirstFastAlignmentModel() {
+        AiSeparationDownloadService.startFastVocalAlignment(context)
+        AppNoticeBus.post(
+            message = context.getString(
+                R.string.settings_ai_fast_alignment_download_started,
+                context.getString(R.string.ai_fast_alignment_bundle_name),
+            ),
+            icon = AppNoticeIcon.DOWNLOAD,
+        )
+    }
+
+    fun downloadFirstLyricAlignmentModel() {
+        scope.launch {
+            val result = runCatching {
+                val model = store.refreshLyricAlignmentCatalog().getOrThrow()
+                    .minWithOrNull(
+                        compareBy<com.rawsmusic.separation.AiLyricAlignmentCatalogEntry> {
+                            it.estimatedMemoryMb
+                        }.thenBy { it.modelSizeBytes + it.vocabularySizeBytes },
+                    ) ?: error(
+                        context.getString(R.string.settings_ai_lyric_alignment_no_downloadable_model),
+                    )
+                AiSeparationDownloadService.startLyricAlignment(
+                    context,
+                    model.id,
+                    model.version,
+                )
+                model.name
+            }
+            showOperationNotice(
+                context = context,
+                success = result.isSuccess,
+                message = result.fold(
+                    onSuccess = {
+                        context.getString(
+                            R.string.settings_ai_lyric_alignment_download_started,
+                            it,
+                        )
+                    },
+                    onFailure = { it.message.orEmpty() },
+                ),
+            )
+        }
+    }
 
     val repositoryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             val result = store.importRepository(uri)
-            Toast.makeText(
-                context,
-                result.fold(
-                    onSuccess = { context.getString(R.string.settings_ai_repository_imported, it.name) },
-                    onFailure = { it.message ?: context.getString(R.string.settings_ai_repository_import_failed) },
-                ),
-                if (result.isSuccess) Toast.LENGTH_SHORT else Toast.LENGTH_LONG,
-            ).show()
+            showOperationNotice(
+                context = context,
+                success = result.isSuccess,
+                message = repositoryImportMessage(result),
+            )
         }
     }
 
@@ -92,14 +224,14 @@ fun AiSeparationSettingsScreen(
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             val result = store.importModelPackage(uri)
-            Toast.makeText(
-                context,
-                result.fold(
+            showOperationNotice(
+                context = context,
+                success = result.isSuccess,
+                message = result.fold(
                     onSuccess = { context.getString(R.string.settings_ai_model_imported, it.catalog.name) },
                     onFailure = { it.message ?: context.getString(R.string.settings_ai_model_import_failed) },
                 ),
-                if (result.isSuccess) Toast.LENGTH_SHORT else Toast.LENGTH_LONG,
-            ).show()
+            )
         }
     }
 
@@ -108,9 +240,10 @@ fun AiSeparationSettingsScreen(
         scope.launch {
             val result = store.importRuntime(uri)
             runtimeStatus = AiSeparationRuntimeBridge.status(context)
-            Toast.makeText(
-                context,
-                result.fold(
+            showOperationNotice(
+                context = context,
+                success = result.isSuccess,
+                message = result.fold(
                     onSuccess = {
                         context.getString(R.string.settings_ai_runtime_imported, it.name, it.version)
                     },
@@ -118,8 +251,7 @@ fun AiSeparationSettingsScreen(
                         it.message ?: context.getString(R.string.settings_ai_runtime_import_failed)
                     },
                 ),
-                if (result.isSuccess) Toast.LENGTH_SHORT else Toast.LENGTH_LONG,
-            ).show()
+            )
         }
     }
 
@@ -133,16 +265,16 @@ fun AiSeparationSettingsScreen(
                 recommendedImportTarget.first,
                 recommendedImportTarget.second,
             )
-            Toast.makeText(
-                context,
-                result.fold(
+            showOperationNotice(
+                context = context,
+                success = result.isSuccess,
+                message = result.fold(
                     onSuccess = { context.getString(R.string.settings_ai_recommended_imported, it.catalog.name) },
                     onFailure = {
                         it.message ?: context.getString(R.string.settings_ai_recommended_import_failed)
                     },
                 ),
-                if (result.isSuccess) Toast.LENGTH_SHORT else Toast.LENGTH_LONG,
-            ).show()
+            )
         }
     }
 
@@ -170,7 +302,16 @@ fun AiSeparationSettingsScreen(
                 store.reload()
                 runtimeStatus = AiSeparationRuntimeBridge.status(context)
                 if (downloadProgress.message.isNotBlank()) {
-                    Toast.makeText(context, downloadProgress.message, Toast.LENGTH_LONG).show()
+                    if (downloadProgress.phase == AiSeparationDownloadPhase.FAILED) {
+                        AppNoticeBus.error(downloadProgress.message)
+                    } else if (downloadProgress.phase == AiSeparationDownloadPhase.COMPLETED) {
+                        AppNoticeBus.post(
+                            message = downloadProgress.message,
+                            icon = AppNoticeIcon.DOWNLOAD,
+                        )
+                    } else {
+                        Toast.makeText(context, downloadProgress.message, Toast.LENGTH_LONG).show()
+                    }
                 }
                 delay(1_500L)
                 AiSeparationProgressBus.clearCompleted()
@@ -186,7 +327,16 @@ fun AiSeparationSettingsScreen(
             AiSeparationJobPhase.CANCELLED -> {
                 resultStore.reload()
                 if (jobProgress.message.isNotBlank()) {
-                    Toast.makeText(context, jobProgress.message, Toast.LENGTH_LONG).show()
+                    if (jobProgress.phase == AiSeparationJobPhase.FAILED) {
+                        AppNoticeBus.error(jobProgress.message)
+                    } else if (jobProgress.phase == AiSeparationJobPhase.COMPLETED) {
+                        AppNoticeBus.post(
+                            message = jobProgress.message,
+                            icon = AppNoticeIcon.AI,
+                        )
+                    } else {
+                        Toast.makeText(context, jobProgress.message, Toast.LENGTH_LONG).show()
+                    }
                 }
                 delay(2_000L)
                 AiSeparationJobProgressBus.clearCompleted()
@@ -321,9 +471,15 @@ fun AiSeparationSettingsScreen(
                             downloadProgress.totalBytes,
                         ),
                     )
-                    !installed -> {
+                    else -> {
                         SettingsNavigationEntry(
-                            title = stringResource(R.string.settings_ai_recommended_download),
+                            title = stringResource(
+                                if (installed) {
+                                    R.string.settings_ai_recommended_redownload
+                                } else {
+                                    R.string.settings_ai_recommended_download
+                                },
+                            ),
                             description = if (realtimeCapable) {
                                 stringResource(R.string.settings_ai_recommended_download_summary)
                             } else {
@@ -337,23 +493,25 @@ fun AiSeparationSettingsScreen(
                                 )
                             },
                         )
-                        SettingsNavigationEntry(
-                            title = stringResource(R.string.settings_ai_recommended_import),
-                            description = stringResource(
-                                R.string.settings_ai_recommended_import_named_summary,
-                                recommended.name,
-                            ),
-                            onClick = {
-                                recommendedImportTarget = recommended.id to recommended.version
-                                recommendedModelLauncher.launch(
-                                    arrayOf(
-                                        "application/octet-stream",
-                                        "application/onnx",
-                                        "*/*",
+                        if (!installed) {
+                            SettingsNavigationEntry(
+                                title = stringResource(R.string.settings_ai_recommended_import),
+                                description = stringResource(
+                                    R.string.settings_ai_recommended_import_named_summary,
+                                    recommended.name,
+                                ),
+                                onClick = {
+                                    recommendedImportTarget = recommended.id to recommended.version
+                                    recommendedModelLauncher.launch(
+                                        arrayOf(
+                                            "application/octet-stream",
+                                            "application/onnx",
+                                            "*/*",
+                                        )
                                     )
-                                )
-                            },
-                        )
+                                },
+                            )
+                        }
                     }
                 }
                 if (installed && !offlineSelected && !activeDownload) {
@@ -363,16 +521,16 @@ fun AiSeparationSettingsScreen(
                         onClick = {
                             scope.launch {
                                 val result = store.selectModel(recommended.id, recommended.version)
-                                Toast.makeText(
-                                    context,
-                                    result.fold(
+                                showOperationNotice(
+                                    context = context,
+                                    success = result.isSuccess,
+                                    message = result.fold(
                                         onSuccess = {
                                             context.getString(R.string.settings_ai_offline_selected_toast)
                                         },
                                         onFailure = { it.message.orEmpty() },
                                     ),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
+                                )
                             }
                         },
                     )
@@ -387,16 +545,16 @@ fun AiSeparationSettingsScreen(
                                     recommended.id,
                                     recommended.version,
                                 )
-                                Toast.makeText(
-                                    context,
-                                    result.fold(
+                                showOperationNotice(
+                                    context = context,
+                                    success = result.isSuccess,
+                                    message = result.fold(
                                         onSuccess = {
                                             context.getString(R.string.settings_ai_realtime_selected_toast)
                                         },
                                         onFailure = { it.message.orEmpty() },
                                     ),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
+                                )
                             }
                         },
                     )
@@ -577,11 +735,11 @@ fun AiSeparationSettingsScreen(
                             else -> null
                         }
                         if (failure != null) {
-                            Toast.makeText(context, failure, Toast.LENGTH_LONG).show()
+                            AppNoticeBus.error(failure)
                         } else {
                             val result = AiSeparationJobService.start(context, uri!!, selectedAudioName)
                             if (result.isFailure) {
-                                Toast.makeText(context, result.exceptionOrNull()?.message.orEmpty(), Toast.LENGTH_LONG).show()
+                                AppNoticeBus.error(result.exceptionOrNull()?.message.orEmpty())
                             }
                         }
                     },
@@ -604,6 +762,11 @@ fun AiSeparationSettingsScreen(
                 description = stringResource(R.string.settings_ai_repository_import_summary),
                 onClick = { repositoryLauncher.launch(arrayOf("application/json", "text/json", "text/plain")) },
             )
+            SettingsNavigationEntry(
+                title = stringResource(R.string.settings_ai_repository_import_url),
+                description = stringResource(R.string.settings_ai_repository_import_url_summary),
+                onClick = { repositoryUrlDialog = true },
+            )
             if (repository != null) {
                 SettingsNavigationEntry(
                     title = stringResource(R.string.settings_ai_repository_refresh),
@@ -611,14 +774,14 @@ fun AiSeparationSettingsScreen(
                     onClick = {
                         scope.launch {
                             val result = store.refreshCatalog()
-                            Toast.makeText(
-                                context,
-                                result.fold(
+                            showOperationNotice(
+                                context = context,
+                                success = result.isSuccess,
+                                message = result.fold(
                                     onSuccess = { context.getString(R.string.settings_ai_repository_refreshed, it.size) },
                                     onFailure = { it.message ?: context.getString(R.string.settings_ai_repository_refresh_failed) },
                                 ),
-                                if (result.isSuccess) Toast.LENGTH_SHORT else Toast.LENGTH_LONG,
-                            ).show()
+                            )
                         }
                     },
                 )
@@ -628,7 +791,10 @@ fun AiSeparationSettingsScreen(
                     onClick = {
                         scope.launch {
                             store.removeRepository()
-                            Toast.makeText(context, R.string.settings_ai_repository_removed, Toast.LENGTH_SHORT).show()
+                            AppNoticeBus.post(
+                                message = context.getString(R.string.settings_ai_repository_removed),
+                                icon = AppNoticeIcon.AI,
+                            )
                         }
                     },
                 )
@@ -636,13 +802,14 @@ fun AiSeparationSettingsScreen(
         }
 
         SettingsSection(stringResource(R.string.settings_ai_models_section)) {
-            if (state.catalog.isEmpty()) {
+            val offlineModels = state.catalog.filterNot(AiFastVocalAlignmentModel::isCandidate)
+            if (offlineModels.isEmpty()) {
                 SettingsInfoEntry(
                     title = stringResource(R.string.settings_ai_models_empty),
                     description = stringResource(R.string.settings_ai_models_empty_summary),
                 )
             } else {
-                state.catalog.forEach { model ->
+                offlineModels.forEach { model ->
                     val installed = state.isInstalled(model)
                     val offlineSelected = state.isSelected(model)
                     val realtimeSelected = state.isRealtimeSelected(model)
@@ -690,14 +857,14 @@ fun AiSeparationSettingsScreen(
                             onClick = {
                                 scope.launch {
                                     val result = store.selectModel(model.id, model.version)
-                                    Toast.makeText(
-                                        context,
-                                        result.fold(
+                                    showOperationNotice(
+                                        context = context,
+                                        success = result.isSuccess,
+                                        message = result.fold(
                                             onSuccess = { context.getString(R.string.settings_ai_model_selected_toast) },
                                             onFailure = { it.message.orEmpty() },
                                         ),
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
+                                    )
                                 }
                             },
                         )
@@ -711,9 +878,10 @@ fun AiSeparationSettingsScreen(
                             onClick = {
                                 scope.launch {
                                     val result = store.selectRealtimeModel(model.id, model.version)
-                                    Toast.makeText(
-                                        context,
-                                        result.fold(
+                                    showOperationNotice(
+                                        context = context,
+                                        success = result.isSuccess,
+                                        message = result.fold(
                                             onSuccess = {
                                                 context.getString(
                                                     R.string.settings_ai_realtime_selected_toast
@@ -721,8 +889,7 @@ fun AiSeparationSettingsScreen(
                                             },
                                             onFailure = { it.message.orEmpty() },
                                         ),
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
+                                    )
                                 }
                             },
                         )
@@ -745,6 +912,351 @@ fun AiSeparationSettingsScreen(
                     )
                 },
             )
+        }
+
+        SettingsSection(stringResource(R.string.settings_ai_melody_model_section)) {
+            val recommended = AiRecommendedMelodyModels.RMVPE_Q8
+            val activeDownload = downloadProgress.active &&
+                downloadProgress.modelId == recommended.id &&
+                downloadProgress.modelVersion == recommended.version
+            val installed = melodyModelInstalled == true
+            val status = when {
+                activeDownload -> buildDownloadProgressText(
+                    downloadProgress.downloadedBytes,
+                    downloadProgress.totalBytes,
+                )
+                melodyModelInstalled == null -> stringResource(R.string.settings_ai_melody_model_checking)
+                installed -> stringResource(R.string.settings_ai_melody_model_installed)
+                else -> stringResource(R.string.settings_ai_melody_model_not_installed)
+            }
+            SettingsInfoEntry(
+                title = "${recommended.displayName} ${recommended.version}",
+                description = stringResource(
+                    R.string.settings_ai_melody_model_summary,
+                    status,
+                    formatBytes(recommended.modelSizeBytes),
+                ),
+            )
+            if (activeDownload) {
+                SettingsInfoEntry(
+                    title = stringResource(R.string.settings_ai_melody_model_downloading),
+                    description = downloadProgress.message,
+                )
+            } else if (!installed) {
+                SettingsNavigationEntry(
+                    title = stringResource(R.string.settings_ai_melody_model_download),
+                    description = stringResource(R.string.settings_ai_melody_model_download_summary),
+                    onClick = {
+                        AiSeparationDownloadService.startMelody(context)
+                        AppNoticeBus.post(
+                            message = context.getString(R.string.settings_ai_melody_model_download_started),
+                            icon = AppNoticeIcon.DOWNLOAD,
+                        )
+                    },
+                )
+            } else {
+                SettingsNavigationEntry(
+                    title = stringResource(R.string.settings_ai_melody_model_delete),
+                    description = stringResource(R.string.settings_ai_melody_model_delete_summary),
+                    onClick = {
+                        scope.launch {
+                            val result = melodyModelStore.removeRecommended()
+                            if (result.isSuccess) melodyModelRevision++
+                            showOperationNotice(
+                                context = context,
+                                success = result.isSuccess,
+                                message = result.fold(
+                                    onSuccess = { context.getString(R.string.settings_ai_melody_model_deleted) },
+                                    onFailure = { it.message.orEmpty() },
+                                ),
+                            )
+                        }
+                    },
+                )
+            }
+        }
+
+        SettingsSection(stringResource(R.string.settings_ai_piano_pack_section)) {
+            val activeDownload = downloadProgress.active &&
+                downloadProgress.modelId == AiRecommendedPianoPack.ID &&
+                downloadProgress.modelVersion == AiRecommendedPianoPack.VERSION
+            val installed = recommendedPianoInstalled == true
+            val status = when {
+                activeDownload -> buildDownloadProgressText(
+                    downloadProgress.downloadedBytes,
+                    downloadProgress.totalBytes,
+                )
+                recommendedPianoInstalled == null -> stringResource(R.string.settings_ai_piano_pack_checking)
+                installed -> stringResource(R.string.settings_ai_piano_pack_installed)
+                else -> stringResource(R.string.settings_ai_piano_pack_not_installed)
+            }
+            SettingsInfoEntry(
+                title = "${AiRecommendedPianoPack.DISPLAY_NAME} ${AiRecommendedPianoPack.VERSION}",
+                description = stringResource(
+                    R.string.settings_ai_piano_pack_summary,
+                    status,
+                    formatBytes(AiRecommendedPianoPack.ESTIMATED_DOWNLOAD_BYTES),
+                    formatBytes(AiRecommendedPianoPack.ESTIMATED_INSTALLED_BYTES),
+                ),
+            )
+            if (activeDownload) {
+                SettingsInfoEntry(
+                    title = stringResource(R.string.settings_ai_piano_pack_downloading),
+                    description = downloadProgress.message,
+                )
+            } else if (!installed) {
+                SettingsNavigationEntry(
+                    title = stringResource(R.string.settings_ai_piano_pack_download),
+                    description = stringResource(R.string.settings_ai_piano_pack_download_summary),
+                    onClick = {
+                        AiSeparationDownloadService.startRecommendedPianoPack(context)
+                        AppNoticeBus.post(
+                            message = context.getString(R.string.settings_ai_piano_pack_download_started),
+                            icon = AppNoticeIcon.DOWNLOAD,
+                        )
+                    },
+                )
+            } else {
+                SettingsNavigationEntry(
+                    title = stringResource(R.string.settings_ai_piano_pack_delete),
+                    description = stringResource(R.string.settings_ai_piano_pack_delete_summary),
+                    onClick = {
+                        scope.launch {
+                            val result = recommendedPianoInstaller.removeRecommended()
+                            if (result.isSuccess) recommendedPianoRevision++
+                            showOperationNotice(
+                                context = context,
+                                success = result.isSuccess,
+                                message = result.fold(
+                                    onSuccess = { context.getString(R.string.settings_ai_piano_pack_deleted) },
+                                    onFailure = { it.message.orEmpty() },
+                                ),
+                            )
+                        }
+                    },
+                )
+            }
+        }
+
+        SettingsSection(stringResource(R.string.settings_ai_fast_alignment_section)) {
+            val directBundleDownloadActive = downloadProgress.active &&
+                downloadProgress.modelId == AiFastVocalAlignmentBundle.ID &&
+                downloadProgress.modelVersion == AiFastVocalAlignmentBundle.VERSION
+            val directBundleStatus = when {
+                directBundleDownloadActive -> buildDownloadProgressText(
+                    downloadProgress.downloadedBytes,
+                    downloadProgress.totalBytes,
+                )
+                state.fastVocalAlignmentBundleInstalled ->
+                    stringResource(R.string.settings_ai_fast_alignment_direct_installed)
+                else -> stringResource(R.string.settings_ai_fast_alignment_direct_not_installed)
+            }
+            SettingsInfoEntry(
+                title = stringResource(R.string.settings_ai_fast_alignment_direct_title),
+                description = stringResource(
+                    R.string.settings_ai_fast_alignment_direct_summary,
+                    directBundleStatus,
+                    formatBytes(AiFastVocalAlignmentBundle.ARCHIVE_SIZE_BYTES),
+                ),
+            )
+            if (directBundleDownloadActive) {
+                SettingsInfoEntry(
+                    title = stringResource(R.string.settings_ai_fast_alignment_downloading),
+                    description = downloadProgress.message,
+                )
+            } else if (!state.fastVocalAlignmentBundleInstalled) {
+                SettingsNavigationEntry(
+                    title = stringResource(R.string.settings_ai_fast_alignment_direct_download),
+                    description = stringResource(
+                        R.string.settings_ai_fast_alignment_direct_download_summary,
+                    ),
+                    onClick = { downloadFirstFastAlignmentModel() },
+                )
+            }
+            val fastModels = state.catalog
+                .filter(AiFastVocalAlignmentModel::isCandidate)
+                .sortedWith(
+                    compareBy<com.rawsmusic.separation.AiSeparationCatalogEntry> {
+                        if (AiFastVocalAlignmentModel.isPreferred(it)) 0 else 1
+                    }.thenBy { it.estimatedMemoryMb }
+                        .thenBy { it.name },
+                )
+            if (fastModels.isEmpty() && !state.fastVocalAlignmentBundleInstalled) {
+                SettingsInfoEntry(
+                    title = stringResource(R.string.settings_ai_fast_alignment_empty),
+                    description = stringResource(R.string.settings_ai_fast_alignment_empty_summary),
+                )
+                SettingsNavigationEntry(
+                    title = stringResource(R.string.settings_ai_fast_alignment_manage_catalog),
+                    description = stringResource(R.string.settings_ai_fast_alignment_manage_catalog_summary),
+                    onClick = {
+                        scope.launch {
+                            val result = store.refreshCatalog()
+                            showOperationNotice(
+                                context = context,
+                                success = result.isSuccess,
+                                message = result.fold(
+                                    onSuccess = {
+                                        context.getString(R.string.settings_ai_repository_refreshed, it.size)
+                                    },
+                                    onFailure = {
+                                        it.message ?: context.getString(
+                                            R.string.settings_ai_repository_refresh_failed,
+                                        )
+                                    },
+                                ),
+                            )
+                        }
+                    },
+                )
+            } else {
+                fastModels.forEach { model ->
+                    val installed = state.isInstalled(model)
+                    val selected = store.selectedFastVocalAlignmentModel()?.catalog?.let {
+                        it.id == model.id && it.version == model.version
+                    } == true
+                    val activeDownload = downloadProgress.active &&
+                        downloadProgress.modelId == model.id &&
+                        downloadProgress.modelVersion == model.version
+                    val status = when {
+                        activeDownload -> buildDownloadProgressText(
+                            downloadProgress.downloadedBytes,
+                            downloadProgress.totalBytes,
+                        )
+                        selected -> stringResource(R.string.settings_ai_fast_alignment_selected)
+                        installed -> stringResource(R.string.settings_ai_fast_alignment_installed)
+                        else -> stringResource(R.string.settings_ai_fast_alignment_not_installed)
+                    }
+                    val preference = if (AiFastVocalAlignmentModel.isPreferred(model)) {
+                        stringResource(R.string.settings_ai_fast_alignment_preferred)
+                    } else {
+                        stringResource(R.string.settings_ai_fast_alignment_compatible)
+                    }
+                    SettingsInfoEntry(
+                        title = "${model.name} ${model.version}",
+                        description = stringResource(
+                            R.string.settings_ai_fast_alignment_summary,
+                            status,
+                            formatBytes(model.archiveSizeBytes),
+                            model.estimatedMemoryMb,
+                            preference,
+                            model.description,
+                        ),
+                    )
+                    when {
+                        activeDownload -> SettingsInfoEntry(
+                            title = stringResource(R.string.settings_ai_fast_alignment_downloading),
+                            description = downloadProgress.message,
+                        )
+                        !installed -> SettingsNavigationEntry(
+                            title = stringResource(R.string.settings_ai_fast_alignment_download),
+                            description = stringResource(
+                                R.string.settings_ai_fast_alignment_download_summary,
+                            ),
+                            onClick = {
+                                AiSeparationDownloadService.start(
+                                    context,
+                                    model.id,
+                                    model.version,
+                                )
+                            },
+                        )
+                    }
+                    if (installed && !activeDownload) {
+                        SettingsNavigationEntry(
+                            title = stringResource(R.string.settings_ai_model_delete),
+                            description = stringResource(R.string.settings_ai_model_delete_summary),
+                            onClick = { deleteTarget = model.id to model.version },
+                        )
+                    }
+                }
+            }
+        }
+
+        SettingsSection(stringResource(R.string.settings_ai_lyric_alignment_section)) {
+            if (state.lyricAlignmentCatalog.isEmpty()) {
+                SettingsInfoEntry(
+                    title = stringResource(R.string.settings_ai_lyric_alignment_empty),
+                    description = stringResource(R.string.settings_ai_lyric_alignment_empty_summary),
+                )
+                SettingsNavigationEntry(
+                    title = stringResource(R.string.settings_ai_lyric_alignment_download_one_click),
+                    description = stringResource(
+                        R.string.settings_ai_lyric_alignment_download_one_click_summary,
+                    ),
+                    onClick = { downloadFirstLyricAlignmentModel() },
+                )
+            } else {
+                state.lyricAlignmentCatalog.forEach { model ->
+                    val installed = state.isLyricAlignmentInstalled(model)
+                    val selected = state.selectedLyricAlignmentId == model.id &&
+                        state.selectedLyricAlignmentVersion == model.version
+                    val activeDownload = downloadProgress.active &&
+                        downloadProgress.modelId == model.id &&
+                        downloadProgress.modelVersion == model.version
+                    val status = when {
+                        activeDownload -> buildDownloadProgressText(
+                            downloadProgress.downloadedBytes,
+                            downloadProgress.totalBytes,
+                        )
+                        selected -> stringResource(R.string.settings_ai_lyric_alignment_selected)
+                        installed -> stringResource(R.string.settings_ai_lyric_alignment_installed)
+                        else -> stringResource(R.string.settings_ai_lyric_alignment_not_installed)
+                    }
+                    SettingsInfoEntry(
+                        title = "${model.name} ${model.version}",
+                        description = stringResource(
+                            R.string.settings_ai_lyric_alignment_summary,
+                            status,
+                            formatBytes(model.modelSizeBytes + model.vocabularySizeBytes),
+                            model.estimatedMemoryMb,
+                            model.description,
+                        ),
+                    )
+                    when {
+                        activeDownload -> SettingsInfoEntry(
+                            title = stringResource(R.string.settings_ai_lyric_alignment_downloading),
+                            description = downloadProgress.message,
+                        )
+                        !installed -> SettingsNavigationEntry(
+                            title = stringResource(R.string.settings_ai_lyric_alignment_download),
+                            description = stringResource(
+                                R.string.settings_ai_lyric_alignment_download_summary,
+                            ),
+                            onClick = {
+                                AiSeparationDownloadService.startLyricAlignment(
+                                    context,
+                                    model.id,
+                                    model.version,
+                                )
+                            },
+                        )
+                        !selected -> SettingsNavigationEntry(
+                            title = stringResource(R.string.settings_ai_lyric_alignment_select),
+                            description = stringResource(
+                                R.string.settings_ai_lyric_alignment_select_summary,
+                            ),
+                            onClick = {
+                                scope.launch {
+                                    val result = store.selectLyricAlignmentModel(model.id, model.version)
+                                    showOperationNotice(
+                                        context = context,
+                                        success = result.isSuccess,
+                                        message = result.fold(
+                                            onSuccess = {
+                                                context.getString(
+                                                    R.string.settings_ai_lyric_alignment_selected_toast,
+                                                )
+                                            },
+                                            onFailure = { it.message.orEmpty() },
+                                        ),
+                                    )
+                                }
+                            },
+                        )
+                    }
+                }
+            }
         }
 
         SettingsSection(stringResource(R.string.settings_ai_results_section)) {
@@ -813,14 +1325,14 @@ fun AiSeparationSettingsScreen(
                         scope.launch {
                             livePlayer.stop()
                             val result = resultStore.clear()
-                            Toast.makeText(
-                                context,
-                                result.fold(
+                            showOperationNotice(
+                                context = context,
+                                success = result.isSuccess,
+                                message = result.fold(
                                     onSuccess = { context.getString(R.string.settings_ai_results_cleared) },
                                     onFailure = { it.message.orEmpty() },
                                 ),
-                                Toast.LENGTH_SHORT,
-                            ).show()
+                            )
                         }
                     },
                 )
@@ -840,14 +1352,14 @@ fun AiSeparationSettingsScreen(
                     onClick = {
                         scope.launch {
                             val result = store.clearAllModels()
-                            Toast.makeText(
-                                context,
-                                result.fold(
+                            showOperationNotice(
+                                context = context,
+                                success = result.isSuccess,
+                                message = result.fold(
                                     onSuccess = { context.getString(R.string.settings_ai_storage_cleared) },
                                     onFailure = { it.message.orEmpty() },
                                 ),
-                                Toast.LENGTH_SHORT,
-                            ).show()
+                            )
                         }
                     },
                 )
@@ -864,6 +1376,68 @@ fun AiSeparationSettingsScreen(
         }
     }
 
+    if (repositoryUrlDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { repositoryUrlDialog = false },
+            title = {
+                androidx.compose.material3.Text(
+                    stringResource(R.string.settings_ai_repository_import_url_title),
+                )
+            },
+            text = {
+                androidx.compose.foundation.layout.Column {
+                    androidx.compose.material3.Text(
+                        stringResource(R.string.settings_ai_repository_import_url_summary),
+                    )
+                    androidx.compose.material3.OutlinedTextField(
+                        value = repositoryUrl,
+                        onValueChange = { repositoryUrl = it },
+                        label = {
+                            androidx.compose.material3.Text(
+                                stringResource(R.string.settings_ai_repository_import_url_label),
+                            )
+                        },
+                        placeholder = {
+                            androidx.compose.material3.Text(
+                                stringResource(R.string.settings_ai_repository_import_url_hint),
+                            )
+                        },
+                        singleLine = true,
+                    )
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    enabled = repositoryUrl.trim().startsWith("https://"),
+                    onClick = {
+                        val url = repositoryUrl.trim()
+                        repositoryUrlDialog = false
+                        repositoryUrl = ""
+                        scope.launch {
+                            val result = store.importRepositoryFromUrl(url)
+                            showOperationNotice(
+                                context = context,
+                                success = result.isSuccess,
+                                message = repositoryImportMessage(result),
+                            )
+                        }
+                    },
+                ) {
+                    androidx.compose.material3.Text(
+                        stringResource(R.string.settings_ai_repository_import_url_confirm),
+                    )
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = { repositoryUrlDialog = false },
+                ) {
+                    androidx.compose.material3.Text(stringResource(R.string.settings_cancel))
+                }
+            },
+        )
+    }
+
     deleteTarget?.let { (id, version) ->
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { deleteTarget = null },
@@ -875,14 +1449,14 @@ fun AiSeparationSettingsScreen(
                         deleteTarget = null
                         scope.launch {
                             val result = store.removeModel(id, version)
-                            Toast.makeText(
-                                context,
-                                result.fold(
+                            showOperationNotice(
+                                context = context,
+                                success = result.isSuccess,
+                                message = result.fold(
                                     onSuccess = { context.getString(R.string.settings_ai_model_deleted) },
                                     onFailure = { it.message.orEmpty() },
                                 ),
-                                Toast.LENGTH_SHORT,
-                            ).show()
+                            )
                         }
                     }
                 ) { androidx.compose.material3.Text(stringResource(R.string.settings_ai_model_delete)) }
@@ -930,11 +1504,24 @@ private fun queryDisplayName(context: android.content.Context, uri: Uri): String
 
 private fun showLivePlaybackResult(context: android.content.Context, result: Result<Unit>) {
     result.exceptionOrNull()?.let { error ->
-        Toast.makeText(
-            context,
-            error.message ?: context.getString(R.string.settings_ai_live_failed),
-            Toast.LENGTH_LONG,
-        ).show()
+        AppNoticeBus.error(
+            error.message ?: context.getString(R.string.settings_ai_live_failed)
+        )
+    }
+}
+
+private fun showOperationNotice(
+    context: android.content.Context,
+    success: Boolean,
+    message: String,
+) {
+    if (success) {
+        AppNoticeBus.post(
+            message = message,
+            icon = AppNoticeIcon.AI,
+        )
+    } else {
+        AppNoticeBus.error(message)
     }
 }
 

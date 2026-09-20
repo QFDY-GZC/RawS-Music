@@ -7,12 +7,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -20,13 +20,17 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.theme.ColorThemeMode
 import com.rawsmusic.core.ui.theme.RawMonet
+import com.rawsmusic.core.ui.theme.RawThemeRuntimeState
 import com.rawsmusic.core.ui.theme.getCurrentColorThemeMode
+import com.rawsmusic.module.data.prefs.AppPreferences
+import java.io.File
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTitle
@@ -36,6 +40,7 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 /**
  * 设置页面共享组件。使用 miuix 标准标题栏、分组标题与偏好项。
@@ -105,8 +110,16 @@ private fun Color.blendForSettings(target: Color, fraction: Float): Color {
 
 @Composable
 fun appFontFamily(): FontFamily {
-    val tf = com.rawsmusic.module.data.prefs.FontManager.typeface
-    return if (tf != null) FontFamily(tf) else FontFamily.Default
+    val path = AppPreferences.UI.customFontPath
+    val runtimeVersion = RawThemeRuntimeState.version
+    return remember(path, runtimeVersion) {
+        if (path.isBlank()) {
+            FontFamily.Default
+        } else {
+            runCatching { FontFamily(Font(File(path), FontWeight.Normal)) }
+                .getOrDefault(FontFamily.Default)
+        }
+    }
 }
 
 @Composable
@@ -141,7 +154,7 @@ fun SettingsPage(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .navigationBarsPadding()
+                .rawStableNavigationBarsPadding()
                 .padding(horizontal = 12.dp),
             content = {
                 Spacer(Modifier.height(8.dp))

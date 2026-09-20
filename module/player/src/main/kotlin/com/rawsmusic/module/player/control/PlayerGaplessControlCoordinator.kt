@@ -54,8 +54,16 @@ internal class PlayerGaplessControlCoordinator(
                 playMode = callbacks.currentPlayMode(),
                 peekShuffleIndex = callbacks.peekShuffleIndex,
             )
-            val nextSong = queue.songs.getOrNull(nextIndex) ?: return
-            if (nextSong.path.isBlank()) return
+            val nextSong = queue.songs.getOrNull(nextIndex)
+            if (nextSong == null || nextSong.path.isBlank()) {
+                // A mode change can remove the previously planned next item (for example,
+                // sequential playback at the end of the list). Clear the native pending slot;
+                // leaving the old path alive would make the renderer crossfade into a song that
+                // no longer belongs to the current Reference-style cursor.
+                callbacks.applyPlan(GaplessPlaybackPlan(null, false))
+                callbacks.logInfo("Gapless: no next item for mode=${callbacks.currentPlayMode()}")
+                return
+            }
 
             val plan = GaplessPlaybackPlan(
                 nextSongPath = nextSong.path,

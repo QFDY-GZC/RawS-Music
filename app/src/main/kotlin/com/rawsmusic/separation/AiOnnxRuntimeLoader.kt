@@ -2,7 +2,6 @@ package com.rawsmusic.separation
 
 import android.content.Context
 import android.os.Build
-import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -45,12 +44,12 @@ internal object AiOnnxRuntimeLoader {
             .filter { it.isFile && it.name == MANIFEST_FILE }
             .mapNotNull { manifest ->
                 runCatching {
-                    val entry = AiSeparationJson.parseRuntimeManifest(manifest.readText())
-                    val library = File(manifest.parentFile, entry.libraryFile)
-                    require(entry.abi in supportedAbis)
-                    require(library.isFile && library.length() == entry.librarySizeBytes)
-                    require(sha256(library) == entry.librarySha256)
-                    entry to library
+                val entry = AiSeparationJson.parseRuntimeManifest(manifest.readText())
+                val library = File(manifest.parentFile, entry.libraryFile)
+                require(entry.abi in supportedAbis)
+                require(library.isFile && library.length() == entry.librarySizeBytes)
+                require(sha256(library) == entry.librarySha256)
+                entry to library
                 }.getOrNull()
             }
             .maxByOrNull { it.first.version }
@@ -67,11 +66,6 @@ internal object AiOnnxRuntimeLoader {
             loadedPath = canonicalPath
             loadedEntry = installed.first
             loadError = ""
-            Log.i(
-                TAG,
-                "AI_RUNTIME_CACHE loaded persistent=${installed.second.absolutePath} " +
-                    "executable=$canonicalPath",
-            )
         }
         installed.first
     }.onFailure { error ->
@@ -93,9 +87,9 @@ internal object AiOnnxRuntimeLoader {
         if (
             target.isFile &&
             target.length() == entry.librarySizeBytes &&
-            sha256(target) == entry.librarySha256
+            sha256(target) == entry.librarySha256 &&
+            !target.canWrite()
         ) {
-            Log.i(TAG, "AI_RUNTIME_CACHE executable=reused bytes=${target.length()}")
             return target
         }
 
@@ -116,9 +110,14 @@ internal object AiOnnxRuntimeLoader {
             }
             staging.setReadable(true, true)
             staging.setExecutable(true, true)
+            // Android 14+ refuses to dlopen dynamically loaded code while the file is writable.
+            // Finalize the verified staging image as read-only before publishing it into the
+            // executable cache, so System.load() never observes a writable .so.
+            require(staging.setReadOnly()) { "无法将运行库执行镜像设为只读" }
+            require(!staging.canWrite()) { "运行库执行镜像仍可写" }
             if (target.exists() && !target.delete()) error("无法替换运行库执行镜像")
             require(staging.renameTo(target)) { "无法提交运行库执行镜像" }
-            Log.i(TAG, "AI_RUNTIME_CACHE executable=restored bytes=${target.length()}")
+            require(!target.canWrite()) { "运行库执行镜像提交后仍可写" }
             return target
         } finally {
             staging.delete()
@@ -158,7 +157,6 @@ internal object AiOnnxRuntimeLoader {
             targetDir.parentFile?.mkdirs()
             targetDir.deleteRecursively()
             require(staging.renameTo(targetDir)) { "无法迁移已安装运行库" }
-            Log.i(TAG, "AI_RUNTIME_CACHE migrated legacy runtime to persistent storage")
         } finally {
             staging.deleteRecursively()
         }

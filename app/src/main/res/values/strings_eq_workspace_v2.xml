@@ -11,7 +11,7 @@
     <string name="settings_peq_band_layout_hint">Smartly converts the current filters</string>
     <string name="settings_peq_presets_and_tools">Presets and tools</string>
     <string name="settings_peq_autoeq_card_summary">Search and import headphone corrections</string>
-    <string name="settings_peq_import_formats">RawSMusic JSON, AutoEq text or AutoEq JSON</string>
+    <string name="settings_peq_import_formats">RawSMusic JSON, AutoEq ParametricEQ text or AutoEq JSON. GraphicEQ text is routed to Graphic Equalizer.</string>
     <string name="settings_peq_export_card_summary">Save the current filters and preamp</string>
     <string name="settings_peq_reset_card_summary">Restore neutral filters for the current band count</string>
     <string name="settings_peq_cached_preset_summary">%1$d filters · %2$s</string>
@@ -29,4 +29,8 @@
     <string name="settings_peq_import_applied_detail">Imported %1$s: %2$d source filters → %3$d bands</string>
     <string name="settings_peq_imported_autoeq_name">Imported AutoEq</string>
     <string name="settings_peq_imported_list_name">Imported filter list</string>
+
+    <string name="settings_peq_error_graphic_eq_target">AutoEq GraphicEQ preset detected. Import it from the Graphic Equalizer tab.</string>
+    <string name="settings_graphic_eq_imported_autoeq_name">Imported AutoEq GraphicEQ</string>
+    <string name="settings_graphic_eq_autoeq_import_success">AutoEq GraphicEQ imported: %1$d curve points → %2$d bands</string>
 </resources>

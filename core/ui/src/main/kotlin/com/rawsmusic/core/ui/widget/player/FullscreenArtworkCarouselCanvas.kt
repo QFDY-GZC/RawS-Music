@@ -24,7 +24,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
-import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkBitmapRuntime
+import com.rawsmusic.core.ui.widget.bitmaps.artworkHighTargetSide
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import kotlin.math.abs
 
@@ -48,12 +49,13 @@ private data class FullscreenCanvasLane(
 internal fun FullscreenArtworkCarouselCanvas(
     songs: List<AudioFile>,
     centerIndex: Int,
-    progress: Float,
+    progressProvider: () -> Float,
     hideCenterLane: Boolean,
     sideLaneAlpha: Float,
     sceneRevealProgress: Float = 1f,
     modifier: Modifier = Modifier,
 ) {
+    val providerHighSide = artworkHighTargetSide(LocalContext.current)
     val laneSongs = (-FULLSCREEN_CAROUSEL_LANE_RADIUS..FULLSCREEN_CAROUSEL_LANE_RADIUS).map { logicalOffset ->
         if (songs.isEmpty() || (songs.size == 1 && logicalOffset != 0)) {
             null
@@ -76,7 +78,7 @@ internal fun FullscreenArtworkCarouselCanvas(
         key(holderIdentity) {
             rememberFullscreenCarouselBitmap(
                 key = artworkKey,
-                targetSide = fullscreenCarouselDecodeSide(logicalOffset),
+                targetSide = fullscreenCarouselDecodeSide(logicalOffset, providerHighSide),
             )
         }
     }
@@ -100,6 +102,7 @@ internal fun FullscreenArtworkCarouselCanvas(
     val clipPath = remember { Path() }
 
     Canvas(modifier = modifier) {
+        val progress = progressProvider()
         val metrics = resolveFullscreenArtworkCarouselMetrics(size.width, size.height)
         val nativeCanvas = drawContext.canvas.nativeCanvas
         val reflectionGap = 4f * density
@@ -170,7 +173,7 @@ private fun rememberFullscreenCarouselBitmap(
 ): Bitmap? {
     val context = LocalContext.current
     val bitmap by produceState<Bitmap?>(initialValue = null, key1 = key, key2 = targetSide) {
-        value = CoilArtworkRuntime.executeBitmap(
+        value = ArtworkBitmapRuntime.executeBitmap(
             context = context,
             key = key,
             width = targetSide,
@@ -222,11 +225,12 @@ private fun drawFullscreenCanvasLane(
         canvas.concat(matrix)
     }
 
-    coverRect.set(-drawSide * 0.5f, -drawSide * 0.5f, drawSide * 0.5f, drawSide * 0.5f)
-    centerCropFullscreenSource(bitmap, drawSide, drawSide, sourceRect)
+    fitFullscreenArtworkRect(bitmap, drawSide, drawSide, coverRect)
+    sourceRect.set(0, 0, bitmap.width, bitmap.height)
+    val visibleCornerRadius = minOf(scaledCornerRadius, coverRect.width() * 0.5f, coverRect.height() * 0.5f)
     canvas.save()
     clipPath.reset()
-    clipPath.addRoundRect(coverRect, scaledCornerRadius, scaledCornerRadius, Path.Direction.CW)
+    clipPath.addRoundRect(coverRect, visibleCornerRadius, visibleCornerRadius, Path.Direction.CW)
     canvas.clipPath(clipPath)
     coverPaint.alpha = (transform.alpha.coerceIn(0f, 1f) * 255f).toInt()
     coverPaint.isFilterBitmap = true
@@ -237,9 +241,10 @@ private fun drawFullscreenCanvasLane(
         drawFullscreenReflection(
             canvas = canvas,
             bitmap = bitmap,
-            drawSide = drawSide,
+            coverWidth = coverRect.width(),
+            coverHeight = coverRect.height(),
             reflectionGap = reflectionGap * transform.scale,
-            cornerRadius = scaledCornerRadius,
+            cornerRadius = visibleCornerRadius,
             alpha = transform.alpha,
             reflectionPaint = reflectionPaint,
             gradientPaint = gradientPaint,
@@ -256,7 +261,8 @@ private fun drawFullscreenCanvasLane(
 private fun drawFullscreenReflection(
     canvas: android.graphics.Canvas,
     bitmap: Bitmap,
-    drawSide: Float,
+    coverWidth: Float,
+    coverHeight: Float,
     reflectionGap: Float,
     cornerRadius: Float,
     alpha: Float,
@@ -268,20 +274,21 @@ private fun drawFullscreenReflection(
     reflectionDestination: RectF,
     clipPath: Path,
 ) {
-    val reflectionHeight = drawSide * FullscreenReflectionHeightFraction
-    val top = drawSide * 0.5f + reflectionGap
+    val reflectionHeight = coverHeight * FullscreenReflectionHeightFraction
+    val top = coverHeight * 0.5f + reflectionGap
     val bottom = top + reflectionHeight
-    reflectionRect.set(-drawSide * 0.5f, top, drawSide * 0.5f, bottom)
-    centerCropFullscreenSource(bitmap, drawSide, drawSide, reflectionSourceRect)
+    reflectionRect.set(-coverWidth * 0.5f, top, coverWidth * 0.5f, bottom)
+    reflectionSourceRect.set(0, 0, bitmap.width, bitmap.height)
     val sourceSliceHeight =
-        (reflectionSourceRect.height() * FullscreenReflectionHeightFraction)
+        (bitmap.height * FullscreenReflectionHeightFraction)
             .toInt()
-            .coerceIn(1, reflectionSourceRect.height())
+            .coerceIn(1, bitmap.height)
     reflectionSourceRect.top = reflectionSourceRect.bottom - sourceSliceHeight
 
+    val reflectionCornerRadius = minOf(cornerRadius, reflectionRect.width() * 0.5f, reflectionRect.height() * 0.5f)
     canvas.save()
     clipPath.reset()
-    clipPath.addRoundRect(reflectionRect, cornerRadius, cornerRadius, Path.Direction.CW)
+    clipPath.addRoundRect(reflectionRect, reflectionCornerRadius, reflectionCornerRadius, Path.Direction.CW)
     canvas.clipPath(clipPath)
     layerPaint.alpha = (FullscreenReflectionAlpha * alpha.coerceIn(0f, 1f) * 255f).toInt()
     val layer = canvas.saveLayer(reflectionRect, layerPaint)
@@ -290,7 +297,7 @@ private fun drawFullscreenReflection(
     canvas.save()
     canvas.translate(0f, bottom)
     canvas.scale(1f, -1f)
-    reflectionDestination.set(-drawSide * 0.5f, 0f, drawSide * 0.5f, reflectionHeight)
+    reflectionDestination.set(-coverWidth * 0.5f, 0f, coverWidth * 0.5f, reflectionHeight)
     canvas.drawBitmap(bitmap, reflectionSourceRect, reflectionDestination, reflectionPaint)
     canvas.restore()
 
@@ -312,27 +319,19 @@ private fun drawFullscreenReflection(
     canvas.restore()
 }
 
-private fun centerCropFullscreenSource(
+private fun fitFullscreenArtworkRect(
     bitmap: Bitmap,
-    destinationWidth: Float,
-    destinationHeight: Float,
-    output: Rect,
+    maxWidth: Float,
+    maxHeight: Float,
+    output: RectF,
 ) {
-    val bitmapWidth = bitmap.width
-    val bitmapHeight = bitmap.height
-    if (bitmapWidth <= 0 || bitmapHeight <= 0) {
-        output.set(0, 0, bitmapWidth, bitmapHeight)
-        return
-    }
-    val destinationRatio = destinationWidth / destinationHeight
-    val sourceRatio = bitmapWidth.toFloat() / bitmapHeight
-    if (sourceRatio > destinationRatio) {
-        val cropWidth = (bitmapHeight * destinationRatio).toInt().coerceAtMost(bitmapWidth)
-        val x = (bitmapWidth - cropWidth) / 2
-        output.set(x, 0, x + cropWidth, bitmapHeight)
-    } else {
-        val cropHeight = (bitmapWidth / destinationRatio).toInt().coerceAtMost(bitmapHeight)
-        val y = (bitmapHeight - cropHeight) / 2
-        output.set(0, y, bitmapWidth, y + cropHeight)
-    }
+    val bitmapWidth = bitmap.width.coerceAtLeast(1)
+    val bitmapHeight = bitmap.height.coerceAtLeast(1)
+    val scale = minOf(
+        maxWidth.coerceAtLeast(1f) / bitmapWidth.toFloat(),
+        maxHeight.coerceAtLeast(1f) / bitmapHeight.toFloat(),
+    )
+    val width = bitmapWidth * scale
+    val height = bitmapHeight * scale
+    output.set(-width * 0.5f, -height * 0.5f, width * 0.5f, height * 0.5f)
 }

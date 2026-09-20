@@ -68,6 +68,31 @@ internal object DecodedArtworkSourceCache {
         entry.bitmapFor(minimumSide)
     }
 
+    /**
+     * Borrow a source bitmap while the cache lock is held.
+     *
+     * A plain [get] is only suitable for inspecting the bitmap.  Returning that reference and
+     * using it later leaves a race with trim/put/clear, all of which are allowed to recycle the
+     * source.  Scaling/cropping must happen inside this boundary so the source cannot be recycled
+     * between the validity check and Canvas.drawBitmap().
+     */
+    fun <T> withBitmap(
+        key: String,
+        minimumSide: Int = 1,
+        block: (Bitmap) -> T,
+    ): T? = synchronized(lock) {
+        val entry = entries[key] ?: return@synchronized null
+        if (entry.low?.isRecycled == true) entry.low = null
+        if (entry.high?.isRecycled == true) entry.high = null
+        if (entry.low == null && entry.high == null) {
+            removeLocked(key)
+            return@synchronized null
+        }
+        val bitmap = entry.bitmapFor(minimumSide) ?: return@synchronized null
+        if (bitmap.isRecycled) return@synchronized null
+        block(bitmap)
+    }
+
     fun getBounds(key: String): Bounds? = synchronized(lock) {
         bounds[key]
     }

@@ -71,14 +71,17 @@ class LibraryScanLazySync(
         )
     }
 
-    suspend fun syncFinal(songs: List<AudioFile>): FinalResult {
+    suspend fun syncFinal(
+        songs: List<AudioFile>,
+        deleteMissing: Boolean = true
+    ): FinalResult {
         flushEnriched(forceRefresh = false)
         coroutineContext.ensureActive()
 
         val oldSongs = repository.getAllSongsForSync()
         val delta = LibrarySyncPlanner.calculateDelta(oldSongs = oldSongs, newSongs = songs)
 
-        if (delta.deletes.isNotEmpty()) {
+        if (deleteMissing && delta.deletes.isNotEmpty()) {
             repository.deleteSongsForScan(delta.deletes, refreshLibrary = false)
         }
         if (delta.upserts.isNotEmpty()) {
@@ -95,7 +98,7 @@ class LibraryScanLazySync(
             added = addedCount,
             updated = updatedCount,
             upserted = delta.upserts.size,
-            deleted = delta.deletes.size,
+            deleted = if (deleteMissing) delta.deletes.size else 0,
             unchanged = delta.unchanged.size
         )
     }

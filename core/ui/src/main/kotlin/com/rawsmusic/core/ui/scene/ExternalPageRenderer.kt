@@ -1,6 +1,7 @@
 package com.rawsmusic.core.ui.scene
 
 import androidx.compose.runtime.Composable
+import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListState
 
 /**
  * 外部页面渲染器接口。
@@ -17,5 +18,10 @@ interface ExternalPageRenderer {
      * @return true 表示已处理，false 表示未处理（走默认占位）
      */
     @Composable
-    fun RenderPage(scene: NavScene, onBack: () -> Unit, argument: String): Boolean
+    fun RenderPage(
+        scene: NavScene,
+        onBack: () -> Unit,
+        argument: String,
+        virtualListState: ComposeVirtualListState? = null,
+    ): Boolean
 }

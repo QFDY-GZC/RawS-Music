@@ -1,14 +1,18 @@
 package com.rawsmusic.lyrico.runtime
 
 object HostApiRegistry {
-    const val PLUGIN_API_VERSION = 3
-    const val HOST_API_VERSION = 3
+    /** Plugin callback protocol. API v5 extends structured TTML lyric semantics. */
+    const val PLUGIN_API_VERSION = 5
+    /** Platform bridge API. Host API v4 adds plugin-scoped i18n. */
+    const val HOST_API_VERSION = 4
     val SUPPORTED_PLUGIN_API_VERSIONS = 1..PLUGIN_API_VERSION
 
     val SUPPORTED_HOST_APIS = setOf(
         "app.info",
         "app.userAgent",
         "runtime.info",
+        "i18n.getLocale",
+        "i18n.t",
         "cache.get",
         "cache.set",
         "cache.remove",

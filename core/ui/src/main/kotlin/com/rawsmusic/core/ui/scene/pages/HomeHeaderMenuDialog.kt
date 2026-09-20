@@ -49,37 +49,126 @@ internal fun HomeHeaderSettingsSection(
     )
     Spacer(Modifier.height(7.dp))
     HomeHeaderToggleRow(
-        title = stringResource(R.string.home_header_carousel_lyric_title),
-        summary = stringResource(R.string.home_header_carousel_lyric_summary),
-        checked = options.carouselLyricVisible,
-        onCheckedChange = options::updateCarouselLyricVisible,
+        title = stringResource(R.string.home_header_carousel_visible_title),
+        summary = stringResource(R.string.home_header_carousel_visible_summary),
+        checked = options.carouselVisible,
+        onCheckedChange = options::updateCarouselVisible,
+    )
+    if (options.carouselVisible) {
+        Spacer(Modifier.height(7.dp))
+        HomeHeaderToggleRow(
+            title = stringResource(R.string.home_header_carousel_lyric_title),
+            summary = stringResource(R.string.home_header_carousel_lyric_summary),
+            checked = options.carouselLyricVisible,
+            onCheckedChange = options::updateCarouselLyricVisible,
+        )
+        Spacer(Modifier.height(7.dp))
+        HomeHeaderToggleRow(
+            title = stringResource(R.string.home_header_carousel_gesture_lock_title),
+            summary = stringResource(R.string.home_header_carousel_gesture_lock_summary),
+            checked = options.carouselGestureLocked,
+            onCheckedChange = options::updateCarouselGestureLocked,
+        )
+        Spacer(Modifier.height(7.dp))
+        val styleDropdown = DropdownEntry(
+            items = HomeArtworkCarouselStyle.entries.map { style ->
+                DropdownItem(
+                    text = stringResource(style.titleRes()),
+                    summary = stringResource(style.summaryRes()),
+                    selected = style == options.carouselStyle,
+                    onClick = { options.updateCarouselStyle(style) },
+                )
+            },
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(15.dp))
+                .background(scheme.surfaceContainer.copy(alpha = 0.82f)),
+        ) {
+            RawWindowDropdownPreference(
+                entry = styleDropdown,
+                title = stringResource(R.string.home_header_artwork_style_title),
+                summary = null,
+                insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                showValue = true,
+                maxHeight = 220.dp,
+                collapseOnSelection = false,
+            )
+        }
+    }
+
+    Spacer(Modifier.height(7.dp))
+    HomeHeaderToggleRow(
+        title = stringResource(R.string.home_most_played_disable_title),
+        summary = stringResource(R.string.home_most_played_disable_summary),
+        checked = !options.mostPlayedVisible,
+        onCheckedChange = { hidden -> options.updateMostPlayedVisible(!hidden) },
+    )
+
+    Spacer(Modifier.height(14.dp))
+    Text(
+        text = stringResource(R.string.home_header_floating_style_title),
+        color = scheme.onSurface,
+        fontSize = 16.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+    )
+    HomeHeaderToggleRow(
+        title = stringResource(R.string.home_header_floating_glass_title),
+        summary = stringResource(R.string.home_header_floating_glass_summary),
+        checked = options.floatingGlassEnabled,
+        onCheckedChange = options::updateFloatingGlassEnabled,
     )
     Spacer(Modifier.height(7.dp))
-    val styleDropdown = DropdownEntry(
-        items = HomeArtworkCarouselStyle.entries.map { style ->
-            DropdownItem(
-                text = stringResource(style.titleRes()),
-                summary = stringResource(style.summaryRes()),
-                selected = style == options.carouselStyle,
-                onClick = { options.updateCarouselStyle(style) },
-            )
-        },
+    HomeHeaderToggleRow(
+        title = stringResource(R.string.home_header_press_displacement_title),
+        summary = stringResource(R.string.home_header_press_displacement_summary),
+        checked = options.floatingPressDisplacementEnabled,
+        onCheckedChange = options::updateFloatingPressDisplacementEnabled,
     )
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(15.dp))
-            .background(scheme.surfaceContainer.copy(alpha = 0.82f)),
-    ) {
-        RawWindowDropdownPreference(
-            entry = styleDropdown,
-            title = stringResource(R.string.home_header_artwork_style_title),
-            summary = null,
-            insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-            showValue = true,
-            maxHeight = 220.dp,
-            collapseOnSelection = false,
+    Spacer(Modifier.height(7.dp))
+    HomeHeaderToggleRow(
+        title = stringResource(R.string.home_header_long_press_spring_title),
+        summary = stringResource(R.string.home_header_long_press_spring_summary),
+        checked = options.floatingLongPressSpringEnabled,
+        onCheckedChange = options::updateFloatingLongPressSpringEnabled,
+    )
+    Spacer(Modifier.height(7.dp))
+    HomeHeaderToggleRow(
+        title = stringResource(R.string.home_header_top_feather_title),
+        summary = stringResource(R.string.home_header_top_feather_summary),
+        checked = options.topFeatherEnabled,
+        onCheckedChange = options::updateTopFeatherEnabled,
+    )
+    if (options.topFeatherEnabled) {
+        Spacer(Modifier.height(7.dp))
+        val featherDropdown = DropdownEntry(
+            items = HomeTopFeatherStrength.entries.map { strength ->
+                DropdownItem(
+                    text = stringResource(strength.titleRes()),
+                    summary = stringResource(strength.summaryRes()),
+                    selected = strength == options.topFeatherStrength,
+                    onClick = { options.updateTopFeatherStrength(strength) },
+                )
+            },
         )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(15.dp))
+                .background(scheme.surfaceContainer.copy(alpha = 0.82f)),
+        ) {
+            RawWindowDropdownPreference(
+                entry = featherDropdown,
+                title = stringResource(R.string.home_header_top_feather_strength_title),
+                summary = null,
+                insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                showValue = true,
+                maxHeight = 220.dp,
+                collapseOnSelection = false,
+            )
+        }
     }
 }
 
@@ -119,6 +208,46 @@ private fun HomeHeaderToggleRow(
     }
 }
 
+@Composable
+private fun HomeHeaderDialogToggleRow(
+    title: String,
+    summary: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val scheme = MiuixTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(scheme.surfaceContainerHigh.copy(alpha = 0.45f))
+            .clickable { onCheckedChange(!checked) }
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 12.dp),
+        ) {
+            Text(
+                text = title,
+                color = scheme.onSurface,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = summary,
+                color = scheme.onSurfaceVariantSummary,
+                fontSize = 13.sp,
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
 private fun HomeArtworkCarouselStyle.titleRes(): Int = when (this) {
     HomeArtworkCarouselStyle.CurrentCarousel -> R.string.home_header_artwork_style_current
     HomeArtworkCarouselStyle.VerticalDial -> R.string.home_header_artwork_style_dial
@@ -129,11 +258,25 @@ private fun HomeArtworkCarouselStyle.summaryRes(): Int = when (this) {
     HomeArtworkCarouselStyle.VerticalDial -> R.string.home_header_artwork_style_dial_summary
 }
 
+private fun HomeTopFeatherStrength.titleRes(): Int = when (this) {
+    HomeTopFeatherStrength.Soft -> R.string.home_header_top_feather_strength_soft
+    HomeTopFeatherStrength.Standard -> R.string.home_header_top_feather_strength_standard
+    HomeTopFeatherStrength.Strong -> R.string.home_header_top_feather_strength_strong
+}
+
+private fun HomeTopFeatherStrength.summaryRes(): Int = when (this) {
+    HomeTopFeatherStrength.Soft -> R.string.home_header_top_feather_strength_soft_summary
+    HomeTopFeatherStrength.Standard -> R.string.home_header_top_feather_strength_standard_summary
+    HomeTopFeatherStrength.Strong -> R.string.home_header_top_feather_strength_strong_summary
+}
+
 @Composable
 internal fun HomeHeaderMenuDialog(
     show: Boolean,
     weatherVisible: Boolean,
     onWeatherVisibleChange: (Boolean) -> Unit,
+    carouselVisible: Boolean,
+    onCarouselVisibleChange: (Boolean) -> Unit,
     carouselLyricVisible: Boolean,
     onCarouselLyricVisibleChange: (Boolean) -> Unit,
     carouselStyle: HomeArtworkCarouselStyle,
@@ -185,67 +328,50 @@ internal fun HomeHeaderMenuDialog(
 
         Spacer(Modifier.height(12.dp))
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
-                .background(scheme.surfaceContainerHigh.copy(alpha = 0.45f))
-                .clickable { onCarouselLyricVisibleChange(!carouselLyricVisible) }
-                .padding(horizontal = 12.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 12.dp)
-            ) {
-                Text(
-                    text = stringResource(R.string.home_header_carousel_lyric_title),
-                    color = scheme.onSurface,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    text = stringResource(R.string.home_header_carousel_lyric_summary),
-                    color = scheme.onSurfaceVariantSummary,
-                    fontSize = 13.sp
-                )
-            }
-            Switch(
-                checked = carouselLyricVisible,
-                onCheckedChange = onCarouselLyricVisibleChange
-            )
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        val carouselStyleDropdown = DropdownEntry(
-            items = HomeArtworkCarouselStyle.entries.map { style ->
-                DropdownItem(
-                    text = stringResource(style.titleRes()),
-                    summary = stringResource(style.summaryRes()),
-                    selected = style == carouselStyle,
-                    onClick = { onCarouselStyleChange(style) }
-                )
-            }
+        HomeHeaderDialogToggleRow(
+            title = stringResource(R.string.home_header_carousel_visible_title),
+            summary = stringResource(R.string.home_header_carousel_visible_summary),
+            checked = carouselVisible,
+            onCheckedChange = onCarouselVisibleChange,
         )
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
-                .background(scheme.surfaceContainerHigh.copy(alpha = 0.45f))
-        ) {
-            RawWindowDropdownPreference(
-                entry = carouselStyleDropdown,
-                title = stringResource(R.string.home_header_artwork_style_title),
-                summary = null,
-                insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                showValue = true,
-                maxHeight = 260.dp,
-                collapseOnSelection = true
+
+        if (carouselVisible) {
+            Spacer(Modifier.height(12.dp))
+            HomeHeaderDialogToggleRow(
+                title = stringResource(R.string.home_header_carousel_lyric_title),
+                summary = stringResource(R.string.home_header_carousel_lyric_summary),
+                checked = carouselLyricVisible,
+                onCheckedChange = onCarouselLyricVisibleChange,
             )
+
+            Spacer(Modifier.height(16.dp))
+
+            val carouselStyleDropdown = DropdownEntry(
+                items = HomeArtworkCarouselStyle.entries.map { style ->
+                    DropdownItem(
+                        text = stringResource(style.titleRes()),
+                        summary = stringResource(style.summaryRes()),
+                        selected = style == carouselStyle,
+                        onClick = { onCarouselStyleChange(style) }
+                    )
+                }
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(scheme.surfaceContainerHigh.copy(alpha = 0.45f))
+            ) {
+                RawWindowDropdownPreference(
+                    entry = carouselStyleDropdown,
+                    title = stringResource(R.string.home_header_artwork_style_title),
+                    summary = null,
+                    insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    showValue = true,
+                    maxHeight = 260.dp,
+                    collapseOnSelection = true
+                )
+            }
         }
     }
 }

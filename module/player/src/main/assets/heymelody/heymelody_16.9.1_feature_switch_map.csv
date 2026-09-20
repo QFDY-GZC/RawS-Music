@@ -1,0 +1,26 @@
+﻿feature_id,semantic,whitelist_keys,RawSMusic_policy
+4,Wear detection,wearDetection,query/write only when signed profile enables matching key and device readback exists
+6,Game mode,gameMode,query/write only when signed profile enables matching key and device readback exists
+9,Vocal enhance,vocalEnhance,query/write only when signed profile enables matching key and device readback exists
+11,Hearing enhancement switch,hearingEnhancement|hearingEnhancementNew,query/write only when signed profile enables matching key and device readback exists
+12,Personalized noise,personalNoise,query/write only when signed profile enables matching key and device readback exists
+15,Zen mode,zenMode,query/write only when signed profile enables matching key and device readback exists
+17,Multi-device connect,multiDevicesConnect,query/write only when signed profile enables matching key and device readback exists
+19,Headset sound record,headSetSoundRecord,query/write only when signed profile enables matching key and device readback exists
+21,Smart call,smartCall,query/write only when signed profile enables matching key and device readback exists
+22,Device lost remind,deviceLostRemind,query/write only when signed profile enables matching key and device readback exists
+23,Long power mode,longPowerMode,query/write only when signed profile enables matching key and device readback exists
+24,High tone quality,highToneQuality,query/write only when signed profile enables matching key and device readback exists
+25,Voice command,voiceCommand,query/write only when signed profile enables matching key and device readback exists
+28,Control auto volume,controlAutoVolumeSupport,query/write only when signed profile enables matching key and device readback exists
+29,Bass engine support,bassEngineSupport,query/write only when signed profile enables matching key and device readback exists
+48,Adaptive volume,adaptive-volume generated SDK field,catalogued; not generic UI
+49,Adaptive ear,adaptive-ear generated SDK field,catalogued; not generic UI
+50,Speech perception,speech-perception generated SDK field,catalogued; not generic UI
+52,Meeting assistant,meeting-assistant generated SDK field,catalogued; not generic UI
+53,Long-press volume,longPressVolume,query/write only when signed profile enables matching key and device readback exists
+55,Swift Pair,swiftPair,query/write only when signed profile enables matching key and device readback exists
+56,Hearing optimize,hearing-optimize generated SDK field,catalogued; not generic UI
+57,Incoming call control,incomingCallControl,query/write only when signed profile enables matching key and device readback exists
+58,Sleep detection,sleep-detection generated SDK field,query/write only when signed profile enables matching key and device readback exists
+59,Head motion,head-motion generated SDK field,query/write only when signed profile enables matching key and device readback exists

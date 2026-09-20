@@ -4,7 +4,10 @@ import android.content.Context
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Environment
+import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.util.Log
 import com.rawsmusic.core.common.model.AudioFile
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -35,6 +38,7 @@ data class AiSeparationResult(
     val sourceFileName: String = sourceName,
     val sourceSize: Long = 0L,
     val sourceDurationMs: Long = 0L,
+    val sourceModifiedEpochMs: Long = 0L,
     val outputFormat: String = "wav",
 ) {
     val vocalsFile: File
@@ -68,6 +72,7 @@ data class AiSeparationResult(
 
 class AiSeparationResultStore private constructor(context: Context) {
     private val appContext = context.applicationContext
+    private val activityMapStore = AiVocalActivityMapStore.get(appContext)
     private val legacyRoot = File(appContext.filesDir, "ai_separation/results")
     // Shared Music directories may accept media files but reject non-media sidecars
     // such as JSON on some Android/FUSE implementations. Keep the manifest private
@@ -97,6 +102,8 @@ class AiSeparationResultStore private constructor(context: Context) {
         model: AiSeparationInstalledModel,
         sampleRate: Int,
         stats: AiNativeSeparationStats,
+        activityWav: File? = null,
+        sourceModifiedEpochMs: Long = 0L,
     ): AiSeparationResult = withContext(Dispatchers.IO) {
         mutex.withLock {
             require(vocals.isFile && instrumental.isFile) { "分离输出文件缺失" }
@@ -107,10 +114,21 @@ class AiSeparationResultStore private constructor(context: Context) {
             require(metadataRoot.isDirectory || metadataRoot.mkdirs()) {
                 "无法创建 AI 分离结果清单目录"
             }
-            val sourceIdentity = querySourceIdentity(
+            val observedSourceIdentity = querySourceIdentity(
                 sourceUri = sourceUri,
                 fallbackName = sourceName,
                 durationMs = stats.totalFrames * 1000L / sampleRate.coerceAtLeast(1),
+            )
+            val capturedModified = normalizeEpochMs(sourceModifiedEpochMs)
+            val observedModified = normalizeEpochMs(observedSourceIdentity.modifiedEpochMs)
+            if (capturedModified > 0L && observedModified > 0L) {
+                require(
+                    kotlin.math.abs(capturedModified - observedModified) <=
+                        SOURCE_MODIFIED_TOLERANCE_MS
+                ) { "源音频在 AI 分离期间发生变化，请重新生成" }
+            }
+            val sourceIdentity = observedSourceIdentity.copy(
+                modifiedEpochMs = capturedModified.takeIf { it > 0L } ?: observedModified,
             )
             val id = "${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(8)}"
             val staging = File(root, ".staging_$id")
@@ -146,9 +164,17 @@ class AiSeparationResultStore private constructor(context: Context) {
                     sourceFileName = sourceIdentity.fileName,
                     sourceSize = sourceIdentity.size,
                     sourceDurationMs = sourceIdentity.durationMs,
+                    sourceModifiedEpochMs = sourceIdentity.modifiedEpochMs,
                     outputFormat = extension,
                 )
                 val metadataFile = File(metadataRoot, "$id.json")
+                activityWav
+                    ?.takeIf { it.isFile && it.length() > 44L }
+                    ?.let { wav ->
+                        activityMapStore.analyzeAndStore(id, wav).onFailure { error ->
+                            Log.w(TAG, "Voice activity map skipped id=$id: ${error.message}")
+                        }
+                    }
                 writeMetadataManifest(
                     target = metadataFile,
                     bytes = resultJson(result).toByteArray(),
@@ -163,10 +189,16 @@ class AiSeparationResultStore private constructor(context: Context) {
                 committed
             } catch (error: Throwable) {
                 staging.deleteRecursively()
+                activityMapStore.remove(id)
                 throw error
             }
         }
     }
+
+    suspend fun loadVoiceActivity(
+        result: AiSeparationResult,
+        analyzerVersion: String = AiVocalActivityMapStore.ANALYZER_VERSION,
+    ) = activityMapStore.load(result.id, analyzerVersion)
 
     suspend fun remove(id: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
@@ -181,6 +213,7 @@ class AiSeparationResultStore private constructor(context: Context) {
                 }
                 if (target.exists() && !target.deleteRecursively()) error("无法删除分离结果")
                 File(metadataRoot, "$id.json").delete()
+                activityMapStore.remove(id)
                 mutable.value = scan()
             }
         }
@@ -194,23 +227,74 @@ class AiSeparationResultStore private constructor(context: Context) {
                     directory.listFiles().orEmpty().forEach { it.deleteRecursively() }
                 }
                 metadataRoot.listFiles().orEmpty().forEach { it.deleteRecursively() }
+                activityMapStore.clear()
                 mutable.value = emptyList()
             }
         }
     }
 
-    fun findFor(song: AudioFile): AiSeparationResult? {
-        val fileName = normalizeFileName(song.path.substringAfterLast('/').ifBlank { song.displayName })
-        return mutable.value.firstOrNull { result ->
-            val mediaIdMatches = song.id > 0L && result.sourceMediaId > 0L &&
-                song.id == result.sourceMediaId
-            val nameMatches = normalizeFileName(result.sourceFileName) == fileName
-            val sizeMatches = song.fileSize <= 0L || result.sourceSize <= 0L ||
-                song.fileSize == result.sourceSize
-            val durationMatches = song.duration <= 0L || result.sourceDurationMs <= 0L ||
-                kotlin.math.abs(song.duration - result.sourceDurationMs) <= DURATION_TOLERANCE_MS
-            mediaIdMatches || (nameMatches && sizeMatches && durationMatches)
-        }
+    /**
+     * Returns the cached result that belongs to the current library item.
+     *
+     * MediaStore can expose a different duration for a cue track or after a metadata refresh,
+     * so duration is deliberately only a ranking signal. An exact filename is a stronger
+     * identity than a stale duration and must not make a completed result disappear.
+     */
+    fun findFor(song: AudioFile): AiSeparationResult? = findCandidatesFor(song)
+        .firstOrNull { isExactMatch(song, it) }
+
+    /**
+     * Candidate results are exposed for the preview UI when an Android provider changed the
+     * media id or filename representation. The caller must still use [isExactMatch] before
+     * allowing a writeback.
+     */
+    fun findCandidatesFor(song: AudioFile): List<AiSeparationResult> = mutable.value
+        .map { result -> result to matchScore(song, result) }
+        .sortedWith(
+            compareByDescending<Pair<AiSeparationResult, Int>> { it.second }
+                .thenByDescending { it.first.createdAtEpochMs }
+        )
+        .map { it.first }
+
+    fun isExactMatch(song: AudioFile, result: AiSeparationResult): Boolean {
+        if (!sourceVersionMatches(song, result)) return false
+        val mediaIdMatches = song.id > 0L && result.sourceMediaId > 0L &&
+            song.id == result.sourceMediaId
+        if (mediaIdMatches) return true
+
+        val currentName = songFileName(song)
+        val resultName = normalizeFileName(result.sourceFileName)
+            .ifBlank { normalizeFileName(result.sourceName) }
+        if (currentName.isBlank() || resultName.isBlank()) return false
+        if (currentName == resultName) return true
+
+        val currentStem = currentName.substringBeforeLast('.', currentName)
+        val resultStem = resultName.substringBeforeLast('.', resultName)
+        return currentStem == resultStem &&
+            (song.fileSize <= 0L || result.sourceSize <= 0L || song.fileSize == result.sourceSize)
+    }
+
+    private fun matchScore(song: AudioFile, result: AiSeparationResult): Int {
+        val currentName = songFileName(song)
+        val resultName = normalizeFileName(result.sourceFileName)
+            .ifBlank { normalizeFileName(result.sourceName) }
+        val currentStem = currentName.substringBeforeLast('.', currentName)
+        val resultStem = resultName.substringBeforeLast('.', resultName)
+        val mediaIdMatches = song.id > 0L && result.sourceMediaId > 0L &&
+            song.id == result.sourceMediaId
+        val nameMatches = currentName.isNotBlank() && currentName == resultName
+        val stemMatches = currentStem.isNotBlank() && currentStem == resultStem
+        val sizeMatches = song.fileSize > 0L && result.sourceSize > 0L &&
+            song.fileSize == result.sourceSize
+        val durationMatches = song.duration <= 0L || result.sourceDurationMs <= 0L ||
+            kotlin.math.abs(song.duration - result.sourceDurationMs) <= DURATION_TOLERANCE_MS
+        val versionMatches = sourceVersionMatches(song, result)
+        return (if (mediaIdMatches) 10_000 else 0) +
+            (if (nameMatches) 2_000 else 0) +
+            (if (stemMatches) 1_000 else 0) +
+            (if (sizeMatches) 200 else 0) +
+            (if (durationMatches) 100 else 0) +
+            (if (versionMatches) 50 else -20_000)
     }
 
     fun cleanupStaleStaging() {
@@ -246,6 +330,7 @@ class AiSeparationResultStore private constructor(context: Context) {
                         ?: rootJson.get("sourceName").asString,
                     sourceSize = rootJson.get("sourceSize")?.asLong ?: 0L,
                     sourceDurationMs = rootJson.get("sourceDurationMs")?.asLong ?: 0L,
+                    sourceModifiedEpochMs = rootJson.get("sourceModifiedEpochMs")?.asLong ?: 0L,
                     outputFormat = rootJson.get("outputFormat")?.asString ?: "wav",
                 )
                 require(result.vocalsFile.isFile && result.instrumentalFile.isFile)
@@ -311,7 +396,7 @@ class AiSeparationResultStore private constructor(context: Context) {
     }
 
     private fun resultJson(result: AiSeparationResult): String = JsonObject().apply {
-        addProperty("schemaVersion", 2)
+        addProperty("schemaVersion", 3)
         addProperty("id", result.id)
         addProperty("sourceName", result.sourceName)
         addProperty("modelId", result.modelId)
@@ -326,8 +411,65 @@ class AiSeparationResultStore private constructor(context: Context) {
         addProperty("sourceFileName", result.sourceFileName)
         addProperty("sourceSize", result.sourceSize)
         addProperty("sourceDurationMs", result.sourceDurationMs)
+        addProperty("sourceModifiedEpochMs", result.sourceModifiedEpochMs)
         addProperty("outputFormat", result.outputFormat)
     }.toString()
+
+    private fun sourceVersionMatches(song: AudioFile, result: AiSeparationResult): Boolean {
+        val current = normalizeEpochMs(song.dateModified)
+        val cached = normalizeEpochMs(result.sourceModifiedEpochMs)
+        if (current <= 0L || cached <= 0L) return true
+        return kotlin.math.abs(current - cached) <= SOURCE_MODIFIED_TOLERANCE_MS
+    }
+
+    internal fun captureSourceModifiedEpochMs(sourceUri: Uri): Long =
+        querySourceModifiedEpochMs(sourceUri)
+
+    private fun querySourceModifiedEpochMs(sourceUri: Uri): Long {
+        if (sourceUri.scheme.equals("file", ignoreCase = true)) {
+            return sourceUri.path
+                ?.let(::File)
+                ?.takeIf(File::exists)
+                ?.lastModified()
+                ?.coerceAtLeast(0L)
+                ?: 0L
+        }
+
+        val mediaStoreValue = runCatching {
+            appContext.contentResolver.query(
+                sourceUri,
+                arrayOf(MediaStore.Audio.Media.DATE_MODIFIED),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (!cursor.moveToFirst()) return@use 0L
+                val index = cursor.getColumnIndex(MediaStore.Audio.Media.DATE_MODIFIED)
+                if (index >= 0) cursor.getLong(index) else 0L
+            } ?: 0L
+        }.getOrDefault(0L)
+        if (mediaStoreValue > 0L) return normalizeEpochMs(mediaStoreValue)
+
+        return runCatching {
+            appContext.contentResolver.query(
+                sourceUri,
+                arrayOf(DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (!cursor.moveToFirst()) return@use 0L
+                val index = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                if (index >= 0) normalizeEpochMs(cursor.getLong(index)) else 0L
+            } ?: 0L
+        }.getOrDefault(0L)
+    }
+
+    private fun normalizeEpochMs(value: Long): Long = when {
+        value <= 0L -> 0L
+        value < EPOCH_MILLISECONDS_THRESHOLD -> value * 1000L
+        else -> value
+    }
 
     private fun querySourceIdentity(
         sourceUri: Uri,
@@ -337,6 +479,12 @@ class AiSeparationResultStore private constructor(context: Context) {
         var mediaId = parseMediaId(sourceUri)
         var fileName = fallbackName
         var size = 0L
+        if (sourceUri.scheme.equals("file", ignoreCase = true)) {
+            sourceUri.path?.let(::File)?.takeIf(File::isFile)?.let { sourceFile ->
+                fileName = sourceFile.name.ifBlank { fileName }
+                size = sourceFile.length().coerceAtLeast(0L)
+            }
+        }
         runCatching {
             appContext.contentResolver.query(
                 sourceUri,
@@ -358,7 +506,13 @@ class AiSeparationResultStore private constructor(context: Context) {
                 }
             }
         }
-        return SourceIdentity(mediaId, fileName, size, durationMs)
+        return SourceIdentity(
+            mediaId = mediaId,
+            fileName = fileName,
+            size = size,
+            durationMs = durationMs,
+            modifiedEpochMs = querySourceModifiedEpochMs(sourceUri),
+        )
     }
 
     private fun parseMediaId(uri: Uri): Long {
@@ -366,14 +520,31 @@ class AiSeparationResultStore private constructor(context: Context) {
         return tail.substringAfterLast(':').toLongOrNull()?.coerceAtLeast(0L) ?: 0L
     }
 
+    private fun songFileName(song: AudioFile): String {
+        val displayName = normalizeFileName(song.displayName)
+        val pathName = Uri.decode(song.path.substringAfterLast('/'))
+            .trim()
+            .takeIf { it.isNotBlank() }
+            ?.let(::normalizeFileName)
+        // Content providers often expose an integer row id as the last path segment.
+        return if (song.path.startsWith("content://", ignoreCase = true) ||
+            pathName?.toLongOrNull() != null
+        ) {
+            displayName
+        } else {
+            pathName ?: displayName
+        }
+    }
+
     private fun normalizeFileName(value: String): String =
-        value.trim().lowercase().replace(Regex("\\s+"), " ")
+        Uri.decode(value.trim()).lowercase().replace(Regex("\\s+"), " ")
 
     private data class SourceIdentity(
         val mediaId: Long,
         val fileName: String,
         val size: Long,
         val durationMs: Long,
+        val modifiedEpochMs: Long,
     )
 
     private fun writeMetadataManifest(target: File, bytes: ByteArray) {
@@ -384,8 +555,11 @@ class AiSeparationResultStore private constructor(context: Context) {
     }
 
     companion object {
+        private const val TAG = "AiSeparationResultStore"
         private const val RESULT_MANIFEST = "result.json"
         private const val DURATION_TOLERANCE_MS = 1_500L
+        private const val SOURCE_MODIFIED_TOLERANCE_MS = 2_000L
+        private const val EPOCH_MILLISECONDS_THRESHOLD = 100_000_000_000L
         private val SAFE_ID = Regex("[A-Za-z0-9._-]{1,96}")
 
         @Volatile private var instance: AiSeparationResultStore? = null

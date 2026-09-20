@@ -46,11 +46,13 @@ private fun LyricSettingsScreen(
             SettingsNavigationEntry(
                 title = stringResource(R.string.settings_lyric_management_title),
                 description = stringResource(R.string.settings_lyric_management_summary),
+                iconRes = R.drawable.ic_settings_lyrics_ali,
                 onClick = onNavigateToManagement,
             )
             SettingsNavigationEntry(
                 title = stringResource(R.string.settings_lyric_font_title),
                 description = stringResource(R.string.settings_lyric_font_summary),
+                iconRes = R.drawable.ic_settings_font,
                 onClick = onNavigateToFont,
             )
             SettingsNavigationEntry(

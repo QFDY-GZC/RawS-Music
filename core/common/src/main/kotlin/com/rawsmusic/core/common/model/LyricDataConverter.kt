@@ -130,11 +130,11 @@ private fun normalizeSourceWordTimeline(
     absoluteBaseMs: Long,
     absoluteLineEndMs: Long
 ): List<LyricWord> {
-    if (sourceWords.isEmpty() || absoluteBaseMs <= 0L) return sourceWords
+    if (sourceWords.isEmpty()) return emptyList()
 
     val lineDurationMs = (absoluteLineEndMs - absoluteBaseMs).coerceAtLeast(1L)
     val finiteWords = sourceWords.filter { it.begin >= 0L && it.end >= it.begin }
-    if (finiteWords.isEmpty()) return sourceWords
+    if (finiteWords.isEmpty()) return sourceWords.flatMap(::subdivideCjkTimedWord)
 
     val firstBegin = finiteWords.minOf { it.begin }
     val lastEnd = finiteWords.maxOf { maxOf(it.begin, it.end) }
@@ -148,19 +148,23 @@ private fun normalizeSourceWordTimeline(
             firstBegin <= lineDurationMs + relativeAllowanceMs &&
             lastEnd <= lineDurationMs + relativeAllowanceMs
 
-    if (!looksLineRelative) return sourceWords
-
-    return sourceWords.map { word ->
-        val begin = (absoluteBaseMs + word.begin.coerceAtLeast(0L)).coerceAtLeast(absoluteBaseMs)
-        val rawDuration = when {
-            word.end > word.begin -> word.end - word.begin
-            word.duration > 0L -> word.duration
-            else -> 1L
+    val normalized = if (!looksLineRelative || absoluteBaseMs <= 0L) {
+        sourceWords
+    } else {
+        sourceWords.map { word ->
+            val begin = (absoluteBaseMs + word.begin.coerceAtLeast(0L)).coerceAtLeast(absoluteBaseMs)
+            val rawDuration = when {
+                word.end > word.begin -> word.end - word.begin
+                word.duration > 0L -> word.duration
+                else -> 1L
+            }
+            word.copy(
+                begin = begin,
+                end = begin + rawDuration.coerceAtLeast(1L),
+                duration = rawDuration.coerceAtLeast(1L)
+            )
         }
-        word.copy(
-            begin = begin,
-            end = begin + rawDuration.coerceAtLeast(1L),
-            duration = rawDuration.coerceAtLeast(1L)
-        )
     }
+
+    return normalized.flatMap(::subdivideCjkTimedWord)
 }

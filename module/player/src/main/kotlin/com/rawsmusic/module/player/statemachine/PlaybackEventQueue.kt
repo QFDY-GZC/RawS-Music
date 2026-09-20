@@ -9,7 +9,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
@@ -22,7 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Design:
  * - Single-threaded event processing via a Channel consumer
  * - put() clears the queue before offering (only latest event kept for same-type)
- * - Each event handle() is followed by a short delay (30ms)
+ * - Events are dispatched immediately after the previous handler returns
  * - clearEvents() on pause/stop flushes pending events
  *
  * Implementation notes:
@@ -36,7 +35,6 @@ class PlaybackEventQueue(
     companion object {
         private const val TAG = "PlaybackEventQueue"
         private const val QUEUE_CAPACITY = 64
-        private const val POST_HANDLE_DELAY_MS = 30L
     }
 
     /**
@@ -81,6 +79,14 @@ class PlaybackEventQueue(
             override val eventType = "STOP"
         }
 
+        /** Player-service command for repeat/shuffle changes. Kept on the same lane as PLAY. */
+        data class ModeEvent(
+            val reason: String,
+            val handler: suspend () -> Unit,
+        ) : PlaybackEvent() {
+            override val eventType = "MODE"
+        }
+
         /**
          * Generic event for custom operations (e.g. render switch, settings change).
          * These are NOT conflated — each runs exactly once.
@@ -122,9 +128,6 @@ class PlaybackEventQueue(
                 }
                 _currentEvent.value = null
                 _pendingCount.value = /* approximate */ maxOf(0, _pendingCount.value - 1)
-                if (running.get()) {
-                    delay(POST_HANDLE_DELAY_MS)
-                }
             }
             Log.i(TAG, "Event queue consumer stopped")
         }
@@ -150,7 +153,10 @@ class PlaybackEventQueue(
                 // Clear all pending events on pause/stop
                 clearPendingInternal()
             }
-            is PlaybackEvent.PlayEvent, is PlaybackEvent.SeekEvent, is PlaybackEvent.ResumeEvent -> {
+            is PlaybackEvent.PlayEvent,
+            is PlaybackEvent.SeekEvent,
+            is PlaybackEvent.ResumeEvent,
+            is PlaybackEvent.ModeEvent -> {
                 // Conflate: remove same-type pending events
                 conflateSameType(event.eventType)
             }
@@ -213,6 +219,10 @@ class PlaybackEventQueue(
             }
             is PlaybackEvent.StopEvent -> {
                 Log.d(TAG, "Handling STOP")
+                event.handler()
+            }
+            is PlaybackEvent.ModeEvent -> {
+                Log.d(TAG, "Handling MODE: ${event.reason}")
                 event.handler()
             }
             is PlaybackEvent.GenericEvent -> {

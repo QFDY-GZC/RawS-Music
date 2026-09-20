@@ -85,6 +85,19 @@ data class UsbStatsSnapshot(
     val clockValidKnown: Boolean = false,
     val clockValid: Boolean = false,
 
+    // First normal PCM container diagnostic cached by native and exported in-app.
+    val pcmInputDiagReady: Boolean = false,
+    val pcmProtocol: Int = 0,
+    val pcmSourceFrameBytes: Int = 0,
+    val pcmDeviceFrameBytes: Int = 0,
+    val pcmAdapter: String = "",
+    val pcmNeedsResample: Boolean = false,
+    val pcmSamples: Int = 0,
+    val pcmNonSilent: Int = 0,
+    val pcmLowZero: Int = 0,
+    val pcmSignExtendedTop: Int = 0,
+    val pcmFirst16Hex: String = "",
+
     val featureUnitPolicy: String = "",
     val featureUnitPath: String = "",
     val featureUnitResult: Int = 0,
@@ -189,6 +202,44 @@ object UsbLearnedPolicyStore {
             updatedAt = System.currentTimeMillis()
         )
         write(deviceKey, reset)
+        return true
+    }
+
+    fun invalidateLastGoodIfMatches(
+        deviceKey: String,
+        alt: Int,
+        sampleRate: Int,
+        bitDepth: Int,
+        subslot: Int,
+        feedbackEndpoint: Int,
+    ): Boolean {
+        val old = read(deviceKey) ?: return false
+        val matches = old.lastGoodAlt == alt &&
+            old.lastGoodSampleRate == sampleRate &&
+            old.lastGoodBitDepth == bitDepth &&
+            old.lastGoodSubslot == subslot &&
+            old.lastGoodFeedbackEndpoint == feedbackEndpoint
+        if (!matches) return false
+
+        // Older builds recorded last-good as soon as the producer accepted its first PCM block.
+        // That says nothing about completed ISO traffic and can make recovery select the same
+        // non-draining alternate setting forever. A stable self-test will repopulate these fields.
+        write(
+            deviceKey,
+            old.copy(
+                lastGoodAlt = 0,
+                lastGoodSampleRate = 0,
+                lastGoodBitDepth = 0,
+                lastGoodSubslot = 0,
+                lastGoodFeedbackEndpoint = 0,
+                lastGoodNoFeedback = false,
+                lastGoodNoClockSet = false,
+                lastGoodNoFeatureUnit = false,
+                lastGoodPreferSafeAlt = false,
+                successCount = 0,
+                updatedAt = System.currentTimeMillis(),
+            ),
+        )
         return true
     }
 
@@ -363,267 +414,109 @@ object UsbLearnedPolicyStore {
 }
 
 object UsbSelfTest {
-    private fun outputRatio(stats: UsbStatsSnapshot): Double {
-        val expected = stats.expectedBytesPerSec
-        val usbOut = stats.usbOutBytesPerSec
-        if (expected <= 0L || usbOut <= 0L) return 0.0
-        return usbOut.toDouble() / expected.toDouble()
-    }
-
-    private fun bufferedMs(stats: UsbStatsSnapshot): Long {
-        val bytesPerSec = when {
-            stats.usbOutBytesPerSec > 0 -> stats.usbOutBytesPerSec
-            stats.expectedBytesPerSec > 0 -> stats.expectedBytesPerSec
-            else -> 0L
-        }
-        if (bytesPerSec <= 0L) return 0L
-        return (stats.bufferUsedBytes * 1000L) / bytesPerSec
-    }
-
-    private fun noHardTransportErrors(stats: UsbStatsSnapshot): Boolean {
-        return stats.submitErr == 0 &&
-            stats.packetErr == 0 &&
-            stats.xferErr == 0
-    }
-
-    private fun noTransportErrors(stats: UsbStatsSnapshot): Boolean {
-        return stats.underrun == 0 && noHardTransportErrors(stats)
-    }
-
-    private fun appOrSchedulerUnderFeeds(stats: UsbStatsSnapshot): Boolean {
-        val expected = stats.expectedBytesPerSec
-        if (expected <= 0L) return false
-        val appLow = stats.appInBytesPerSec in 0L until (expected * 75L / 100L)
-        val scheduledLow = stats.scheduledUsbBytesPerSec in 0L until (expected * 75L / 100L)
-        // Underrun is a symptom of producer/scheduler starvation on MIUI and
-        // no-feedback DACs. It is not a hard USB transport error like submit,
-        // packet, or transfer failure, so do not use it to escalate to profile
-        // recovery.
-        return appLow && scheduledLow && noHardTransportErrors(stats)
-    }
-
-    private fun noFeedbackFakePlayback(stats: UsbStatsSnapshot): Boolean {
-        val expected = stats.expectedBytesPerSec
-        if (expected <= 0L) return false
-        if (!(stats.isFixedNoFeedbackPacer || !stats.feedbackEnabled)) return false
-        if (!noHardTransportErrors(stats)) return false
-        val bufferedEnough = stats.bufferUsedBytes >= expected * 160L / 1000L
-        val appCollapsed = stats.appInBytesPerSec in 0L until (expected * 75L / 100L)
-        val scheduledCollapsed = stats.scheduledUsbBytesPerSec in 0L until (expected * 60L / 100L)
-        val completedCollapsed = stats.usbOutBytesPerSec in 0L until (expected * 35L / 100L)
-        return bufferedEnough && appCollapsed && scheduledCollapsed && completedCollapsed
-    }
-
-
-    private fun feedbackDegradedFixedUnderOutput(stats: UsbStatsSnapshot): Boolean {
-        val expected = stats.expectedBytesPerSec
-        if (expected <= 0L) return false
-        val degraded = stats.isFeedbackDegradedFixedPacer ||
-            stats.feedbackState >= 4 ||
-            stats.feedbackInvalidCount > 0 ||
-            stats.feedbackEmptyCount > 0
-        if (!degraded) return false
-        if (!noHardTransportErrors(stats)) return false
-        val ratio = outputRatio(stats)
-        // Native has already proven the explicit feedback endpoint is unusable
-        // and switched to a fixed pacer.  If OUT completion then collapses,
-        // treating it as "decoder under-feed" can park no-feedback-capable
-        // devices forever after the first audible second.  the model drops the
-        // bad feedback endpoint and retries the same stream as no-feedback.
-        val scheduledLow = stats.scheduledUsbBytesPerSec <= 0L ||
-            stats.scheduledUsbBytesPerSec < expected * 70L / 100L
-        return stats.usbOutBytesPerSec >= 0L && ratio < 0.70 && scheduledLow
-    }
-
-    private fun looksHealthy(stats: UsbStatsSnapshot, bufferedMs: Long): Boolean {
-        val usbNearExpected = outputRatio(stats) in 0.70..1.30
-        val bufferHealthy = stats.bufferCapacityBytes <= 0L || bufferedMs in 20L..4000L
-        return stats.appInBytesPerSec > 0 &&
-            usbNearExpected &&
-            bufferHealthy &&
-            noHardTransportErrors(stats)
-    }
-
-    private fun feedbackSuspect(stats: UsbStatsSnapshot): Boolean {
-        // Once native has already dropped the feedback endpoint and switched to
-        // PI pacing, later under-output must no longer be treated as
-        // "feedback invalid". Otherwise we keep retrying the same no-feedback
-        // fallback in a loop.
-        if (!stats.feedbackEnabled || stats.isFixedNoFeedbackPacer) return false
-        return stats.feedbackState in 4..6 ||
-            stats.feedbackInvalidCount > 0 ||
-            stats.feedbackEmptyCount > 0
+    private enum class NativeHealthCode {
+        Healthy,
+        FeedbackDegradedUnderOutput,
+        NoFeedbackFakePlayback,
+        FixedPacerUnderFeed,
+        NoFeedbackSchedulerUnderTarget,
+        TransportError,
+        VolumeTooLow,
+        SaturatedNoOutput,
+        FeedbackInvalid,
+        UnderOutput,
+        DecoderFeedDip,
+        DecoderFeedsButNoUsbOutput,
+        ClockMismatch,
+        FeedbackScheduledNotCompleting,
+        ScheduledNotCompleting,
+        Inconclusive,
     }
 
     fun run(stats: UsbStatsSnapshot): UsbSelfTestResult {
-        val bufferedMs = bufferedMs(stats)
-        val ratio = outputRatio(stats)
-        if (looksHealthy(stats, bufferedMs)) {
+        val values = if (UsbAudioEngine.isNativeLibraryLoaded()) {
+            runCatching {
+                UsbAudioEngine.nativeClassifyUsbStreamHealth(
+                    appBytesPerSecond = stats.appInBytesPerSec,
+                    completedUsbBytesPerSecond = stats.usbOutBytesPerSec,
+                    scheduledUsbBytesPerSecond = stats.scheduledUsbBytesPerSec,
+                    expectedBytesPerSecond = stats.expectedBytesPerSec,
+                    bufferUsedBytes = stats.bufferUsedBytes,
+                    bufferCapacityBytes = stats.bufferCapacityBytes,
+                    underrun = stats.underrun,
+                    submitError = stats.submitErr,
+                    packetError = stats.packetErr,
+                    transferError = stats.xferErr,
+                    clockRate = stats.clockRate,
+                    targetRate = stats.targetRate,
+                    finalVolume = stats.finalVolume,
+                    feedbackEnabled = stats.feedbackEnabled,
+                    feedbackState = stats.feedbackState,
+                    feedbackInvalidCount = stats.feedbackInvalidCount,
+                    feedbackEmptyCount = stats.feedbackEmptyCount,
+                    fixedNoFeedbackPacer = stats.isFixedNoFeedbackPacer,
+                    feedbackDegradedFixedPacer = stats.isFeedbackDegradedFixedPacer,
+                )
+            }.getOrNull()
+        } else {
+            null
+        }
+        if (values == null || values.size < 4) {
             return UsbSelfTestResult(
-                kind = UsbSilentKind.None,
+                kind = UsbSilentKind.Unknown,
                 shouldRestart = false,
                 shouldFallbackProfile = false,
-                message = "USB stream healthy: app=${stats.appInBytesPerSec} usb=${stats.usbOutBytesPerSec} expected=${stats.expectedBytesPerSec} buffered=${bufferedMs}ms"
+                message = "native USB health classifier unavailable",
             )
         }
-
-        // If the native side already degraded an explicit feedback endpoint,
-        // under-output is a stream-config symptom, not a decoder starvation
-        // symptom.  Retry the same profile with feedback disabled before the
-        // Kotlin feeder classifies low app/scheduled rates as harmless.
-        if (feedbackDegradedFixedUnderOutput(stats)) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.FeedbackInvalid,
-                shouldRestart = true,
-                shouldFallbackProfile = true,
-                message = "Feedback-degraded fixed pacer is under-outputting: ratio=${"%.3f".format(ratio)} completed=${stats.usbOutBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} expected=${stats.expectedBytesPerSec} fbState=${stats.feedbackStateName} fbInvalid=${stats.feedbackInvalidCount} fbEmpty=${stats.feedbackEmptyCount}"
-            )
-        }
-
-        if (noFeedbackFakePlayback(stats)) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.UsbNotOutputting,
-                shouldRestart = true,
-                shouldFallbackProfile = true,
-                message = "No-feedback/fixed-pacer fake playback: native buffer parked but transport collapsed: app=${stats.appInBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} completed=${stats.usbOutBytesPerSec} expected=${stats.expectedBytesPerSec} buffered=${bufferedMs}ms"
-            )
-        }
-
-        // Fixed/no-feedback path: a low app feed or low scheduled
-        // rate during pause, cutover, warm pause, or Android scheduling jitter
-        // is not a DAC/profile failure.  Do not persist safeAlt/noFb hints and
-        // do not request a profile restart unless the app is actually feeding
-        // close to the target rate.
-        if ((stats.isFixedNoFeedbackPacer || !stats.feedbackEnabled) &&
-            stats.usbOutBytesPerSec > 0 &&
-            appOrSchedulerUnderFeeds(stats)
-        ) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.DecoderNotFeeding,
-                shouldRestart = false,
-                shouldFallbackProfile = false,
-                message = "No-feedback/fixed-pacer stream is alive but app/scheduler under-feeds: app=${stats.appInBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} expected=${stats.expectedBytesPerSec} completed=${stats.usbOutBytesPerSec}"
-            )
-        }
-
-        if (!stats.feedbackEnabled &&
-            stats.usbOutBytesPerSec > 0 &&
-            stats.scheduledUsbBytesPerSec > 0 &&
-            stats.expectedBytesPerSec > 0 &&
-            ratio in 0.0..<0.70 &&
-            noHardTransportErrors(stats)
-        ) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.DecoderNotFeeding,
-                shouldRestart = false,
-                shouldFallbackProfile = false,
-                message = "No-feedback stream is alive but Android scheduler is under target: ratio=${"%.3f".format(ratio)} completed=${stats.usbOutBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} expected=${stats.expectedBytesPerSec} underrun=${stats.underrun}"
-            )
-        }
-
-        if (stats.xferErr > 0 || stats.submitErr > 0) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.TransportError,
-                shouldRestart = true, shouldFallbackProfile = true,
-                message = "USB transport error"
-            )
-        }
-        if (stats.finalVolume >= 0.0001f && stats.finalVolume < 0.03f) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.VolumeTooLow,
-                shouldRestart = false, shouldFallbackProfile = false,
-                message = "Final volume too low: ${stats.finalVolume}"
-            )
-        }
-        if (stats.usbOutBytesPerSec <= 0 &&
-            stats.bufferCapacityBytes > 0 &&
-            stats.bufferUsedBytes * 100 >= stats.bufferCapacityBytes * 60
-        ) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.UsbNotOutputting,
-                shouldRestart = true, shouldFallbackProfile = true,
-                message = "USB buffer is saturated but no USB out traffic"
-            )
-        }
-        if (!appOrSchedulerUnderFeeds(stats) &&
-            (stats.appInBytesPerSec > 0 || stats.scheduledUsbBytesPerSec > stats.expectedBytesPerSec / 2) &&
-            stats.usbOutBytesPerSec > 0 &&
-            stats.expectedBytesPerSec > 0 &&
-            ratio in 0.0..<0.70 &&
-            feedbackSuspect(stats)
-        ) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.FeedbackInvalid,
-                shouldRestart = true,
-                shouldFallbackProfile = true,
-                message = "USB feedback invalid: ratio=${"%.3f".format(ratio)} completed=${stats.usbOutBytesPerSec} expected=${stats.expectedBytesPerSec} fbState=${stats.feedbackStateName} fbInvalid=${stats.feedbackInvalidCount} fbEmpty=${stats.feedbackEmptyCount}"
-            )
-        }
-        if (!appOrSchedulerUnderFeeds(stats) &&
-            (stats.appInBytesPerSec > 0 || stats.scheduledUsbBytesPerSec > stats.expectedBytesPerSec / 2) &&
-            stats.usbOutBytesPerSec > 0 &&
-            stats.expectedBytesPerSec > 0 &&
-            ratio in 0.0..<0.55
-        ) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.UsbNotOutputting,
-                shouldRestart = true,
-                shouldFallbackProfile = true,
-                message = "USB under-output: ratio=${"%.3f".format(ratio)} completed=${stats.usbOutBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} expected=${stats.expectedBytesPerSec} buffered=${bufferedMs}ms feedback=${stats.feedbackEnabled} pacing=${stats.pacingMode}"
-            )
-        }
-        if (stats.usbOutBytesPerSec > 0 && stats.appInBytesPerSec <= 0) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.DecoderNotFeeding,
-                shouldRestart = false, shouldFallbackProfile = false,
-                message = "Decoder feed dipped to 0, but USB is still outputting with ${bufferedMs}ms buffered"
-            )
-        }
-        if (!appOrSchedulerUnderFeeds(stats) && stats.appInBytesPerSec > 0 && stats.usbOutBytesPerSec <= 0) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.UsbNotOutputting,
-                shouldRestart = true, shouldFallbackProfile = true,
-                message = "Decoder feeds PCM but USB out=0"
-            )
-        }
-        if (stats.targetRate > 0 && stats.clockRate > 0 &&
-            kotlin.math.abs(stats.clockRate - stats.targetRate) > 100
-        ) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.ClockMismatch,
-                shouldRestart = true, shouldFallbackProfile = true,
-                message = "Clock mismatch: device=${stats.clockRate}, target=${stats.targetRate}"
-            )
-        }
-        if (!appOrSchedulerUnderFeeds(stats) &&
-            stats.expectedBytesPerSec > 0 &&
-            stats.scheduledUsbBytesPerSec > stats.expectedBytesPerSec / 2 &&
-            stats.usbOutBytesPerSec < stats.expectedBytesPerSec * 70 / 100 &&
-            feedbackSuspect(stats)
-        ) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.FeedbackInvalid,
-                shouldRestart = true, shouldFallbackProfile = true,
-                message = "USB feedback path is suspect while scheduled traffic is not completing: completed=${stats.usbOutBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} expected=${stats.expectedBytesPerSec} fbState=${stats.feedbackStateName}"
-            )
-        }
-        if (!appOrSchedulerUnderFeeds(stats) &&
-            stats.expectedBytesPerSec > 0 &&
-            stats.scheduledUsbBytesPerSec > stats.expectedBytesPerSec / 2 &&
-            stats.usbOutBytesPerSec < stats.expectedBytesPerSec * 55 / 100
-        ) {
-            return UsbSelfTestResult(
-                kind = UsbSilentKind.UsbNotOutputting,
-                shouldRestart = true,
-                shouldFallbackProfile = true,
-                message = "USB scheduled but not completing: completed=${stats.usbOutBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} expected=${stats.expectedBytesPerSec}"
-            )
-        }
-
+        val kind = UsbSilentKind.entries.getOrNull(values[0]) ?: UsbSilentKind.Unknown
+        val code = NativeHealthCode.entries.getOrNull(values[3]) ?: NativeHealthCode.Inconclusive
         return UsbSelfTestResult(
-            kind = UsbSilentKind.Unknown,
-            shouldRestart = false, shouldFallbackProfile = false,
-            message = "USB self-test inconclusive: app=${stats.appInBytesPerSec} completed=${stats.usbOutBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} expected=${stats.expectedBytesPerSec} fbState=${stats.feedbackStateName} pacing=${stats.pacingMode}"
+            kind = kind,
+            shouldRestart = values[1] != 0,
+            shouldFallbackProfile = values[2] != 0,
+            message = nativeHealthMessage(code, stats),
         )
+    }
+
+    private fun nativeHealthMessage(code: NativeHealthCode, stats: UsbStatsSnapshot): String {
+        val expected = stats.expectedBytesPerSec
+        val ratio = if (expected > 0L) stats.usbOutBytesPerSec.toDouble() / expected.toDouble() else 0.0
+        val bytesPerSec = when {
+            stats.usbOutBytesPerSec > 0L -> stats.usbOutBytesPerSec
+            expected > 0L -> expected
+            else -> 0L
+        }
+        val bufferedMs = if (bytesPerSec > 0L) stats.bufferUsedBytes * 1000L / bytesPerSec else 0L
+        return when (code) {
+            NativeHealthCode.Healthy ->
+                "USB stream healthy: app=${stats.appInBytesPerSec} usb=${stats.usbOutBytesPerSec} expected=$expected buffered=${bufferedMs}ms"
+            NativeHealthCode.FeedbackDegradedUnderOutput ->
+                "Feedback-degraded fixed pacer under-output: ratio=${"%.3f".format(ratio)} completed=${stats.usbOutBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} expected=$expected fbState=${stats.feedbackStateName}"
+            NativeHealthCode.NoFeedbackFakePlayback ->
+                "No-feedback/fixed-pacer fake playback: app=${stats.appInBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} completed=${stats.usbOutBytesPerSec} expected=$expected buffered=${bufferedMs}ms"
+            NativeHealthCode.FixedPacerUnderFeed ->
+                "Fixed/no-feedback transport alive; app/scheduler under-feeding: app=${stats.appInBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} completed=${stats.usbOutBytesPerSec} expected=$expected"
+            NativeHealthCode.NoFeedbackSchedulerUnderTarget ->
+                "No-feedback transport alive but scheduler is under target: ratio=${"%.3f".format(ratio)} completed=${stats.usbOutBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} expected=$expected"
+            NativeHealthCode.TransportError -> "USB transport error"
+            NativeHealthCode.VolumeTooLow -> "Final volume too low: ${stats.finalVolume}"
+            NativeHealthCode.SaturatedNoOutput -> "USB buffer saturated but no completed USB output"
+            NativeHealthCode.FeedbackInvalid ->
+                "USB feedback invalid: ratio=${"%.3f".format(ratio)} completed=${stats.usbOutBytesPerSec} expected=$expected fbState=${stats.feedbackStateName}"
+            NativeHealthCode.UnderOutput ->
+                "USB under-output: ratio=${"%.3f".format(ratio)} completed=${stats.usbOutBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} expected=$expected"
+            NativeHealthCode.DecoderFeedDip ->
+                "Decoder feed dipped while USB still drains; buffered=${bufferedMs}ms"
+            NativeHealthCode.DecoderFeedsButNoUsbOutput -> "Decoder feeds PCM but USB out=0"
+            NativeHealthCode.ClockMismatch ->
+                "Clock mismatch: device=${stats.clockRate}, target=${stats.targetRate}"
+            NativeHealthCode.FeedbackScheduledNotCompleting ->
+                "USB feedback path suspect: completed=${stats.usbOutBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} expected=$expected"
+            NativeHealthCode.ScheduledNotCompleting ->
+                "USB scheduled but not completing: completed=${stats.usbOutBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} expected=$expected"
+            NativeHealthCode.Inconclusive ->
+                "USB self-test inconclusive: app=${stats.appInBytesPerSec} completed=${stats.usbOutBytesPerSec} scheduled=${stats.scheduledUsbBytesPerSec} expected=$expected"
+        }
     }
 }

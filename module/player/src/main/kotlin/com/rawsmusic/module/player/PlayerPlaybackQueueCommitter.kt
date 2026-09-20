@@ -23,7 +23,15 @@ internal class PlayerPlaybackQueueCommitter(
             if (sameQueue(existingQueue.songs, requestedQueue)) {
                 // Manual next/previous passes the active queue back into play(). Only move
                 // the cursor; rebuilding here would regenerate the random order.
-                setQueue(existingQueue.copy(currentIndex = safeIndex))
+                setQueue(
+                    existingQueue.copy(
+                        currentIndex = safeIndex,
+                        entryIds = QueueEntryIdGenerator.normalize(
+                            requestedQueue.size,
+                            existingQueue.entryIds,
+                        ),
+                    ),
+                )
             } else {
                 clearHistory()
                 setQueue(
@@ -31,8 +39,9 @@ internal class PlayerPlaybackQueueCommitter(
                         songs = requestedQueue,
                         currentIndex = safeIndex,
                         repeatMode = currentRepeatMode(),
-                        isShuffle = false,
+                        isShuffle = isShuffleEnabled(),
                         originalSongs = emptyList(),
+                        entryIds = QueueEntryIdGenerator.normalize(requestedQueue.size, emptyList()),
                     ),
                 )
                 if (isShuffleEnabled()) {
@@ -52,13 +61,26 @@ internal class PlayerPlaybackQueueCommitter(
                     it.cueTrackIndex == song.cueTrackIndex
             }
             if (existingIndex >= 0) {
-                setQueue(currentQueue().copy(currentIndex = existingIndex))
+                val current = currentQueue()
+                setQueue(
+                    current.copy(
+                        currentIndex = existingIndex,
+                        entryIds = QueueEntryIdGenerator.normalize(current.songs.size, current.entryIds),
+                    ),
+                )
             } else {
+                val current = currentQueue()
                 currentSongs.add(song)
                 setQueue(
                     PlayQueue(
                         songs = currentSongs,
                         currentIndex = currentSongs.lastIndex,
+                        repeatMode = currentRepeatMode(),
+                        isShuffle = isShuffleEnabled(),
+                        entryIds = QueueEntryIdGenerator.normalize(
+                            currentSongs.size,
+                            current.entryIds,
+                        ),
                     ),
                 )
             }

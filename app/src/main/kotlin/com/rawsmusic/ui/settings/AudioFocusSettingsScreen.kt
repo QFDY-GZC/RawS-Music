@@ -73,6 +73,7 @@ fun AudioFocusSettingsScreen(
                 title = stringResource(R.string.settings_audio_focus_resume_after_call),
                 summary = stringResource(R.string.settings_audio_focus_resume_after_call_summary),
                 checked = resumeAfterCall,
+                enabled = handleTransient,
                 onCheckedChange = { checked ->
                     resumeAfterCall = checked
                     AudioFocusPreferences.resumeAfterCall = checked
@@ -123,6 +124,7 @@ fun AudioFocusSettingsScreen(
                 title = stringResource(R.string.settings_audio_focus_resume_on_gain),
                 summary = stringResource(R.string.settings_audio_focus_resume_on_gain_summary),
                 checked = resumeOnFocusGain,
+                enabled = handleTransient,
                 onCheckedChange = { checked ->
                     resumeOnFocusGain = checked
                     AudioFocusPreferences.resumeOnFocusGain = checked
@@ -133,6 +135,7 @@ fun AudioFocusSettingsScreen(
                 title = stringResource(R.string.settings_audio_focus_allow_duck),
                 summary = stringResource(R.string.settings_audio_focus_allow_duck_summary),
                 checked = allowDuck,
+                enabled = handleTransient,
                 onCheckedChange = { checked ->
                     allowDuck = checked
                     AudioFocusPreferences.allowDuck = checked

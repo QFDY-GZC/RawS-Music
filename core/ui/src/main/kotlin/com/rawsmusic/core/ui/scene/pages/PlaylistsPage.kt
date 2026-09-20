@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.res.stringResource
 import com.rawsmusic.core.ui.R
+import com.rawsmusic.core.ui.widget.flow.referenceStaticForeground
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
@@ -20,7 +21,7 @@ fun PlaylistsPage(onBack: () -> Unit) {
         ) {
             Text(
                 text = stringResource(R.string.playlist_empty),
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                color = referenceStaticForeground(MiuixTheme.colorScheme.onSurfaceVariantSummary, 0.72f),
                 fontSize = 16.sp
             )
         }

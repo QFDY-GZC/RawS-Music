@@ -42,9 +42,11 @@ internal class PlayerUsbVolumeRouteCoordinator(
         val setExplicitSoftwareMute: (Boolean) -> Unit,
         val applyComposedVolume: () -> Unit,
         val applyUsbVolume: (UsbOutputProfile, String) -> Unit,
+        val configureTransitionGainOwner: (UsbOutputProfile, String) -> Unit,
         val syncUsbRemoteVolumeRoute: (String) -> Unit,
         val setNativeDvc: (Boolean, Float, Float) -> Unit,
         val setHardwareVolumeStep: (Int, String) -> Int,
+        val setHardwareVolumeUi: (Float, String) -> Int,
         val shouldUseUsbRemoteVolume: () -> Boolean,
     )
 
@@ -103,12 +105,37 @@ internal class PlayerUsbVolumeRouteCoordinator(
         systemVolumeController().suppressCallbacks(windowMs, reason)
     }
 
+    /**
+     * Re-acquiring Android playback ownership must never restore a stale app-side value into
+     * STREAM_MUSIC. Read the currently routed system/Bluetooth volume first; only later explicit
+     * user volume commands are allowed to change the system coarse step.
+     */
+    fun prepareAndroidVolumeForPlaybackTakeover(reason: String) {
+        if (callbacks.isUsbExclusiveActive()) return
+        val systemLinear = getSystemMusicVolumeLinear()
+        if (androidDvcController.isActive(usbExclusive = false)) {
+            androidDvcController.prepareForPlaybackTakeover(
+                usbExclusive = false,
+                reason = reason,
+            )
+        } else {
+            AppPreferences.Player.volume = systemLinear
+            if (systemLinear > 0.0001f) callbacks.setExplicitSoftwareMute(false)
+        }
+        AppLogger.i(
+            TAG,
+            "Android playback takeover adopted current STREAM_MUSIC: systemLinear=$systemLinear " +
+                "dvc=${androidDvcController.isActive(usbExclusive = false)} reason=$reason"
+        )
+    }
+
     fun keepUsbExclusiveSoftwareVolumeIsolated(reason: String) {
         if (!isUsbExclusiveSoftwareVolumeActive()) return
         AppLogger.i(
             TAG,
-            "USB software volume kept isolated from STREAM_MUSIC: " +
-                "app=${AppPreferences.Player.volume.coerceIn(0f, 1f)} reason=$reason"
+            "USB software volume follows local STREAM_MUSIC UI: " +
+                "app=${AppPreferences.Player.volume.coerceIn(0f, 1f)} " +
+                "system=${getSystemMusicVolumeLinear()} reason=$reason"
         )
     }
 
@@ -117,23 +144,93 @@ internal class PlayerUsbVolumeRouteCoordinator(
         return callbacks.buildUsbOutputProfile(true).volumePath == UsbVolumePath.Software
     }
 
+    fun usbSoftwarePcmGainForLocalUi(linear: Float): Float {
+        return UsbSoftwareVolumeCurve.gainForLocalStream(
+            uiLinear = linear,
+            rangeDb = AppPreferences.Player.usbSoftwareVolumeRangeDb,
+        )
+    }
+
+    fun refreshUsbSoftwareVolumeCurve(reason: String) {
+        if (!isUsbExclusiveSoftwareVolumeActive()) return
+        applyUsbExclusiveSoftwareUserVolume(
+            AppPreferences.Player.usbSoftwareVolume.coerceIn(0f, 1f),
+            "curve_refresh:$reason",
+        )
+    }
+
     fun normalizeUsbExclusiveSoftwareEntryVolume(systemLinear: Float, reason: String): Float {
-        val current = AppPreferences.Player.usbSoftwareVolume.coerceIn(0f, 1f)
-        AppPreferences.Player.volume = current
+        val desired = AppPreferences.Player.usbSoftwareVolume.coerceIn(0f, 1f)
+        // Software USB volume now uses the normal local STREAM_MUSIC presentation. Seed the local
+        // stream silently from the saved USB level so the first hardware-key press does not jump
+        // from an unrelated Android volume value. The public stream is discrete, so use the actual
+        // quantized value as the software-gain/UI source of truth.
+        systemVolumeController().setMusicVolumeLinearIgnoringCallbacks(
+            linear = desired,
+            flags = 0,
+            ignoreWindowMs = 500L,
+            reason = "usb_software_entry:$reason",
+        )
+        val actual = getSystemMusicVolumeLinear()
+        AppPreferences.Player.usbSoftwareVolume = actual
+        AppPreferences.Player.volume = actual
         AppLogger.i(
             TAG,
-            "Restoring independent USB software volume: ui=$current system=$systemLinear reason=$reason"
+            "USB software volume seeded onto local STREAM_MUSIC: desired=$desired " +
+                "previousSystem=$systemLinear actual=$actual reason=$reason"
         )
-        return current
+        return actual
+    }
+
+    /**
+     * Seed the software-volume presentation from the currently audible hardware Feature Unit dB.
+     *
+     * reference USB implementation keeps software and hardware volume as separate owners and does not release the Feature
+     * Unit merely because the preference changed. RawSMusic additionally maps the current hardware
+     * attenuation onto the software curve so the new owner starts at approximately the same audible
+     * level instead of resurrecting a stale software-volume preference.
+     */
+    fun prepareHardwareToSoftwareEntry(hardwareDb: Float, reason: String): Float {
+        val desiredUi = UsbSoftwareVolumeCurve.localStreamForDb(
+            gainDb = hardwareDb.coerceAtMost(0f),
+            rangeDb = AppPreferences.Player.usbSoftwareVolumeRangeDb,
+        )
+        val previousSystem = getSystemMusicVolumeLinear()
+        systemVolumeController().setMusicVolumeLinearIgnoringCallbacks(
+            linear = desiredUi,
+            flags = 0,
+            ignoreWindowMs = 700L,
+            reason = "usb_hw_to_sw_entry:$reason",
+        )
+        val actualUi = getSystemMusicVolumeLinear()
+        val pcmGain = usbSoftwarePcmGainForLocalUi(actualUi)
+        AppPreferences.Player.usbSoftwareVolume = actualUi
+        AppPreferences.Player.volume = actualUi
+        callbacks.setExplicitSoftwareMute(actualUi <= 0.0001f)
+
+        // Set the global/native target before changing Feature Unit ownership. On a strict
+        // bit-perfect live handle native keeps that handle at unity PCM but still remembers this
+        // target for the processed session that will be opened after the transport is stopped.
+        engine.nativeSetUsbSoftwareGain(pcmGain)
+        AppLogger.i(
+            TAG,
+            "USB HW->SW entry seeded from hardware dB: hardwareDb=$hardwareDb desiredUi=$desiredUi " +
+                "actualUi=$actualUi pcmGain=$pcmGain previousSystem=$previousSystem reason=$reason",
+        )
+        return actualUi
     }
 
     fun applyUsbExclusiveSoftwareUserVolume(linear: Float, reason: String) {
         val target = linear.coerceIn(0f, 1f)
-        val pcmGain = PlaybackVolumePlanner.usbSoftwarePcmGain(target)
+        val pcmGain = usbSoftwarePcmGainForLocalUi(target)
         AppPreferences.Player.usbSoftwareVolume = target
         AppPreferences.Player.volume = target
         callbacks.setExplicitSoftwareMute(target <= 0.0001f)
-        AppLogger.i(TAG, "applyUsbExclusiveSoftwareUserVolume: ui=$target pcmGain=$pcmGain reason=$reason")
+        AppLogger.i(
+            TAG,
+            "applyUsbExclusiveSoftwareUserVolume: ui=$target pcmGain=$pcmGain " +
+                "systemMax=${systemVolumeController().getMusicVolumeMaxStep()} reason=$reason",
+        )
         engine.nativeSetUsbSoftwareGain(pcmGain)
         callbacks.applyComposedVolume()
         keepUsbExclusiveSoftwareVolumeIsolated("applyUsbExclusiveSoftwareUserVolume:$reason")
@@ -143,10 +240,6 @@ internal class PlayerUsbVolumeRouteCoordinator(
         AppPreferences.Player.volume = 1.0f
         callbacks.setExplicitSoftwareMute(false)
         engine.nativeSetUsbSoftwareGain(1.0f)
-        val handle = engine.currentHandle
-        if (handle != 0L) {
-            engine.setSessionVolumeScale(handle, 1.0f, 0)
-        }
         AppLogger.w(TAG, "USB fixed digital 0dB volume enforced without changing STREAM_MUSIC: reason=$reason")
     }
 
@@ -171,7 +264,7 @@ internal class PlayerUsbVolumeRouteCoordinator(
 
         when {
             !exclusive || profile == null -> {
-                engine.nativeSetPolicy(exclusive = false, bitPerfect = false, hwVol = false)
+                engine.setPolicy(exclusive = false, bitPerfect = false, hwVol = false)
                 engine.nativeSetUsbSoftwareGain(1.0f)
                 if (!androidDvcController.isActive(usbExclusive = false)) {
                     AppPreferences.Player.volume = systemLinear
@@ -183,36 +276,37 @@ internal class PlayerUsbVolumeRouteCoordinator(
                 AppLogger.i(TAG, "Non-exclusive playback uses Android system volume directly")
             }
             volumePath == UsbVolumePath.HardwareUserVolume -> {
-                engine.nativeSetPolicy(
+                engine.setPolicy(
                     exclusive = true,
-                    bitPerfect = profile.bitPerfect,
+                    // DSD source-direct remains a fixed/raw native transport even when hardware
+                    // volume is the user-volume owner. Keep this identical to the policy that was
+                    // committed before native init so nativeStart does not require a reinit.
+                    bitPerfect = profile.bitPerfect || profile.dsdSourceDirect,
                     hwVol = true,
                 )
+                callbacks.configureTransitionGainOwner(profile, "hardware:$reason")
                 engine.nativeSetUsbSoftwareGain(1.0f)
-                val handle = engine.currentHandle
-                if (handle != 0L) {
-                    engine.setSessionVolumeScale(handle, 1.0f, 0)
-                }
             }
             volumePath == UsbVolumePath.Fixed -> {
-                engine.nativeSetPolicy(exclusive = true, bitPerfect = true, hwVol = false)
+                engine.setPolicy(exclusive = true, bitPerfect = true, hwVol = false)
+                callbacks.configureTransitionGainOwner(profile, "fixed:$reason")
                 forceUsbFixedVolume0Db("applyVolumeRoute:$reason")
                 AppLogger.i(TAG, "USB exclusive fixed-output path active; user volume locked at 0dB")
             }
             else -> {
-                engine.nativeSetPolicy(
+                engine.setPolicy(
                     exclusive = true,
                     bitPerfect = profile.bitPerfect,
                     hwVol = AppPreferences.Player.usbVolumeMode == 1 &&
                         AppPreferences.Player.hardwareFeatureUnitEnabled && exclusive,
                 )
+                callbacks.configureTransitionGainOwner(profile, "software:$reason")
                 val userLinear = normalizeUsbExclusiveSoftwareEntryVolume(systemLinear, reason)
                 val handle = engine.currentHandle
                 if (handle != 0L) {
                     callbacks.applyUsbVolume(profile, "applyVolumeRoute:$reason")
-                    engine.setSessionVolumeScale(handle, 1.0f, 0)
                 } else {
-                    engine.nativeSetUsbSoftwareGain(PlaybackVolumePlanner.usbSoftwarePcmGain(userLinear))
+                    engine.nativeSetUsbSoftwareGain(usbSoftwarePcmGainForLocalUi(userLinear))
                 }
                 AppLogger.i(TAG, "USB exclusive software gain follows app volume: linear=$userLinear")
                 keepUsbExclusiveSoftwareVolumeIsolated("applyVolumeRoute:$reason")
@@ -231,12 +325,20 @@ internal class PlayerUsbVolumeRouteCoordinator(
         when (route) {
             VolumeRoute.USB_FIXED -> forceUsbFixedVolume0Db("setUserVolume_ignored")
             VolumeRoute.USB_HARDWARE -> {
-                // Hardware step conversion remains in the owning controller.
-                callbacks.setHardwareVolumeStep(UsbHardwareVolumeMath.uiToStep(v), "setUserVolume")
+                callbacks.setHardwareVolumeUi(v, "setUserVolume")
             }
             VolumeRoute.SYSTEM -> {
                 if (isUsbExclusiveSoftwareVolumeActive()) {
-                    applyUsbExclusiveSoftwareUserVolume(v, "setUserVolume")
+                    systemVolumeController().setMusicVolumeLinearIgnoringCallbacks(
+                        linear = v,
+                        flags = 0,
+                        ignoreWindowMs = 300L,
+                        reason = "usb_software_setUserVolume",
+                    )
+                    applyUsbExclusiveSoftwareUserVolume(
+                        getSystemMusicVolumeLinear(),
+                        "setUserVolume_local_stream",
+                    )
                 } else if (androidDvcController.isActive(usbExclusive = false)) {
                     androidDvcController.setLogicalVolume(v, "setUserVolume")
                 } else {
@@ -258,8 +360,7 @@ internal class PlayerUsbVolumeRouteCoordinator(
             androidDvcController.isActive(usbExclusive = callbacks.isUsbExclusiveActive()) ||
                 (
                     callbacks.isUsbExclusiveActive() &&
-                        resolveVolumeRoute() == VolumeRoute.SYSTEM &&
-                        !isUsbExclusiveSoftwareVolumeActive()
+                        resolveVolumeRoute() == VolumeRoute.SYSTEM
                     )
         systemVolumeController().syncObservation(shouldObserve, reason)
     }

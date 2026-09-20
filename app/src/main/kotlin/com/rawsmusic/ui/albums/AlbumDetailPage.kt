@@ -37,7 +37,7 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.R
 import com.rawsmusic.core.ui.scene.pages.themeColors
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
-import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
+import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListFull
 import com.rawsmusic.module.player.PlayerController
 import com.rawsmusic.module.player.PlayerService
 import com.rawsmusic.ui.songs.PlayerHolder
@@ -158,7 +158,7 @@ fun AlbumDetailPageCompose(
         }
 
         // 歌曲列表（Compose）
-        ComposePowerListFull(
+        ComposeVirtualListFull(
             songs = songs,
             onSongClick = { song, _ -> playSongSafe(song) },
             onSongLongClick = { _, _ -> }

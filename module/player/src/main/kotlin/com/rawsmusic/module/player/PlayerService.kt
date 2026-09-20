@@ -17,6 +17,10 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
+import android.os.Process
 import android.util.Log
 import android.os.PowerManager
 import android.os.SystemClock
@@ -29,16 +33,24 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.isFileBackedArtworkSource
 import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.common.model.LyricWord
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.core.common.artwork.EmbeddedArtworkRegion
+import com.rawsmusic.core.common.artwork.ArtworkResolutionPolicy
+import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.model.RepeatMode
+import com.rawsmusic.core.common.net.RemoteHttpStreamRegistry
 import com.rawsmusic.core.common.taglib.TagLibBridge
+import com.rawsmusic.core.common.utils.PlayerSwitchTrace
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.AudioFocusPreferences
 import com.rawsmusic.module.data.prefs.PlaylistStore
 import com.rawsmusic.module.player.lyrics.BluetoothLyricBridge
+import com.rawsmusic.module.player.lyrics.ColorOsDirectLyricBridge
+import com.rawsmusic.module.player.lyrics.ColorOsLyricMetadata
+import com.rawsmusic.module.player.lyrics.ColorOsNonModuleLyricBridge
 import com.rawsmusic.module.player.lyrics.LiveLyricNotificationBridge
 import com.rawsmusic.module.player.lyrics.buildLiveLyricNotificationText
 import com.rawsmusic.module.player.lyrics.buildLiveLyricSecondaryText
@@ -53,8 +65,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URLDecoder
@@ -66,6 +78,15 @@ class PlayerService : LifecycleService() {
         const val CHANNEL_ID = "rawsmusic_player_channel_silent_v2"
         private const val LEGACY_CHANNEL_ID = "rawsmusic_player_channel"
         const val NOTIFICATION_ID = 1001
+        // Keep metadata and notification publication on a dedicated external-media thread.
+        // Metadata artwork refresh is coalesced by 100 ms on Android 8+
+        // (200 ms on older releases), while notification refresh uses its own 75/150 ms cadence.
+        private val MEDIA_METADATA_COALESCE_MS: Long
+            get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) 100L else 200L
+        private val NOTIFICATION_PUBLICATION_DELAY_MS: Long
+            get() = if (Build.VERSION.SDK_INT >= 34) 150L else 75L
+        private const val LIVE_LYRIC_PROGRESS_INTERVAL_MS = 220L
+        private const val MEDIA_SESSION_PROGRESS_INTERVAL_MS = 1000L
         const val ACTION_PLAY = "com.rawsmusic.action.PLAY"
         const val ACTION_PAUSE = "com.rawsmusic.action.PAUSE"
         const val ACTION_TOGGLE_PLAYBACK = "com.rawsmusic.action.TOGGLE_PLAYBACK"
@@ -79,6 +100,7 @@ class PlayerService : LifecycleService() {
         const val ACTION_TOGGLE_SHUFFLE = "com.rawsmusic.action.TOGGLE_SHUFFLE"
         const val ACTION_TOGGLE_DESKTOP_LYRIC = "com.rawsmusic.action.TOGGLE_DESKTOP_LYRIC"
         const val ACTION_REFRESH_NOTIFICATION = "com.rawsmusic.action.REFRESH_NOTIFICATION"
+        const val ACTION_REFRESH_LYRIC_METADATA = "com.rawsmusic.action.REFRESH_LYRIC_METADATA"
         const val ACTION_SUPER_ISLAND_LYRIC = "com.rawsmusic.action.SUPER_ISLAND_LYRIC"
         const val ACTION_SUPER_ISLAND_LYRIC_CLEAR = "com.rawsmusic.action.SUPER_ISLAND_LYRIC_CLEAR"
         /** USB 独占播放前台保活 */
@@ -106,9 +128,11 @@ class PlayerService : LifecycleService() {
         /** 屏幕解锁时检查USB状态 */
         const val ACTION_SCREEN_UNLOCKED = "com.rawsmusic.action.SCREEN_UNLOCKED"
 
+        @Volatile
         var isRunning = false
             private set
 
+        @Volatile
         private var _instance: PlayerService? = null
 
         private var cachedGetTokenMethod: java.lang.reflect.Method? = null
@@ -122,12 +146,70 @@ class PlayerService : LifecycleService() {
 
         /** 更新当前歌词 — 供外部（MainActivity）调用 */
         fun updateLyrics(lyricData: LyricData?, song: AudioFile? = null) {
+            val service = _instance
+            val activeSong = service?.currentSong
+            // A lyric read can finish after a notification-bar skip. Do not let the old read
+            // overwrite the service-owned song, but always accept the null clear used to open a
+            // new song generation (the service metadata may still be one event behind the UI).
+            if (lyricData != null && song != null && activeSong != null &&
+                service.colorOsLyricIdentity(activeSong) != service.colorOsLyricIdentity(song)
+            ) {
+                Log.d(
+                    "PlayerService",
+                    "drop stale lyrics update: active=${activeSong.path} request=${song.path}"
+                )
+                return
+            }
             _currentLyrics.value = lyricData
+            service?.currentLyricsSongIdentity = song?.let(service::colorOsLyricIdentity)
             currentRuntimeController()?.onLyricsUpdated(song, lyricData)
         }
 
         fun pushLyricsToMediaSession() {
-            _instance?.updateLyricsInMetadata()
+            _instance?.scheduleLyricsMediaPublication()
+        }
+
+        /**
+         * In-process UI -> Service media identity handoff.
+         *
+         * reference player keeps track state on its player-service looper and moves only expensive external
+         * media publication to a separate worker.  Avoid bouncing an already-running Raw service
+         * through Context.startService()/onStartCommand for every track/state pulse: post the small
+         * state mutation onto the Service/Main looper and let metadata/artwork/notification work
+         * fan out to the dedicated media publisher from there.
+         */
+        fun syncSongUpdateFromUi(
+            song: AudioFile,
+            serviceArtworkPath: String,
+            playState: PlayState,
+            position: Long,
+        ): Boolean {
+            val service = _instance ?: return false
+            service.runOnPlayerServiceThread {
+                service.applySongUpdate(
+                    title = song.title,
+                    artist = song.artist,
+                    album = song.album,
+                    serviceArtworkPath = serviceArtworkPath.ifBlank { song.path },
+                    path = song.path,
+                    fileSize = song.fileSize,
+                    dateModified = song.dateModified,
+                    cueTrackIndex = song.cueTrackIndex,
+                    duration = song.duration,
+                    state = playState,
+                    position = position,
+                    reason = "in_process_ui",
+                )
+            }
+            return true
+        }
+
+        fun syncPositionFromUi(position: Long): Boolean {
+            val service = _instance ?: return false
+            service.runOnPlayerServiceThread {
+                service.applySyncedPosition(position)
+            }
+            return true
         }
 
         /**
@@ -142,7 +224,9 @@ class PlayerService : LifecycleService() {
             reason: String
         ): Boolean {
             val service = _instance ?: return false
-            service.syncUsbMediaIdentity(song, playing, position, reason)
+            service.runOnPlayerServiceThread {
+                service.syncUsbMediaIdentity(song, playing, position, reason)
+            }
             return true
         }
 
@@ -151,7 +235,9 @@ class PlayerService : LifecycleService() {
             releaseFocus: Boolean
         ): Boolean {
             val service = _instance ?: return false
-            service.clearUsbMediaIdentity(reason, releaseFocus)
+            service.runOnPlayerServiceThread {
+                service.clearUsbMediaIdentity(reason, releaseFocus)
+            }
             return true
         }
 
@@ -163,9 +249,7 @@ class PlayerService : LifecycleService() {
                 PlayState.IDLE
             }
             return AppPreferences.Player.usbExclusiveRequested ||
-                AppPreferences.Player.lastSongPath.isNotBlank() ||
                 lastState == PlayState.PLAYING ||
-                lastState == PlayState.PAUSED ||
                 lastState == PlayState.PREPARING
         }
 
@@ -364,19 +448,64 @@ class PlayerService : LifecycleService() {
     }
 
     private var mediaSessionCompat: MediaSessionCompat? = null
+    /** reference player-equivalent owner for core MediaSession state and final metadata commits. */
+    private var playerServiceThread: HandlerThread? = null
+    private var playerServiceHandler: Handler? = null
     private val liveLyricNotificationBridge: LiveLyricNotificationBridge by lazy {
         LiveLyricNotificationBridge(this)
     }
+    @Volatile
     private var currentSong: AudioFile? = null
+    @Volatile
     private var currentPlayState: PlayState = PlayState.IDLE
+    private var superIslandPublished = false
+    private var superIslandSongPath: String? = null
+    private var colorOsLyricRetryJob: Job? = null
+    private var currentLyricsSongIdentity: String? = null
+    private var colorOsDirectTrackIdentity: String? = null
+    private var colorOsDirectTrackGeneration: Long = 0L
+    private var colorOsDirectPayloadKey: String? = null
+    /**
+     * System media publication is intentionally isolated from Android's service/Main looper.
+     * reference player 1026 uses a dedicated `external api thread` for MediaMetadata + notification work,
+     * then serializes MediaSession state through its player-service handler. Raw previously did the
+     * expensive lyric metadata/Bitmap parcel/PendingIntent rebuild inline from onStartCommand/Main,
+     * which can otherwise stall Choreographer during track motion.
+     */
+    private var mediaPublicationThread: HandlerThread? = null
+    private var mediaPublicationHandler: Handler? = null
+    private val mediaPublicationLock = Any()
+    private var pendingLyricsPublicationRetry = false
+    private val lyricsMediaPublicationRunnable = Runnable {
+        val retry = synchronized(mediaPublicationLock) {
+            val requested = pendingLyricsPublicationRetry
+            pendingLyricsPublicationRetry = false
+            requested
+        }
+        updateLyricsInMetadataNow(retry)
+    }
+    private val notificationPublicationRunnable = Runnable {
+        updateNotificationNow()
+    }
+    private val playbackWidgetRefreshRunnable = Runnable {
+        notifyPlaybackWidgetIfChanged(force = true)
+    }
+    @Volatile
     private var coverBitmap: Bitmap? = null
+    /** Identity that actually owns [coverBitmap]. A retained old bitmap must never follow new text metadata. */
+    @Volatile
+    private var coverBitmapSongIdentity: String? = null
     /** 记录当前正在加载封面的 albumArtPath，防止竞态 */
+    @Volatile
     private var loadingArtPath: String? = null
     /** Monotonic artwork request id; path equality alone cannot distinguish rapid song changes. */
+    @Volatile
     private var artworkRequestGeneration: Long = 0L
     /** 上次收到的播放位置，用于通知栏进度条更新 */
+    @Volatile
     private var lastKnownPosition: Long = 0L
     /** 上次收到精确位置时的系统时间，用于估算当前播放位置 */
+    @Volatile
     private var lastPositionTime: Long = 0L
     /** 播放位置更新协程 */
     private var positionUpdateJob: kotlinx.coroutines.Job? = null
@@ -390,6 +519,8 @@ class PlayerService : LifecycleService() {
     private var lastPlaybackWidgetProgressElapsed = 0L
     /** USB 硬件音量 VolumeProvider — 接收系统音量键事件 */
     private var usbVolumeProvider: UsbHardwareVolumeProvider? = null
+    private var lastUsbRouteLogRemote: Boolean? = null
+    private var lastUsbRouteLogElapsed = 0L
     /** WifiLock. Even for local playback, some OEM schedulers classify
      *  the app more leniently when both media FGS and a high-perf lock are active. */
     private var wifiLock: WifiManager.WifiLock? = null
@@ -404,6 +535,56 @@ class PlayerService : LifecycleService() {
      */
     @Volatile
     private var usbBackgroundKeepAliveLatched: Boolean = false
+
+    private fun runOnPlayerServiceThread(block: () -> Unit) {
+        val handler = playerServiceHandler
+        if (handler == null || Looper.myLooper() == handler.looper) {
+            block()
+        } else {
+            handler.post(block)
+        }
+    }
+
+    /** reference player's ExternalAPI/notification helper is a Handler on the external-api looper. */
+    private fun runOnExternalApiThread(block: () -> Unit) {
+        val handler = mediaPublicationHandler
+        if (handler == null || Looper.myLooper() == handler.looper) {
+            block()
+        } else {
+            handler.post(block)
+        }
+    }
+
+    /**
+     * External-api work may build a metadata payload, but the final MediaSession commit belongs to
+     * the player-service looper. This mirrors reference player B.P() -> PlayerService handler message 27.
+     * Re-check the generation at the final commit boundary so queued rapid-skip payloads can never
+     * publish after a newer song generation has become current.
+     */
+    private fun publishMediaMetadataOnPlayerServiceThread(
+        metadata: MediaMetadataCompat,
+        requestGeneration: Long,
+        expectedSongIdentity: String,
+        expectedArtworkPath: String? = null,
+        traceName: String,
+    ) {
+        runOnPlayerServiceThread {
+            if (!isRunning || requestGeneration != artworkRequestGeneration) return@runOnPlayerServiceThread
+            if (currentSong?.mediaArtworkIdentity() != expectedSongIdentity) return@runOnPlayerServiceThread
+            if (expectedArtworkPath != null && loadingArtPath != expectedArtworkPath) {
+                return@runOnPlayerServiceThread
+            }
+            val startedNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
+            mediaSessionCompat?.setMetadata(metadata)
+            if (startedNs != 0L) {
+                PlayerSwitchTrace.duration(traceName, System.nanoTime() - startedNs)
+                PlayerSwitchTrace.mark(
+                    traceName.lowercase(),
+                    "thread=${Thread.currentThread().name} generation=$requestGeneration",
+                )
+            }
+        }
+    }
 
     /** 屏幕解锁广播接收器 — USER_PRESENT 监听，确保USB独占模式在锁屏后正常工作 */
     private val screenUnlockReceiver = object : android.content.BroadcastReceiver() {
@@ -426,6 +607,21 @@ class PlayerService : LifecycleService() {
         super.onCreate()
         isRunning = true
         _instance = this
+
+        playerServiceThread = HandlerThread(
+            "player service thread",
+            Process.THREAD_PRIORITY_DEFAULT,
+        ).also { thread ->
+            thread.start()
+            playerServiceHandler = Handler(thread.looper)
+        }
+        mediaPublicationThread = HandlerThread(
+            "external api thread",
+            4,
+        ).also { thread ->
+            thread.start()
+            mediaPublicationHandler = Handler(thread.looper)
+        }
 
         // Service 持有 PlayerController 单例，避免 UI 层重建导致重复创建
         val controller = playerController
@@ -494,20 +690,31 @@ class PlayerService : LifecycleService() {
                     return super.onMediaButtonEvent(mediaButtonEvent)
                 }
             })
-            isActive = true
+            // A service/USB manager owner is not itself a media item.  Starting the session as
+            // active makes SystemUI/OEM media surfaces advertise RawSMusic as playing audio even
+            // on an empty cold start.  Real metadata/playback publication activates it below.
+            isActive = false
         }
 
         // 初始化 USB 硬件音量 VolumeProvider
         setupUsbVolumeProvider()
 
-        // 启动前台通知
-        if (!startForegroundCompat(NOTIFICATION_ID, buildNotification())) {
+        // Android requires a service started through startForegroundService() to promote itself
+        // promptly, but that transient startup promotion is not playback ownership.  Promote once
+        // to satisfy the platform contract, then immediately reconcile below.  Keeping an empty
+        // service permanently in MEDIA_PLAYBACK makes SystemUI/OEM schedulers report RawSMusic as
+        // "playing audio" even though there is no current media item and no renderer output.
+        isForegroundStarted = startForegroundCompat(NOTIFICATION_ID, buildNotification())
+        if (!isForegroundStarted) {
             Log.w(
                 "PlayerService",
                 "Foreground promotion rejected during service creation; stopping without restart",
             )
             stopSelf()
             return
+        }
+        if (!shouldOwnPlaybackForeground()) {
+            stopForegroundCompat(removeNotification = true)
         }
         notifyPlaybackWidgetIfChanged(force = true)
 
@@ -516,7 +723,7 @@ class PlayerService : LifecycleService() {
             rebuildMetadataWithBluetoothLyric()
         }
         PlaybackTickerState.setRefreshCallback {
-            updateNotification()
+            scheduleNotificationPublication()
         }
     }
 
@@ -597,17 +804,60 @@ class PlayerService : LifecycleService() {
             @Suppress("DEPRECATION")
             stopForeground(removeNotification)
         }
+        isForegroundStarted = false
     }
 
     private fun bootstrapRuntimeState(reason: String) {
+        val owner = playerServiceHandler
+        if (owner != null && Looper.myLooper() != owner.looper) {
+            owner.post { bootstrapRuntimeState(reason) }
+            return
+        }
         val controller = playerController
-        val controllerSong = controller.currentSong.value
-        if (controllerSong == null && AppPreferences.Player.lastSongPath.isBlank()) {
+        // Queue state is durable independently from now-playing. Restore it even when the last
+        // session was stopped before a song became the current decoder item.
+        val restoredSong = controller.restoreLastSong()
+        val controllerSong = controller.currentSong.value ?: restoredSong
+        if (controllerSong == null &&
+            controller.queue.value.songs.isEmpty() &&
+            AppPreferences.Player.lastSongPath.isBlank()
+        ) {
             Log.i("PlayerService", "bootstrapRuntimeState skipped: no retained song reason=$reason")
             return
         }
         if (controllerSong == null) {
-            restoreStickyPlaybackState(reason = "bootstrap:$reason", autoResume = false)
+            currentSong = null
+            currentPlayState = PlayState.IDLE
+            updateNotification()
+            Log.i(
+                "PlayerService",
+                "bootstrapRuntimeState: queue-only restore reason=$reason " +
+                    "queue=${controller.queue.value.songs.size}",
+            )
+            return
+        }
+        // Reference keeps the selected queue row visible without treating it as resumable audio.
+        // Do the same: expose metadata/controls, but never inherit a stale PLAYING preference or
+        // acquire audio/USB resources before the user explicitly starts the selected row.
+        if (controller.isQueueSelectionOnly()) {
+            currentSong = controllerSong
+            currentPlayState = PlayState.IDLE
+            lastKnownPosition = 0L
+            lastPositionTime = SystemClock.elapsedRealtime()
+            updateMediaSessionMetadata(
+                controllerSong.title,
+                controllerSong.artist,
+                controllerSong.album,
+                controllerSong.albumArtPath,
+                controllerSong.duration,
+            )
+            updateMediaSessionPlaybackState(PlayState.IDLE, 0L)
+            updateNotification()
+            Log.i(
+                "PlayerService",
+                "bootstrapRuntimeState: queue selection only reason=$reason " +
+                    "song=${controllerSong.title} queue=${controller.queue.value.songs.size}",
+            )
             return
         }
 
@@ -626,7 +876,6 @@ class PlayerService : LifecycleService() {
         currentPlayState = restoredState
         lastKnownPosition = controller.position.value.coerceAtLeast(0L)
         lastPositionTime = SystemClock.elapsedRealtime()
-        mediaSessionCompat?.isActive = true
 
         updateMediaSessionMetadata(
             controllerSong.title,
@@ -669,10 +918,47 @@ class PlayerService : LifecycleService() {
     }
 
     private fun restoreStickyPlaybackState(reason: String, autoResume: Boolean) {
+        val owner = playerServiceHandler
+        if (owner != null && Looper.myLooper() != owner.looper) {
+            owner.post { restoreStickyPlaybackState(reason, autoResume) }
+            return
+        }
         val controller = playerController
-        val restoredSong = controller.currentSong.value ?: controller.restoreLastSong()
+        val restoredSong = controller.restoreLastSong() ?: controller.currentSong.value
         if (restoredSong == null) {
-            Log.w("PlayerService", "restoreStickyPlaybackState skipped: no last song reason=$reason")
+            val queueSize = controller.queue.value.songs.size
+            if (queueSize > 0) {
+                currentSong = null
+                currentPlayState = PlayState.IDLE
+                updateNotification()
+                Log.i(
+                    "PlayerService",
+                    "restoreStickyPlaybackState: queue-only restore reason=$reason queue=$queueSize",
+                )
+            } else {
+                Log.w("PlayerService", "restoreStickyPlaybackState skipped: no retained state reason=$reason")
+            }
+            return
+        }
+        if (controller.isQueueSelectionOnly()) {
+            currentSong = restoredSong
+            currentPlayState = PlayState.IDLE
+            lastKnownPosition = 0L
+            lastPositionTime = SystemClock.elapsedRealtime()
+            updateMediaSessionMetadata(
+                restoredSong.title,
+                restoredSong.artist,
+                restoredSong.album,
+                restoredSong.albumArtPath,
+                restoredSong.duration,
+            )
+            updateMediaSessionPlaybackState(PlayState.IDLE, 0L)
+            updateNotification()
+            Log.i(
+                "PlayerService",
+                "restoreStickyPlaybackState: queue selection only reason=$reason " +
+                    "song=${restoredSong.title} queue=${controller.queue.value.songs.size}",
+            )
             return
         }
 
@@ -693,7 +979,6 @@ class PlayerService : LifecycleService() {
         currentPlayState = restoredState
         lastKnownPosition = AppPreferences.Player.lastPosition.coerceAtLeast(0L)
         lastPositionTime = SystemClock.elapsedRealtime()
-        mediaSessionCompat?.isActive = true
 
         updateMediaSessionMetadata(
             restoredSong.title,
@@ -851,15 +1136,8 @@ class PlayerService : LifecycleService() {
                 stopUsbBackgroundGuardian("action_stop")
             }
             "com.rawsmusic.action.SYNC_POSITION" -> {
-                // 从应用同步播放进度，避免通知栏进度条漂移
-                val pos = intent.getLongExtra("position", 0L)
-                if (pos > 0) {
-                    lastKnownPosition = pos
-                    lastPositionTime = SystemClock.elapsedRealtime()
-                    if (currentPlayState == PlayState.PLAYING) {
-                        updateMediaSessionPlaybackState(PlayState.PLAYING, pos)
-                    }
-                }
+                val position = intent.getLongExtra("position", 0L)
+                runOnPlayerServiceThread { applySyncedPosition(position) }
             }
             ACTION_UPDATE -> {
                 // 从Intent读取歌曲信息并更新通知
@@ -871,50 +1149,34 @@ class PlayerService : LifecycleService() {
                 val fileSize = intent.getLongExtra("fileSize", 0L)
                 val dateModified = intent.getLongExtra("dateModified", 0L)
                 val cueTrackIndex = intent.getIntExtra("cueTrackIndex", 0)
-                val serviceArtworkPath = albumArtPath.ifBlank { path }
+                val serviceArtworkPath = resolveServiceArtworkPath(albumArtPath, path)
                 val duration = intent.getLongExtra("duration", 0L)
                 val state = intent.getIntExtra("playState", PlayState.IDLE.ordinal)
                 val position = intent.getLongExtra("position", 0L)
 
-                lastKnownPosition = position
-                lastPositionTime = SystemClock.elapsedRealtime()
-
-                val songChanged = currentSong?.albumArtPath != serviceArtworkPath ||
-                        currentSong?.path != path ||
-                        currentSong?.title != title
-
-                currentSong = AudioFile(
-                    id = 0,
-                    path = path,
-                    title = title,
-                    artist = artist,
-                    album = album,
-                    duration = duration,
-                    albumArtPath = serviceArtworkPath,
-                    fileSize = fileSize,
-                    dateModified = dateModified,
-                    cueTrackIndex = cueTrackIndex
-                )
-                currentPlayState = PlayState.entries.getOrElse(state) { PlayState.IDLE }
-                if (currentPlayState == PlayState.PLAYING) {
-                    requestServiceAudioFocus("ACTION_UPDATE_PLAYING")
-                    acquireWakeLockIfNeeded()
+                runOnPlayerServiceThread {
+                    applySongUpdate(
+                        title = title,
+                        artist = artist,
+                        album = album,
+                        serviceArtworkPath = serviceArtworkPath,
+                        path = path,
+                        fileSize = fileSize,
+                        dateModified = dateModified,
+                        cueTrackIndex = cueTrackIndex,
+                        duration = duration,
+                        state = PlayState.entries.getOrElse(state) { PlayState.IDLE },
+                        position = position,
+                        reason = "action_update",
+                    )
                 }
-
-                // 始终更新完整元数据+播放状态（解决切歌后封面不更新）
-                updateMediaSessionMetadata(title, artist, album, serviceArtworkPath, duration)
-
-                // 显式更新播放状态，触发系统通知栏刷新元数据
-                updateMediaSessionPlaybackState(currentPlayState, lastKnownPosition)
-
-                // 播放中：启动位置定期更新（通知栏进度条）
-                startPositionUpdates()
             }
             ACTION_UPDATE_LYRICS -> {
                 // 歌词已更新，仅更新歌词和元数据（保留已有封面）
                 updateLyricsInMetadata()
             }
             ACTION_REFRESH_NOTIFICATION -> updateNotification()
+            ACTION_REFRESH_LYRIC_METADATA -> updateLyricsInMetadata()
             ACTION_ENSURE_WAKELOCK -> {
                 // 确保 WakeLock 持有（切歌期间防止被系统挂起）
                 acquireWakeLockIfNeeded()
@@ -1054,12 +1316,121 @@ class PlayerService : LifecycleService() {
         }
     }
 
+    private fun applySyncedPosition(position: Long) {
+        val owner = playerServiceHandler
+        if (owner != null && Looper.myLooper() != owner.looper) {
+            owner.post { applySyncedPosition(position) }
+            return
+        }
+        // PlaybackState already contains position + speed + elapsedRealtime, so SystemUI advances
+        // it without a 1 s Binder pulse. Use the UI pulse only to maintain our baseline. Re-publish
+        // when it proves a discontinuity (seek), matching reference player's event-driven MediaSession path.
+        if (position <= 0L) return
+        val now = SystemClock.elapsedRealtime()
+        val expectedPosition = if (currentPlayState == PlayState.PLAYING && lastPositionTime > 0L) {
+            lastKnownPosition + (now - lastPositionTime).coerceAtLeast(0L)
+        } else {
+            lastKnownPosition
+        }
+        val positionDiscontinuity = kotlin.math.abs(position - expectedPosition) >= 500L
+        lastKnownPosition = position
+        lastPositionTime = now
+        if (currentPlayState == PlayState.PLAYING && positionDiscontinuity) {
+            updateMediaSessionPlaybackState(PlayState.PLAYING, position)
+        }
+    }
+
+    private fun applySongUpdate(
+        title: String,
+        artist: String,
+        album: String,
+        serviceArtworkPath: String,
+        path: String,
+        fileSize: Long,
+        dateModified: Long,
+        cueTrackIndex: Int,
+        duration: Long,
+        state: PlayState,
+        position: Long,
+        reason: String,
+    ) {
+        val owner = playerServiceHandler
+        if (owner != null && Looper.myLooper() != owner.looper) {
+            owner.post {
+                applySongUpdate(
+                    title = title,
+                    artist = artist,
+                    album = album,
+                    serviceArtworkPath = serviceArtworkPath,
+                    path = path,
+                    fileSize = fileSize,
+                    dateModified = dateModified,
+                    cueTrackIndex = cueTrackIndex,
+                    duration = duration,
+                    state = state,
+                    position = position,
+                    reason = reason,
+                )
+            }
+            return
+        }
+        lastKnownPosition = position
+        lastPositionTime = SystemClock.elapsedRealtime()
+
+        val songChanged = currentSong?.albumArtPath != serviceArtworkPath ||
+            currentSong?.path != path ||
+            currentSong?.title != title ||
+            currentSong?.artist != artist ||
+            currentSong?.album != album ||
+            currentSong?.duration != duration ||
+            currentSong?.cueTrackIndex != cueTrackIndex
+
+        currentSong = AudioFile(
+            id = currentSong?.takeIf { it.path == path && it.cueTrackIndex == cueTrackIndex }?.id ?: 0L,
+            path = path,
+            title = title,
+            artist = artist,
+            album = album,
+            duration = duration,
+            albumArtPath = serviceArtworkPath,
+            fileSize = fileSize,
+            dateModified = dateModified,
+            cueTrackIndex = cueTrackIndex,
+        )
+        if (songChanged) {
+            invalidateLyricsForSongChange(reason)
+        }
+
+        currentPlayState = state
+        if (currentPlayState == PlayState.PLAYING) {
+            requestServiceAudioFocus("SONG_UPDATE_PLAYING:$reason")
+            acquireWakeLockIfNeeded()
+        }
+
+        // reference player does not rebuild metadata/artwork on a pure play/pause state pulse. Keep the
+        // expensive external-media lane tied to an actual media identity change only.
+        if (songChanged) {
+            updateMediaSessionMetadata(title, artist, album, serviceArtworkPath, duration)
+        }
+        updateMediaSessionPlaybackState(currentPlayState, lastKnownPosition)
+        if (!songChanged) {
+            scheduleNotificationPublication()
+        }
+        startPositionUpdates()
+    }
+
     /**
      * 通过广播通知MainActivity执行播放控制
      */
     private fun notifyActivity(action: String) {
         PlayerEventBus.emit(action)
 
+        runOnPlayerServiceThread {
+            applyNotifiedPlaybackAction(action)
+        }
+    }
+
+    private fun applyNotifiedPlaybackAction(action: String) {
         // 本地状态更新 — NEXT/PREVIOUS 不在此更新播放状态
         // 等待 MainActivity 通过 ACTION_UPDATE 回传真实状态
         when (action) {
@@ -1076,6 +1447,22 @@ class PlayerService : LifecycleService() {
                 positionUpdateJob?.cancel()
                 // 暂停时保留WakeLock，避免蓝牙场景下被杀后台
                 updateMediaSessionPlaybackState(currentPlayState, lastKnownPosition)
+                updateNotification()
+            }
+            ACTION_STOP -> {
+                // STOP is an explicit terminal ownership decision. PlayerController serializes the
+                // renderer teardown on its transport queue, so its StateFlow can still read PLAYING
+                // for a short window here. Do not let that retiring backend keep MediaSession/FGS
+                // advertising active audio after the user has already stopped playback.
+                currentPlayState = PlayState.STOPPED
+                usbBackgroundKeepAliveLatched = false
+                positionUpdateJob?.cancel()
+                stopUsbBackgroundGuardian("notify_stop")
+                abandonServiceAudioFocus("ACTION_STOP")
+                releaseUsbWakeLock()
+                releaseWakeLock()
+                releaseWifiLock("notify_stop")
+                updateMediaSessionPlaybackState(PlayState.STOPPED, lastKnownPosition)
                 updateNotification()
             }
             ACTION_NEXT, ACTION_PREVIOUS -> {
@@ -1099,7 +1486,7 @@ class PlayerService : LifecycleService() {
         val album = intent.getStringExtra("album") ?: ""
         val albumArtPath = intent.getStringExtra("albumArtPath") ?: ""
         val path = intent.getStringExtra("path") ?: currentSong?.path.orEmpty()
-        val serviceArtworkPath = albumArtPath.ifBlank { path }
+        val serviceArtworkPath = resolveServiceArtworkPath(albumArtPath, path)
         val duration = intent.getLongExtra("duration", currentSong?.duration ?: 0L)
         val position = intent.getLongExtra("position", lastKnownPosition).coerceAtLeast(0L)
         val reason = intent.getStringExtra("reason") ?: "usb_media_identity"
@@ -1124,7 +1511,32 @@ class PlayerService : LifecycleService() {
     }
 
     private fun forceMediaSessionPlaying(reason: String) {
-        mediaSessionCompat?.isActive = true
+        val owner = playerServiceHandler
+        if (owner != null && Looper.myLooper() != owner.looper) {
+            owner.post { forceMediaSessionPlaying(reason) }
+            return
+        }
+        val controllerState = playerController.playState.value
+        val controllerSong = playerController.currentSong.value
+        val sustainedUsbPlayback = playerController.shouldSustainUsbBackgroundPlayback()
+        if (controllerSong == null ||
+            (controllerState != PlayState.PLAYING && !sustainedUsbPlayback)
+        ) {
+            val fallbackState = if (controllerSong != null || currentSong != null) {
+                PlayState.PAUSED
+            } else {
+                PlayState.IDLE
+            }
+            currentPlayState = fallbackState
+            updateMediaSessionPlaybackState(fallbackState, lastKnownPosition)
+            Log.i(
+                "PlayerService",
+                "forceMediaSessionPlaying suppressed: reason=$reason controllerState=$controllerState " +
+                    "controllerSong=${controllerSong?.title} serviceSong=${currentSong?.title} " +
+                    "sustainUsb=$sustainedUsbPlayback",
+            )
+            return
+        }
         if (currentPlayState != PlayState.PLAYING) {
             currentPlayState = PlayState.PLAYING
         }
@@ -1162,33 +1574,51 @@ class PlayerService : LifecycleService() {
      * 更新MediaSession的元数据（标题、艺术家、封面等）
      */
     private fun updateMediaSessionMetadata(title: String, artist: String, album: String, albumArtPath: String, duration: Long) {
-        coverBitmap = null
+        colorOsLyricRetryJob?.cancel()
+        colorOsLyricRetryJob = null
+        // Retain the displayed cover until its replacement is ready. Clearing it
+        // here creates an empty artwork publication on every metadata refresh.
         val songSnapshot = currentSong
-        val serviceArtworkPath = albumArtPath.ifBlank { songSnapshot?.path.orEmpty() }
+        val serviceArtworkPath = resolveServiceArtworkPath(
+            albumArtPath,
+            songSnapshot?.path.orEmpty(),
+        )
         val songIdentity = songSnapshot?.mediaArtworkIdentity().orEmpty()
-        val audioFallbackPath = songSnapshot?.path.orEmpty()
+        val audioFallbackPath = songSnapshot?.path
+            ?.takeIf { it.isFileBackedArtworkSource() }
+            .orEmpty()
         val requestGeneration = ++artworkRequestGeneration
         loadingArtPath = serviceArtworkPath
 
-        val lrcText = _currentLyrics.value?.let { lyrics ->
-            if (!lyrics.isEmpty) buildLrcText(lyrics) else null
-        }
-
         val displayArtist = BluetoothLyricBridge.currentDisplayArtist() ?: artist
-
-        val metadata = MediaMetadataCompat.Builder().apply {
-            putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
-            putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
-            putString(MediaMetadataCompat.METADATA_KEY_ALBUM, album)
-            putLong(MediaMetadataCompat.METADATA_KEY_DURATION, duration)
-            if (!lrcText.isNullOrBlank()) {
-                putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
+        // reference player builds the external payload on its external-api Handler, then posts the final
+        // MediaMetadataCompat back to the player-service Handler. Keep that exact ownership split.
+        runOnExternalApiThread {
+            if (!isCurrentArtworkRequest(requestGeneration, songIdentity, serviceArtworkPath)) {
+                return@runOnExternalApiThread
             }
-        }.build()
-        mediaSessionCompat?.setMetadata(metadata)
-
-        // 先用无封面更新通知
-        updateNotification()
+            val metadata = MediaMetadataCompat.Builder().apply {
+                putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
+                putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
+                putString(MediaMetadataCompat.METADATA_KEY_ALBUM, album)
+                putLong(MediaMetadataCompat.METADATA_KEY_DURATION, duration)
+            }.build()
+            if (!isCurrentArtworkRequest(requestGeneration, songIdentity, serviceArtworkPath)) {
+                return@runOnExternalApiThread
+            }
+            // Identity publication is deliberately text-only. Re-attaching the retained 1024/1536
+            // bitmap here made every title update parcel several megabytes through MediaSession,
+            // including the previous song's cover during a rapid switch. The stable artwork lane
+            // below publishes the current song's bitmap once after motion settles.
+            publishMediaMetadataOnPlayerServiceThread(
+                metadata = metadata,
+                requestGeneration = requestGeneration,
+                expectedSongIdentity = songIdentity,
+                expectedArtworkPath = serviceArtworkPath,
+                traceName = "MEDIASESSION_METADATA_TEXT_BINDER",
+            )
+            scheduleNotificationPublication()
+        }
 
         // 异步加载新封面
         if (songSnapshot != null) {
@@ -1200,44 +1630,137 @@ class PlayerService : LifecycleService() {
             )
         }
 
-        // 强制更新播放状态，触发系统通知栏刷新元数据（尤其是封面）
-        updateMediaSessionPlaybackState(currentPlayState, lastKnownPosition)
+    }
+
+    private fun isCurrentArtworkRequest(
+        requestGeneration: Long,
+        expectedSongIdentity: String,
+        expectedArtworkPath: String,
+    ): Boolean = requestGeneration == artworkRequestGeneration &&
+        loadingArtPath == expectedArtworkPath &&
+        currentSong?.mediaArtworkIdentity() == expectedSongIdentity
+
+    private fun scheduleLyricsMediaPublication(
+        retry: Boolean = true,
+        delayMs: Long = MEDIA_METADATA_COALESCE_MS,
+    ) {
+        if (!isRunning) return
+        val handler = mediaPublicationHandler ?: return
+        synchronized(mediaPublicationLock) {
+            pendingLyricsPublicationRetry = pendingLyricsPublicationRetry || retry
+            handler.removeCallbacks(lyricsMediaPublicationRunnable)
+            handler.postDelayed(lyricsMediaPublicationRunnable, delayMs.coerceAtLeast(0L))
+        }
+    }
+
+    private fun scheduleNotificationPublication(
+        delayMs: Long = NOTIFICATION_PUBLICATION_DELAY_MS,
+    ) {
+        if (!isRunning) return
+        val handler = mediaPublicationHandler ?: return
+        handler.removeCallbacks(notificationPublicationRunnable)
+        handler.postDelayed(notificationPublicationRunnable, delayMs.coerceAtLeast(0L))
+    }
+
+    /** Service/Main callers only enqueue. Heavy media publication is worker-owned. */
+    private fun updateLyricsInMetadata(retry: Boolean = true) {
+        scheduleLyricsMediaPublication(retry = retry)
     }
 
     /**
-     * 仅更新歌词到MediaSession元数据，保留已有封面（不清除coverBitmap）
-     * 解决：自然切歌时歌词异步加载完成后，不清空已加载的封面
+     * 仅更新歌词到MediaSession元数据，保留已有封面（不清除coverBitmap）。
+     * reference player 1026 builds external metadata on its own HandlerThread before handing the final
+     * object to the player-service handler; keep Raw's Bitmap/Parcel/notification work off Main.
      */
-    private fun updateLyricsInMetadata() {
+    private fun updateLyricsInMetadataNow(retry: Boolean = true) {
+        colorOsLyricRetryJob?.cancel()
+        colorOsLyricRetryJob = null
         val song = currentSong ?: run {
             liveLyricNotificationBridge.clear()
             return
         }
-        val lrcText = _currentLyrics.value?.let { lyrics ->
-            if (!lyrics.isEmpty) buildLrcText(lyrics) else null
-        }
+        val lrcText = _currentLyrics.value
+            ?.takeIf { currentLyricsSongIdentity == colorOsLyricIdentity(song) }
+            ?.let { lyrics ->
+                if (!lyrics.isEmpty) buildLrcText(lyrics) else null
+            }
 
         val displayArtist = BluetoothLyricBridge.currentDisplayArtist() ?: song.artist
-
+        val songIdentity = song.mediaArtworkIdentity()
+        val matchingArtwork = coverBitmap?.takeIf {
+            coverBitmapSongIdentity == songIdentity && !it.isRecycled
+        }
         val metadata = MediaMetadataCompat.Builder().apply {
             putString(MediaMetadataCompat.METADATA_KEY_TITLE, song.title)
             putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
             putString(MediaMetadataCompat.METADATA_KEY_ALBUM, song.album)
             putLong(MediaMetadataCompat.METADATA_KEY_DURATION, song.duration)
-            coverBitmap?.let { putCompatibleArtwork(it) }
+            // During a track switch coverBitmap intentionally still retains the outgoing pixels.
+            // Never attach that bitmap to incoming lyric/text metadata. If artwork for this exact
+            // song has already been published, preserving it here is safe because identity and
+            // generation are checked again at the final player-service commit boundary.
+            matchingArtwork?.let { putCompatibleArtwork(it) }
             if (!lrcText.isNullOrBlank()) {
                 putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
             }
+            putColorOsLyricMetadata(song)
         }.build()
-        mediaSessionCompat?.setMetadata(metadata)
-        updateNotification()
+        val expectedGeneration = artworkRequestGeneration
+        if (expectedGeneration != artworkRequestGeneration ||
+            currentSong?.mediaArtworkIdentity() != song.mediaArtworkIdentity()) return
+        publishMediaMetadataOnPlayerServiceThread(
+            metadata = metadata,
+            requestGeneration = expectedGeneration,
+            expectedSongIdentity = songIdentity,
+            expectedArtworkPath = loadingArtPath,
+            traceName = "MEDIASESSION_METADATA_LYRIC_BINDER",
+        )
+        if (expectedGeneration == artworkRequestGeneration &&
+            currentSong?.mediaArtworkIdentity() == song.mediaArtworkIdentity()
+        ) {
+            publishColorOsDirectLyric(song)
+            scheduleNotificationPublication()
+        }
+
+        val colorOsLyricInfo = buildColorOsLyricInfo(song)
+        if (AppPreferences.Lyrics.colorOsBridgeLyricEnabled &&
+            retry &&
+            !colorOsLyricInfo.isNullOrBlank()
+        ) {
+            val expectedIdentity = colorOsLyricIdentity(song)
+            colorOsLyricRetryJob = lifecycleScope.launch(Dispatchers.Default) {
+                delay(800L)
+                if (currentSong?.let(::colorOsLyricIdentity) == expectedIdentity) {
+                    scheduleLyricsMediaPublication(retry = false, delayMs = 0L)
+                }
+            }
+        }
     }
 
     /**
      * 更新MediaSession的播放状态
      */
     private fun updateMediaSessionPlaybackState(state: PlayState, position: Long) {
-        val (stateCompat, speed) = when (state) {
+        val owner = playerServiceHandler
+        if (owner != null && Looper.myLooper() != owner.looper) {
+            owner.post { updateMediaSessionPlaybackState(state, position) }
+            return
+        }
+        val controllerState = playerController.playState.value
+        val hasMediaIdentity = playerController.currentSong.value != null || currentSong != null
+        val sustainedUsbPlayback = hasMediaIdentity && playerController.shouldSustainUsbBackgroundPlayback()
+        val effectiveState = when {
+            !hasMediaIdentity -> PlayState.IDLE
+            state == PlayState.PLAYING &&
+                controllerState != PlayState.PLAYING &&
+                !sustainedUsbPlayback -> if (controllerState == PlayState.PREPARING) {
+                    PlayState.PREPARING
+                } else {
+                    PlayState.PAUSED
+                }
+            else -> state
+        }
+        val (stateCompat, speed) = when (effectiveState) {
             PlayState.PLAYING -> PlaybackStateCompat.STATE_PLAYING to 1.0f
             PlayState.PAUSED -> PlaybackStateCompat.STATE_PAUSED to 0f
             PlayState.PREPARING -> PlaybackStateCompat.STATE_BUFFERING to 0f
@@ -1257,18 +1780,42 @@ class PlayerService : LifecycleService() {
                     PlaybackStateCompat.ACTION_STOP
             )
             addCustomAction(
-                ACTION_TOGGLE_FAVORITE,
-                "收藏",
-                R.drawable.ic_notification_favorite
-            )
-            addCustomAction(
                 ACTION_TOGGLE_SHUFFLE,
                 "播放模式",
                 R.drawable.ic_repeat
             )
         }.build()
-        mediaSessionCompat?.setPlaybackState(playbackState)
-        reassertUsbRemoteVolumeRoute("playback_state:${state.name}")
+        // A selected/paused item may keep metadata and a notification, but it is not active audio
+        // ownership. Several OEM SystemUI/battery surfaces treat an active MediaSession as "playing
+        // audio" even when PlaybackState is PAUSED, so keep the session active only for a real
+        // renderer/preparation owner (or the live USB background owner).
+        val sessionOwnsMedia = hasMediaIdentity && (
+            effectiveState == PlayState.PLAYING ||
+                effectiveState == PlayState.PREPARING ||
+                sustainedUsbPlayback
+            )
+        mediaSessionCompat?.let { session ->
+            val sessionStartedNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
+            session.setPlaybackState(playbackState)
+            session.isActive = sessionOwnsMedia
+            if (sessionStartedNs != 0L) {
+                PlayerSwitchTrace.duration(
+                    "MEDIASESSION_PLAYBACKSTATE_BINDER",
+                    System.nanoTime() - sessionStartedNs,
+                )
+            }
+        }
+        if (sessionOwnsMedia) {
+            reassertUsbRemoteVolumeRoute("playback_state:${effectiveState.name}")
+        }
+        if (state == PlayState.PLAYING && effectiveState != PlayState.PLAYING) {
+            positionUpdateJob?.cancel()
+            Log.i(
+                "PlayerService",
+                "MediaSession PLAYING downgraded: requested=$state effective=$effectiveState " +
+                    "controllerState=$controllerState hasMedia=$hasMediaIdentity sustainUsb=$sustainedUsbPlayback",
+            )
+        }
     }
 
     /**
@@ -1277,33 +1824,34 @@ class PlayerService : LifecycleService() {
      * is still the active route instead of silently falling back to STREAM_MUSIC.
      */
     private fun reassertUsbRemoteVolumeRoute(reason: String) {
+        val owner = playerServiceHandler
+        if (owner != null && Looper.myLooper() != owner.looper) {
+            owner.post { reassertUsbRemoteVolumeRoute(reason) }
+            return
+        }
         val session = mediaSessionCompat ?: return
         val provider = usbVolumeProvider ?: return
-        if (!playerController.shouldUseUsbRemoteVolume()) return
+        if (!playerController.shouldUseUsbRemoteVolume()) {
+            session.setPlaybackToLocal(android.media.AudioManager.STREAM_MUSIC)
+            logUsbVolumeRoute(false, reason)
+            return
+        }
         session.setPlaybackToRemote(provider)
         session.isActive = true
         provider.syncFromController()
-        Log.d("PlayerService", "USB remote volume route reasserted: reason=$reason")
+        logUsbVolumeRoute(true, reason)
+    }
+
+    private fun logUsbVolumeRoute(remote: Boolean, reason: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (lastUsbRouteLogRemote == remote && now - lastUsbRouteLogElapsed < 30_000L) return
+        lastUsbRouteLogRemote = remote
+        lastUsbRouteLogElapsed = now
+        Log.d("PlayerService", "USB volume route confirmed: remote=$remote reason=$reason")
     }
 
     private fun rebuildMetadataWithBluetoothLyric() {
-        val song = currentSong ?: return
-        val lrcText = _currentLyrics.value?.let { lyrics ->
-            if (!lyrics.isEmpty) buildLrcText(lyrics) else null
-        }
-        val displayArtist = BluetoothLyricBridge.currentDisplayArtist() ?: song.artist
-        val metadata = MediaMetadataCompat.Builder().apply {
-            putString(MediaMetadataCompat.METADATA_KEY_TITLE, song.title)
-            putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
-            putString(MediaMetadataCompat.METADATA_KEY_ALBUM, song.album)
-            putLong(MediaMetadataCompat.METADATA_KEY_DURATION, song.duration)
-            coverBitmap?.let { putCompatibleArtwork(it) }
-            if (!lrcText.isNullOrBlank()) {
-                putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
-            }
-        }.build()
-        mediaSessionCompat?.setMetadata(metadata)
-        updateNotification()
+        scheduleLyricsMediaPublication()
     }
 
     /**
@@ -1342,6 +1890,59 @@ class PlayerService : LifecycleService() {
         return withoutModified.substringBeforeLast("|", withoutModified)
     }
 
+    private fun resolveServiceArtworkPath(albumArtPath: String, audioPath: String): String {
+        val explicitArtwork = albumArtPath.trim()
+        if (explicitArtwork.isNotBlank()) {
+            val remoteAudio = audioPath.startsWith("http://", ignoreCase = true) ||
+                audioPath.startsWith("https://", ignoreCase = true)
+            if (!remoteAudio || explicitArtwork != audioPath.trim()) {
+                return explicitArtwork
+            }
+        }
+        return audioPath.takeIf { it.isFileBackedArtworkSource() }.orEmpty()
+    }
+
+    /**
+     * Android media-artwork resolution policy.
+     *
+     * The API switch selects the same high tier used by playback; otherwise media surfaces receive
+     * the low tier. The experimental resolution option therefore also affects high-resolution API art.
+     */
+    private fun mediaSessionArtworkTargetSide(): Int {
+        val metrics = resources.displayMetrics
+        val shortSide = if (metrics.widthPixels > 0 && metrics.heightPixels > 0) {
+            minOf(metrics.widthPixels, metrics.heightPixels)
+        } else {
+            ArtworkResolutionPolicy.LARGE_DISPLAY_MIN_SIDE_PX
+        }
+        return if (AppPreferences.AlbumArt.sendHighResolutionArtwork) {
+            ArtworkResolutionPolicy.highTargetSide(
+                increaseResolution = AppPreferences.AlbumArt.useHigherRes,
+                displayShortSidePx = shortSide,
+                maxMemoryBytes = Runtime.getRuntime().maxMemory(),
+            )
+        } else {
+            ArtworkResolutionPolicy.lowTargetSide(shortSide)
+        }
+    }
+
+    private fun mediaSessionArtworkConfig(): Bitmap.Config =
+        if (ArtworkResolutionPolicy.use24BitRgbEffective(
+                requested = AppPreferences.AlbumArt.forceArgb8888,
+                maxMemoryBytes = Runtime.getRuntime().maxMemory(),
+            )
+        ) {
+            Bitmap.Config.ARGB_8888
+        } else {
+            Bitmap.Config.RGB_565
+        }
+
+    private fun serviceArtworkDecodeOptions(sampleSize: Int): BitmapFactory.Options =
+        BitmapFactory.Options().apply {
+            inSampleSize = sampleSize.coerceAtLeast(1)
+            inPreferredConfig = mediaSessionArtworkConfig()
+        }
+
     /**
      * 异步加载封面Bitmap
      * 支持：content:// URI（含 albumart 高清提取）、文件路径
@@ -1353,11 +1954,40 @@ class PlayerService : LifecycleService() {
         requestGeneration: Long
     ) {
         lifecycleScope.launch(Dispatchers.IO) {
+            // External artwork belongs to the external-media publication cadence, not to the
+            // player-page animation duration. reference player coalesces external metadata for 100 ms on
+            // Android 8+ (200 ms earlier); generation/identity invalidation handles rapid skips.
+            val artworkCoalesceMs = MEDIA_METADATA_COALESCE_MS
+            if (PlayerSwitchTrace.isActive()) {
+                PlayerSwitchTrace.mark(
+                    "service_artwork_deferred",
+                    "generation=$requestGeneration delay=${artworkCoalesceMs}ms thread=${Thread.currentThread().name}",
+                )
+            }
+            delay(artworkCoalesceMs)
+            if (!isCurrentArtworkRequest(requestGeneration, expectedSongIdentity, albumArtPath)) {
+                if (PlayerSwitchTrace.isActive()) {
+                    PlayerSwitchTrace.mark(
+                        "service_artwork_superseded",
+                        "generation=$requestGeneration before_decode=true",
+                    )
+                }
+                return@launch
+            }
+            val targetSide = mediaSessionArtworkTargetSide()
             var bitmap: Bitmap? = null
             var usedDefaultArtwork = false
+            val decodeStartedNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
+            if (decodeStartedNs != 0L) {
+                PlayerSwitchTrace.mark(
+                    "service_artwork_decode_begin",
+                    "generation=$requestGeneration side=$targetSide thread=${Thread.currentThread().name}",
+                )
+            }
             try {
                 val rawPath = try { URLDecoder.decode(albumArtPath, "UTF-8") } catch (_: Exception) { albumArtPath }
                 val path = normalizeServiceArtworkPath(rawPath)
+                Log.d("StatusArtwork", "load targetSide=$targetSide apiHigh=${AppPreferences.AlbumArt.sendHighResolutionArtwork} labs=${AppPreferences.AlbumArt.useHigherRes} path=${path.takeLast(96)}")
 
                 if (path.isBlank()) {
                     // Continue to the configured built-in fallback below.
@@ -1365,38 +1995,38 @@ class PlayerService : LifecycleService() {
                     val filePath = path.removePrefix("file://")
                     val file = File(filePath)
                     if (file.exists()) {
-                        bitmap = decodeSampledFile(filePath, 512, 512)
+                        bitmap = decodeSampledFile(filePath, targetSide, targetSide)
                     }
                 } else if (path.startsWith("content://") && path.contains("albumart")) {
                     // albumart URI — 优先从音频文件内嵌封面提取高清原图
-                    bitmap = extractEmbeddedArtwork(path)
+                    bitmap = extractEmbeddedArtwork(path, targetSide)
                     // 回退到 content URI 缩略图
                     if (bitmap == null) {
-                        bitmap = loadFromContentUri(path, 512, 512)
+                        bitmap = loadFromContentUri(path, targetSide, targetSide)
                     }
                 } else if (path.startsWith("content://")) {
                     // 其他 content URI
-                    bitmap = loadFromContentUri(path, 512, 512)
+                    bitmap = loadFromContentUri(path, targetSide, targetSide)
                 } else {
                     // 文件路径 — 尝试直接解码
                     val file = File(path)
                     if (file.exists()) {
-                        bitmap = decodeSampledFile(path, 512, 512)
+                        bitmap = decodeSampledFile(path, targetSide, targetSide)
                     }
                     // 文件路径解码失败时，尝试作为内嵌封面从音频文件提取
                     if (bitmap == null && path.isNotBlank()) {
-                        bitmap = extractEmbeddedFromAudioFile(path)
+                        bitmap = extractEmbeddedFromAudioFile(path, targetSide)
                     }
                 }
 
                 if (bitmap == null) {
                     if (audioFallbackPath.isNotBlank() && audioFallbackPath != path && File(audioFallbackPath).exists()) {
-                        bitmap = extractEmbeddedFromAudioFile(audioFallbackPath)
+                        bitmap = extractEmbeddedFromAudioFile(audioFallbackPath, targetSide)
                     }
                 }
 
                 if (bitmap == null && AppPreferences.AlbumArt.useDefaultArtwork) {
-                    bitmap = decodeDefaultServiceArtwork(512)
+                    bitmap = decodeDefaultServiceArtwork(targetSide)
                     usedDefaultArtwork = bitmap != null
                     Log.i(
                         "StatusArtwork",
@@ -1404,41 +2034,73 @@ class PlayerService : LifecycleService() {
                     )
                 }
 
-                withContext(Dispatchers.Main.immediate) {
-                    val song = currentSong
-                    val requestIsCurrent = requestGeneration == artworkRequestGeneration &&
-                        loadingArtPath == albumArtPath &&
-                        song?.mediaArtworkIdentity() == expectedSongIdentity
-                    if (!requestIsCurrent) {
-                        bitmap?.takeIf { it !== coverBitmap && !it.isRecycled }?.recycle()
-                        return@withContext
-                    }
-
-                    val resolvedBitmap = bitmap ?: return@withContext
-                    coverBitmap = resolvedBitmap
-                    val lrcText = _currentLyrics.value?.let { lyrics ->
-                        if (!lyrics.isEmpty) buildLrcText(lyrics) else null
-                    }
-                    val displayArtist = BluetoothLyricBridge.currentDisplayArtist() ?: song.artist
-                    val metadata = MediaMetadataCompat.Builder().apply {
-                        putString(MediaMetadataCompat.METADATA_KEY_TITLE, song.title)
-                        putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
-                        putString(MediaMetadataCompat.METADATA_KEY_ALBUM, song.album)
-                        putLong(MediaMetadataCompat.METADATA_KEY_DURATION, song.duration)
-                        putCompatibleArtwork(resolvedBitmap)
-                        if (!lrcText.isNullOrBlank()) {
-                            putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
-                        }
-                    }.build()
-                    mediaSessionCompat?.setMetadata(metadata)
-                    Log.i(
-                        "StatusArtwork",
-                        "apply song=$expectedSongIdentity default=$usedDefaultArtwork size=${resolvedBitmap.width}x${resolvedBitmap.height}"
+                if (decodeStartedNs != 0L) {
+                    PlayerSwitchTrace.duration(
+                        "SERVICE_ARTWORK_DECODE",
+                        System.nanoTime() - decodeStartedNs,
                     )
+                    PlayerSwitchTrace.mark(
+                        "service_artwork_decode_done",
+                        "generation=$requestGeneration side=${bitmap?.width ?: 0}x${bitmap?.height ?: 0} default=$usedDefaultArtwork",
+                    )
+                }
+
+                // Decode is IO-owned; everything after decode is external-media publication state.
+                // Do not bounce through Main. reference player's bitmap/metadata/notification helpers live
+                // on the external-api looper and only hand the final MediaMetadata object back to
+                // the player-service looper.
+                val decodedBitmap = bitmap
+                val decodedDefaultArtwork = usedDefaultArtwork
+                runOnExternalApiThread {
                     try {
-                        startForegroundCompat(NOTIFICATION_ID, buildNotification())
+                        val songSnapshot = currentSong
+                        if (songSnapshot == null ||
+                            !isCurrentArtworkRequest(requestGeneration, expectedSongIdentity, albumArtPath)
+                        ) {
+                            decodedBitmap
+                                ?.takeIf { it !== coverBitmap && !it.isRecycled }
+                                ?.recycle()
+                            return@runOnExternalApiThread
+                        }
+
+                        coverBitmap = decodedBitmap
+                        coverBitmapSongIdentity = expectedSongIdentity
+
+                        val lrcText = _currentLyrics.value
+                            ?.takeIf { currentLyricsSongIdentity == colorOsLyricIdentity(songSnapshot) }
+                            ?.let { lyrics -> if (!lyrics.isEmpty) buildLrcText(lyrics) else null }
+                        val displayArtist = BluetoothLyricBridge.currentDisplayArtist() ?: songSnapshot.artist
+                        val metadata = MediaMetadataCompat.Builder().apply {
+                            putString(MediaMetadataCompat.METADATA_KEY_TITLE, songSnapshot.title)
+                            putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
+                            putString(MediaMetadataCompat.METADATA_KEY_ALBUM, songSnapshot.album)
+                            putLong(MediaMetadataCompat.METADATA_KEY_DURATION, songSnapshot.duration)
+                            decodedBitmap?.let { putCompatibleArtwork(it) }
+                            if (!lrcText.isNullOrBlank()) {
+                                putString(MediaMetadataCompat.METADATA_KEY_GENRE, lrcText)
+                            }
+                            putColorOsLyricMetadata(songSnapshot)
+                        }.build()
+                        if (!isCurrentArtworkRequest(requestGeneration, expectedSongIdentity, albumArtPath)) {
+                            return@runOnExternalApiThread
+                        }
+                        publishMediaMetadataOnPlayerServiceThread(
+                            metadata = metadata,
+                            requestGeneration = requestGeneration,
+                            expectedSongIdentity = expectedSongIdentity,
+                            expectedArtworkPath = albumArtPath,
+                            traceName = "MEDIASESSION_METADATA_ART_BINDER",
+                        )
+                        Log.i(
+                            "StatusArtwork",
+                            "apply song=$expectedSongIdentity default=$decodedDefaultArtwork " +
+                                "size=${decodedBitmap?.width ?: 0}x${decodedBitmap?.height ?: 0}"
+                        )
+                        scheduleNotificationPublication()
                     } catch (_: Exception) {
-                        try { updateNotification() } catch (_: Exception) {}
+                        decodedBitmap
+                            ?.takeIf { it !== coverBitmap && !it.isRecycled }
+                            ?.recycle()
                     }
                 }
             } catch (_: Exception) {
@@ -1456,6 +2118,74 @@ class PlayerService : LifecycleService() {
         putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bitmap)
     }
 
+    private fun MediaMetadataCompat.Builder.putColorOsLyricMetadata(song: AudioFile?) {
+        if (!AppPreferences.Lyrics.colorOsBridgeLyricEnabled) return
+        val lyricInfo = buildColorOsLyricInfo(song)
+        if (!lyricInfo.isNullOrBlank()) {
+            putString(ColorOsLyricMetadata.METADATA_KEY, lyricInfo)
+            val hasRawLyric = lyricInfo.contains("rawLyric")
+            Log.d(
+                "ColorOsLyricMeta",
+                "published song=${song?.title} chars=${lyricInfo.length} raw=$hasRawLyric",
+            )
+        }
+    }
+
+    private fun buildColorOsLyricInfo(song: AudioFile?): String? = song
+        ?.let { currentSongValue ->
+            if (currentLyricsSongIdentity != colorOsLyricIdentity(currentSongValue)) return@let null
+            _currentLyrics.value
+                ?.takeUnless { it.isEmpty }
+                ?.let { ColorOsLyricMetadata.build(currentSongValue, it) }
+        }
+
+    private fun publishColorOsDirectLyric(song: AudioFile?) {
+        val externalHandler = mediaPublicationHandler
+        if (externalHandler != null && Looper.myLooper() != externalHandler.looper) {
+            externalHandler.post { publishColorOsDirectLyric(song) }
+            return
+        }
+        if (!AppPreferences.Lyrics.colorOsBridgeLyricEnabled || song == null) return
+        val lyricInfo = buildColorOsLyricInfo(song) ?: return
+        if (AppPreferences.Lyrics.colorOsBridgeDeliveryMode ==
+            AppPreferences.Lyrics.COLOROS_DELIVERY_MODE_NON_MODULE
+        ) {
+            val published = ColorOsNonModuleLyricBridge.publish(this, song, lyricInfo)
+            if (published) {
+                Log.i(
+                    "ColorOsLyricDirect",
+                    "published non-module compatibility payload song=${song.title}"
+                )
+            }
+            return
+        }
+        val trackIdentity = colorOsLyricIdentity(song)
+        if (trackIdentity != colorOsDirectTrackIdentity) {
+            colorOsDirectTrackIdentity = trackIdentity
+            colorOsDirectTrackGeneration += 1L
+            colorOsDirectPayloadKey = null
+        }
+        val payloadKey = "$trackIdentity|${lyricInfo.length}|${lyricInfo.hashCode()}"
+        if (payloadKey == colorOsDirectPayloadKey) return
+        if (ColorOsDirectLyricBridge.publish(
+                context = this,
+                song = song,
+                lyricInfo = lyricInfo,
+                trackGeneration = colorOsDirectTrackGeneration,
+            )
+        ) {
+            colorOsDirectPayloadKey = payloadKey
+            Log.i(
+                "ColorOsLyricDirect",
+                "published source=lyricprovider/raws-music trackGeneration=" +
+                    "$colorOsDirectTrackGeneration song=${song.title}",
+            )
+        }
+    }
+
+    private fun colorOsLyricIdentity(song: AudioFile): String =
+        "${song.path}|${song.cueTrackIndex}|${song.fileSize}|${song.dateModified}"
+
     private fun decodeDefaultServiceArtwork(targetSide: Int): Bitmap? {
         val source = BitmapFactory.decodeResource(
             resources,
@@ -1470,19 +2200,19 @@ class PlayerService : LifecycleService() {
     /**
      * 从音频文件内嵌封面提取高清原图
      */
-    private fun extractEmbeddedArtwork(albumArtUri: String): Bitmap? {
+    private fun extractEmbeddedArtwork(albumArtUri: String, targetSide: Int): Bitmap? {
         val uri = Uri.parse(albumArtUri)
         val albumId = uri.lastPathSegment?.toLongOrNull() ?: return null
 
         // 查询该专辑的第一首音频文件路径
         val audioPath = queryFirstAudioPathForAlbum(albumId) ?: return null
 
-        extractCoverWithTagLib(audioPath, 512, 512)?.let { return it }
+        extractCoverWithTagLib(audioPath, targetSide, targetSide)?.let { return it }
 
         val ext = audioPath.substringAfterLast(".", "").uppercase()
         // WAV/DSF/DFF/AIFF 等格式：MediaMetadataRetriever 无法提取封面，使用 FFmpegKit
         if (ext in setOf("WAV", "DSF", "DFF", "AIFF", "AIF")) {
-            return extractCoverWithFfmpeg(audioPath)
+            return extractCoverWithFfmpeg(audioPath, targetSide)
         }
 
         // 其他格式：native TagLib 失败后才 fallback 到 MediaMetadataRetriever
@@ -1492,12 +2222,12 @@ class PlayerService : LifecycleService() {
             val bytes = retriever.embeddedPicture ?: return null
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
-            val sampleSize = calculateSampleSize(options.outWidth, options.outHeight, 512, 512)
-            val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            val sampleSize = calculateSampleSize(options.outWidth, options.outHeight, targetSide, targetSide)
+            val decodeOptions = serviceArtworkDecodeOptions(sampleSize)
             return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions)
         } catch (_: Exception) {
             // MediaMetadataRetriever 失败时回退到 FFmpegKit
-            return extractCoverWithFfmpeg(audioPath)
+            return extractCoverWithFfmpeg(audioPath, targetSide)
         } finally {
             try { retriever.release() } catch (_: Exception) {}
         }
@@ -1508,6 +2238,7 @@ class PlayerService : LifecycleService() {
      * metadata does not bypass the shared artwork policy by pulling embeddedPicture into Java heap.
      */
     private fun extractCoverWithTagLib(audioPath: String, reqWidth: Int, reqHeight: Int): Bitmap? {
+        if (audioPath.startsWith("http://", true) || audioPath.startsWith("https://", true)) return null
         decodeSampledRegion(audioPath, reqWidth, reqHeight)?.let { return it }
 
         if (!TagLibBridge.isLoaded()) return null
@@ -1546,7 +2277,7 @@ class PlayerService : LifecycleService() {
             }
             if (options.outWidth <= 0 || options.outHeight <= 0) return null
             val sampleSize = calculateSampleSize(options.outWidth, options.outHeight, reqWidth, reqHeight)
-            val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            val decodeOptions = serviceArtworkDecodeOptions(sampleSize)
             region.openStream().use { stream ->
                 BitmapFactory.decodeStream(stream, null, decodeOptions)
             }
@@ -1558,22 +2289,38 @@ class PlayerService : LifecycleService() {
     /**
      * 使用 FFmpegKit 从音频文件提取嵌入封面
      */
-    private fun extractCoverWithFfmpeg(audioPath: String): Bitmap? {
+    private fun extractCoverWithFfmpeg(audioPath: String, targetSide: Int): Bitmap? {
         return try {
-            val audioFile = File(audioPath)
-            val version = "${audioPath.hashCode()}_${audioFile.length()}_${audioFile.lastModified()}"
+            val remoteHttp = audioPath.startsWith("http://", true) || audioPath.startsWith("https://", true)
+            val audioFile = if (remoteHttp) null else File(audioPath)
+            val version = if (remoteHttp) {
+                "remote_${audioPath.hashCode()}"
+            } else {
+                "${audioPath.hashCode()}_${audioFile?.length() ?: 0L}_${audioFile?.lastModified() ?: 0L}"
+            }
             val coverFile = java.io.File(cacheDir, "albumart/cover_$version.jpg")
             val coverDir = coverFile.parentFile
             if (coverDir != null && !coverDir.exists()) coverDir.mkdirs()
 
             if (!coverFile.exists() || coverFile.length() <= 1024) {
-                val ret = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.extractCover(audioPath, coverFile.absolutePath)
+                val ret = if (remoteHttp) {
+                    val remote = RemoteHttpStreamRegistry.lookup(audioPath) ?: return null
+                    val resolvedUrl = remote.resolveUrl(audioPath)
+                    FFmpegBridge.extractCover(
+                        inputPath = resolvedUrl,
+                        outputPath = coverFile.absolutePath,
+                        headers = remote.resolveHeaders(audioPath),
+                        userAgent = remote.userAgent,
+                    )
+                } else {
+                    FFmpegBridge.extractCover(audioPath, coverFile.absolutePath)
+                }
                 if (ret != 0 || !coverFile.exists() || coverFile.length() <= 1024) {
                     if (coverFile.exists()) coverFile.delete()
                     return null
                 }
             }
-            decodeSampledFile(coverFile.absolutePath, 512, 512)
+            decodeSampledFile(coverFile.absolutePath, targetSide, targetSide)
         } catch (_: Exception) { null }
     }
 
@@ -1607,7 +2354,7 @@ class PlayerService : LifecycleService() {
         BitmapFactory.decodeStream(inputStream, null, options)
         inputStream.close()
         val sampleSize = calculateSampleSize(options.outWidth, options.outHeight, reqWidth, reqHeight)
-        val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        val decodeOptions = serviceArtworkDecodeOptions(sampleSize)
         val inputStream2 = contentResolver.openInputStream(uri) ?: return null
         val bitmap = BitmapFactory.decodeStream(inputStream2, null, decodeOptions)
         inputStream2.close()
@@ -1633,22 +2380,26 @@ class PlayerService : LifecycleService() {
             BitmapFactory.decodeFile(path, options)
             if (options.outWidth <= 0 || options.outHeight <= 0) return null
             val sampleSize = calculateSampleSize(options.outWidth, options.outHeight, reqWidth, reqHeight)
-            val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            val decodeOptions = serviceArtworkDecodeOptions(sampleSize)
             BitmapFactory.decodeFile(path, decodeOptions)
         } catch (_: Exception) { null }
     }
 
     /** 从音频文件内嵌封面提取（albumArtPath可能是音频文件路径本身） */
-    private fun extractEmbeddedFromAudioFile(audioPath: String): Bitmap? {
+    private fun extractEmbeddedFromAudioFile(audioPath: String, targetSide: Int): Bitmap? {
         val extensions = setOf("mp3", "flac", "m4a", "wav", "ogg", "aac", "wma", "ape", "opus", "dsf", "dff", "aiff")
         val ext = audioPath.substringAfterLast(".", "").lowercase()
         if (ext !in extensions) return null
 
-        extractCoverWithTagLib(audioPath, 512, 512)?.let { return it }
+        if (audioPath.startsWith("http://", true) || audioPath.startsWith("https://", true)) {
+            return extractCoverWithFfmpeg(audioPath, targetSide)
+        }
+
+        extractCoverWithTagLib(audioPath, targetSide, targetSide)?.let { return it }
 
         // WAV/DSF/DFF/AIFF：native TagLib 失败后直接用 FFmpegKit
         if (ext in setOf("wav", "dsf", "dff", "aiff", "aif")) {
-            return extractCoverWithFfmpeg(audioPath)
+            return extractCoverWithFfmpeg(audioPath, targetSide)
         }
 
         val retriever = MediaMetadataRetriever()
@@ -1658,19 +2409,25 @@ class PlayerService : LifecycleService() {
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
             if (options.outWidth <= 0 || options.outHeight <= 0) return null
-            val sampleSize = calculateSampleSize(options.outWidth, options.outHeight, 512, 512)
-            val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            val sampleSize = calculateSampleSize(options.outWidth, options.outHeight, targetSide, targetSide)
+            val decodeOptions = serviceArtworkDecodeOptions(sampleSize)
             return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions)
         } catch (_: Exception) {
-            return extractCoverWithFfmpeg(audioPath)
+            return extractCoverWithFfmpeg(audioPath, targetSide)
         } finally {
             try { retriever.release() } catch (_: Exception) {}
         }
     }
 
+    @Volatile
     private var isForegroundStarted = false
 
     private fun updateLiveLyricNotification(positionMs: Long = lastKnownPosition) {
+        val externalHandler = mediaPublicationHandler
+        if (externalHandler != null && Looper.myLooper() != externalHandler.looper) {
+            externalHandler.post { updateLiveLyricNotification(positionMs) }
+            return
+        }
         val enabled = AppPreferences.Lyrics.liveUpdateLyricEnabled
         liveLyricNotificationBridge.setEnabled(enabled)
         if (!enabled || currentPlayState != PlayState.PLAYING) {
@@ -1678,6 +2435,10 @@ class PlayerService : LifecycleService() {
             return
         }
         val song = currentSong ?: return
+        if (currentLyricsSongIdentity != colorOsLyricIdentity(song)) {
+            liveLyricNotificationBridge.clear()
+            return
+        }
         val lyrics = _currentLyrics.value ?: run {
             liveLyricNotificationBridge.clear()
             return
@@ -1708,7 +2469,9 @@ class PlayerService : LifecycleService() {
             allowLongCompactLyric = !fullLine && display.allowLongCompactLyric,
             preserveCompactLyric = fullLine,
             secondaryLyric = secondary,
-            artwork = coverBitmap
+            artwork = coverBitmap?.takeIf {
+                coverBitmapSongIdentity == song.mediaArtworkIdentity() && !it.isRecycled
+            }
         )
     }
 
@@ -1717,62 +2480,99 @@ class PlayerService : LifecycleService() {
      * bounded lyric metadata; the app layer resolves artwork and owns the Xiaomi service.
      */
     private fun publishSuperIslandLyric(positionMs: Long = lastKnownPosition) {
-        val intent = if (
-            currentPlayState == PlayState.PLAYING &&
+        val externalHandler = mediaPublicationHandler
+        if (externalHandler != null && Looper.myLooper() != externalHandler.looper) {
+            externalHandler.post { publishSuperIslandLyric(positionMs) }
+            return
+        }
+        val shouldPublish = currentPlayState == PlayState.PLAYING &&
             AppPreferences.Lyrics.xiaomiSuperIslandLyricEnabled
-        ) {
-            val song = currentSong
-            val lyrics = _currentLyrics.value
-            val index = song?.let { lyrics?.findCurrentLine(positionMs) } ?: -1
-            val line = lyrics?.getLine(index)
-            if (song != null && line != null) {
-                Intent(ACTION_SUPER_ISLAND_LYRIC).apply {
-                    setPackage(packageName)
-                    // setPackage() still leaves this as an implicit package-scoped
-                    // broadcast. The receiver intentionally has no public filter, so
-                    // point to the app-owned bridge explicitly or HyperOS drops it.
-                    component = ComponentName(
-                        packageName,
-                        "com.rawsmusic.lyric.XiaomiSuperIslandLyricReceiver"
-                    )
-                    putExtra("title", song.title)
-                    putExtra("artist", song.artist)
-                    putExtra("album", song.album)
-                    putExtra("path", song.path)
-                    putExtra("albumArtPath", song.albumArtPath)
-                    putExtra("duration", song.duration)
-                    putExtra("position", positionMs)
-                    putExtra("lineTime", line.timeStamp)
-                    putExtra("lineEnd", line.endTime)
-                    putExtra("lineText", line.text)
-                    putExtra("lineTranslation", line.translation)
-                    putExtra("lineRomanization", line.romanization)
-                    putExtra("lineWords", encodeLyricWords(line.words))
-                    putExtra("linePronunciationWords", encodeLyricWords(line.pronunciationWords))
-                    putExtra("lineBackgroundWords", encodeLyricWords(line.backgroundWords))
-                    putExtra("lineBackgroundText", line.backgroundText.orEmpty())
-                    putExtra("lineBackgroundTranslation", line.backgroundTranslation.orEmpty())
-                    putExtra("lineBackgroundStart", line.backgroundStartTime ?: 0L)
-                    putExtra("lineBackgroundEnd", line.backgroundEndTime ?: 0L)
-                    putExtra("lineAgent", line.agent.orEmpty())
-                    putExtra("lineAgentName", line.agentName.orEmpty())
-                    putExtra("lineIsTtml", line.isTtml)
-                }
-            } else null
-        } else null
-        try {
-            val event = intent ?: Intent(ACTION_SUPER_ISLAND_LYRIC_CLEAR).apply {
-                setPackage(packageName)
-                component = ComponentName(
-                    packageName,
-                    "com.rawsmusic.lyric.XiaomiSuperIslandLyricReceiver"
-                )
+        if (!shouldPublish) {
+            clearSuperIslandLyricIfPublished()
+            return
+        }
+
+        val song = currentSong ?: run {
+            clearSuperIslandLyricIfPublished()
+            return
+        }
+        if (currentLyricsSongIdentity != colorOsLyricIdentity(song)) {
+            clearSuperIslandLyricIfPublished()
+            return
+        }
+        val lyrics = _currentLyrics.value
+        val index = lyrics?.findCurrentLine(positionMs) ?: -1
+        val line = lyrics?.getLine(index)
+        if (line == null) {
+            // Lyrics can arrive after playback has started. Preserve the current island during
+            // a temporary timing gap, but retire an island that belongs to the previous track.
+            if (superIslandPublished && superIslandSongPath != song.path) {
+                clearSuperIslandLyricIfPublished()
             }
-            sendBroadcast(event)
+            superIslandSongPath = song.path
+            return
+        }
+
+        val intent = Intent(ACTION_SUPER_ISLAND_LYRIC).apply {
+            setPackage(packageName)
+            component = superIslandReceiverComponent()
+            putExtra("title", song.title)
+            putExtra("artist", song.artist)
+            putExtra("album", song.album)
+            putExtra("path", song.path)
+            putExtra("albumArtPath", song.albumArtPath)
+            putExtra("duration", song.duration)
+            putExtra("position", positionMs)
+            putExtra("lineTime", line.timeStamp)
+            putExtra("lineEnd", line.endTime)
+            putExtra("lineText", line.text)
+            putExtra("lineTranslation", line.translation)
+            putExtra("lineRomanization", line.romanization)
+            putExtra("lineWords", encodeLyricWords(line.words))
+            putExtra("linePronunciationWords", encodeLyricWords(line.pronunciationWords))
+            putExtra("lineBackgroundWords", encodeLyricWords(line.backgroundWords))
+            putExtra("lineBackgroundText", line.backgroundText.orEmpty())
+            putExtra("lineBackgroundTranslation", line.backgroundTranslation.orEmpty())
+            putExtra("lineBackgroundStart", line.backgroundStartTime ?: 0L)
+            putExtra("lineBackgroundEnd", line.backgroundEndTime ?: 0L)
+            putExtra("lineAgent", line.agent.orEmpty())
+            putExtra("lineAgentName", line.agentName.orEmpty())
+            putExtra("lineIsTtml", line.isTtml)
+        }
+        try {
+            sendBroadcast(intent)
+            superIslandPublished = true
+            superIslandSongPath = song.path
         } catch (error: Exception) {
             Log.w("PlayerService", "Unable to publish Super Island lyric event", error)
         }
     }
+
+    private fun clearSuperIslandLyricIfPublished(force: Boolean = false) {
+        val externalHandler = mediaPublicationHandler
+        if (externalHandler != null && Looper.myLooper() != externalHandler.looper) {
+            externalHandler.post { clearSuperIslandLyricIfPublished(force) }
+            return
+        }
+        if (!force && !superIslandPublished) return
+        runCatching {
+            sendBroadcast(
+                Intent(ACTION_SUPER_ISLAND_LYRIC_CLEAR).apply {
+                    setPackage(packageName)
+                    component = superIslandReceiverComponent()
+                }
+            )
+        }.onFailure { error ->
+            Log.w("PlayerService", "Unable to clear Super Island lyric event", error)
+        }
+        superIslandPublished = false
+        superIslandSongPath = null
+    }
+
+    private fun superIslandReceiverComponent() = ComponentName(
+        packageName,
+        "com.rawsmusic.lyric.XiaomiSuperIslandLyricReceiver"
+    )
 
     private fun encodeLyricWords(words: List<LyricWord>): String {
         val json = JSONArray()
@@ -1792,27 +2592,106 @@ class PlayerService : LifecycleService() {
     }
 
     private fun updateNotification() {
+        val handler = mediaPublicationHandler
+        if (handler != null && Looper.myLooper() == handler.looper) {
+            updateNotificationNow()
+        } else {
+            scheduleNotificationPublication()
+        }
+    }
+
+    private fun updateNotificationNow() {
         updateLiveLyricNotification()
         publishSuperIslandLyric()
+        val buildStartedNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
         val notification = buildNotification()
-        if (!isForegroundStarted) {
-            startForegroundCompat(NOTIFICATION_ID, notification)
-            isForegroundStarted = true
+        if (buildStartedNs != 0L) {
+            PlayerSwitchTrace.duration(
+                "NOTIFICATION_BUILD",
+                System.nanoTime() - buildStartedNs,
+            )
+        }
+        val hasMediaIdentity = hasPublishedMediaIdentity()
+        if (shouldOwnPlaybackForeground()) {
+            if (!isForegroundStarted) {
+                val foregroundStartedNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
+                isForegroundStarted = startForegroundCompat(NOTIFICATION_ID, notification)
+                if (foregroundStartedNs != 0L) {
+                    PlayerSwitchTrace.duration(
+                        "NOTIFICATION_START_FOREGROUND",
+                        System.nanoTime() - foregroundStartedNs,
+                    )
+                }
+            } else {
+                // 后续更新使用 notify()，避免 startForeground() 可能的封面图更新问题
+                val notifyStartedNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
+                getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification)
+                if (notifyStartedNs != 0L) {
+                    PlayerSwitchTrace.duration(
+                        "NOTIFICATION_BINDER",
+                        System.nanoTime() - notifyStartedNs,
+                    )
+                }
+            }
         } else {
-            // 后续更新使用 notify()，避免 startForeground() 可能的封面图更新问题
-            getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification)
+            // Metadata/queue ownership is not audio ownership.  Keep a paused media notification
+            // when there is a selected item, but never keep the process in MEDIA_PLAYBACK merely
+            // because a song is selected or a lyric/artwork refresh rebuilt the notification.
+            if (isForegroundStarted) {
+                stopForegroundCompat(removeNotification = !hasMediaIdentity)
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            if (hasMediaIdentity) {
+                val notifyStartedNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
+                manager?.notify(NOTIFICATION_ID, notification)
+                if (notifyStartedNs != 0L) {
+                    PlayerSwitchTrace.duration(
+                        "NOTIFICATION_BINDER",
+                        System.nanoTime() - notifyStartedNs,
+                    )
+                }
+            } else {
+                manager?.cancel(NOTIFICATION_ID)
+            }
         }
         notifyPlaybackWidgetIfChanged()
     }
 
+    private fun hasPublishedMediaIdentity(): Boolean =
+        playerController.currentSong.value != null || currentSong != null
+
+    /**
+     * Foreground-service MEDIA_PLAYBACK is owned by a live/preparing renderer, not by persisted
+     * metadata.  This is deliberately stricter than MediaSession activity: a paused session may
+     * remain addressable by headset/SystemUI controls without advertising active audio work.
+     */
+    private fun shouldOwnPlaybackForeground(): Boolean {
+        if (!hasPublishedMediaIdentity()) return false
+        if (currentPlayState == PlayState.STOPPED) return false
+        val controllerState = playerController.playState.value
+        val backendState = playerController.ffmpegPlayerRef.state
+        // currentPlayState is a service-side mirror fed by intents/publication and can legitimately
+        // lag the transport. Do not let that stale mirror retain MEDIA_PLAYBACK foreground-service
+        // ownership after the real controller/backend has stopped producing audio.
+        return controllerState == PlayState.PLAYING ||
+            controllerState == PlayState.PREPARING ||
+            backendState == FfmpegAudioPlayer.State.PLAYING ||
+            backendState == FfmpegAudioPlayer.State.PREPARING ||
+            playerController.shouldSustainUsbBackgroundPlayback()
+    }
+
     private fun schedulePlaybackWidgetRefresh(delayMs: Long = 180L) {
-        lifecycleScope.launch {
-            delay(delayMs)
-            notifyPlaybackWidgetIfChanged(force = true)
-        }
+        val handler = mediaPublicationHandler ?: return
+        handler.removeCallbacks(playbackWidgetRefreshRunnable)
+        handler.postDelayed(playbackWidgetRefreshRunnable, delayMs.coerceAtLeast(0L))
     }
 
     private fun notifyPlaybackWidgetIfChanged(force: Boolean = false) {
+        val externalHandler = mediaPublicationHandler
+        if (externalHandler != null && Looper.myLooper() != externalHandler.looper) {
+            externalHandler.post { notifyPlaybackWidgetIfChanged(force) }
+            return
+        }
         val controllerSong = playerController.currentSong.value
         val song = currentSong ?: controllerSong
         val controllerState = playerController.playState.value
@@ -1837,6 +2716,11 @@ class PlayerService : LifecycleService() {
     }
 
     private fun notifyPlaybackWidgetProgress() {
+        val externalHandler = mediaPublicationHandler
+        if (externalHandler != null && Looper.myLooper() != externalHandler.looper) {
+            externalHandler.post { notifyPlaybackWidgetProgress() }
+            return
+        }
         val now = SystemClock.elapsedRealtime()
         if (now - lastPlaybackWidgetProgressElapsed < 400L) return
         lastPlaybackWidgetProgressElapsed = now
@@ -2030,7 +2914,7 @@ class PlayerService : LifecycleService() {
         )
         builder.addAction(
             Notification.Action.Builder(
-                android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_skip_previous),
+                android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_rewind_fill),
                 "上一曲", prevIntent
             ).build()
         )
@@ -2069,7 +2953,7 @@ class PlayerService : LifecycleService() {
         )
         builder.addAction(
             Notification.Action.Builder(
-                android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_skip_next),
+                android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_speed_fill),
                 "下一曲", nextIntent
             ).build()
         )
@@ -2114,26 +2998,6 @@ class PlayerService : LifecycleService() {
             )
         }
 
-        if (AppPreferences.Lyrics.MEDIA_NOTIFICATION_BUTTON_FAVORITE in selectedButtons) {
-            val isFavorite = song?.let { PlaylistStore.getInstance(this).isFavorite(it) } == true
-            val favIntent = PendingIntent.getService(
-                this, 10,
-                Intent(this, PlayerService::class.java).setAction(ACTION_TOGGLE_FAVORITE),
-                flags
-            )
-            builder.addAction(
-                Notification.Action.Builder(
-                    android.graphics.drawable.Icon.createWithResource(
-                        this,
-                        if (isFavorite) R.drawable.ic_notification_favorite_filled
-                        else R.drawable.ic_notification_favorite
-                    ),
-                    if (isFavorite) "取消收藏" else "收藏",
-                    favIntent
-                ).build()
-            )
-        }
-
         mediaSessionCompat?.let { session ->
             val compatToken = session.sessionToken
             val frameworkToken = try {
@@ -2168,7 +3032,10 @@ class PlayerService : LifecycleService() {
             builder.setStyle(mediaStyle)
         }
 
-        coverBitmap?.let { builder.setLargeIcon(it) }
+        val notificationArtwork = coverBitmap?.takeIf {
+            song != null && coverBitmapSongIdentity == song.mediaArtworkIdentity() && !it.isRecycled
+        }
+        notificationArtwork?.let { builder.setLargeIcon(it) }
 
         val notification = builder.build()
 
@@ -2211,19 +3078,30 @@ class PlayerService : LifecycleService() {
         notification.defaults = 0
         notification.sound = null
         notification.vibrate = null
+        XiaomiMediaDragShare.attach(notification, song)
 
         return notification
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        runCatching {
-            sendBroadcast(Intent(ACTION_SUPER_ISLAND_LYRIC_CLEAR).setPackage(packageName))
-        }
+        // Close publication admission before draining either Handler queue. This is the same
+        // lifecycle boundary reference player enforces before quitting ExternalAPI/player-service threads.
+        isRunning = false
+        mediaPublicationHandler?.removeCallbacksAndMessages(null)
+        mediaPublicationHandler = null
+        mediaPublicationThread?.quitSafely()
+        mediaPublicationThread = null
+        playerServiceHandler?.removeCallbacksAndMessages(null)
+        playerServiceHandler = null
+        playerServiceThread?.quitSafely()
+        playerServiceThread = null
+        colorOsLyricRetryJob?.cancel()
+        colorOsLyricRetryJob = null
+        clearSuperIslandLyricIfPublished(force = true)
         liveLyricNotificationBridge.clear()
         stopUsbBackgroundGuardian("service_destroy")
         releaseRuntimeController("service_destroy")
-        isRunning = false
         _instance = null
         positionUpdateJob?.cancel()
         abandonServiceAudioFocus("service_destroy")
@@ -2282,11 +3160,22 @@ class PlayerService : LifecycleService() {
      * 非USB独占时仅使用MEDIA_PLAYBACK
      */
     private fun updateForegroundServiceType() {
+        val externalOwner = mediaPublicationHandler
+        if (externalOwner != null && Looper.myLooper() != externalOwner.looper) {
+            externalOwner.post { updateForegroundServiceType() }
+            return
+        }
+        if (!shouldOwnPlaybackForeground()) {
+            if (isForegroundStarted) {
+                stopForegroundCompat(removeNotification = !hasPublishedMediaIdentity())
+            }
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 val type = usbForegroundServiceType()
                 val notification = buildNotification()
-                startForegroundWithTypeFallback(NOTIFICATION_ID, notification, type)
+                isForegroundStarted = startForegroundWithTypeFallback(NOTIFICATION_ID, notification, type)
                 Log.d("PlayerService", "Foreground service type updated: $type (USB exclusive: ${playerController.isUsbExclusiveActive()})")
             } catch (e: Exception) {
                 Log.w("PlayerService", "Failed to update foreground service type", e)
@@ -2296,6 +3185,11 @@ class PlayerService : LifecycleService() {
 
     /** 后台冷启动保护：确保前台服务已启动 */
     private fun ensureForegroundForUsb() {
+        val externalOwner = mediaPublicationHandler
+        if (externalOwner != null && Looper.myLooper() != externalOwner.looper) {
+            externalOwner.post { ensureForegroundForUsb() }
+            return
+        }
         try {
             val notification = buildNotification()
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
@@ -2479,8 +3373,13 @@ class PlayerService : LifecycleService() {
         android.util.Log.i("PlayerService", "USB VolumeProvider initialized")
     }
 
-    /** USB 独占启用时，硬件音量和软件音量都使用 MediaSession remote volume 接管音量键。 */
+    /** USB 硬件 Feature Unit 使用 remote volume；软件音量保持本地 STREAM_MUSIC UI。 */
     fun activateUsbRemoteVolume(reason: String) {
+        val owner = playerServiceHandler
+        if (owner != null && Looper.myLooper() != owner.looper) {
+            owner.post { activateUsbRemoteVolume(reason) }
+            return
+        }
         val session = mediaSessionCompat ?: return
         val provider = usbVolumeProvider ?: return
         val ctrl = playerController
@@ -2506,6 +3405,11 @@ class PlayerService : LifecycleService() {
 
     /** 关闭 USB 独占时，切回本地音量 */
     fun deactivateUsbRemoteVolume(reason: String) {
+        val owner = playerServiceHandler
+        if (owner != null && Looper.myLooper() != owner.looper) {
+            owner.post { deactivateUsbRemoteVolume(reason) }
+            return
+        }
         val session = mediaSessionCompat ?: return
 
         android.util.Log.i("PlayerService", "deactivateUsbRemoteVolume: reason=$reason")
@@ -2519,13 +3423,20 @@ class PlayerService : LifecycleService() {
         position: Long,
         reason: String
     ) {
+        val owner = playerServiceHandler
+        if (owner != null && Looper.myLooper() != owner.looper) {
+            owner.post { syncUsbMediaIdentity(song, playing, position, reason) }
+            return
+        }
         song?.let { newSong ->
             val changed = currentSong?.path != newSong.path ||
                 currentSong?.title != newSong.title ||
                 currentSong?.albumArtPath != newSong.albumArtPath ||
-                currentSong?.duration != newSong.duration
+                currentSong?.duration != newSong.duration ||
+                currentSong?.cueTrackIndex != newSong.cueTrackIndex
             currentSong = newSong
             if (changed) {
+                invalidateLyricsForSongChange("usb_media_identity:$reason")
                 updateMediaSessionMetadata(
                     newSong.title,
                     newSong.artist,
@@ -2540,7 +3451,6 @@ class PlayerService : LifecycleService() {
         currentPlayState = state
         lastKnownPosition = position.coerceAtLeast(0L)
         lastPositionTime = SystemClock.elapsedRealtime()
-        mediaSessionCompat?.isActive = true
         if (playing) {
             val isProgressPulse = reason == "progress_update"
             requestServiceAudioFocus("pulse:$reason")
@@ -2573,6 +3483,17 @@ class PlayerService : LifecycleService() {
         }
     }
 
+    /** Clear every service-side lyric cache at the same boundary as a media identity change. */
+    private fun invalidateLyricsForSongChange(reason: String) {
+        colorOsLyricRetryJob?.cancel()
+        colorOsLyricRetryJob = null
+        _currentLyrics.value = null
+        currentLyricsSongIdentity = null
+        PlaybackTickerState.clear()
+        liveLyricNotificationBridge.clear()
+        Log.d("PlayerService", "lyrics invalidated: reason=$reason")
+    }
+
     private fun clearUsbMediaIdentity(reason: String, releaseFocus: Boolean) {
         if (
             usbBackgroundKeepAliveLatched &&
@@ -2596,10 +3517,26 @@ class PlayerService : LifecycleService() {
 
     /** 同步 MediaSession 播放状态（供 PlayerController 调用） */
     fun updateMediaSessionPlaybackStateForUsb(playing: Boolean, reason: String) {
+        val owner = playerServiceHandler
+        if (owner != null && Looper.myLooper() != owner.looper) {
+            owner.post { updateMediaSessionPlaybackStateForUsb(playing, reason) }
+            return
+        }
         val session = mediaSessionCompat ?: return
         val provider = usbVolumeProvider ?: return
 
-        val state = if (playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+        val controllerSong = playerController.currentSong.value
+        val controllerState = playerController.playState.value
+        val sustainedUsbPlayback = playerController.shouldSustainUsbBackgroundPlayback()
+        val mayPublishPlaying = playing &&
+            controllerSong != null &&
+            (controllerState == PlayState.PLAYING || sustainedUsbPlayback)
+        val hasMediaIdentity = controllerSong != null || currentSong != null
+        val state = when {
+            !hasMediaIdentity -> PlaybackStateCompat.STATE_NONE
+            mayPublishPlaying -> PlaybackStateCompat.STATE_PLAYING
+            else -> PlaybackStateCompat.STATE_PAUSED
+        }
         val actions = PlaybackStateCompat.ACTION_PLAY or
             PlaybackStateCompat.ACTION_PAUSE or
             PlaybackStateCompat.ACTION_PLAY_PAUSE or
@@ -2608,16 +3545,25 @@ class PlayerService : LifecycleService() {
             PlaybackStateCompat.ACTION_STOP
 
         val playbackState = PlaybackStateCompat.Builder()
-            .setState(state, lastKnownPosition, if (playing) 1.0f else 0.0f, SystemClock.elapsedRealtime())
+            .setState(state, lastKnownPosition, if (mayPublishPlaying) 1.0f else 0.0f, SystemClock.elapsedRealtime())
             .setActions(actions)
             .build()
 
-        session.isActive = true
+        val sessionOwnsMedia = hasMediaIdentity &&
+            (mayPublishPlaying || controllerState == PlayState.PAUSED || controllerState == PlayState.PREPARING)
+        session.isActive = sessionOwnsMedia
         session.setPlaybackState(playbackState)
-        reassertUsbRemoteVolumeRoute("usb_playback_state:$reason")
+        if (sessionOwnsMedia) {
+            reassertUsbRemoteVolumeRoute("usb_playback_state:$reason")
+        }
         provider.syncFromController()
 
-        android.util.Log.i("PlayerService", "MediaSession playbackState: playing=$playing reason=$reason volume=${provider.currentVolume}")
+        android.util.Log.i(
+            "PlayerService",
+            "MediaSession playbackState: requestedPlaying=$playing publishedPlaying=$mayPublishPlaying " +
+                "reason=$reason controllerState=$controllerState hasMedia=$hasMediaIdentity " +
+                "volume=${provider.currentVolume}",
+        )
     }
 
     /** 释放 WakeLock */
@@ -2634,20 +3580,36 @@ class PlayerService : LifecycleService() {
     private fun startPositionUpdates() {
         positionUpdateJob?.cancel()
         if (currentPlayState == PlayState.PLAYING) {
-            positionUpdateJob = lifecycleScope.launch(Dispatchers.Main) {
-                while (true) {
-                    kotlinx.coroutines.delay(
-                        if (AppPreferences.Lyrics.liveUpdateLyricEnabled) 220L else 1000L
-                    )
+            positionUpdateJob = lifecycleScope.launch(Dispatchers.Default) {
+                var slowTickElapsedMs = MEDIA_SESSION_PROGRESS_INTERVAL_MS
+                while (isActive) {
+                    val liveLyricEnabled = AppPreferences.Lyrics.liveUpdateLyricEnabled ||
+                        AppPreferences.Lyrics.xiaomiSuperIslandLyricEnabled
+                    val tickMs = if (liveLyricEnabled) LIVE_LYRIC_PROGRESS_INTERVAL_MS
+                    else MEDIA_SESSION_PROGRESS_INTERVAL_MS
+                    kotlinx.coroutines.delay(tickMs)
                     if (currentPlayState == PlayState.PLAYING) {
                         val elapsed = if (lastPositionTime > 0) SystemClock.elapsedRealtime() - lastPositionTime else 0L
                         val estimatedPosition = (lastKnownPosition + elapsed).coerceAtLeast(0L)
                         val duration = currentSong?.duration ?: 0L
                         if (duration > 0 && estimatedPosition <= duration) {
-                            updateMediaSessionPlaybackState(PlayState.PLAYING, estimatedPosition)
-                            updateLiveLyricNotification(estimatedPosition)
-                            publishSuperIslandLyric(estimatedPosition)
-                            notifyPlaybackWidgetProgress()
+                            // High-rate external lyric publication is independent from MediaSession
+                            // and widget progress. Do not drag their Binder/broadcast work onto every
+                            // 220 ms lyric tick while Activity/RenderThread are trying to meet 120 Hz.
+                            if (liveLyricEnabled) {
+                                updateLiveLyricNotification(estimatedPosition)
+                                publishSuperIslandLyric(estimatedPosition)
+                            }
+
+                            slowTickElapsedMs += tickMs
+                            if (slowTickElapsedMs >= MEDIA_SESSION_PROGRESS_INTERVAL_MS) {
+                                slowTickElapsedMs = 0L
+                                // PlaybackStateCompat already carries position + speed +
+                                // elapsedRealtime, so SystemUI advances position without a Binder
+                                // pulse. reference player republishes on state/seek discontinuities instead.
+                                // Keep only the widget's explicit progress broadcast on this tick.
+                                notifyPlaybackWidgetProgress()
+                            }
                         }
                     }
                 }

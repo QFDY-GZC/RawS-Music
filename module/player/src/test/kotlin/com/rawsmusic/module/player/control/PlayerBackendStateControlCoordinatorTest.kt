@@ -88,8 +88,8 @@ class PlayerBackendStateControlCoordinatorTest {
         repeatOneHarness.coordinator.onStateChanged(
             PlayerBackendStateControlCoordinator.BackendState.COMPLETED
         )
-        assertEquals(1, repeatOneHarness.playCount)
-        assertEquals(repeatOneHarness.songA.path, repeatOneHarness.playedSong?.path)
+        assertEquals(1, repeatOneHarness.nextCount)
+        assertEquals(PlayState.PREPARING, repeatOneHarness.playState)
 
         val middleHarness = Harness().apply {
             repeatMode = RepeatMode.OFF
@@ -99,6 +99,7 @@ class PlayerBackendStateControlCoordinatorTest {
             PlayerBackendStateControlCoordinator.BackendState.COMPLETED
         )
         assertEquals(1, middleHarness.nextCount)
+        assertEquals(PlayState.PREPARING, middleHarness.playState)
 
         val endHarness = Harness().apply {
             repeatMode = RepeatMode.OFF
@@ -108,6 +109,7 @@ class PlayerBackendStateControlCoordinatorTest {
             PlayerBackendStateControlCoordinator.BackendState.COMPLETED
         )
         assertEquals(0, endHarness.nextCount)
+        assertEquals(PlayState.STOPPED, endHarness.playState)
     }
 
     private class Harness {
@@ -160,13 +162,9 @@ class PlayerBackendStateControlCoordinatorTest {
                     playedSong = song
                     playedIndex = index
                 },
-                replayCurrentSong = { song ->
-                    playCount++
-                    playedSong = song
-                    playedIndex = queue.currentIndex
-                },
                 pauseTransport = { pauseCount++ },
-                nextTransport = { nextCount++ },
+                automaticReplayTransport = { nextCount++; true },
+                automaticAdvanceTransport = { nextCount++; true },
                 stopTransport = { stopCount++ },
                 clearUnavailableSong = { clearedCount++ },
                 logDebug = {},

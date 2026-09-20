@@ -1,10 +1,11 @@
 package com.rawsmusic.core.ui.widget.player
 
+import com.rawsmusic.core.ui.widget.bitmaps.AlbumArtTiers
 import kotlin.math.abs
 
 /**
  * Keeps the portrait full-cover rail responsive without starting seventeen full-cover decodes at
- * once. Only the settled centre owns the 1440px fullscreen tier; visible side lanes use bounded
+ * once. Only the settled centre owns the provider high fullscreen tier; visible side lanes use bounded
  * list-style requests, one hidden lane on either side is admitted as a preload, and the remaining
  * retained holders keep composition identity without joining the decode wave.
  */
@@ -12,7 +13,7 @@ internal enum class PortraitDialArtworkTier(
     val targetSidePx: Int,
     val shouldLoad: Boolean,
 ) {
-    Center(targetSidePx = 1440, shouldLoad = true),
+    Center(targetSidePx = AlbumArtTiers.FULL_RES_SIDE, shouldLoad = true),
     Near(targetSidePx = 768, shouldLoad = true),
     Outer(targetSidePx = 512, shouldLoad = true),
     Preload(targetSidePx = 384, shouldLoad = true),

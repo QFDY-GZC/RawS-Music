@@ -1,32 +1,33 @@
 package com.rawsmusic.module.scanner.webdav
 
 import android.util.Log
+import okhttp3.Cookie
+import okhttp3.CookieJar
 import okhttp3.Credentials
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Response
 import okhttp3.Route
-import org.xmlpull.v1.XmlPullParser
-import org.xmlpull.v1.XmlPullParserFactory
-import java.io.StringReader
-import java.net.URI
-import java.net.URLDecoder
-import java.security.MessageDigest
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 
 data class WebDavConfig(
     val url: String,
     val username: String = "",
     val password: String = "",
-    val authMode: AuthMode = AuthMode.AUTO
+    val authMode: AuthMode = AuthMode.AUTO,
+    /** Reserved for reverse proxies / share endpoints without changing the core protocol API. */
+    val extraHeaders: Map<String, String> = emptyMap(),
 )
 
 enum class AuthMode {
     AUTO,
     BASIC,
-    DIGEST
+    DIGEST,
 }
 
 data class WebDavItem(
@@ -35,334 +36,323 @@ data class WebDavItem(
     val isDirectory: Boolean,
     val size: Long = 0,
     val lastModified: String = "",
-    val contentType: String = ""
+    val contentType: String = "",
+    /** Canonical absolute URL resolved against the directory that produced this item. */
+    val resolvedUrl: String = "",
 ) {
     val fileName: String
         get() = displayName.ifBlank {
-            val decoded = URLDecoder.decode(href.trimEnd('/'), "UTF-8")
-            decoded.substringAfterLast('/')
+            resolvedUrl.toHttpUrlOrNull()?.pathSegments?.lastOrNull { it.isNotBlank() }
+                ?: href.trimEnd('/').substringAfterLast('/')
         }
 }
 
 data class WebDavTestResult(
     val success: Boolean,
-    val message: String
+    val message: String,
+    val canonicalUrl: String = "",
 )
 
-class WebDavClient {
+data class WebDavPlaybackRequest(
+    val url: String,
+    val headers: Map<String, String>,
+    val userAgent: String,
+)
 
+data class WebDavDirectoryResult(
+    val canonicalUrl: String,
+    val items: List<WebDavItem>,
+)
+
+class WebDavException(
+    message: String,
+    val statusCode: Int? = null,
+    val requestUrl: String? = null,
+) : Exception(message)
+
+class WebDavClient {
     companion object {
         private const val TAG = "WebDavClient"
+        private const val USER_AGENT = "RawSMusic/1.0"
+        private const val AUTH_PROBE_FRESH_MS = 120_000L
     }
 
-    private var currentConfig: WebDavConfig? = null
-    private var authAttemptCount = 0
-    private var lastAuthMethod: String? = null
+    private val digestAuth = WebDavDigestAuth()
+    private val lastAuthSchemeByOrigin = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val digestChallengeByOrigin = java.util.concurrent.ConcurrentHashMap<String, CachedDigestChallenge>()
+    private val authProbeAtByOrigin = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val cookieStore = CopyOnWriteArrayList<Cookie>()
+
+    private data class CachedDigestChallenge(
+        val challenge: WebDavAuthChallenge,
+        val capturedAtMs: Long,
+    )
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .callTimeout(90, TimeUnit.SECONDS)
             .followRedirects(true)
             .followSslRedirects(true)
-            .authenticator { route: Route?, response: Response ->
-                handleAuth(response)
+            .addNetworkInterceptor { chain ->
+                val original = chain.request()
+                val config = original.tag(WebDavConfig::class.java)
+                if (config == null || WebDavUrlTools.isCredentialSafeTarget(config.url, original.url.toString())) {
+                    chain.proceed(original)
+                } else {
+                    val sanitized = original.newBuilder()
+                        .removeHeader("Authorization")
+                        .removeHeader("Proxy-Authorization")
+                        .removeHeader("Cookie")
+                    config.extraHeaders.sanitizedHeaders().keys.forEach(sanitized::removeHeader)
+                    Log.w(TAG, "Stripped WebDAV credentials from redirect to ${original.url.host}")
+                    chain.proceed(sanitized.build())
+                }
             }
+            .cookieJar(object : CookieJar {
+                override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+                    cookies.forEach { incoming ->
+                        cookieStore.removeAll { old ->
+                            old.name == incoming.name && old.domain == incoming.domain && old.path == incoming.path
+                        }
+                        if (incoming.expiresAt > System.currentTimeMillis()) cookieStore += incoming
+                    }
+                }
+
+                override fun loadForRequest(url: HttpUrl): List<Cookie> {
+                    val now = System.currentTimeMillis()
+                    cookieStore.removeAll { it.expiresAt <= now }
+                    return cookieStore.filter { it.matches(url) }
+                }
+            })
+            .authenticator { _: Route?, response: Response -> authenticate(response) }
             .build()
     }
 
-    private fun handleAuth(response: Response): Request? {
-        val config = currentConfig ?: return null
-        if (config.username.isBlank()) return null
-
-        val existingAuth = response.request.header("Authorization")
-        if (existingAuth != null) {
-            if (authAttemptCount >= 2) {
-                Log.w(TAG, "Auth attempts exhausted (tried $authAttemptCount times). Stopping.")
-                return null
-            }
-            authAttemptCount++
-            Log.w(TAG, "Auth rejected (${existingAuth.take(15)}...), attempt $authAttemptCount")
-        }
-
-        val authHeaders = response.headers("WWW-Authenticate")
-        if (authHeaders.isEmpty()) {
-            Log.w(TAG, "No WWW-Authenticate header found")
-            return null
-        }
-
-        Log.d(TAG, "WWW-Authenticate headers: $authHeaders")
-
-        val parsedAuths = parseAllAuthHeaders(authHeaders)
-        Log.d(TAG, "Parsed auth methods: ${parsedAuths.keys}")
-
-        return when (config.authMode) {
-            AuthMode.DIGEST -> {
-                parsedAuths["Digest"]?.let { tryDigestAuth(response, config, it) }
-                    ?: run { Log.w(TAG, "Digest requested but not offered by server"); null }
-            }
-            AuthMode.BASIC -> {
-                parsedAuths["Basic"]?.let { tryBasicAuth(response, config) }
-                    ?: run { Log.w(TAG, "Basic requested but not offered by server"); null }
-            }
-            AuthMode.AUTO -> {
-                if (existingAuth?.startsWith("Basic") == true && response.code == 401) {
-                    Log.d(TAG, "Basic failed, trying Digest...")
-                    parsedAuths["Digest"]?.let { tryDigestAuth(response, config, it) }
-                } else {
-                    parsedAuths["Digest"]?.let { tryDigestAuth(response, config, it) }
-                        ?: parsedAuths["Basic"]?.let { tryBasicAuth(response, config) }
-                }
-            }
-        }
-    }
-
-    private fun parseAllAuthHeaders(headers: List<String>): Map<String, String> {
-        val result = mutableMapOf<String, String>()
-        for (header in headers) {
-            val trimmed = header.trim()
-            when {
-                trimmed.startsWith("Digest", ignoreCase = true) -> {
-                    result["Digest"] = trimmed
-                }
-                trimmed.startsWith("Basic", ignoreCase = true) -> {
-                    result["Basic"] = trimmed
-                }
-                trimmed.startsWith("Bearer", ignoreCase = true) -> {
-                    result["Bearer"] = trimmed
-                }
-                trimmed.startsWith("NTLM", ignoreCase = true) -> {
-                    result["NTLM"] = trimmed
-                }
-            }
-        }
-        
-        if (result.isEmpty() && headers.isNotEmpty()) {
-            val combined = headers.joinToString(", ")
-            if (combined.contains("Digest", ignoreCase = true)) {
-                result["Digest"] = combined
-            }
-            if (combined.contains("Basic", ignoreCase = true)) {
-                result["Basic"] = combined
-            }
-        }
-        
-        return result
-    }
-
-    private fun tryBasicAuth(response: Response, config: WebDavConfig): Request? {
-        return try {
-            val credentials = Credentials.basic(config.username, config.password)
-            Log.d(TAG, "Using Basic auth for user: ${config.username}")
-            lastAuthMethod = "Basic"
-            response.request.newBuilder()
-                .header("Authorization", credentials)
-                .build()
-        } catch (e: Exception) {
-            Log.e(TAG, "Basic auth failed", e)
-            null
-        }
-    }
-
-    private fun tryDigestAuth(response: Response, config: WebDavConfig, authHeader: String): Request? {
-        try {
-            val realm = extractParam(authHeader, "realm") ?: return null
-            val nonce = extractParam(authHeader, "nonce") ?: return null
-            val qop = extractParam(authHeader, "qop")
-            val opaque = extractParam(authHeader, "opaque")
-            val algorithm = extractParam(authHeader, "algorithm") ?: "MD5"
-            
-            val url = response.request.url
-            val uri = url.encodedPath + if (url.encodedQuery != null) "?${url.encodedQuery}" else ""
-            val method = response.request.method
-            val nc = "00000001"
-            val cnonce = generateCnonce()
-
-            Log.d(TAG, "Digest params: realm=$realm, nonce=$nonce, qop=$qop, algorithm=$algorithm")
-
-            val ha1 = if (algorithm.equals("MD5-sess", ignoreCase = true)) {
-                md5("${md5("${config.username}:$realm:${config.password}")}:$nonce:$cnonce")
-            } else {
-                md5("${config.username}:$realm:${config.password}")
-            }
-            val ha2 = md5("$method:$uri")
-
-            val digestResponse = if (qop != null) {
-                val qopValue = qop.replace("\"", "").split(",").map { it.trim() }
-                    .firstOrNull { it == "auth" } ?: "auth"
-                md5("$ha1:$nonce:$nc:$cnonce:$qopValue:$ha2")
-            } else {
-                md5("$ha1:$nonce:$ha2")
-            }
-
-            Log.d(TAG, "Digest HA1=$ha1, HA2=$ha2, response=$digestResponse")
-
-            val authValue = buildString {
-                append("Digest ")
-                append("""username="${config.username}", """)
-                append("""realm="$realm", """)
-                append("""nonce="$nonce", """)
-                append("""uri="$uri", """)
-                append("""response="$digestResponse"""")
-                if (algorithm != null) append(""", algorithm=$algorithm""")
-                if (opaque != null) append(""", opaque="$opaque"""")
-                if (qop != null) append(""", qop=auth""")
-                append(""", nc=$nc""")
-                append(""", cnonce="$cnonce"""")
-            }
-
-            Log.d(TAG, "Using Digest auth: ${authValue.take(100)}...")
-            lastAuthMethod = "Digest"
-            return response.request.newBuilder()
-                .header("Authorization", authValue.trim())
-                .build()
-        } catch (e: Exception) {
-            Log.e(TAG, "Digest auth failed", e)
-            return null
-        }
-    }
-
-    private fun extractParam(header: String, param: String): String? {
-        val patterns = listOf(
-            Regex("""(?i)$param\s*=\s*"([^"]+)""""),
-            Regex("""(?i)$param\s*=\s*([^,\s]+)""")
-        )
-        for (pattern in patterns) {
-            val match = pattern.find(header)
-            if (match != null) {
-                return match.groupValues[1]
-            }
-        }
-        return null
-    }
-
-    private fun md5(input: String): String {
-        val digest = MessageDigest.getInstance("MD5")
-        val bytes = digest.digest(input.toByteArray(Charsets.UTF_8))
-        return bytes.joinToString("") { "%02x".format(it) }
-    }
-
-    private fun generateCnonce(): String {
-        val chars = "0123456789abcdef"
-        return (1..16).map { chars.random() }.joinToString("")
+    /**
+     * Used only when direct FFmpeg HTTP open has failed and playback falls back to a full local
+     * cache file. Keep directory/auth traffic on the normal bounded client, but do not impose the
+     * 90-second total-call limit on large media bodies.
+     */
+    private val streamingHttpClient: OkHttpClient by lazy {
+        httpClient.newBuilder()
+            .readTimeout(5, TimeUnit.MINUTES)
+            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .build()
     }
 
     fun testConnection(config: WebDavConfig): WebDavTestResult {
-        currentConfig = config
-        authAttemptCount = 0
-        lastAuthMethod = null
         return try {
-            val url = normalizeUrl(config.url)
-            Log.d(TAG, "Testing connection to: $url, user: ${config.username}, authMode: ${config.authMode}")
-            val request = buildRequest(url, config, "HEAD")
-            val response = httpClient.newCall(request).execute()
-            Log.d(TAG, "HEAD response: ${response.code}, auth used: $lastAuthMethod")
-            val errorBody = if (!response.isSuccessful) response.body?.string()?.take(500) else null
-            if (errorBody != null) Log.d(TAG, "Error body: $errorBody")
-            response.close()
-            if (response.isSuccessful || response.code == 405) {
-                val propfindRequest = buildPropfindRequest(url, config, depth = "0")
-                val propfindResponse = httpClient.newCall(propfindRequest).execute()
-                val body = propfindResponse.body?.string()
-                Log.d(TAG, "PROPFIND response: ${propfindResponse.code}")
-                propfindResponse.close()
-                if (propfindResponse.isSuccessful && body != null) {
-                    WebDavTestResult(true, "连接成功 (${lastAuthMethod ?: "无认证"})")
-                } else {
-                    Log.e(TAG, "PROPFIND failed: ${propfindResponse.code}")
-                    WebDavTestResult(false, "PROPFIND 失败: ${propfindResponse.code}")
-                }
-            } else {
-                Log.e(TAG, "HEAD failed: ${response.code}, body: $errorBody")
-                when (response.code) {
-                    401 -> WebDavTestResult(false, "认证失败 (401): 用户名或密码错误")
-                    403 -> WebDavTestResult(false, "访问被拒绝 (403): 无权限或认证方式不支持")
-                    404 -> WebDavTestResult(false, "路径不存在 (404): 请检查 WebDAV 地址")
-                    else -> WebDavTestResult(false, "连接失败: HTTP ${response.code}")
-                }
+            val url = canonicalizeCollectionUrl(config.url)
+            httpClient.newCall(buildPropfindRequest(url, config, depth = "0")).execute().use { response ->
+                if (!response.isSuccessful) throw responseException(response)
+                val canonical = WebDavUrlTools.normalizeCollectionUrl(response.request.url.toString())
+                WebDavTestResult(
+                    success = true,
+                    message = "连接成功 (${authDescription(config, response.request.url)})",
+                    canonicalUrl = canonical,
+                )
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "testConnection failed", e)
-            WebDavTestResult(false, "连接失败: ${e.message}")
+        } catch (error: Throwable) {
+            Log.e(TAG, "testConnection failed", error)
+            WebDavTestResult(false, error.message ?: "连接失败")
         }
     }
 
-    fun listDirectory(config: WebDavConfig, path: String = ""): List<WebDavItem> {
-        currentConfig = config
-        authAttemptCount = 0
-        lastAuthMethod = null
-        val url = if (path.isNotEmpty()) normalizeUrl(path) else normalizeUrl(config.url)
-        return listDirectoryInternal(config, url)
-    }
+    fun listDirectory(config: WebDavConfig, path: String = ""): List<WebDavItem> =
+        listDirectoryResult(config, path).items
 
-    private fun listDirectoryInternal(config: WebDavConfig, url: String): List<WebDavItem> {
+    fun listDirectoryResult(config: WebDavConfig, path: String = ""): WebDavDirectoryResult {
+        val requestedUrl = canonicalizeCollectionUrl(path.ifBlank { config.url })
         return try {
-            val request = buildPropfindRequest(url, config, depth = "1")
-            val response = httpClient.newCall(request).execute()
-            val body = response.body?.string()
-            response.close()
-
-            if (!response.isSuccessful || body == null) {
-                Log.e(TAG, "PROPFIND failed: ${response.code}, url: $url, auth: $lastAuthMethod")
-                if (response.code == 401 || response.code == 403) {
-                    Log.e(TAG, "Authentication error - check username/password")
-                }
-                return emptyList()
+            httpClient.newCall(buildPropfindRequest(requestedUrl, config, depth = "1")).execute().use { response ->
+                if (!response.isSuccessful) throw responseException(response)
+                val xml = response.body?.string() ?: throw WebDavException("服务器返回了空的 PROPFIND 响应")
+                val finalUrl = WebDavUrlTools.normalizeCollectionUrl(response.request.url.toString())
+                val selfIdentity = WebDavUrlTools.identity(finalUrl)
+                val items = WebDavMultiStatusParser.parse(xml)
+                    .mapNotNull { parsed ->
+                        val resolved = runCatching {
+                            WebDavUrlTools.resolveHref(finalUrl, parsed.href, parsed.isDirectory)
+                        }.onFailure {
+                            Log.w(TAG, "Ignoring invalid DAV href=${parsed.href}", it)
+                        }.getOrNull() ?: return@mapNotNull null
+                        WebDavItem(
+                            href = parsed.href,
+                            displayName = parsed.displayName,
+                            isDirectory = parsed.isDirectory,
+                            size = parsed.size,
+                            lastModified = parsed.lastModified,
+                            contentType = parsed.contentType,
+                            resolvedUrl = resolved,
+                        )
+                    }
+                    .filter { !it.isDirectory || WebDavUrlTools.identity(it.resolvedUrl) != selfIdentity }
+                    .distinctBy { it.resolvedUrl }
+                WebDavDirectoryResult(canonicalUrl = finalUrl, items = items)
             }
-
-            val items = parsePropfindResponse(body)
-            val currentHref = normalizeHref(url)
-            items.filter { normalizeHref(it.href) != currentHref }
-        } catch (e: Exception) {
-            Log.e(TAG, "listDirectory failed", e)
-            emptyList()
+        } catch (error: WebDavException) {
+            Log.e(TAG, "listDirectory failed url=$requestedUrl status=${error.statusCode}", error)
+            throw error
+        } catch (error: Throwable) {
+            Log.e(TAG, "listDirectory failed url=$requestedUrl", error)
+            throw WebDavException(error.message ?: "加载 WebDAV 目录失败", requestUrl = requestedUrl)
         }
     }
 
-    fun buildFileUrl(config: WebDavConfig, href: String): String {
-        val baseUrl = normalizeUrl(config.url)
-        val rawUrl = if (href.startsWith("http://") || href.startsWith("https://")) {
-            href
-        } else {
-            val base = URI(baseUrl)
-            val resolved = base.resolve(href)
-            resolved.toString()
-        }
-        return rawUrl
-    }
+    fun canonicalizeCollectionUrl(url: String): String = WebDavUrlTools.normalizeCollectionUrl(url)
 
+    fun canonicalizeResourceUrl(url: String): String = WebDavUrlTools.normalizeResourceUrl(url)
+
+    fun resolveChildUrl(baseUrl: String, child: String, directory: Boolean): String =
+        WebDavUrlTools.resolveChild(baseUrl, child, directory)
+
+    fun buildFileUrl(config: WebDavConfig, href: String): String =
+        WebDavUrlTools.resolveHref(config.url, href)
+
+    fun buildFileUrl(currentDirectoryUrl: String, href: String, isDirectory: Boolean): String =
+        WebDavUrlTools.resolveHref(currentDirectoryUrl, href, isDirectory)
+
+    /**
+     * Legacy compatibility API. Credentials are intentionally no longer embedded in media URLs;
+     * persisted queue playback is rehydrated through WebDavPlaybackCredentialResolver instead.
+     */
     fun buildAuthenticatedUrl(config: WebDavConfig, href: String): String {
-        val rawUrl = buildFileUrl(config, href)
-        if (config.username.isBlank()) return rawUrl
-        try {
-            val uri = URI(rawUrl)
-            val userInfo = "${config.username}:${config.password}"
-            return URI(uri.scheme, userInfo, uri.host, uri.port, uri.path, uri.query, uri.fragment).toString()
-        } catch (_: Exception) {
-            return rawUrl
+        val rawUrl = if (href.startsWith("http://", true) || href.startsWith("https://", true)) {
+            canonicalizeResourceUrl(href)
+        } else {
+            buildFileUrl(config, href)
+        }
+        return WebDavUrlTools.stripUserInfo(rawUrl)
+    }
+
+    fun buildPlaybackRequest(config: WebDavConfig, item: WebDavItem): WebDavPlaybackRequest {
+        val rawUrl = WebDavUrlTools.stripUserInfo(item.resolvedUrl.ifBlank { buildFileUrl(config, item.href) })
+        return buildPlaybackRequestForUrl(config, rawUrl, refreshAuthentication = false)
+    }
+
+    fun buildPlaybackRequestForUrl(
+        config: WebDavConfig,
+        targetUrl: String,
+        refreshAuthentication: Boolean,
+    ): WebDavPlaybackRequest {
+        val rawUrl = WebDavUrlTools.stripUserInfo(canonicalizeResourceUrl(targetUrl))
+        return WebDavPlaybackRequest(
+            url = rawUrl,
+            headers = buildPlaybackHeaders(config, rawUrl, refreshAuthentication),
+            userAgent = effectiveUserAgent(config),
+        )
+    }
+
+    fun buildPlaybackHeaders(
+        config: WebDavConfig,
+        targetUrl: String,
+        refreshAuthentication: Boolean,
+    ): Map<String, String> {
+        val rawUrl = WebDavUrlTools.stripUserInfo(canonicalizeResourceUrl(targetUrl))
+        if (!WebDavUrlTools.isCredentialSafeTarget(config.url, rawUrl)) return emptyMap()
+        val parsed = rawUrl.toHttpUrlOrNull() ?: return emptyMap()
+        val origin = WebDavUrlTools.origin(parsed)
+
+        if (refreshAuthentication && shouldRefreshAuthentication(config, origin)) {
+            refreshAuthentication(config, rawUrl)
+        }
+
+        val knownScheme = lastAuthSchemeByOrigin[origin]
+        return buildMap {
+            putAll(config.extraHeaders.sanitizedHeaders().filterKeys { !it.equals("User-Agent", true) })
+            matchingCookies(parsed).takeIf { it.isNotBlank() }?.let { sessionCookies ->
+                val explicitCookies = entries.firstOrNull { it.key.equals("Cookie", true) }?.value
+                val combined = listOfNotNull(explicitCookies?.takeIf { it.isNotBlank() }, sessionCookies)
+                    .joinToString("; ")
+                keys.firstOrNull { it.equals("Cookie", true) }?.let(::remove)
+                put("Cookie", combined)
+            }
+            if (config.username.isBlank()) return@buildMap
+
+            when {
+                config.authMode == AuthMode.BASIC || knownScheme.equals("Basic", true) -> {
+                    put("Authorization", Credentials.basic(config.username, config.password))
+                }
+                config.authMode == AuthMode.DIGEST || knownScheme.equals("Digest", true) -> {
+                    val challenge = digestChallengeByOrigin[origin]?.challenge ?: return@buildMap
+                    val getRequest = Request.Builder().url(parsed).get().build()
+                    digestAuth.authorization(getRequest, config.username, config.password, challenge)?.let {
+                        put("Authorization", it)
+                    }
+                }
+            }
         }
     }
 
-    fun getParentUrl(currentUrl: String, config: WebDavConfig): String? {
-        val baseUrl = normalizeUrl(config.url)
-        if (currentUrl.trimEnd('/') == baseUrl.trimEnd('/')) return null
-        val current = URI(currentUrl.trimEnd('/'))
-        val parent = current.resolve("..")
-        val parentStr = parent.toString().trimEnd('/')
-        val baseStr = baseUrl.trimEnd('/')
-        if (parentStr.length < baseStr.length) return null
-        return parentStr
+    fun getParentUrl(currentUrl: String, config: WebDavConfig): String? =
+        WebDavUrlTools.parentWithinRoot(config.url, currentUrl)
+
+    fun createDirectory(config: WebDavConfig, path: String): Boolean {
+        val url = canonicalizeCollectionUrl(path)
+        val request = requestBuilder(url, config).method("MKCOL", null).build()
+        httpClient.newCall(request).execute().use { response ->
+            if (response.isSuccessful) return true
+            if (response.code == 405) return exists(config, url)
+            throw responseException(response)
+        }
     }
 
-    private fun buildRequest(url: String, config: WebDavConfig, method: String): Request {
-        val builder = Request.Builder().url(url).method(method, null)
-            .header("User-Agent", "RawSMusic/1.0")
-            .header("Accept", "*/*")
-        return builder.build()
+    fun uploadFile(config: WebDavConfig, remotePath: String, data: ByteArray): Boolean {
+        val url = canonicalizeResourceUrl(remotePath)
+        val body = data.toRequestBody("application/octet-stream".toMediaType())
+        httpClient.newCall(requestBuilder(url, config).put(body).build()).execute().use { response ->
+            if (!response.isSuccessful) throw responseException(response)
+            return true
+        }
     }
 
-    private fun buildPropfindRequest(url: String, config: WebDavConfig, depth: String = "1"): Request {
+    fun downloadFile(config: WebDavConfig, remotePath: String): ByteArray? {
+        val url = canonicalizeResourceUrl(remotePath)
+        httpClient.newCall(requestBuilder(url, config).get().build()).execute().use { response ->
+            if (response.code == 404) return null
+            if (!response.isSuccessful) throw responseException(response)
+            return response.body?.bytes()
+        }
+    }
+
+    /**
+     * Opens a streaming WebDAV resource request for the local range bridge. The returned response
+     * owns the network body and must be closed by the caller. Range is forwarded verbatim so FFmpeg
+     * can seek without downloading the whole object first.
+     */
+    internal fun openStreamingResponse(
+        config: WebDavConfig,
+        remotePath: String,
+        rangeHeader: String?,
+        headOnly: Boolean,
+    ): Response {
+        val url = canonicalizeResourceUrl(remotePath)
+        val builder = requestBuilder(url, config)
+            .header("Accept-Encoding", "identity")
+        rangeHeader?.takeIf { it.isNotBlank() }?.let { builder.header("Range", it) }
+        val request = if (headOnly) builder.head().build() else builder.get().build()
+        return streamingHttpClient.newCall(request).execute()
+    }
+
+    fun exists(config: WebDavConfig, path: String): Boolean {
+        val directory = path.trim().substringBefore('?').endsWith('/')
+        val url = WebDavUrlTools.normalize(path, directory)
+        httpClient.newCall(buildPropfindRequest(url, config, depth = "0")).execute().use { response ->
+            if (response.isSuccessful) return true
+            if (response.code == 404) return false
+            if (response.code !in setOf(405, 501)) throw responseException(response)
+        }
+        httpClient.newCall(requestBuilder(url, config).head().build()).execute().use { response ->
+            if (response.code == 404) return false
+            if (!response.isSuccessful) throw responseException(response)
+            return true
+        }
+    }
+
+    private fun buildPropfindRequest(url: String, config: WebDavConfig, depth: String): Request {
         val propfindXml = """<?xml version="1.0" encoding="utf-8"?>
             |<d:propfind xmlns:d="DAV:">
             |  <d:prop>
@@ -373,193 +363,179 @@ class WebDavClient {
             |    <d:resourcetype/>
             |  </d:prop>
             |</d:propfind>""".trimMargin()
-
-        val body = propfindXml.toRequestBody(
-            "application/xml; charset=utf-8".toMediaType()
-        )
-        val builder = Request.Builder()
-            .url(url)
+        val body = propfindXml.toRequestBody("application/xml; charset=utf-8".toMediaType())
+        return requestBuilder(url, config)
             .method("PROPFIND", body)
             .header("Depth", depth)
             .header("Content-Type", "application/xml; charset=utf-8")
-            .header("User-Agent", "RawSMusic/1.0")
-            .header("Accept", "*/*")
-
-        return builder.build()
+            .build()
     }
 
-    private fun parsePropfindResponse(xml: String): List<WebDavItem> {
-        val items = mutableListOf<WebDavItem>()
-        try {
-            val factory = XmlPullParserFactory.newInstance()
-            factory.isNamespaceAware = true
-            val parser = factory.newPullParser()
-            parser.setInput(StringReader(xml))
+    private fun requestBuilder(url: String, config: WebDavConfig): Request.Builder {
+        val credentialSafe = WebDavUrlTools.isCredentialSafeTarget(config.url, url)
+        val builder = Request.Builder()
+            .url(url)
+            .tag(WebDavConfig::class.java, config)
+            .header("User-Agent", effectiveUserAgent(config))
+            .header("Accept", "*/*")
+        if (credentialSafe) {
+            config.extraHeaders.sanitizedHeaders()
+                .filterKeys { !it.equals("User-Agent", true) }
+                .forEach { (name, value) -> builder.header(name, value) }
+        }
+        val knownScheme = url.toHttpUrlOrNull()?.let(WebDavUrlTools::origin)?.let(lastAuthSchemeByOrigin::get)
+        if (
+            credentialSafe &&
+            config.username.isNotBlank() &&
+            (config.authMode == AuthMode.BASIC || knownScheme.equals("Basic", true))
+        ) {
+            builder.header("Authorization", Credentials.basic(config.username, config.password))
+        }
+        return builder
+    }
 
-            var href = ""
-            var displayName = ""
-            var contentLength = 0L
-            var lastModified = ""
-            var contentType = ""
-            var isDirectory = false
-            var inResponse = false
-            var currentTag = ""
+    private fun authenticate(response: Response): Request? {
+        val config = response.request.tag(WebDavConfig::class.java) ?: return null
+        if (!WebDavUrlTools.isCredentialSafeTarget(config.url, response.request.url.toString())) return null
+        if (config.username.isBlank() || responseCount(response) >= 4) return null
+        val challenges = digestAuth.parseChallenges(response.headers("WWW-Authenticate"))
+        if (challenges.isEmpty()) return null
+        val digest = challenges.firstOrNull { it.scheme.equals("Digest", true) }
+        val basic = challenges.firstOrNull { it.scheme.equals("Basic", true) }
+        fun basicAuthorization(): String? {
+            if (basic == null) return null
+            val basicValue = Credentials.basic(config.username, config.password)
+            if (response.request.header("Authorization") == basicValue) return null
+            return basicValue
+        }
 
-            var eventType = parser.eventType
-            while (eventType != XmlPullParser.END_DOCUMENT) {
-                when (eventType) {
-                    XmlPullParser.START_TAG -> {
-                        val name = parser.name
-                        val namespace = parser.namespace
-                        when {
-                            name == "response" && namespace == "DAV:" -> {
-                                inResponse = true
-                                href = ""
-                                displayName = ""
-                                contentLength = 0L
-                                lastModified = ""
-                                contentType = ""
-                                isDirectory = false
-                            }
-                            inResponse -> {
-                                currentTag = name
-                                if (name == "collection" && namespace == "DAV:") {
-                                    isDirectory = true
-                                }
-                            }
-                        }
-                    }
-                    XmlPullParser.TEXT -> {
-                        if (inResponse) {
-                            val text = parser.text?.trim() ?: ""
-                            when (currentTag) {
-                                "href" -> href = text
-                                "displayname" -> displayName = text
-                                "getcontentlength" -> contentLength = text.toLongOrNull() ?: 0L
-                                "getlastmodified" -> lastModified = text
-                                "getcontenttype" -> contentType = text
-                            }
-                        }
-                    }
-                    XmlPullParser.END_TAG -> {
-                        if (parser.name == "response" && parser.namespace == "DAV:" && inResponse) {
-                            inResponse = false
-                            if (href.isNotBlank()) {
-                                items.add(
-                                    WebDavItem(
-                                        href = href,
-                                        displayName = displayName,
-                                        isDirectory = isDirectory,
-                                        size = contentLength,
-                                        lastModified = lastModified,
-                                        contentType = contentType
-                                    )
-                                )
-                            }
-                        }
-                        currentTag = ""
+        val chosenAuthorization: Pair<String, String> = when (config.authMode) {
+            AuthMode.DIGEST -> {
+                val challenge = digest ?: return null
+                cacheDigestChallenge(response.request.url, challenge)
+                "Digest" to (digestAuth.authorization(response.request, config.username, config.password, challenge) ?: return null)
+            }
+            AuthMode.BASIC -> "Basic" to (basicAuthorization() ?: return null)
+            AuthMode.AUTO -> {
+                val digestValue = digest?.let {
+                    cacheDigestChallenge(response.request.url, it)
+                    digestAuth.authorization(response.request, config.username, config.password, it)
+                }
+                if (digestValue != null) "Digest" to digestValue
+                else "Basic" to (basicAuthorization() ?: return null)
+            }
+        }
+        val (chosenScheme, authorization) = chosenAuthorization
+
+        lastAuthSchemeByOrigin[WebDavUrlTools.origin(response.request.url)] = chosenScheme
+        authProbeAtByOrigin[WebDavUrlTools.origin(response.request.url)] = System.currentTimeMillis()
+        Log.d(TAG, "Authentication challenge resolved with $chosenScheme for ${response.request.url.host}")
+        return response.request.newBuilder().header("Authorization", authorization).build()
+    }
+
+    private fun shouldRefreshAuthentication(config: WebDavConfig, origin: String): Boolean {
+        if (config.username.isBlank() || config.authMode == AuthMode.BASIC) return false
+        val now = System.currentTimeMillis()
+        val knownScheme = lastAuthSchemeByOrigin[origin]
+        val lastProbe = authProbeAtByOrigin[origin] ?: 0L
+        if (knownScheme == null) return now - lastProbe > AUTH_PROBE_FRESH_MS
+        if (!knownScheme.equals("Digest", true)) return false
+        val challenge = digestChallengeByOrigin[origin] ?: return true
+        return now - challenge.capturedAtMs > AUTH_PROBE_FRESH_MS
+    }
+
+    private fun refreshAuthentication(config: WebDavConfig, targetUrl: String) {
+        val parsed = targetUrl.toHttpUrlOrNull() ?: return
+        val origin = WebDavUrlTools.origin(parsed)
+        runCatching {
+            var needsPropfind = false
+            httpClient.newCall(requestBuilder(targetUrl, config).head().build()).execute().use { response ->
+                needsPropfind = response.code in setOf(405, 501)
+                if (!response.isSuccessful && !needsPropfind) {
+                    Log.w(TAG, "WebDAV auth HEAD preflight code=${response.code} host=${response.request.url.host}")
+                }
+            }
+            if (needsPropfind) {
+                httpClient.newCall(buildPropfindRequest(targetUrl, config, depth = "0")).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "WebDAV auth PROPFIND preflight code=${response.code} host=${response.request.url.host}")
                     }
                 }
-                eventType = parser.next()
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "parsePropfindResponse failed", e)
+        }.onFailure { error ->
+            Log.w(TAG, "WebDAV playback auth preflight failed host=${parsed.host}: ${error.message}")
         }
-        return items
+        authProbeAtByOrigin[origin] = System.currentTimeMillis()
     }
 
-    private fun normalizeUrl(url: String): String {
-        var normalized = url.trim()
-        if (!normalized.startsWith("http://") && !normalized.startsWith("https://")) {
-            normalized = "http://$normalized"
-        }
-        if (!normalized.endsWith("/")) {
-            normalized = "$normalized/"
-        }
-        return normalized
+    private fun cacheDigestChallenge(url: HttpUrl, challenge: WebDavAuthChallenge) {
+        digestChallengeByOrigin[WebDavUrlTools.origin(url)] = CachedDigestChallenge(
+            challenge = challenge,
+            capturedAtMs = System.currentTimeMillis(),
+        )
     }
 
-    fun createDirectory(config: WebDavConfig, path: String): Boolean {
-        currentConfig = config
-        authAttemptCount = 0
-        lastAuthMethod = null
-        val url = normalizeUrl(path)
-        return try {
-            val requestBuilder = Request.Builder().url(url).method("MKCOL", null)
-            if (config.username.isNotBlank()) {
-                requestBuilder.header("Authorization", Credentials.basic(config.username, config.password))
+    private fun matchingCookies(url: HttpUrl): String = cookieStore
+        .filter { it.expiresAt > System.currentTimeMillis() && it.matches(url) }
+        .joinToString("; ") { "${it.name}=${it.value}" }
+
+    private fun responseCount(response: Response): Int {
+        var count = 0
+        var current: Response? = response
+        while (current != null) {
+            if (current.code == 401 || current.code == 407) count++
+            current = current.priorResponse
+        }
+        return count
+    }
+
+    private fun authDescription(config: WebDavConfig, url: HttpUrl): String {
+        if (config.username.isBlank()) return "无认证"
+        return lastAuthSchemeByOrigin[WebDavUrlTools.origin(url)] ?: when (config.authMode) {
+            AuthMode.BASIC -> "Basic"
+            AuthMode.DIGEST -> "Digest"
+            AuthMode.AUTO -> "自动认证"
+        }
+    }
+
+    private fun responseException(response: Response): WebDavException {
+        val url = response.request.url.toString()
+        val detail = response.body?.string()?.replace('\n', ' ')?.replace('\r', ' ')?.take(240).orEmpty()
+        val message = when (response.code) {
+            400 -> "服务器拒绝了 WebDAV 请求 (400)"
+            401 -> "WebDAV 认证失败 (401)：请检查用户名、密码或认证方式"
+            403 -> "WebDAV 访问被拒绝 (403)：账号没有当前路径权限"
+            404 -> "WebDAV 路径不存在 (404)：请检查服务器地址和根目录"
+            405 -> "服务器不允许此 WebDAV 方法 (405)"
+            409 -> "WebDAV 路径冲突 (409)：上级目录可能不存在"
+            423 -> "WebDAV 资源已锁定 (423)"
+            429 -> "WebDAV 请求过于频繁 (429)"
+            in 500..599 -> "WebDAV 服务器错误 (${response.code})"
+            else -> "WebDAV 请求失败：HTTP ${response.code}"
+        } + detail.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty() +
+            if (detail.contains("Client type mismatch", ignoreCase = true)) {
+                " · 服务器要求匹配客户端 User-Agent；可在自定义 HTTP Header 中设置，例如 User-Agent: Zotero/8.0"
+            } else {
+                ""
             }
-            val response = httpClient.newCall(requestBuilder.build()).execute()
-            val success = response.isSuccessful || response.code == 405
-            response.close()
-            success
-        } catch (e: Exception) {
-            Log.e(TAG, "MKCOL failed", e)
-            false
-        }
+        return WebDavException(message, response.code, url)
     }
 
-    fun uploadFile(config: WebDavConfig, remotePath: String, data: ByteArray): Boolean {
-        currentConfig = config
-        authAttemptCount = 0
-        lastAuthMethod = null
-        val url = normalizeUrl(remotePath).trimEnd('/')
-        return try {
-            val body = data.toRequestBody("application/octet-stream".toMediaType())
-            val requestBuilder = Request.Builder().url(url).put(body)
-            if (config.username.isNotBlank()) {
-                requestBuilder.header("Authorization", Credentials.basic(config.username, config.password))
+    private fun effectiveUserAgent(config: WebDavConfig): String =
+        config.extraHeaders.entries
+            .firstOrNull { it.key.equals("User-Agent", true) }
+            ?.value
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: USER_AGENT
+
+    private fun Map<String, String>.sanitizedHeaders(): Map<String, String> = buildMap {
+        this@sanitizedHeaders.forEach { (rawName, rawValue) ->
+            val name = rawName.trim().replace("\r", "").replace("\n", "")
+            val value = rawValue.replace("\r", "").replace("\n", "")
+            if (name.isNotBlank() && !name.equals("Host", true) && !name.equals("Content-Length", true)) {
+                put(name, value)
             }
-            val response = httpClient.newCall(requestBuilder.build()).execute()
-            val success = response.isSuccessful
-            response.close()
-            success
-        } catch (e: Exception) {
-            Log.e(TAG, "PUT upload failed", e)
-            false
         }
-    }
-
-    fun downloadFile(config: WebDavConfig, remotePath: String): ByteArray? {
-        currentConfig = config
-        authAttemptCount = 0
-        lastAuthMethod = null
-        val url = normalizeUrl(remotePath).trimEnd('/')
-        return try {
-            val requestBuilder = Request.Builder().url(url).get()
-            if (config.username.isNotBlank()) {
-                requestBuilder.header("Authorization", Credentials.basic(config.username, config.password))
-            }
-            val response = httpClient.newCall(requestBuilder.build()).execute()
-            val bytes = response.body?.bytes()
-            response.close()
-            if (response.isSuccessful) bytes else null
-        } catch (e: Exception) {
-            Log.e(TAG, "GET download failed", e)
-            null
-        }
-    }
-
-    fun exists(config: WebDavConfig, path: String): Boolean {
-        currentConfig = config
-        authAttemptCount = 0
-        lastAuthMethod = null
-        val url = normalizeUrl(path).trimEnd('/')
-        return try {
-            val requestBuilder = Request.Builder().url(url).head()
-            if (config.username.isNotBlank()) {
-                requestBuilder.header("Authorization", Credentials.basic(config.username, config.password))
-            }
-            val response = httpClient.newCall(requestBuilder.build()).execute()
-            val exists = response.isSuccessful
-            response.close()
-            exists
-        } catch (_: Exception) { false }
-    }
-
-    private fun normalizeHref(href: String): String {
-        var h = href.trim()
-        if (!h.endsWith("/")) h = "$h/"
-        return h
     }
 }

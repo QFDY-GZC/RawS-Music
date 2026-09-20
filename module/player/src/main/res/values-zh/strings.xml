@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="usb_volume_exclusive_only">硬件音量仅在 USB 独占模式下可用</string>
+</resources>

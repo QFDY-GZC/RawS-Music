@@ -6,13 +6,15 @@ fun NavScene.bottomNavigationRoot(): NavScene = when (this) {
     NavScene.SOURCE_IMPORT -> NavScene.HOME
 
     NavScene.FOLDERS,
-    NavScene.FOLDER_HIERARCHY -> NavScene.FOLDERS
+    NavScene.FOLDER_HIERARCHY,
+    NavScene.FOLDER_DETAIL -> NavScene.FOLDERS
 
     NavScene.ALBUMS,
     NavScene.ALBUM_DETAIL -> NavScene.ALBUMS
 
     NavScene.ARTISTS,
-    NavScene.ARTIST_DETAIL -> NavScene.ARTISTS
+    NavScene.ARTIST_DETAIL,
+    NavScene.ARTIST_BIOGRAPHY -> NavScene.ARTISTS
 
     NavScene.PLAYLISTS,
     NavScene.PLAYLIST_DETAIL,

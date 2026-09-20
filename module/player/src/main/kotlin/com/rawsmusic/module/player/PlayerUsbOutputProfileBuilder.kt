@@ -11,7 +11,9 @@ import com.rawsmusic.module.player.usb.UsbOutputProfile
 import com.rawsmusic.module.player.usb.UsbPcmFormatRequest
 import com.rawsmusic.module.player.usb.UsbPcmFormatCapability
 import com.rawsmusic.module.player.usb.UsbPcmOutputMode
+import com.rawsmusic.module.player.usb.UsbVolumeModeBitPerfectPolicy
 import com.rawsmusic.module.player.usb.UsbRecoveryPlan
+import java.util.concurrent.atomic.AtomicReference
 
 internal data class UsbFeedbackModelDecision(
     val noFeedback: Boolean,
@@ -28,6 +30,8 @@ internal class PlayerUsbOutputProfileBuilder(
     private val tag: String,
     private val callbacks: Callbacks,
 ) {
+    private val lastNoFeedbackDiagnostic = AtomicReference<String?>(null)
+
     data class Callbacks(
         val currentDsdMode: () -> UsbDsdModeConfig?,
         val currentDsdRate: () -> Int,
@@ -37,6 +41,7 @@ internal class PlayerUsbOutputProfileBuilder(
         val capabilities: () -> UsbDeviceAudioCapabilities?,
         val engineCapabilities: () -> UsbDeviceAudioCapabilities?,
         val isHardwareVolumeValidated: () -> Boolean,
+        val isEffectiveBitPerfect: () -> Boolean,
         val decideFeedbackModel: (
             UsbDeviceAudioCapabilities?,
             UsbPcmFormatRequest,
@@ -51,10 +56,16 @@ internal class PlayerUsbOutputProfileBuilder(
     fun build(exclusive: Boolean): UsbOutputProfile {
         val effectiveDsdMode = callbacks.currentDsdMode()
         val effectiveDsdActive = effectiveDsdMode != null
-        val bitPerfect = AppPreferences.Player.bitPerfectEnabled &&
-            exclusive &&
-            !effectiveDsdActive
-        if (exclusive && effectiveDsdActive && AppPreferences.Player.bitPerfectEnabled) {
+        val usbVolumeMode = AppPreferences.Player.usbVolumeMode
+        val bitPerfectCandidate = callbacks.isEffectiveBitPerfect() && exclusive && !effectiveDsdActive
+        val bitPerfect = UsbVolumeModeBitPerfectPolicy.effectivePcmBitPerfect(
+            candidate = bitPerfectCandidate,
+            usbVolumeMode = usbVolumeMode,
+        )
+        if (bitPerfectCandidate && !bitPerfect) {
+            AppLogger.i(tag, "USB profile: explicit software volume disables effective PCM bit-perfect")
+        }
+        if (exclusive && effectiveDsdActive && AppPreferences.Player.usbBitPerfectMode.requestsBitPerfect) {
             AppLogger.w(tag, "USB profile: PCM→DSD/DSD transport overrides PCM bit-perfect for this session")
         }
 
@@ -84,18 +95,24 @@ internal class PlayerUsbOutputProfileBuilder(
 
         if (exclusive && feedbackModel.noFeedback) {
             val format = feedbackModel.format
-            AppLogger.w(
-                tag,
+            val diagnostic =
                 "USB stream config: noFeedback=true reason=${feedbackModel.reason} " +
                     "fmt=${format?.sampleRate}/${format?.validBits}/${format?.subslotBytes} " +
                     "iface=${format?.interfaceNumber} alt=${format?.altSetting} " +
                     "out=0x${(format?.outEndpoint ?: 0).toString(16)} " +
                     "fb=0x${(format?.feedbackEndpoint ?: 0).toString(16)} " +
-                    "outSync=${format?.outSync} fbUsage=${format?.feedbackUsage}",
-            )
+                    "outSync=${format?.outSync} fbUsage=${format?.feedbackUsage}"
+            // build() is queried by several live volume/route paths. Logging this warning on
+            // every query used to synchronously flush the same line thousands of times while
+            // USB playback was active. Keep the diagnostic edge-triggered: a changed profile is
+            // still recorded immediately, while steady-state reads remain allocation/file-I/O free.
+            if (lastNoFeedbackDiagnostic.getAndSet(diagnostic) != diagnostic) {
+                AppLogger.w(tag, diagnostic)
+            }
+        } else {
+            lastNoFeedbackDiagnostic.set(null)
         }
 
-        val usbVolumeMode = AppPreferences.Player.usbVolumeMode
         val hardwareRequested = exclusive &&
             usbVolumeMode == 1 &&
             AppPreferences.Player.hardwareFeatureUnitEnabled
@@ -133,7 +150,7 @@ internal class PlayerUsbOutputProfileBuilder(
                 learned?.force1msPacket == true || pendingPlan?.force1msPacket == true,
             preferSafeAlt = AppPreferences.Player.usbSafeExclusiveMode ||
                 learnedSafeAlt || pendingPlan?.preferSafeAlt == true,
-            forceSoftwareVolume = false,
+            forceSoftwareVolume = exclusive && UsbVolumeModeBitPerfectPolicy.softwareVolumeSelected(usbVolumeMode),
             fixedDigitalVolume = fixedDigitalVolume,
             lastGoodAlt = learned?.lastGoodAlt ?: 0,
             lastGoodSampleRate = learned?.lastGoodSampleRate ?: 0,

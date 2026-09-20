@@ -15,8 +15,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.rawsmusic.core.common.source.RawSourceMediaItem
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
@@ -51,20 +49,19 @@ internal fun SourceArtwork(
             .background(scheme.primary.copy(alpha = 0.10f)),
         contentAlignment = Alignment.Center,
     ) {
-        // Keep the already visible Coil image underneath while the local BitmapProvider request is
-        // warming. If local decoding fails, the remote image remains instead of disappearing a few
-        // seconds after the download finishes.
+        // Keep the already visible provider-backed remote image underneath while the local source
+        // is warming. Both lanes share BitmapProvider ownership; there is no second painter cache.
         if (remoteUrl != null) {
-            AsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(remoteUrl)
-                    .crossfade(120)
-                    .build(),
+            BitmapImage(
+                key = remoteUrl,
                 contentDescription = item?.title,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = contentScale,
-                error = painterResource(R.drawable.ic_music_2_fill),
-                placeholder = painterResource(R.drawable.ic_music_2_fill),
+                targetWidth = targetSize,
+                targetHeight = targetSize,
+                priority = BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
+                surface = ArtworkSurface.Playback,
+                showDefaultArtwork = false,
             )
         }
 

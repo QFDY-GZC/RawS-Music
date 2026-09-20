@@ -53,7 +53,7 @@ internal class LyricPullEngine {
         anchorIndex: Int,
         pullDistancePx: Float,
         viewportHeightPx: Float,
-        visibleIndices: Collection<Int>,
+        visibleIndices: List<Int>,
         frameTimeMs: Long
     ): Boolean {
         val distance = abs(pullDistancePx)
@@ -70,7 +70,7 @@ internal class LyricPullEngine {
         val duration = LyricPullSpec.DURATION_MS
         val delay = LyricPullSpec.itemDelayMs(distance, viewportHeightPx)
 
-        visibleIndices.sorted().forEach { index ->
+        visibleIndices.forEach { index ->
             val item = items.getOrPut(index) { ItemState() }
             if (index <= anchorIndex) {
                 item.reset()
@@ -113,14 +113,25 @@ internal class LyricPullEngine {
         return true
     }
 
-    fun advance(frameTimeMs: Long, visibleIndices: Collection<Int>): LyricPullFrame {
+    fun advance(frameTimeMs: Long, visibleIndices: List<Int>): LyricPullFrame {
         if (!active) return LyricPullFrame(emptyMap(), running = false)
 
         val offsets = linkedMapOf<Int, Float>()
         var anyActiveItem = false
         var previousVisibleOffset = 0f
 
-        visibleIndices.sorted().forEach { index ->
+        val globalLinearProgress = if (globalDurationMs > 0) {
+            ((frameTimeMs - globalStartTimeMs).toFloat() / globalDurationMs).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+        val globalInterpolation = LyricPullSpec.interpolate(
+            progress = globalLinearProgress,
+            movementPx = globalPullDistancePx
+        )
+        val globalContributionPx = globalPullDistancePx * globalInterpolation
+
+        visibleIndices.forEach { index ->
             if (index <= anchorIndex) {
                 items[index]?.reset()
                 offsets[index] = 0f
@@ -128,14 +139,49 @@ internal class LyricPullEngine {
                 return@forEach
             }
 
-            val item = items.getOrPut(index) {
-                ItemState(
-                    phase = LyricPullItemPhase.WaitingForPull,
-                    baseOffsetPx = 0f,
-                    amplitudePx = globalPullDistancePx,
-                    currentOffsetPx = 0f,
-                    durationMs = globalDurationMs
-                )
+            val scheduledStart = globalStartTimeMs +
+                perItemDelayMs * abs(index - anchorIndex).toLong()
+            val item = items[index] ?: run {
+                // Reference derives a newly visible trailing item's current/target top from the
+                // preceding lyric item. In the Compose offset domain, inherit that predecessor's
+                // current compensation and solve the remaining pull curve from this exact frame.
+                // This avoids a bottom-edge row joining an in-flight pull at a large unrelated
+                // global offset, which was the intermittent one-frame trailing-row shake.
+                val inheritedOffset = previousVisibleOffset.coerceAtLeast(0f)
+                val late = ItemState(durationMs = globalDurationMs)
+                if (frameTimeMs < scheduledStart) {
+                    late.phase = LyricPullItemPhase.WaitingForPull
+                    late.baseOffsetPx = inheritedOffset - globalContributionPx
+                    late.amplitudePx = (late.baseOffsetPx + globalPullDistancePx).coerceAtLeast(0f)
+                    late.currentOffsetPx = inheritedOffset
+                } else {
+                    val linearProgress = if (globalDurationMs > 0) {
+                        ((frameTimeMs - scheduledStart).toFloat() / globalDurationMs).coerceIn(0f, 1f)
+                    } else {
+                        1f
+                    }
+                    if (linearProgress >= 1f) {
+                        late.phase = LyricPullItemPhase.Done
+                        late.currentOffsetPx = 0f
+                    } else {
+                        val interpolation = LyricPullSpec.interpolate(
+                            progress = linearProgress,
+                            movementPx = globalPullDistancePx
+                        )
+                        val remaining = (1f - interpolation).coerceAtLeast(0.001f)
+                        late.phase = LyricPullItemPhase.Pulling
+                        late.startTimeMs = scheduledStart
+                        late.baseOffsetPx = (
+                            inheritedOffset - globalContributionPx +
+                                globalPullDistancePx * interpolation
+                            ) / remaining
+                        late.amplitudePx =
+                            (late.baseOffsetPx + globalPullDistancePx).coerceAtLeast(0f)
+                        late.currentOffsetPx = inheritedOffset
+                    }
+                }
+                items[index] = late
+                late
             }
 
             when (item.phase) {
@@ -152,25 +198,10 @@ internal class LyricPullEngine {
                 LyricPullItemPhase.Pulling -> Unit
             }
 
-            if (item.phase == LyricPullItemPhase.WaitingForPull) {
-                val scheduledStart = globalStartTimeMs +
-                    perItemDelayMs * abs(index - anchorIndex).toLong()
-                if (frameTimeMs >= scheduledStart) {
-                    item.phase = LyricPullItemPhase.Pulling
-                    item.startTimeMs = scheduledStart
-                }
+            if (item.phase == LyricPullItemPhase.WaitingForPull && frameTimeMs >= scheduledStart) {
+                item.phase = LyricPullItemPhase.Pulling
+                item.startTimeMs = scheduledStart
             }
-
-            val globalLinearProgress = if (globalDurationMs > 0) {
-                ((frameTimeMs - globalStartTimeMs).toFloat() / globalDurationMs).coerceIn(0f, 1f)
-            } else {
-                0f
-            }
-            val globalInterpolation = LyricPullSpec.interpolate(
-                progress = globalLinearProgress,
-                movementPx = globalPullDistancePx
-            )
-            val globalContributionPx = globalPullDistancePx * globalInterpolation
 
             if (item.phase == LyricPullItemPhase.Pulling) {
                 val linearProgress = if (item.durationMs > 0) {
@@ -192,12 +223,11 @@ internal class LyricPullEngine {
                     item.phase = LyricPullItemPhase.Done
                 }
             } else if (item.phase == LyricPullItemPhase.WaitingForPull) {
-                item.currentOffsetPx = item.baseOffsetPx + globalContributionPx
+                item.currentOffsetPx = (item.baseOffsetPx + globalContributionPx).coerceAtLeast(0f)
             }
 
-            // Clamp every row against the previous row's actual bottom. With LazyColumn's
-            // baseline gap already reserved, the equivalent invariant is a non-decreasing trailing
-            // compensation offset: a later row can never overtake the row before it.
+            // LazyColumn already reserves each row's measured height and spacing, so preserving a
+            // non-decreasing compensation is equivalent to Reference's previousActualBottom guard.
             val clampedOffset = max(item.currentOffsetPx, previousVisibleOffset)
             offsets[index] = clampedOffset
             previousVisibleOffset = clampedOffset

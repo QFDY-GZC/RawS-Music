@@ -4,7 +4,6 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
 import kotlin.math.log10
 import kotlin.math.max
-import kotlin.math.pow
 import java.util.ArrayDeque
 
 /**
@@ -19,27 +18,17 @@ internal object AutoTransitionPolicy {
     const val MIN_MEANINGFUL_LYRIC_LINES = 4
     const val MAX_LYRIC_PREROLL_MS = 30_000L
     const val ENVELOPE_LOOKAHEAD_MS = 30_000L
+    /** Tracks shorter than one complete analysis window are kept gapless. */
+    const val MIN_TRACK_DURATION_MS = ENVELOPE_LOOKAHEAD_MS
     const val HARD_END_SAFETY_REMAINING_MS = 1_500L
-    /** Once a real handover starts, the old track gets an eight-second fade window. */
-    const val LEAD_FADE_WINDOW_MS = 8_000
-    /** The follow track reaches unity one second before the old decoder is physically retired. */
-    const val POST_DOMINANCE_TAIL_MS = 1_000
-    /** Start the formal fade only when the final lyric is essentially finished. */
-    const val FINAL_LYRIC_END_APPROACH_MS = 500L
-    /** Incoming track always begins extremely low, then rises linearly in dB. */
-    const val INCOMING_START_DB = -50f
-    /** While the lead remains untouched, keep the follow underlay no louder than this. */
-    const val INCOMING_UNDERLAY_CEILING_DB = -36f
-    /** The old track is quiet but still continuous at the dominance point; its final second finishes the tail. */
-    const val LEAD_DB_AT_DOMINANCE = -36f
-    const val LEAD_SILENCE_DB = -90f
-    // Kept in Recipe/StartPlan for source compatibility with the current policy surface. The
-    // controller no longer derives an audible floor from source RMS; INCOMING_START_DB owns it.
-    const val DEFAULT_INCOMING_FLOOR_DB = INCOMING_START_DB
-    const val MIN_INCOMING_FLOOR_DB = -60f
-    const val MAX_INCOMING_FLOOR_DB = INCOMING_START_DB
-    const val INCOMING_SAFETY_MARGIN_DB = 15f
-    const val DEFAULT_HANDOVER_MS = LEAD_FADE_WINDOW_MS
+    /** Smart transitions use the available musical tail instead of a fixed 8 s cap. */
+    const val MIN_HANDOVER_MS = 6_000
+    const val DEFAULT_HANDOVER_MS = 12_000
+    const val MAX_HANDOVER_MS = 20_000
+    /** The nominal point where lead/follow ownership is equal. */
+    const val SMART_PIVOT_PERCENT = 55
+    /** Compatibility name used by the quiet-tail retimer. */
+    const val LEAD_FADE_WINDOW_MS = DEFAULT_HANDOVER_MS
 
     enum class Source {
         LYRICS,
@@ -49,16 +38,12 @@ internal object AutoTransitionPolicy {
     data class Recipe(
         val targetPath: String,
         val source: Source,
-        /** Absolute current-track position where underlay is allowed to start. */
+        /** Absolute current-track position where the next decoder may be prepared. */
         val triggerPositionMs: Long?,
         /** Absolute current-track position where the formal handover should start. */
         val handoverPositionMs: Long?,
         val handoverDurationMs: Int,
         val envelopeLookaheadMs: Long = ENVELOPE_LOOKAHEAD_MS,
-        val defaultIncomingFloorDb: Float = DEFAULT_INCOMING_FLOOR_DB,
-        val minIncomingFloorDb: Float = MIN_INCOMING_FLOOR_DB,
-        val maxIncomingFloorDb: Float = MAX_INCOMING_FLOOR_DB,
-        val incomingSafetyMarginDb: Float = INCOMING_SAFETY_MARGIN_DB,
         val confidence: Float,
     )
 
@@ -82,6 +67,9 @@ internal object AutoTransitionPolicy {
             current.cueOffsetMs == next.cueOffsetMs
         ) {
             return Decision(null, forceGapless = true, reason = "same_item_repeat_gapless")
+        }
+        if (isKnownShortTrack(current) || isKnownShortTrack(next)) {
+            return Decision(null, forceGapless = true, reason = "short_track_gapless")
         }
         if (isSequentialAlbumPair(current, next)) {
             return Decision(null, forceGapless = true, reason = "sequential_album_gapless")
@@ -145,21 +133,13 @@ internal object AutoTransitionPolicy {
         val estimatedEnd = minOf(currentDurationMs, lastStart + 4_500L)
         val lastEnd = (wordEnd ?: explicitEnd ?: estimatedEnd).coerceIn(lastStart + 1L, currentDurationMs)
 
-        // The 30 s threshold is analysis/preparation headroom only. Do not derive the lead fade by
-        // subtracting eight seconds from a later retirement point: that made the outgoing song duck
-        // while the final lyric was still being sung. The formal handover now begins only as the
-        // final timed lyric approaches its end. Word timing is preferred, then explicit line end,
-        // with the estimated end as the conservative fallback.
-        val handoverStart = (lastEnd - FINAL_LYRIC_END_APPROACH_MS)
-            .coerceIn(lastStart, currentDurationMs - 1L)
-        val plannedRetirePosition = (handoverStart + LEAD_FADE_WINDOW_MS)
-            .coerceAtMost(currentDurationMs)
-            .coerceAtLeast(handoverStart + 1L)
-        val handoverMs = (plannedRetirePosition - handoverStart)
-            .coerceAtLeast(1L)
-            .toInt()
+        // Lyrics are a semantic boundary, not a look-ahead hint. Preserve the complete last line,
+        // then introduce the following track immediately after its final timed word/line ends.
+        if (lastEnd >= currentDurationMs) return null
+        val handoverStart = lastEnd
+        val handoverMs = adaptiveHandoverMs(currentDurationMs - handoverStart)
         // Arm/pre-open from the last meaningful line (bounded by the 30 s policy window), but the
-        // mixer keeps the lead at unity and the follow pinned at -50 dB until handoverStart.
+        // mixer does not consume the follow track until the exact handover start.
         val trigger = max(lastStart, handoverStart - MAX_LYRIC_PREROLL_MS)
             .coerceAtLeast(0L)
         if (trigger >= currentDurationMs) return null
@@ -191,16 +171,26 @@ internal object AutoTransitionPolicy {
         if (current.discNumber > 0 && next.discNumber > 0 && current.discNumber != next.discNumber) return false
         return current.trackNumber > 0 && next.trackNumber == current.trackNumber + 1
     }
+
+    internal fun adaptiveHandoverMs(availableMs: Long): Int = availableMs
+        .coerceAtLeast(1L)
+        .coerceAtMost(MAX_HANDOVER_MS.toLong())
+        .toInt()
+
+    internal fun pivotMs(handoverMs: Int): Int =
+        (handoverMs.coerceAtLeast(1).toLong() * SMART_PIVOT_PERCENT / 100L)
+            .coerceIn(1L, handoverMs.coerceAtLeast(1).toLong())
+            .toInt()
+
+    private fun isKnownShortTrack(track: AudioFile): Boolean =
+        track.duration in 1 until MIN_TRACK_DURATION_MS
 }
 
 /** Start parameters consumed by [CrossfadeTransitionController]. */
 internal data class AutoTransitionStartPlan(
     val preRollMs: Int,
     val handoverMs: Int,
-    val defaultIncomingFloorDb: Float,
-    val minIncomingFloorDb: Float,
-    val maxIncomingFloorDb: Float,
-    val incomingSafetyMarginDb: Float,
+    val pivotMs: Int,
     val source: AutoTransitionPolicy.Source,
 )
 
@@ -243,25 +233,20 @@ internal class AutoTransitionRuntime(private val tag: String) {
 
     fun resolveStartPlan(positionMs: Long, durationMs: Long): AutoTransitionStartPlan? {
         val activeRecipe = recipe ?: return null
-        if (durationMs <= 0L || activeRecipe.targetPath.isBlank()) return null
+        if (durationMs < AutoTransitionPolicy.MIN_TRACK_DURATION_MS || activeRecipe.targetPath.isBlank()) return null
         val remainingMs = (durationMs - positionMs).coerceAtLeast(0L)
         if (remainingMs <= 0L) return null
 
         return when (activeRecipe.source) {
             AutoTransitionPolicy.Source.LYRICS -> {
-                val trigger = activeRecipe.triggerPositionMs ?: return null
-                if (positionMs < trigger) return null
                 val handoverAt = activeRecipe.handoverPositionMs ?: positionMs
-                val preRoll = (handoverAt - positionMs)
-                    .coerceIn(0L, AutoTransitionPolicy.MAX_LYRIC_PREROLL_MS)
-                    .toInt()
+                // The next decoder may be prepared from triggerPositionMs, but decoding it here
+                // consumes its intro. Start the mixer only at the semantic handover point.
+                if (positionMs < handoverAt) return null
                 AutoTransitionStartPlan(
-                    preRollMs = preRoll,
+                    preRollMs = 0,
                     handoverMs = activeRecipe.handoverDurationMs.coerceAtLeast(900),
-                    defaultIncomingFloorDb = activeRecipe.defaultIncomingFloorDb,
-                    minIncomingFloorDb = activeRecipe.minIncomingFloorDb,
-                    maxIncomingFloorDb = activeRecipe.maxIncomingFloorDb,
-                    incomingSafetyMarginDb = activeRecipe.incomingSafetyMarginDb,
+                    pivotMs = AutoTransitionPolicy.pivotMs(activeRecipe.handoverDurationMs.coerceAtLeast(900)),
                     source = activeRecipe.source,
                 )
             }
@@ -272,39 +257,15 @@ internal class AutoTransitionRuntime(private val tag: String) {
                 val hardEndSafety = remainingMs <= AutoTransitionPolicy.HARD_END_SAFETY_REMAINING_MS
                 if (!quietTail && !fadeTail && !hardEndSafety) return null
 
-                // A quiet tail is already musically expendable: start the eight-second takeover
-                // immediately and physically retire the old decoder after it. For a normal fade-out,
-                // allow a short low-level underlay first when enough file remains, but still reserve
-                // a full eight-second lead fade. Hard endings use whatever time is left.
-                val desiredHandover = minOf(
-                    AutoTransitionPolicy.LEAD_FADE_WINDOW_MS.toLong(),
+                // Preparation happens outside the mixer. Never consume the following song before
+                // the real ramp because that permanently skips the same amount of its intro.
+                val desiredHandover = AutoTransitionPolicy.adaptiveHandoverMs(
                     remainingMs.coerceAtLeast(900L),
-                ).toInt()
-                val preRoll: Int
-                val handover: Int
-                when {
-                    quietTail -> {
-                        preRoll = 0
-                        handover = desiredHandover
-                    }
-                    fadeTail -> {
-                        preRoll = (remainingMs - desiredHandover)
-                            .coerceIn(0L, AutoTransitionPolicy.LEAD_FADE_WINDOW_MS.toLong())
-                            .toInt()
-                        handover = desiredHandover
-                    }
-                    else -> {
-                        preRoll = 0
-                        handover = desiredHandover
-                    }
-                }
+                )
                 AutoTransitionStartPlan(
-                    preRollMs = preRoll,
-                    handoverMs = handover,
-                    defaultIncomingFloorDb = activeRecipe.defaultIncomingFloorDb,
-                    minIncomingFloorDb = activeRecipe.minIncomingFloorDb,
-                    maxIncomingFloorDb = activeRecipe.maxIncomingFloorDb,
-                    incomingSafetyMarginDb = activeRecipe.incomingSafetyMarginDb,
+                    preRollMs = 0,
+                    handoverMs = desiredHandover,
+                    pivotMs = AutoTransitionPolicy.pivotMs(desiredHandover),
                     source = activeRecipe.source,
                 )
             }
@@ -318,41 +279,79 @@ internal class AutoTransitionRuntime(private val tag: String) {
 }
 
 private class AutoTransitionEnvelopeTracker {
-    private data class Sample(val positionMs: Long, val db: Float)
+    private data class Sample(val positionMs: Long, var db: Float, var observations: Int = 1)
     private val samples = ArrayDeque<Sample>()
+    private var fadeLatchedUntilMs = Long.MIN_VALUE
 
-    fun reset() = samples.clear()
+    fun reset() {
+        samples.clear()
+        fadeLatchedUntilMs = Long.MIN_VALUE
+    }
 
     fun observe(positionMs: Long, db: Float) {
         if (!db.isFinite()) return
-        samples.addLast(Sample(positionMs, db.coerceIn(-90f, 0f)))
-        val cutoff = positionMs - 3_000L
+        val level = db.coerceIn(-90f, 0f)
+        val last = samples.lastOrNull()
+        if (last != null && positionMs - last.positionMs < 80L) {
+            last.observations++
+            last.db += (level - last.db) / last.observations.toFloat()
+        } else {
+            samples.addLast(Sample(positionMs, level))
+        }
+        val cutoff = positionMs - 10_000L
         while (samples.firstOrNull()?.positionMs?.let { it < cutoff } == true) {
             samples.removeFirst()
         }
-        while (samples.size > 90) samples.removeFirst()
+        while (samples.size > 160) samples.removeFirst()
     }
 
     fun isQuietTail(): Boolean {
-        val recent = samples.takeLastCompat(6)
-        return recent.size >= 3 && recent.map { it.db }.average() <= -38.0
+        val latestPosition = samples.lastOrNull()?.positionMs ?: return false
+        val recent = samples.filter { it.positionMs >= latestPosition - 700L }.map { it.db }
+        return recent.size >= 4 && recent.median() <= -38f
     }
 
     fun looksLikeFadeOut(): Boolean {
-        if (samples.size < 8) return false
+        if (samples.size < 12) return false
         val list = samples.toList()
-        val third = (list.size / 3).coerceAtLeast(2)
-        val early = list.take(third).map { it.db }.average()
-        val late = list.takeLast(third).map { it.db }.average()
-        val drop = early - late
-        val latest = list.last().db
-        return late <= -18.0 && latest <= -16f && drop >= 5.0
+        val latestPosition = list.last().positionMs
+        if (latestPosition <= fadeLatchedUntilMs) return true
+        val span = latestPosition - list.first().positionMs
+        if (span < 1_800L) return false
+
+        val recent = list.filter { it.positionMs >= latestPosition - 700L }.map { it.db }
+        val baseline = list.filter {
+            it.positionMs in (latestPosition - 8_000L)..(latestPosition - 1_500L)
+        }.map { it.db }
+        if (recent.size < 4 || baseline.size < 5) return false
+
+        val recentMedian = recent.median()
+        val baselineUpper = baseline.percentile(0.7f)
+        val suddenDrop = recentMedian <= -20f && baselineUpper - recentMedian >= 8f
+
+        // Compare robust time slices rather than consecutive samples. One chorus hit or transient
+        // may rise again without invalidating an otherwise clear long outro descent.
+        val sectionSize = (list.size / 4).coerceAtLeast(2)
+        val sections = (0 until 4).map { section ->
+            val from = section * sectionSize
+            val to = if (section == 3) list.size else minOf(list.size, from + sectionSize)
+            list.subList(from.coerceAtMost(list.size), to).map { it.db }.median()
+        }
+        val netDrop = sections.first() - sections.last()
+        val risingSteps = sections.zipWithNext().count { (before, after) -> after > before + 2.5f }
+        val gradualDrop = recentMedian <= -17f && netDrop >= 6f && risingSteps <= 1
+        val detected = suddenDrop || gradualDrop
+        if (detected) fadeLatchedUntilMs = latestPosition + 1_600L
+        return detected
     }
 
-    private fun <T> ArrayDeque<T>.takeLastCompat(count: Int): List<T> {
-        if (isEmpty()) return emptyList()
-        val n = count.coerceAtMost(size)
-        return toList().takeLast(n)
+    private fun List<Float>.median(): Float = percentile(0.5f)
+
+    private fun List<Float>.percentile(fraction: Float): Float {
+        if (isEmpty()) return -90f
+        val sorted = sorted()
+        val index = ((sorted.lastIndex) * fraction.coerceIn(0f, 1f)).toInt()
+        return sorted[index]
     }
 }
 
@@ -395,55 +394,6 @@ internal object PcmLevelMeter {
         if (count <= 0) return MIN_DB
         val rms = kotlin.math.sqrt(sum / count.toDouble()).coerceAtLeast(0.0000316227766)
         return (20.0 * log10(rms)).toFloat().coerceIn(MIN_DB, 0f)
-    }
-
-    data class IncomingUnderlayGains(
-        val floorGain: Float,
-        val bedGain: Float,
-        val floorTargetDb: Float,
-        val bedTargetDb: Float,
-    )
-
-    /**
-     * Resolve audible incoming levels from target output loudness.
-     *
-     * The previous implementation clamped the *gain* itself to -27..-18 dB. A quiet intro at
-     * -30 dBFS would therefore be attenuated to roughly -48 dBFS and become effectively inaudible.
-     * Here the policy's low-dB range describes the desired output layer instead. We only attenuate as much as the
-     * incoming material actually needs, never amplify above unity, and keep it subordinate to the
-     * outgoing tail.
-     */
-    fun resolveIncomingUnderlayGains(
-        outgoingDb: Float,
-        incomingDb: Float,
-        defaultFloorDb: Float,
-        minFloorDb: Float,
-        maxFloorDb: Float,
-        safetyMarginDb: Float,
-    ): IncomingUnderlayGains {
-        val safeOutgoing = outgoingDb.takeIf { it.isFinite() } ?: -10f
-        val safeIncoming = incomingDb.takeIf { it.isFinite() } ?: -18f
-        val floorTarget = (safeOutgoing - safetyMarginDb)
-            .coerceIn(minFloorDb, maxFloorDb)
-            .takeIf { it.isFinite() }
-            ?: defaultFloorDb
-        // The underlay is ambience, not an equal-power crossfade yet. Keep the follow track
-        // clearly behind the lead until the formal handover starts. This also follows the
-        // independent lead/follow automation: the lead does not get ducked merely because the
-        // follow renderer has become audible.
-        val bedSafetyDb = max(10f, safetyMarginDb - 4f)
-        val bedTarget = (safeOutgoing - bedSafetyDb)
-            .coerceIn(floorTarget, -18f)
-        fun gainForTarget(targetDb: Float): Float {
-            val attenuationDb = (targetDb - safeIncoming).coerceIn(-30f, 0f)
-            return 10.0.pow(attenuationDb / 20.0).toFloat().coerceIn(0f, 1f)
-        }
-        return IncomingUnderlayGains(
-            floorGain = gainForTarget(floorTarget),
-            bedGain = gainForTarget(bedTarget),
-            floorTargetDb = floorTarget,
-            bedTargetDb = bedTarget,
-        )
     }
 
     private fun readS16LE(buf: ByteArray, offset: Int): Int {

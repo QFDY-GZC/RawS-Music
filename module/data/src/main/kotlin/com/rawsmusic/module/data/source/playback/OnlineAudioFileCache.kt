@@ -61,7 +61,7 @@ internal object OnlineAudioFileCache {
             val cacheDir = File(context.cacheDir, CACHE_DIR).apply { mkdirs() }
             require(cacheDir.isDirectory) { "无法创建在线播放缓存目录" }
 
-            val finalFile = File(cacheDir, "$cacheKey.media")
+            val finalFile = File(cacheDir, "$cacheKey.${cacheExtension(source.url)}")
             val now = System.currentTimeMillis()
             if (finalFile.isFile &&
                 finalFile.length() >= MIN_VALID_BYTES &&
@@ -248,7 +248,7 @@ internal object OnlineAudioFileCache {
 
     private fun trimCache(cacheDir: File, keep: File) {
         val files = cacheDir.listFiles()
-            ?.filter { it.isFile && it.extension == "media" }
+            ?.filter { it.isFile && !it.name.endsWith(".part") }
             ?.sortedByDescending { it.lastModified() }
             .orEmpty()
         var total = files.sumOf { it.length() }
@@ -268,4 +268,18 @@ internal object OnlineAudioFileCache {
     private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray(Charsets.UTF_8))
         .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+
+    private fun cacheExtension(url: String): String {
+        val extension = url
+            .substringBefore('?')
+            .substringBefore('#')
+            .substringAfterLast('.', "")
+            .lowercase(Locale.US)
+        return extension.takeIf {
+            it in setOf(
+                "mp3", "flac", "m4a", "mp4", "aac", "ogg", "opus", "wma", "wav",
+                "aiff", "aif", "ape", "wv", "tta", "dsf", "dff", "mka", "amr",
+            )
+        } ?: "media"
+    }
 }

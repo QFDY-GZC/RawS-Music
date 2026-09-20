@@ -30,9 +30,13 @@ object AudioOutputManager {
     const val BIT_DEPTH_FLOAT32 = 3201
     const val BIT_DEPTH_32_8_24 = 3224
 
+    /** Highest PCM target exposed by the USB-exclusive resampler UI. */
+    const val USB_MAX_TARGET_SAMPLE_RATE = 768_000
+
     /** 常用采样率列表 */
     val STANDARD_SAMPLE_RATES = intArrayOf(
-        44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000
+        44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000,
+        705600, 768000
     )
 
     /** 采样率的显示名称 */
@@ -45,7 +49,9 @@ object AudioOutputManager {
         176400 to "176.4 kHz",
         192000 to "192 kHz",
         352800 to "352.8 kHz",
-        384000 to "384 kHz"
+        384000 to "384 kHz",
+        705600 to "705.6 kHz",
+        768000 to "768 kHz"
     )
 
     /** 比特深度的显示名称 */
@@ -77,8 +83,8 @@ object AudioOutputManager {
     /** AAudio 上限：16–32 bit · 44.1–384 kHz */
     const val AAUDIO_MAX_SAMPLE_RATE = 384_000
 
-    /** Direct Hi-Res 上限：16–32(8.24) bit · 44.1–384 kHz */
-    const val DIRECT_MAX_SAMPLE_RATE = 384_000
+    /** Direct Hi-Res 上限：16–32(8.24) bit · 44.1–768 kHz。高于 384 kHz 的目标只在 Direct 模式暴露。 */
+    const val DIRECT_MAX_SAMPLE_RATE = 768_000
 
     /** AudioTrack 普通输出上限：系统混音，高兼容，PCM ≤ 48 kHz / 24 bit / Stereo */
     const val AUDIO_TRACK_MAX_SAMPLE_RATE = 48_000
@@ -101,7 +107,12 @@ object AudioOutputManager {
         AudioOutputMode.AUDIO_TRACK -> intArrayOf(BIT_DEPTH_AUTO, BIT_DEPTH_16, BIT_DEPTH_24, BIT_DEPTH_FLOAT32)
     }
 
-    /** 采样率选项按输出引擎过滤（含 0=自动） */
+    /**
+     * 采样率选项按输出引擎过滤（含 0=自动）。
+     * 705.6/768 kHz 只会落入 Direct (Hi-Res) 的范围；AAudio 仍封顶 384 kHz，
+     * AudioTrack/OpenSL ES 保持各自原有上限。播放时仍由 probeRateAndEncoding()
+     * 校验当前 Android 路由是否真的接受所选格式。
+     */
     fun getSampleRateOptionsForMode(mode: AudioOutputMode): IntArray {
         val minRate = getMinSampleRateForMode(mode)
         val maxRate = getMaxSampleRateForMode(mode)
@@ -206,9 +217,11 @@ object AudioOutputManager {
             return true
             }
 
-        // Android 13 及以下，纯蓝牙连接时禁用 Direct（避免音频路由混乱）。
-        if (Build.VERSION.SDK_INT <= 33 && hasBtOutput) {
-            Log.d(TAG, "API <= 33 and only Bluetooth output present, Direct not available")
+        // Bluetooth-only routes use Android's codec/mixer path instead of RawSMusic's exact-format
+        // AAudio exclusive DIRECT contract. A simultaneous USB/wired physical route still returns
+        // above and keeps the user's Direct preference active for that physical device.
+        if (hasBtOutput) {
+            Log.d(TAG, "Bluetooth-only output present, Direct not available; use AAudio for this route")
                 return false
             }
 
@@ -251,7 +264,9 @@ object AudioOutputManager {
     private fun isBluetoothOutput(type: Int): Boolean {
         return type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
             type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-            type == AudioDeviceInfo.TYPE_HEARING_AID
+            type == AudioDeviceInfo.TYPE_HEARING_AID ||
+            type == 26 || // TYPE_BLE_HEADSET
+            type == 27    // TYPE_BLE_SPEAKER
     }
 
     private fun isPhysicalDirectOutput(type: Int): Boolean {
@@ -655,19 +670,17 @@ object AudioOutputManager {
             outputMode = outputMode
         )
 
-        when (outputMode) {
-            AudioOutputMode.DIRECT -> {
-                if (Build.VERSION.SDK_INT >= 29) {
-                    try {
-                        builder.setAllowedCapturePolicy(AudioAttributes.ALLOW_CAPTURE_BY_NONE)
-                    } catch (_: Exception) {}
-                }
-            }
-            AudioOutputMode.AAUDIO -> {
-            }
-            AudioOutputMode.AUDIO_TRACK -> {
-            }
-            AudioOutputMode.OPENSL_ES -> {
+        // Screen recording relies on the playback capture policy.  The old DIRECT
+        // branch explicitly opted out, which made Hi-Res playback silent in the
+        // recorder on devices that otherwise support capturing this stream.  Keep
+        // the output mode and format unchanged; only allow the media stream to be
+        // included in the system capture mix.
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                builder.setAllowedCapturePolicy(AudioAttributes.ALLOW_CAPTURE_BY_ALL)
+                Log.d(TAG, "buildMediaAudioAttributes: capturePolicy=ALLOW_CAPTURE_BY_ALL mode=$outputMode")
+            } catch (e: Exception) {
+                Log.w(TAG, "buildMediaAudioAttributes: capture policy unavailable mode=$outputMode", e)
             }
         }
         return builder.build()
@@ -887,7 +900,10 @@ object AudioOutputManager {
         val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         return devices.any {
             it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+            it.type == AudioDeviceInfo.TYPE_HEARING_AID ||
+            it.type == 26 || // TYPE_BLE_HEADSET
+            it.type == 27    // TYPE_BLE_SPEAKER
         }
     }
 

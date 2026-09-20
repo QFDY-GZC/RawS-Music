@@ -59,6 +59,10 @@ internal class AndroidAudioInterruptionController(
     private var phoneCallActive = false
     private var focusRequest: AudioFocusRequest? = null
     private var focusGranted = false
+    // Tracks a transient focus loss independently from the request object. A request remains
+    // registered across LOSS_TRANSIENT, so focusRequest/focusGranted alone cannot tell whether
+    // it is safe to auto-resume when a Telephony callback races ahead of AUDIOFOCUS_GAIN.
+    private var transientFocusLossActive = false
 
     @Volatile
     private var _duckVolumeFactor = 1.0f
@@ -158,13 +162,11 @@ internal class AndroidAudioInterruptionController(
             val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(attributes)
                 .setOnAudioFocusChangeListener(focusChangeListener)
-                // The exclusive USB path holds a real GAIN focus owner and uses
-                // PAUSES_ON_DUCKABLE_LOSS.  Delayed focus would leave the app
-                // without an active owner during the critical background path.
+                // USB exclusive keeps its existing focus ownership contract and ignores callbacks.
+                // For AudioTrack, own CAN_DUCK in-app (Reference-style duckPlaying/UNDUCK) instead
+                // of allowing Android 8+ automatic ducking to bypass the preference/state machine.
                 .setAcceptsDelayedFocusGain(!usbExclusive)
-                .setWillPauseWhenDucked(
-                    if (usbExclusive) true else !AudioFocusPreferences.allowDuck,
-                )
+                .setWillPauseWhenDucked(true)
                 .build()
             focusRequest = request
             manager.requestAudioFocus(request)
@@ -192,6 +194,8 @@ internal class AndroidAudioInterruptionController(
         return focusGranted
     }
 
+    fun hasAudioFocusSession(): Boolean = focusGranted || focusRequest != null
+
     fun abandonAudioFocus() {
         val manager = audioManager
         if (manager != null) {
@@ -206,6 +210,7 @@ internal class AndroidAudioInterruptionController(
         }
         focusRequest = null
         focusGranted = false
+        transientFocusLossActive = false
         setDuckFactor(1.0f)
         clearAutomaticFocusResume("abandon")
     }
@@ -325,9 +330,12 @@ internal class AndroidAudioInterruptionController(
         )
         when (focusChange) {
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                transientFocusLossActive = true
                 if (!policy.handleTransientChangesAndCalls) {
                     AppLogger.d(TAG, "AudioFocus: DUCK ignored by preference")
                 } else if (policy.allowDuck) {
+                    // Own ducking explicitly so the UI setting affects the same gain path on all
+                    // AudioTrack outputs instead of being silently delegated to AudioFlinger.
                     setDuckFactor(DUCK_FACTOR)
                 } else {
                     pauseForFocus(resolveTransientPauseCause(), "duck_pause")
@@ -335,6 +343,7 @@ internal class AndroidAudioInterruptionController(
             }
 
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                transientFocusLossActive = true
                 if (policy.handleTransientChangesAndCalls) {
                     pauseForFocus(resolveTransientPauseCause(), "loss_transient")
                 } else {
@@ -345,6 +354,11 @@ internal class AndroidAudioInterruptionController(
             AudioManager.AUDIOFOCUS_LOSS -> {
                 focusGranted = false
                 focusRequest = null
+                transientFocusLossActive = false
+                setDuckFactor(1.0f)
+                // Permanent loss must cancel a pending transient/call auto-resume even when the
+                // player is already paused and pauseForFocus() would otherwise early-return.
+                clearAutomaticFocusResume("loss_permanent")
                 if (policy.pauseOnPermanentLoss) {
                     pauseForFocus(
                         cause = AudioFocusPauseCause.None,
@@ -358,6 +372,7 @@ internal class AndroidAudioInterruptionController(
 
             AudioManager.AUDIOFOCUS_GAIN -> {
                 focusGranted = true
+                transientFocusLossActive = false
                 setDuckFactor(1.0f)
                 maybeResumeAfterAutomaticPause("focus_gain")
             }
@@ -377,7 +392,19 @@ internal class AndroidAudioInterruptionController(
         reason: String,
         allowAutomaticResume: Boolean = true,
     ) {
-        if (callbacks.isUsbExclusive() || !callbacks.isPlaybackActive()) return
+        if (callbacks.isUsbExclusive()) return
+        if (!callbacks.isPlaybackActive()) {
+            // Focus loss often arrives just before the Telephony callback. Preserve the original
+            // "was playing" latch, but promote Transient -> Call so "resume after call" owns the
+            // eventual recovery rather than the generic resume-on-focus-gain switch.
+            if (allowAutomaticResume && wasPlayingBeforeFocusLoss &&
+                cause == AudioFocusPauseCause.Call && pauseCause == AudioFocusPauseCause.Transient
+            ) {
+                pauseCause = AudioFocusPauseCause.Call
+                AppLogger.d(TAG, "AudioFocus: promoted pending pause cause Transient -> Call")
+            }
+            return
+        }
         setDuckFactor(1.0f)
         wasPlayingBeforeFocusLoss = allowAutomaticResume
         pauseCause = if (allowAutomaticResume) cause else AudioFocusPauseCause.None
@@ -390,6 +417,10 @@ internal class AndroidAudioInterruptionController(
 
     private fun maybeResumeAfterAutomaticPause(reason: String) {
         if (!wasPlayingBeforeFocusLoss || phoneCallActive) return
+        if (reason == "phone_call_ended" && transientFocusLossActive) {
+            AppLogger.d(TAG, "AudioFocus: call ended but focus gain is still pending")
+            return
+        }
         val policy = AudioFocusPolicy.current()
         val shouldResume = when (pauseCause) {
             AudioFocusPauseCause.Call -> policy.resumeAfterCall

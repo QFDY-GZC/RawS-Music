@@ -19,8 +19,8 @@ enum class GlobalSearchScope(val token: String) {
             return when (scene) {
                 NavScene.SONGS -> SONG
                 NavScene.ALBUMS, NavScene.ALBUM_DETAIL -> ALBUM
-                NavScene.ARTISTS, NavScene.ARTIST_DETAIL -> ARTIST
-                NavScene.FOLDERS, NavScene.FOLDER_HIERARCHY -> FOLDER
+                NavScene.ARTISTS, NavScene.ARTIST_DETAIL, NavScene.ARTIST_BIOGRAPHY -> ARTIST
+                NavScene.FOLDERS, NavScene.FOLDER_HIERARCHY, NavScene.FOLDER_DETAIL -> FOLDER
                 NavScene.GENRE, NavScene.GENRE_DETAIL -> GENRE
                 NavScene.YEAR, NavScene.YEAR_DETAIL -> YEAR
                 NavScene.COMPOSER, NavScene.COMPOSER_DETAIL -> COMPOSER

@@ -1,5 +1,18 @@
 package com.rawsmusic.ui.settings
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
@@ -11,14 +24,24 @@ import androidx.compose.runtime.setValue
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.prefs.LyricColorPreferences
+import com.rawsmusic.module.data.prefs.LyricColorPreset
+import com.rawsmusic.module.data.prefs.LyricColorSource
 import com.rawsmusic.module.data.prefs.LyricLayoutPreferences
 import com.rawsmusic.module.data.prefs.LyricTopLayoutStyle
 import com.rawsmusic.module.player.LyriconProviderManager
 import com.rawsmusic.helper.LyricoIntegration
 import com.rawsmusic.lyrico.InstalledLyricoPlugin
 import com.rawsmusic.lyrico.LyricoPluginStore
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import androidx.compose.ui.res.stringResource
 import com.rawsmusic.R
 import android.widget.Toast
@@ -29,8 +52,13 @@ import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
+import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ColorPicker
+import top.yukonga.miuix.kmp.basic.ColorSpace
 import top.yukonga.miuix.kmp.basic.SliderDefaults
+import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.preference.SliderPreference
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 
 @Composable
@@ -44,8 +72,16 @@ fun LiquidGlassLyricManagementScreen(
     var lyriconEnabled by remember { mutableStateOf(lyriconPrefs.enabled) }
     var lyriconTranslation by remember { mutableStateOf(lyriconPrefs.displayTranslation) }
     var lyriconRoma by remember { mutableStateOf(lyriconPrefs.displayRoma) }
+    var lyriconOriginalColorCompat by remember {
+        mutableStateOf(lyriconPrefs.originalTextColorCompatibility)
+    }
     var karaokeGlowEnabled by remember { mutableStateOf(AppPreferences.UI.lyricKaraokeGlowEnabled) }
     var karaokeLiftEnabled by remember { mutableStateOf(AppPreferences.UI.lyricKaraokeLiftEnabled) }
+    val lyricColorSettings by LyricColorPreferences.settings.collectAsState()
+    var showLyricColorPicker by remember { mutableStateOf(false) }
+    var lyricEditingColor by remember(lyricColorSettings.solidColorArgb) {
+        mutableStateOf(Color(lyricColorSettings.solidColorArgb))
+    }
     val lyricBottomPaddingDp by LyricLayoutPreferences.bottomPaddingDp.collectAsState()
     val lyricTopLayoutStyle by LyricLayoutPreferences.topLayoutStyle.collectAsState()
     var lyricoInstalled by remember { mutableStateOf(LyricoIntegration.isInstalled(context)) }
@@ -75,17 +111,21 @@ fun LiquidGlassLyricManagementScreen(
                         result.plugins.size
                     )
                 }
-                Toast.makeText(
-                    context,
-                    message,
-                    if (result.failures.isEmpty()) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
-                ).show()
+                if (result.failures.isEmpty()) {
+                    AppNoticeBus.post(
+                        message = message,
+                        icon = AppNoticeIcon.LYRICS,
+                    )
+                } else {
+                    AppNoticeBus.error(message)
+                }
             } else {
-                Toast.makeText(
-                    context,
-                    context.getString(R.string.settings_lyrico_plugin_import_failed, result.error.orEmpty()),
-                    Toast.LENGTH_LONG
-                ).show()
+                AppNoticeBus.error(
+                    context.getString(
+                        R.string.settings_lyrico_plugin_import_failed,
+                        result.error.orEmpty(),
+                    )
+                )
             }
         }
     }
@@ -192,6 +232,63 @@ fun LiquidGlassLyricManagementScreen(
             }
         }
 
+        SettingsSection(stringResource(R.string.settings_lyric_color_section)) {
+            SwitchRow(
+                label = stringResource(R.string.settings_lyric_color_rainbow),
+                checked = lyricColorSettings.source == LyricColorSource.RAINBOW,
+            ) { enabled ->
+                LyricColorPreferences.setRainbowEnabled(enabled)
+            }
+            SwitchRow(
+                label = stringResource(R.string.settings_lyric_color_album_art),
+                checked = lyricColorSettings.source == LyricColorSource.ALBUM_ART,
+            ) { enabled ->
+                LyricColorPreferences.setAlbumArtEnabled(enabled)
+            }
+            SettingsInfoEntry(
+                title = stringResource(R.string.settings_lyric_color_presets),
+                description = stringResource(R.string.settings_lyric_color_presets_summary),
+            )
+            LyricColorPresetGrid(
+                selectedColor = lyricColorSettings.solidColorArgb.takeIf {
+                    lyricColorSettings.source == LyricColorSource.SOLID
+                },
+                onPresetSelected = LyricColorPreferences::selectPreset,
+            )
+            SettingsNavigationEntry(
+                title = stringResource(R.string.settings_lyric_color_custom),
+                description = lyricColorHex(Color(lyricColorSettings.solidColorArgb)),
+                onClick = {
+                    lyricEditingColor = Color(lyricColorSettings.solidColorArgb)
+                    showLyricColorPicker = true
+                },
+            )
+            SettingsNavigationEntry(
+                title = stringResource(R.string.settings_lyric_color_default),
+                description = stringResource(R.string.settings_lyric_color_default_summary),
+                onClick = LyricColorPreferences::resetToDefault,
+            )
+            SettingsInfoEntry(
+                title = stringResource(R.string.settings_lyric_color_scope),
+                description = stringResource(R.string.settings_lyric_color_scope_summary),
+            )
+            SwitchRow(
+                label = stringResource(R.string.settings_lyric_color_scope_lyric_page),
+                checked = lyricColorSettings.applyToLyricPage,
+                onCheckedChange = LyricColorPreferences::setApplyToLyricPage,
+            )
+            SwitchRow(
+                label = stringResource(R.string.settings_lyric_color_scope_mini_player),
+                checked = lyricColorSettings.applyToMiniPlayer,
+                onCheckedChange = LyricColorPreferences::setApplyToMiniPlayer,
+            )
+            SwitchRow(
+                label = stringResource(R.string.settings_lyric_color_scope_home),
+                checked = lyricColorSettings.applyToHome,
+                onCheckedChange = LyricColorPreferences::setApplyToHome,
+            )
+        }
+
         SettingsSection(stringResource(R.string.settings_lyrico_sources_section)) {
             SettingsInfoEntry(
                 title = stringResource(R.string.settings_lyrico_runtime_title),
@@ -283,7 +380,87 @@ fun LiquidGlassLyricManagementScreen(
                 lyriconRoma = checked
                 LyriconProviderManager.setDisplayRoma(checked)
             }
+            SwitchRow(
+                stringResource(R.string.settings_lyricon_original_color_compat),
+                lyriconOriginalColorCompat,
+                enabled = lyriconEnabled
+            ) { checked ->
+                lyriconOriginalColorCompat = checked
+                LyriconProviderManager.setOriginalTextColorCompatibility(checked)
+            }
         }
 
     }
+
+    if (showLyricColorPicker) {
+        Dialog(onDismissRequest = { showLyricColorPicker = false }) {
+            SettingsCard {
+                Text(text = stringResource(R.string.settings_lyric_color_custom))
+                Spacer(modifier = Modifier.height(12.dp))
+                ColorPicker(
+                    color = lyricEditingColor,
+                    onColorChanged = { lyricEditingColor = it },
+                    colorSpace = ColorSpace.HSV,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+                Button(
+                    onClick = {
+                        LyricColorPreferences.setSolidColor(lyricEditingColor.toArgb())
+                        showLyricColorPicker = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(text = stringResource(R.string.common_confirm))
+                }
+            }
+        }
+    }
 }
+
+@Composable
+private fun LyricColorPresetGrid(
+    selectedColor: Int?,
+    onPresetSelected: (LyricColorPreset) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp, bottom = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        LyricColorPreset.entries.chunked(4).forEach { rowPresets ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                rowPresets.forEach { preset ->
+                    val selected = selectedColor == preset.argb
+                    Box(
+                        modifier = Modifier
+                            .size(if (selected) 46.dp else 42.dp)
+                            .border(
+                                width = if (selected) 3.dp else 1.dp,
+                                color = if (selected) {
+                                    MiuixTheme.colorScheme.primary
+                                } else {
+                                    MiuixTheme.colorScheme.outline.copy(alpha = 0.42f)
+                                },
+                                shape = RoundedCornerShape(50),
+                            )
+                            .padding(4.dp)
+                            .background(
+                                color = Color(preset.argb),
+                                shape = RoundedCornerShape(50),
+                            )
+                            .clickable { onPresetSelected(preset) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun lyricColorHex(color: Color): String =
+    "#%08X".format(color.toArgb())

@@ -60,6 +60,7 @@ fun LiquidGlassLyricFontSettingsScreen(
     var systemFonts by remember { mutableStateOf<List<LyricFontManager.FontInfo>>(emptyList()) }
     var importedFonts by remember { mutableStateOf<List<LyricFontManager.FontInfo>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
+    var showFontCatalog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         systemFonts = withContext(Dispatchers.IO) { LyricFontManager.getSystemFonts() }
@@ -74,7 +75,7 @@ fun LiquidGlassLyricFontSettingsScreen(
     val previewFontFamily = remember(selectedFontPath, fontWeight, fontRevision) {
         if (selectedFontPath.isBlank()) FontFamily.Default
         else try {
-            FontFamily(Font(File(selectedFontPath), FontWeight(fontWeight)))
+            FontFamily(Font(File(selectedFontPath), FontWeight.Normal))
         } catch (_: Exception) {
             FontFamily.Default
         }
@@ -103,14 +104,13 @@ fun LiquidGlassLyricFontSettingsScreen(
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
-            SectionHeader(stringResource(R.string.settings_default_system_font))
-            FontItemRow(
-                name = stringResource(R.string.settings_default_system_font),
-                isSelected = selectedFontPath.isBlank(),
-                onClick = {
-                    selectedFontPath = ""
-                    LyricFontManager.selectFont(null)
-                }
+            SettingsNavigationEntry(
+                title = stringResource(R.string.settings_font_family),
+                description = when {
+                    selectedFontPath.isBlank() -> stringResource(R.string.settings_default_system_font)
+                    else -> File(selectedFontPath).nameWithoutExtension
+                },
+                onClick = { showFontCatalog = true },
             )
         }
 
@@ -158,39 +158,10 @@ fun LiquidGlassLyricFontSettingsScreen(
                     fontScale = it.toInt()
                     LyricFontManager.setFontScale(fontScale)
                 },
-                valueRange = 75f..130f,
-                steps = 10,
+                valueRange = 60f..180f,
+                steps = 23,
                 hapticEffect = SliderDefaults.SliderHapticEffect.Step
             )
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        SettingsCard {
-            SectionHeader(stringResource(R.string.settings_lyric_system_font))
-            Text(
-                stringResource(R.string.settings_lyric_system_font_desc),
-                fontSize = 13.sp,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.padding(top = 2.dp),
-                fontFamily = appFontFamily()
-            )
-            Spacer(Modifier.height(8.dp))
-
-            if (isLoading) {
-                Text(stringResource(R.string.settings_lyric_loading), fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontFamily = appFontFamily())
-            } else {
-                systemFonts.forEach { font ->
-                    FontItemRow(
-                        name = font.name,
-                        isSelected = selectedFontPath == font.path,
-                        onClick = {
-                            selectedFontPath = font.path
-                            LyricFontManager.selectFont(font)
-                        }
-                    )
-                }
-            }
         }
 
         Spacer(Modifier.height(12.dp))
@@ -210,41 +181,30 @@ fun LiquidGlassLyricFontSettingsScreen(
             }
 
             if (importedFonts.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                importedFonts.forEach { font ->
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        FontItemRow(
-                            name = font.name,
-                            isSelected = selectedFontPath == font.path,
-                            onClick = {
-                                selectedFontPath = font.path
-                                LyricFontManager.selectFont(font)
-                            },
-                            modifier = Modifier.weight(1f)
-                        )
-                        TextButton(onClick = {
-                            LyricFontManager.deleteImportedFont(context, font.path)
-                            if (selectedFontPath == font.path) {
-                                selectedFontPath = ""
-                            }
-                            coroutineScope.launch {
-                                importedFonts = withContext(Dispatchers.IO) {
-                                    LyricFontManager.getImportedFonts(context)
-                                }
-                            }
-                        }) {
-                            Text(stringResource(R.string.settings_delete), color = Color.White, fontSize = 13.sp, fontFamily = appFontFamily())
-                        }
-                    }
-                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    stringResource(R.string.settings_font_imported_count, importedFonts.size),
+                    fontSize = 12.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    fontFamily = appFontFamily(),
+                )
             }
         }
+    }
+
+    if (showFontCatalog) {
+        FontCatalogDialog(
+            title = stringResource(R.string.settings_font_family),
+            selectedPath = selectedFontPath,
+            systemFonts = if (isLoading) emptyList() else systemFonts,
+            importedFonts = importedFonts,
+            onDismiss = { showFontCatalog = false },
+            onSelect = { font ->
+                selectedFontPath = font?.path.orEmpty()
+                LyricFontManager.selectFont(font)
+            },
+            onImport = onImportFont,
+        )
     }
 }
 

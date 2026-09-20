@@ -10,6 +10,8 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.widget.Toast
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -23,9 +25,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
+import com.rawsmusic.core.ui.systemui.rawStableStatusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -60,14 +61,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
-import coil.size.Size
 import com.rawsmusic.core.common.artwork.EmbeddedArtworkRegion
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.net.RemoteHttpStreamRegistry
 import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.core.ui.R
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkAspectPolicy
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
 import com.rawsmusic.core.ui.widget.bitmaps.DefaultAlbumArtworkPolicy
 import com.rawsmusic.core.ui.widget.bitmaps.FolderArtworkLocator
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +81,7 @@ import java.io.File
 import java.io.InputStream
 import kotlin.math.max
 import kotlin.math.min
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 
 private const val MIN_ARTWORK_BYTES = 1024L
 private const val MAX_ARTWORK_SCALE = 8f
@@ -145,8 +149,8 @@ internal fun OriginalArtworkViewerDialog(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = 0.96f))
-                .statusBarsPadding()
-                .navigationBarsPadding()
+                .rawStableStatusBarsPadding()
+                .rawStableNavigationBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -189,11 +193,14 @@ internal fun OriginalArtworkViewerDialog(
                         scope.launch {
                             val saved = OriginalArtworkResolver.saveToGallery(context, art, song)
                             saving = false
-                            Toast.makeText(
-                                context,
-                                if (saved) R.string.artwork_saved else R.string.artwork_save_failed,
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            if (saved) {
+                                AppNoticeBus.post(
+                                    message = context.getString(R.string.artwork_saved),
+                                    icon = AppNoticeIcon.ARTWORK,
+                                )
+                            } else {
+                                AppNoticeBus.error(context.getString(R.string.artwork_save_failed))
+                            }
                         }
                     },
                     enabled = !saving,
@@ -255,14 +262,17 @@ private fun ZoomableOriginalArtwork(
             },
         contentAlignment = Alignment.Center
     ) {
-        AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-                .data(source.file)
-                .size(Size.ORIGINAL)
-                .crossfade(false)
-                .build(),
+        BitmapImage(
+            key = source.file.absolutePath,
             contentDescription = contentDescription,
             contentScale = ContentScale.Fit,
+            targetWidth = source.width.coerceAtLeast(1),
+            targetHeight = source.height.coerceAtLeast(1),
+            priority = BitmapRequest.Priority.LOADING_WIDGET,
+            surface = ArtworkSurface.Fullscreen,
+            aspectPolicy = ArtworkAspectPolicy.KeepAspect,
+            exactTarget = true,
+            showDefaultArtwork = false,
             modifier = Modifier.fillMaxSize().graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -375,7 +385,12 @@ private object OriginalArtworkResolver {
         FolderArtworkLocator.find(audioPath, minimumBytes = MIN_ARTWORK_BYTES)
 
     private fun extractWithTagLib(context: Context, audioPath: String, stem: String): OriginalArtworkSource? {
-        if (audioPath.isBlank() || !TagLibBridge.isLoaded()) return null
+        if (
+            audioPath.isBlank() ||
+            audioPath.startsWith("http://", true) ||
+            audioPath.startsWith("https://", true) ||
+            !TagLibBridge.isLoaded()
+        ) return null
         val output = cacheFile(context, "${stem}_taglib.art")
         if (output.length() > MIN_ARTWORK_BYTES) return sourceFor(output)
         output.delete()
@@ -387,11 +402,28 @@ private object OriginalArtworkResolver {
         val output = cacheFile(context, "${stem}_ffmpeg.jpg")
         if (output.length() > MIN_ARTWORK_BYTES) return sourceFor(output)
         output.delete()
-        return if (FFmpegBridge.extractCover(audioPath, output.absolutePath) == 0) sourceFor(output) else null
+        val remoteHttp = audioPath.startsWith("http://", true) || audioPath.startsWith("https://", true)
+        val result = if (remoteHttp) {
+            val remote = RemoteHttpStreamRegistry.lookup(audioPath) ?: return null
+            val resolvedUrl = remote.resolveUrl(audioPath)
+            FFmpegBridge.extractCover(
+                inputPath = resolvedUrl,
+                outputPath = output.absolutePath,
+                headers = remote.resolveHeaders(audioPath),
+                userAgent = remote.userAgent,
+            )
+        } else {
+            FFmpegBridge.extractCover(audioPath, output.absolutePath)
+        }
+        return if (result == 0) sourceFor(output) else null
     }
 
     private fun extractWithRetriever(context: Context, audioPath: String, stem: String): OriginalArtworkSource? {
-        if (audioPath.isBlank()) return null
+        if (
+            audioPath.isBlank() ||
+            audioPath.startsWith("http://", true) ||
+            audioPath.startsWith("https://", true)
+        ) return null
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(audioPath)

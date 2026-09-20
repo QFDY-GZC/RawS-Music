@@ -15,7 +15,7 @@ import android.os.Process
 import android.os.SystemClock
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.waveform.RawWaveformCache
-import com.rawsmusic.core.ui.widget.bitmaps.PowerListCoilArtwork
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.flow.clearRawFlowMemoryCache
 import com.rawsmusic.core.ui.widget.index.RawAlphabetIndexCache
 import com.rawsmusic.module.player.PlayerService
@@ -80,7 +80,7 @@ object FairRuntimeMemoryManager {
         val thread = workerThread ?: return
         Handler(thread.looper).post {
             val startedAt = SystemClock.elapsedRealtime()
-            trimReconstructableCaches()
+            trimReconstructableCaches(level)
             AppLogger.i(
                 TAG,
                 "FAIR_MEMORY android_trim level=$level elapsedMs=${SystemClock.elapsedRealtime() - startedAt}"
@@ -119,7 +119,13 @@ object FairRuntimeMemoryManager {
                     ?.persistForMemoryTermination() ?: true
                 if (!persisted) result = RESULT_FAILURE
             }
-            trimReconstructableCaches()
+            trimReconstructableCaches(
+                if (isKill) {
+                    android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE
+                } else {
+                    android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
+                }
+            )
         } catch (error: Throwable) {
             result = RESULT_FAILURE
             AppLogger.e(TAG, "FAIR_MEMORY processing failed action=$action", error)
@@ -145,8 +151,8 @@ object FairRuntimeMemoryManager {
         )
     }
 
-    private fun trimReconstructableCaches() {
-        PowerListCoilArtwork.trimMemory()
+    private fun trimReconstructableCaches(level: Int) {
+        BitmapProvider.trimMemory()
         RawWaveformCache.clearMemory()
         clearRawFlowMemoryCache()
         RawAlphabetIndexCache.clear()

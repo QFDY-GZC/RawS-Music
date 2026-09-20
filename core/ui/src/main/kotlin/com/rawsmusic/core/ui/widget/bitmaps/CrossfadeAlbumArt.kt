@@ -22,6 +22,7 @@ fun CrossfadeAlbumArt(
     holdPreviousOnKeyChange: Boolean = true,
     priority: BitmapRequest.Priority = BitmapRequest.Priority.LOADING_WIDGET,
     surface: ArtworkSurface = ArtworkSurface.Playback,
+    aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     freezeBitmapUpdates: Boolean = false,
     skipLowResPlaceholder: Boolean = false,
     forceTargetHighRequest: Boolean = false
@@ -39,6 +40,7 @@ fun CrossfadeAlbumArt(
         targetHeight = hiResSize,
         priority = priority,
         surface = surface,
+        aspectPolicy = aspectPolicy,
         fadeInMillis = fadeMillis,
         holdPreviousOnKeyChange = holdPreviousOnKeyChange,
         fadeOnBitmapChange = true,

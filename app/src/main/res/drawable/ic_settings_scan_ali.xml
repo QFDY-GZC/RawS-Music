@@ -1,0 +1,10 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <!-- iconfont.cn icon 7008999 / scan -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M832,480H192a32,32 0,0 0,0 64h640a32,32 0,0 0,0 -64M800.256,160H223.712a63.808,63.808 0,0 0,-63.68 63.744V384a32,32 0,1 0,64 0l-0.32,-160 576.32,-0.256V384a32,32 0,1 0,64 0V223.744A63.84,63.84 0,0 0,800.224 160M832,608a32,32 0,0 0,-32 32l0.256,160L224,800.256V640a32,32 0,0 0,-64 0v160.256C160,835.392 188.608,864 223.744,864h576.512A63.84,63.84 0,0 0,864 800.256V640a32,32 0,0 0,-32 -32" />
+</vector>

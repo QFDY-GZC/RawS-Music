@@ -33,6 +33,23 @@ internal class AudioTrackPcmWriter(
         }
     }
 
+    /** Writes one logical renderer block completely unless AudioTrack returns an error/zero. */
+    fun writeFully(
+        track: AudioTrack,
+        buffer: ByteArray,
+        offset: Int,
+        length: Int,
+        writeMode: Int = AudioTrack.WRITE_BLOCKING
+    ): Int {
+        var total = 0
+        while (total < length) {
+            val written = write(track, buffer, offset + total, length - total, writeMode)
+            if (written <= 0) return if (total > 0) total else written
+            total += written
+        }
+        return total
+    }
+
     private fun writeFloat(
         track: AudioTrack,
         buffer: ByteArray,

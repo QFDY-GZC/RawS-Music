@@ -20,6 +20,12 @@ internal class PcmDitherEngine {
             destination: ByteArray,
             destinationLength: Int
         ): Int
+        @JvmStatic private external fun nativeProcessS32ToS16Rounded(
+            source: ByteArray,
+            sourceLength: Int,
+            destination: ByteArray,
+            destinationLength: Int
+        ): Int
         @JvmStatic private external fun nativeProcessS32ToS24(
             handle: Long,
             source: ByteArray,
@@ -54,6 +60,11 @@ internal class PcmDitherEngine {
             nativeProcessS32ToS16(h, source, sourceLength, destination, destination.size)
         }.getOrDefault(0)
     }
+
+    fun processS32ToS16Rounded(source: ByteArray, sourceLength: Int, destination: ByteArray): Int =
+        runCatching {
+            nativeProcessS32ToS16Rounded(source, sourceLength, destination, destination.size)
+        }.getOrDefault(0)
 
     fun processS32ToS24(source: ByteArray, sourceLength: Int, destination: ByteArray): Int {
         val h = handle

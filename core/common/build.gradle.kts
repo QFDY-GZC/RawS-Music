@@ -28,7 +28,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.lifecycle.livedata.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
-    // AudioFile is consumed by Compose PowerList. Keep its immutable contract visible to the
+    // AudioFile is consumed by Compose VirtualList. Keep its immutable contract visible to the
     // Compose compiler so pixel-only scroll frames can skip unchanged holders.
     implementation(platform(libs.compose.bom))
     implementation("androidx.compose.runtime:runtime")
@@ -38,4 +38,7 @@ dependencies {
     implementation(libs.mmkv)
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.26.0")
     api(libs.dexter)
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation(kotlin("test"))
 }

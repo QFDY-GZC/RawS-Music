@@ -1,8 +1,9 @@
 package com.rawsmusic.core.ui.widget
 
 import android.util.Log
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlin.math.abs
@@ -17,9 +18,6 @@ import kotlin.math.abs
 class PlayerLyricsTransitionCoordinator {
 
     var activeSession by mutableStateOf<PlayerLyricsTransitionSession?>(null)
-        private set
-
-    var progress by mutableFloatStateOf(0f)
         private set
 
     private var playerCandidate: PlayerLyricsArtworkAnchor? = null
@@ -45,7 +43,6 @@ class PlayerLyricsTransitionCoordinator {
     ): PlayerLyricsTransitionSession? {
         if (!isPlayerLyricsPair(from, to)) {
             activeSession = null
-            progress = 0f
             return null
         }
 
@@ -101,7 +98,6 @@ class PlayerLyricsTransitionCoordinator {
             interactive = interactive
         )
         activeSession = next
-        progress = 0f
         Log.d(
             TAG,
             "begin id=${next.id} ${next.from}->${next.to} route=${next.route} " +
@@ -114,18 +110,23 @@ class PlayerLyricsTransitionCoordinator {
     }
 
     fun updateProgress(value: Float) {
-        if (activeSession == null) return
-        progress = value.coerceIn(0f, 1f)
+        activeSession?.updateProgress(value)
     }
 
     fun finish() {
+        // Do not reset the finished session's progress. The old graphicsLayer can survive until
+        // the next Compose apply/draw pass after activeSession becomes null. Resetting a shared
+        // progress State here made that retained layer jump back to its source endpoint for one
+        // frame: PLAYER->LYRIC flashed PLAYER, and LYRIC->PLAYER flashed LYRIC. Each session now
+        // owns its own immutable-lifetime progress State, so its last rendered endpoint remains
+        // stable even if a new transition begins before the old layer is disposed.
         activeSession = null
-        progress = 0f
     }
 
     fun cancel() {
+        // Preserve the last visual value for the same retained-layer reason as finish(). A future
+        // begin() creates a new session with an independent progress State initialized to zero.
         activeSession = null
-        progress = 0f
     }
 
     companion object {
@@ -226,7 +227,18 @@ data class PlayerLyricsTransitionSession(
     val lyricRadiusDp: Float,
     val lyricSnapshotGeneration: Long,
     val interactive: Boolean
-)
+) {
+    private val mutableProgressState = mutableFloatStateOf(0f)
+
+    /** Stable per-session state consumed only from graphicsLayer/draw callbacks. */
+    val progressState: State<Float> get() = mutableProgressState
+
+    val progress: Float get() = mutableProgressState.floatValue
+
+    internal fun updateProgress(value: Float) {
+        mutableProgressState.floatValue = value.coerceIn(0f, 1f)
+    }
+}
 
 enum class PlayerLyricsTransitionDirection {
     PlayerToLyrics,

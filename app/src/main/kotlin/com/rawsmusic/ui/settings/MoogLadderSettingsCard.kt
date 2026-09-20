@@ -126,7 +126,7 @@ private fun MoogModePreference(
     RawWindowDropdownPreference(
         entry = entry,
         title = stringResource(R.string.settings_moog_variant),
-        summary = summaries[index],
+        summary = stringResource(R.string.settings_moog_variant_summary),
         enabled = true,
         showValue = true,
         maxHeight = 520.dp,

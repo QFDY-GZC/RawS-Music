@@ -8,15 +8,52 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
-import android.widget.Toast
 import androidx.core.content.FileProvider
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.ui.AppNoticeBus
 import com.rawsmusic.core.ui.R
 import java.io.File
 
 internal fun sharePlayerAudio(context: Context, song: AudioFile?) {
     if (song == null || !launchAudioShare(context, song)) {
-        Toast.makeText(context, R.string.player_share_audio_unavailable, Toast.LENGTH_SHORT).show()
+        AppNoticeBus.error(context.getString(R.string.player_share_audio_unavailable))
+    }
+}
+
+internal fun shareSelectedAudio(context: Context, songs: List<AudioFile>) {
+    val uris = songs.mapNotNull { song -> resolveShareUri(context, song)?.let { it to song } }
+    if (uris.isEmpty()) {
+        AppNoticeBus.error(context.getString(R.string.player_share_audio_unavailable))
+        return
+    }
+    if (uris.size == 1) {
+        launchAudioShare(context, uris.first().second)
+        return
+    }
+
+    val streamUris = ArrayList(uris.map { it.first })
+    val sendIntent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+        type = "audio/*"
+        putParcelableArrayListExtra(Intent.EXTRA_STREAM, streamUris)
+        clipData = ClipData.newUri(
+            context.contentResolver,
+            uris.first().second.displayName,
+            streamUris.first(),
+        ).also { clip ->
+            streamUris.drop(1).forEach { uri -> clip.addItem(ClipData.Item(uri)) }
+        }
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    val chooser = Intent.createChooser(
+        sendIntent,
+        context.getString(R.string.player_share_audio_chooser),
+    ).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    val launched = runCatching {
+        context.startActivity(chooser)
+        true
+    }.getOrDefault(false)
+    if (!launched) {
+        AppNoticeBus.error(context.getString(R.string.player_share_audio_unavailable))
     }
 }
 

@@ -26,6 +26,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,6 +39,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -46,6 +48,7 @@ import androidx.compose.ui.zIndex
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
+import com.rawsmusic.core.ui.widget.bitmaps.artworkHighTargetSide
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
 import com.rawsmusic.core.ui.widget.bitmaps.DefaultAlbumArtwork
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
@@ -75,8 +78,13 @@ internal fun PortraitDialFullCoverPage(
     sceneInteractionEnabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val songs = remember(queueSongs, currentSong) {
-        queueSongs.ifEmpty { listOfNotNull(currentSong) }
+    val incomingSongs = queueSongs.ifEmpty { listOfNotNull(currentSong) }
+    val providerHighSide = artworkHighTargetSide(LocalContext.current)
+    var songs by remember { mutableStateOf(incomingSongs.toList()) }
+    SideEffect {
+        if (!samePortraitDialQueue(songs, incomingSongs)) {
+            songs = incomingSongs.toList()
+        }
     }
     val queueIdentity = remember(songs) {
         songs.joinToString(separator = "\u0001") { portraitDialSongIdentity(it) }
@@ -393,8 +401,8 @@ internal fun PortraitDialFullCoverPage(
                                     contentDescription = song.displayName,
                                     modifier = Modifier.fillMaxSize(),
                                     contentScale = ContentScale.Crop,
-                                    targetWidth = artworkTier.targetSidePx,
-                                    targetHeight = artworkTier.targetSidePx,
+                                    targetWidth = minOf(artworkTier.targetSidePx, providerHighSide),
+                                    targetHeight = minOf(artworkTier.targetSidePx, providerHighSide),
                                     surface = artworkSurface,
                                     priority = artworkPriority,
                                     holdPreviousOnKeyChange = true,
@@ -432,6 +440,11 @@ internal fun PortraitDialFullCoverPage(
 
 private fun portraitDialSongIdentity(song: AudioFile): String =
     "${song.path}|${song.cueOffsetMs}|${song.cueTrackIndex}"
+
+private fun samePortraitDialQueue(left: List<AudioFile>, right: List<AudioFile>): Boolean =
+    left.size == right.size && left.indices.all { index ->
+        portraitDialSongIdentity(left[index]) == portraitDialSongIdentity(right[index])
+    }
 
 private data class PortraitDialTapTarget(
     val logicalOffset: Int,

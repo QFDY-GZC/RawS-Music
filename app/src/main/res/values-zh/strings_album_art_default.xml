@@ -2,5 +2,5 @@
 <resources>
     <string name="settings_album_art_default_artwork">使用默认专辑图</string>
     <string name="settings_album_art_default_artwork_title">为无封面歌曲显示默认专辑图</string>
-    <string name="settings_album_art_default_artwork_desc">当歌曲没有内嵌或外部封面时，显示内置默认专辑图。关闭后将使用普通占位背景。</string>
+    <string name="settings_album_art_default_artwork_desc">没有专辑图时使用内置默认图片。</string>
 </resources>

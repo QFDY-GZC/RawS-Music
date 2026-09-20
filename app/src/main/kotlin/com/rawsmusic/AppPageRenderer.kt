@@ -14,10 +14,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.core.ui.scene.ExternalPageRenderer
 import com.rawsmusic.core.ui.scene.GlobalSearchScope
 import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.scene.NavigationState
+import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListState
 import com.rawsmusic.module.data.prefs.PlaylistStore
 import com.rawsmusic.module.data.prefs.PlaybackStatsStore
 import com.rawsmusic.module.player.dsp.GraphicEQController
@@ -85,7 +88,12 @@ class AppPageRendererImpl(
     }
 
     @Composable
-    override fun RenderPage(scene: NavScene, onBack: () -> Unit, argument: String): Boolean {
+    override fun RenderPage(
+        scene: NavScene,
+        onBack: () -> Unit,
+        argument: String,
+        virtualListState: ComposeVirtualListState?,
+    ): Boolean {
         val context = LocalContext.current
         val activity = context as? MainActivity
         val pc = activity?.playerController
@@ -115,6 +123,7 @@ class AppPageRendererImpl(
                 PlaylistScreen(
                     playlistStore = playlistStore,
                     onBack = onBack,
+                    virtualListState = virtualListState,
                     onPlaylistClick = { playlistId, _ ->
                         navState?.navigateTo(NavScene.PLAYLIST_DETAIL_PAGE, playlistId)
                     }
@@ -152,7 +161,7 @@ class AppPageRendererImpl(
                         val target = when (scope) {
                             GlobalSearchScope.ALBUM -> NavScene.ALBUM_DETAIL
                             GlobalSearchScope.ARTIST -> NavScene.ARTIST_DETAIL
-                            GlobalSearchScope.FOLDER -> NavScene.FOLDER_HIERARCHY
+                            GlobalSearchScope.FOLDER -> NavScene.FOLDER_DETAIL
                             GlobalSearchScope.GENRE -> NavScene.GENRE_DETAIL
                             GlobalSearchScope.YEAR -> NavScene.YEAR_DETAIL
                             GlobalSearchScope.COMPOSER -> NavScene.COMPOSER_DETAIL
@@ -354,7 +363,7 @@ class AppPageRendererImpl(
                             exportLauncher.launch("PEQ_preset_${System.currentTimeMillis()}.peq.json")
                         },
                         onImportFromFile = {
-                            importLauncher.launch(arrayOf("application/json", "*/*"))
+                            importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
                         },
                         importedFileContent = importedFileContent,
                         onImportedFileContentConsumed = { importedFileContent = null }
@@ -483,9 +492,14 @@ class AppPageRendererImpl(
     private fun writeJsonToUri(context: android.content.Context, uri: Uri, json: String) {
         try {
             context.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
-            Toast.makeText(context, context.getString(com.rawsmusic.R.string.preset_saved), Toast.LENGTH_SHORT).show()
+            AppNoticeBus.post(
+                message = context.getString(com.rawsmusic.R.string.preset_saved),
+                icon = AppNoticeIcon.EQUALIZER,
+            )
         } catch (e: Exception) {
-            Toast.makeText(context, context.getString(com.rawsmusic.R.string.preset_save_failed, e.message.orEmpty()), Toast.LENGTH_SHORT).show()
+            AppNoticeBus.error(
+                context.getString(com.rawsmusic.R.string.preset_save_failed, e.message.orEmpty())
+            )
         }
     }
 
@@ -495,7 +509,9 @@ class AppPageRendererImpl(
                 BufferedReader(InputStreamReader(stream)).readText()
             }
         } catch (e: Exception) {
-            Toast.makeText(context, context.getString(com.rawsmusic.R.string.preset_read_failed, e.message.orEmpty()), Toast.LENGTH_SHORT).show()
+            AppNoticeBus.error(
+                context.getString(com.rawsmusic.R.string.preset_read_failed, e.message.orEmpty())
+            )
             null
         }
     }

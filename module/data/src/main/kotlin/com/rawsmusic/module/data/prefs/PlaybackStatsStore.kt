@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -208,27 +209,82 @@ class PlaybackStatsStore private constructor(private val context: Context) {
         })
     }
 
+    /** Serialize only after earlier Room initialization/writes on the single store dispatcher complete. */
+    suspend fun exportJsonForBackup(): JSONObject = withContext(databaseDispatcher) {
+        exportJson()
+    }
+
     fun restoreJson(json: JSONObject) {
-        val restoredStats = parseStats(json.optJSONArray("stats") ?: JSONArray())
-        val restoredHistory = parseHistory(json.optJSONArray("history") ?: JSONArray())
-            .take(MAX_HISTORY_ITEMS)
-        val restoredDaily = buildMap {
-            val daily = json.optJSONObject("daily") ?: JSONObject()
-            daily.keys().forEach { date -> put(date, daily.optLong(date, 0L)) }
-        }
-        synchronized(lock) {
-            _stats.value = restoredStats
-            _history.value = restoredHistory
-            _dailyListenMs.value = restoredDaily
-        }
+        val payload = parseRestorePayload(json)
+        applyRestorePayloadToMemory(payload)
         databaseScope.launch {
-            dao.replaceAll(
-                stats = restoredStats.map(SongPlaybackStats::toEntity),
-                history = restoredHistory.map(PlaybackHistoryEntry::toEntity),
-                daily = restoredDaily.map { (date, listenedMs) -> DailyListenEntity(date, listenedMs) }
-            )
-            deleteLegacyFiles()
+            persistRestorePayload(payload)
         }
+    }
+
+    /**
+     * Restore and wait for the Room write to finish. Backup/import uses this path so success is not
+     * reported while persistence is still queued on another coroutine.
+     */
+    suspend fun restoreJsonAndVerify(json: JSONObject): Boolean {
+        val payload = parseRestorePayload(json)
+        applyRestorePayloadToMemory(payload)
+        return withContext(databaseDispatcher) {
+            persistRestorePayload(payload)
+            val storedStats = dao.getStats().map(PlaybackStatEntity::toModel)
+            val storedHistory = dao.getHistory(MAX_HISTORY_ITEMS).map(PlaybackHistoryEntity::toModel)
+            val storedDaily = dao.getDaily().associate { it.date to it.listenedMs }
+            sameStats(storedStats, payload.stats) &&
+                sameHistory(storedHistory, payload.history) &&
+                storedDaily == payload.daily
+        }
+    }
+
+
+    private fun sameStats(first: List<SongPlaybackStats>, second: List<SongPlaybackStats>): Boolean =
+        first.sortedBy(SongPlaybackStats::songId) == second.sortedBy(SongPlaybackStats::songId)
+
+    private fun sameHistory(first: List<PlaybackHistoryEntry>, second: List<PlaybackHistoryEntry>): Boolean {
+        val order = compareBy<PlaybackHistoryEntry>(
+            PlaybackHistoryEntry::playedAt,
+            PlaybackHistoryEntry::songId,
+            PlaybackHistoryEntry::title,
+            PlaybackHistoryEntry::artist,
+            PlaybackHistoryEntry::album,
+        )
+        return first.sortedWith(order) == second.sortedWith(order)
+    }
+
+    private data class RestorePayload(
+        val stats: List<SongPlaybackStats>,
+        val history: List<PlaybackHistoryEntry>,
+        val daily: Map<String, Long>,
+    )
+
+    private fun parseRestorePayload(json: JSONObject): RestorePayload = RestorePayload(
+        stats = parseStats(json.optJSONArray("stats") ?: JSONArray()),
+        history = parseHistory(json.optJSONArray("history") ?: JSONArray()).take(MAX_HISTORY_ITEMS),
+        daily = buildMap {
+            val dailyJson = json.optJSONObject("daily") ?: JSONObject()
+            dailyJson.keys().forEach { date -> put(date, dailyJson.optLong(date, 0L)) }
+        },
+    )
+
+    private fun applyRestorePayloadToMemory(payload: RestorePayload) {
+        synchronized(lock) {
+            _stats.value = payload.stats
+            _history.value = payload.history
+            _dailyListenMs.value = payload.daily
+        }
+    }
+
+    private suspend fun persistRestorePayload(payload: RestorePayload) {
+        dao.replaceAll(
+            stats = payload.stats.map(SongPlaybackStats::toEntity),
+            history = payload.history.map(PlaybackHistoryEntry::toEntity),
+            daily = payload.daily.map { (date, listenedMs) -> DailyListenEntity(date, listenedMs) },
+        )
+        deleteLegacyFiles()
     }
 
     private suspend fun loadRoomSnapshot() {

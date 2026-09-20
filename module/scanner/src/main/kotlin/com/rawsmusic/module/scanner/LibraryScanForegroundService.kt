@@ -11,7 +11,6 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AppLogger
-import android.widget.Toast
 import com.rawsmusic.module.data.prefs.AppPreferences
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -24,6 +23,7 @@ import kotlinx.coroutines.launch
 class LibraryScanForegroundService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var scanJob: Job? = null
+    private var pendingScanReason: String? = null
     private lateinit var notificationManager: NotificationManager
 
     override fun onCreate() {
@@ -54,6 +54,7 @@ class LibraryScanForegroundService : Service() {
 
     private fun startScanIfNeeded(reason: String) {
         if (scanJob?.isActive == true) {
+            pendingScanReason = reason
             LibraryScanEventBus.updateState(
                 LibraryScanEventBus.scanState.value.copy(pendingScan = true, message = "扫描正在进行，已记录新的扫描请求")
             )
@@ -71,6 +72,8 @@ class LibraryScanForegroundService : Service() {
             AppLogger.e(TAG, "No repository installed"); stopSelf(); return
         }
         val coordinator = LibraryScanCoordinator(repository)
+        var finalSync: LibraryScanCoordinator.Event.DatabaseSyncCompleted? = null
+        var failed = false
 
         try {
             coordinator.scanAndSync(
@@ -88,11 +91,7 @@ class LibraryScanForegroundService : Service() {
                 when (event) {
                     is LibraryScanCoordinator.Event.DatabaseSyncCompleted -> {
                         if (event.phase == LibraryScanCoordinator.SyncPhase.FINAL) {
-                            showScanToast(
-                                added = event.added,
-                                updated = event.updated,
-                                deleted = event.deleted
-                            )
+                            finalSync = event
                         }
                     }
                     is LibraryScanCoordinator.Event.VisibleCompleted -> {
@@ -104,9 +103,27 @@ class LibraryScanForegroundService : Service() {
                     }
                     is LibraryScanCoordinator.Event.Completed -> {
                         LibraryScanEventBus.tryEmitSongs(event.songs)
+                        val stats = finalSync
+                        LibraryScanToast.show(
+                            applicationContext,
+                            LibraryScanSummary(
+                                scanned = event.songs.size,
+                                added = stats?.added ?: 0,
+                                updated = stats?.updated ?: 0,
+                                removed = stats?.deleted ?: 0,
+                                elapsedMs = event.timeMs
+                            )
+                        )
                     }
+                    is LibraryScanCoordinator.Event.Error -> failed = true
                     else -> Unit
                 }
+            }
+
+            if (failed) {
+                AppLogger.w(TAG, "Foreground scan ended with a scanner error")
+                stopSelf()
+                return
             }
 
             val doneState = LibraryScanEventBus.scanState.value.copy(
@@ -116,6 +133,13 @@ class LibraryScanForegroundService : Service() {
             LibraryScanEventBus.updateState(doneState)
             updateNotification(doneState)
             AppLogger.d(TAG, "Foreground scan completed")
+            val deferredReason = pendingScanReason
+            if (!deferredReason.isNullOrBlank()) {
+                pendingScanReason = null
+                scanJob = null
+                startScanIfNeeded(deferredReason)
+                return
+            }
             stopSelf()
         } catch (e: CancellationException) {
             LibraryScanEventBus.updateState(ScanUiState.cancelled())
@@ -135,6 +159,7 @@ class LibraryScanForegroundService : Service() {
     }
 
     private fun cancelScan() {
+        pendingScanReason = null
         scanJob?.cancel(CancellationException("User cancelled"))
         scanJob = null
         LibraryScanEventBus.updateState(ScanUiState.cancelled())
@@ -273,33 +298,6 @@ class LibraryScanForegroundService : Service() {
             enableVibration(false)
         }
         notificationManager.createNotificationChannel(channel)
-    }
-
-    private fun showScanToast(
-        added: Int,
-        updated: Int,
-        deleted: Int
-    ) {
-        val text = when {
-            added > 0 && updated > 0 && deleted > 0 ->
-                "扫描完成：新增 $added 首，更新 $updated 首，移除 $deleted 首"
-            added > 0 && updated > 0 ->
-                "扫描完成：新增 $added 首，更新 $updated 首"
-            added > 0 && deleted > 0 ->
-                "扫描完成：新增 $added 首，移除 $deleted 首"
-            added > 0 ->
-                "扫描完成：新增 $added 首歌曲"
-            updated > 0 || deleted > 0 ->
-                "扫描完成：没有新增歌曲，更新 $updated 首，移除 $deleted 首"
-            else ->
-                "扫描完成：没有新增歌曲"
-        }
-
-        Toast.makeText(
-            applicationContext,
-            text,
-            Toast.LENGTH_SHORT
-        ).show()
     }
 
     companion object {

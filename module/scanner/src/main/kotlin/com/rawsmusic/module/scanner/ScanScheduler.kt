@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.module.data.prefs.AppPreferences
 
 object ScanScheduler {
 
@@ -28,6 +29,14 @@ object ScanScheduler {
 
     fun scheduleInitialScan(context: Context) {
         AppLogger.d(TAG, "scheduleInitialScan")
+        if (!AppPreferences.Scanner.coldStartAutoScanEnabled) {
+            AppLogger.d(TAG, "scheduleInitialScan skipped: disabled by user")
+            return
+        }
+        if (AppPreferences.UI.scanPaths.isEmpty() && AppPreferences.Scanner.musicFolderUris.isEmpty()) {
+            AppLogger.d(TAG, "scheduleInitialScan skipped: no selected folders")
+            return
+        }
         if (!LegacyFileAccess.hasRequiredScanPermission(context)) {
             AppLogger.w(TAG, "scheduleInitialScan blocked: missing permission for selected access mode")
             if (LegacyFileAccess.isRequested()) {
@@ -37,7 +46,14 @@ object ScanScheduler {
             }
             return
         }
-        AppLogger.d(TAG, "initial auto scan skipped; waiting for manual scan")
+        startOrQueue(
+            ScanRequest(
+                context = context.applicationContext,
+                reason = "cold start",
+                fastScan = false,
+                manual = false
+            )
+        )
     }
 
     fun onStorageChanged(context: Context, reason: String) {

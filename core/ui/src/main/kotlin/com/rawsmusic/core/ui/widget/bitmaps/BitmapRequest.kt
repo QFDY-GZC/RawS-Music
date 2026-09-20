@@ -2,6 +2,25 @@ package com.rawsmusic.core.ui.widget.bitmaps
 
 import android.graphics.Bitmap
 
+
+internal enum class ProviderCancelAction {
+    /** Detach this UI observer only; the provider flight is still required by another live waiter. */
+    DETACH_OBSERVER_ONLY,
+    /** Cancel only this non-owner observer; another waiter still keeps the source flight alive. */
+    CANCEL_OBSERVER_ONLY,
+    /** No live waiters remain, so the provider source flight may be cancelled. */
+    CANCEL_FLIGHT,
+}
+
+internal fun resolveProviderCancelAction(
+    requestIsFlightOwner: Boolean,
+    hasOtherLiveWaiters: Boolean,
+): ProviderCancelAction = when {
+    requestIsFlightOwner && hasOtherLiveWaiters -> ProviderCancelAction.DETACH_OBSERVER_ONLY
+    hasOtherLiveWaiters -> ProviderCancelAction.CANCEL_OBSERVER_ONLY
+    else -> ProviderCancelAction.CANCEL_FLIGHT
+}
+
 /**
  * Bitmap 加载请求
  *
@@ -22,12 +41,22 @@ class BitmapRequest(
     val targetHeight: Int,
     /** 优先级（越小越优先） */
     var priority: Priority = Priority.LOADING_LIST,
-    /** 加载完成回调 */
+    /** Legacy bitmap callback for non-VirtualList surfaces. */
     val callback: ((Bitmap?) -> Unit)? = null,
+    /** Reference-style provider-wrapper callback used by VirtualList artwork holders. */
+    val wrapperCallback: ((ArtworkHandle?) -> Unit)? = null,
     /** Lifecycle surface: Project-style owner deciding whether source probing is allowed. */
     val surface: ArtworkSurface = ArtworkSurface.fromPriority(priority),
+    /**
+     * Per-request source capability. Cache lookup always runs first; callers may disable source
+     * probing for never-visible/prefetch work, but an attached visible VirtualList holder remains
+     * source-capable while drag/fling motion is active.
+     */
+    val sourceDecodeAllowed: Boolean = surface.allowsSourceDecode,
+    /** Source geometry policy. KeepAspect uses a separate provider/cache record from legacy Crop. */
+    val aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     /** Source/version/bucket token used to reject stale async artwork callbacks. */
-    val artworkToken: ArtworkAcceptToken
+    artworkToken: ArtworkAcceptToken,
 ) {
     /** 优先级 */
     enum class Priority(val level: Int) {
@@ -65,17 +94,14 @@ class BitmapRequest(
     @Volatile
     internal var inFlightOwner: Boolean = false
 
-    @Volatile
-    internal var keepAliveOnCancel: Boolean = false
-
-    /**
-     * True only after the provider has claimed the queued source probe.  A detached holder may
-     * remove a request that is still waiting in the Handler queue, but an already-running source
-     * probe is allowed to finish and warm the shared bitmap record.
-     */
+    /** True only after the provider has claimed the queued source probe. */
     @Volatile
     internal var sourceWorkStarted: Boolean = false
         private set
+
+    /** Number of bounded source retries kept inside the provider flight. */
+    @Volatile
+    internal var sourceRetryCount: Int = 0
 
     /** Null is terminal only when the provider has confirmed that no artwork exists. */
     @Volatile
@@ -86,10 +112,20 @@ class BitmapRequest(
         SizeSlotCache.computeBucket(targetWidth, targetHeight)
     }
 
-    /** 缓存 key（key + bucket） */
+    /** Aspect-specific provider/cache source identity. */
+    val cacheSourceKey: String by lazy { artworkAspectCacheSourceKey(key, aspectPolicy) }
+
+    /** 缓存 key（aspect-specific key + bucket） */
     val cacheKey: String by lazy {
-        "${key}_${bucket}"
+        "${cacheSourceKey}_${bucket}"
     }
+
+    /** Provider record identity follows the provider-owned request when a stale source record is
+     * replaced. artwork holders keep the same BitmapRequest/callback ownership; only the provider record
+     * token changes, matching Reference's request-table requeue rather than a UI-level retry. */
+    @Volatile
+    var artworkToken: ArtworkAcceptToken = artworkToken
+        private set
 
     /** Queue/in-flight key. Includes record revision so stale decodes cannot share callbacks. */
     val inFlightKey: String
@@ -104,45 +140,45 @@ class BitmapRequest(
         return true
     }
 
-    /**
-     * Claim the source probe once, without racing a holder detach.
-     *
-     * A detached owner may still be the only queued representation of a shared flight.  In that
-     * case [keepAliveOnCancel] means "detach this listener", not "cancel the source"; a later
-     * holder is waiting on this same request and must still receive its result.
-     */
+    /** Claim this request's source probe at most once. */
     internal fun tryStartSourceWork(): Boolean = synchronized(this) {
-        if ((isCancelled && !keepAliveOnCancel) || sourceWorkStarted) return false
+        if (isCancelled || sourceWorkStarted) return false
         sourceWorkStarted = true
         true
     }
 
-    /** Cancel and report whether the source probe had already started. */
-    internal fun cancelAndGetSourceWorkStarted(keepAlive: Boolean): Boolean = synchronized(this) {
-        keepAliveOnCancel = keepAlive
+    /**
+     * Keep the same provider owner/waiters alive for a short transient-source retry.
+     * The retry number is claimed under the request monitor so a cancellation/rebind cannot
+     * accidentally schedule more than the bounded number of source probes.
+     */
+    internal fun tryPrepareSourceRetry(maxRetries: Int): Int? = synchronized(this) {
+        if (isCancelled || terminalNoArt || sourceRetryCount >= maxRetries) return null
+        sourceRetryCount += 1
+        sourceWorkStarted = false
+        state = State.CHECKING_MEMORY
+        sourceRetryCount
+    }
+
+    internal fun moveToArtworkRecord(nextToken: ArtworkAcceptToken): Boolean = synchronized(this) {
+        if (isCancelled) return false
+        artworkToken = nextToken
+        inFlightOwner = false
+        sourceWorkStarted = false
+        sourceRetryCount = 0
+        terminalNoArt = false
+        state = State.CHECKING_MEMORY
+        true
+    }
+
+    /** 取消请求。 */
+    fun cancel() {
         isCancelled = true
         state = State.CANCELLED
-        sourceWorkStarted
     }
 
-    /**
-     * 取消请求
-     */
-    fun cancel(keepAlive: Boolean = false) {
-        cancelAndGetSourceWorkStarted(keepAlive)
-    }
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is BitmapRequest) return false
-        return key == other.key && decodeKey == other.decodeKey && targetWidth == other.targetWidth && targetHeight == other.targetHeight
-    }
-
-    override fun hashCode(): Int {
-        var result = key.hashCode()
-        result = 31 * result + decodeKey.hashCode()
-        result = 31 * result + targetWidth
-        result = 31 * result + targetHeight
-        return result
-    }
+    // A request owns one observer/cancellation lifecycle, so equality is object identity.
+    // Decode deduplication uses inFlightKey, independently of observer identity. Value equality
+    // here made addIfAbsent drop another visible holder requesting the same album and let
+    // remove(request) detach the wrong holder; neither received a later binding refresh at rest.
 }

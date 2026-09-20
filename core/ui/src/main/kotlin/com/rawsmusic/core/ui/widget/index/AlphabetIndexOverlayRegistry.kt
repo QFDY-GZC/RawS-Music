@@ -9,26 +9,36 @@ import androidx.compose.ui.Modifier
 
 internal data class AlphabetIndexOverlayEntry(
     val owner: Any,
+    val sceneId: String,
     val data: RawAlphabetIndexData,
     val modifier: Modifier,
     val enabled: Boolean,
     val minCellHeightDp: Float,
+    val scrollActiveProvider: (() -> Boolean)?,
     val onTopSelect: (() -> Unit)?,
     val onSelect: (String, Int) -> Unit,
 )
 
 @Stable
 internal class AlphabetIndexOverlayRegistry {
-    var entry by mutableStateOf<AlphabetIndexOverlayEntry?>(null)
-        private set
+    private var entries by mutableStateOf<List<AlphabetIndexOverlayEntry>>(emptyList())
 
     fun publish(value: AlphabetIndexOverlayEntry) {
-        entry = value
+        val current = entries
+        val existingIndex = current.indexOfFirst { it.owner === value.owner }
+        entries = if (existingIndex >= 0) {
+            current.toMutableList().also { it[existingIndex] = value }
+        } else {
+            current + value
+        }
     }
 
     fun remove(owner: Any) {
-        if (entry?.owner === owner) entry = null
+        entries = entries.filterNot { it.owner === owner }
     }
+
+    fun entryFor(sceneId: String): AlphabetIndexOverlayEntry? =
+        entries.lastOrNull { it.sceneId == sceneId }
 }
 
 internal val LocalAlphabetIndexOverlayRegistry =

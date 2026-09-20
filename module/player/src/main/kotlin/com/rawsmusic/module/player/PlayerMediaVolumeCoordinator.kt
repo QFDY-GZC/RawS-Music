@@ -39,13 +39,12 @@ internal class PlayerMediaVolumeCoordinator(
             }
             PlayerUsbVolumeRouteCoordinator.VolumeRoute.SYSTEM -> {
                 if (isUsbExclusiveSoftwareVolumeActive()) {
-                    val old = AppPreferences.Player.volume.coerceIn(0f, 1f)
-                    val delta = if (deltaStep > 0) {
-                        UsbHardwareVolumeModel.DEFAULT_LINEAR_STEP
-                    } else {
-                        -UsbHardwareVolumeModel.DEFAULT_LINEAR_STEP
-                    }
-                    applyUsbExclusiveSoftwareUserVolume(old + delta, "ui_button_system delta=$deltaStep")
+                    val direction = if (deltaStep > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
+                    systemVolumeController().adjustMusicVolume(direction, AudioManager.FLAG_SHOW_UI)
+                    applyUsbExclusiveSoftwareUserVolume(
+                        getSystemMusicVolumeLinear(),
+                        "ui_button_system_local delta=$deltaStep",
+                    )
                 } else if (dvcIsActive(false)) {
                     dvcAdjust(deltaStep, "ui_button_dvc")
                 } else {
@@ -77,7 +76,11 @@ internal class PlayerMediaVolumeCoordinator(
             PlayerUsbVolumeRouteCoordinator.VolumeRoute.SYSTEM -> {
                 val volume = UsbHardwareVolumeModel.stepToUiVolume(step)
                 if (isUsbExclusiveSoftwareVolumeActive()) {
-                    applyUsbExclusiveSoftwareUserVolume(volume, "media_session_set_system:$reason")
+                    setSystemMusicVolumeLinear(volume)
+                    applyUsbExclusiveSoftwareUserVolume(
+                        getSystemMusicVolumeLinear(),
+                        "media_session_set_system_local:$reason",
+                    )
                 } else if (dvcIsActive(false)) {
                     dvcSetLogicalVolume(volume, "media_session_set_dvc:$reason")
                 } else {
@@ -102,13 +105,12 @@ internal class PlayerMediaVolumeCoordinator(
             }
             PlayerUsbVolumeRouteCoordinator.VolumeRoute.SYSTEM -> {
                 if (isUsbExclusiveSoftwareVolumeActive()) {
-                    val old = AppPreferences.Player.volume.coerceIn(0f, 1f)
-                    val delta = if (direction > 0) {
-                        UsbHardwareVolumeModel.DEFAULT_LINEAR_STEP
-                    } else {
-                        -UsbHardwareVolumeModel.DEFAULT_LINEAR_STEP
-                    }
-                    applyUsbExclusiveSoftwareUserVolume(old + delta, "$reason system direction=$direction")
+                    val adjust = if (direction > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
+                    systemVolumeController().adjustMusicVolume(adjust, AudioManager.FLAG_SHOW_UI)
+                    applyUsbExclusiveSoftwareUserVolume(
+                        getSystemMusicVolumeLinear(),
+                        "$reason system_local direction=$direction",
+                    )
                 } else if (dvcIsActive(false)) {
                     dvcAdjust(direction, "media_session_adjust_dvc:$reason")
                 } else {
@@ -131,7 +133,7 @@ internal class PlayerMediaVolumeCoordinator(
             PlayerUsbVolumeRouteCoordinator.VolumeRoute.SYSTEM ->
                 UsbHardwareVolumeModel.uiVolumeToStep(
                     if (isUsbExclusiveSoftwareVolumeActive()) {
-                        AppPreferences.Player.volume.coerceIn(0f, 1f)
+                        getSystemMusicVolumeLinear()
                     } else if (dvcIsActive(false)) {
                         dvcLogicalVolume()
                     } else {

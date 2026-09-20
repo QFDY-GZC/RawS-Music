@@ -37,7 +37,7 @@ internal object UsbAudioFormatPolicy {
         return when {
             bits == 16 && subslot == 2 -> autoConfig(sampleRate, 16, channels, 2, sourceBits)
             bits == 24 && subslot == 3 -> autoConfig(sampleRate, 24, channels, 3, sourceBits)
-            bits == 24 && subslot == 4 -> autoConfig(sampleRate, 24, channels, 4, 32)
+            bits == 24 && subslot == 4 -> autoConfig(sampleRate, 24, channels, 4, sourceBits)
             bits == 32 && subslot == 4 -> autoConfig(sampleRate, 32, channels, 4, sourceBits)
             else -> null
         }

@@ -38,6 +38,23 @@ object EmbeddedArtworkSourceCache {
 
     private val locks = ConcurrentHashMap<String, Any>()
 
+    /**
+     * Reattach a source artifact created by an earlier process without running extraction again.
+     * The artifact name is derived from the versioned audio source key, so a metadata/artwork
+     * rewrite naturally points at a different file.
+     */
+    fun findExisting(
+        context: Context,
+        audioPath: String,
+        sourceKey: String,
+    ): Handle? {
+        if (audioPath.isBlank() || sourceKey.isBlank()) return null
+        val sourceFile = File(audioPath)
+        if (!sourceFile.isFile || !sourceFile.canRead()) return null
+        val target = File(sourceDir(context), "src_${stableDigest(sourceKey)}.art")
+        return existingHandle(sourceKey, audioPath, target, reused = true)
+    }
+
     fun prepare(
         context: Context,
         audioPath: String,

@@ -2,6 +2,7 @@ package com.rawsmusic.module.scanner
 
 import android.util.Log
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
+import com.rawsmusic.core.common.net.RemoteHttpStreamRegistry
 import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.core.common.utils.SampleRateNormalizer
 import java.io.RandomAccessFile
@@ -76,9 +77,12 @@ object FfmpegMetadataReader {
     fun readFullInfo(filePath: String): FullAudioInfo {
         return try {
             var tagLibInfo: FullAudioInfo? = null
+            val remoteHttp = filePath.startsWith("http://", true) || filePath.startsWith("https://", true)
 
             // 优先使用 TagLib（全格式支持，比 FFmpeg 更快）
-            if (TagLibBridge.isLoaded() && TagLibBridge.isSupported(filePath)) {
+            // Remote HTTP sources must not be handed to TagLib because it cannot receive the
+            // authenticated request headers registered for WebDAV/plugin streams.
+            if (!remoteHttp && TagLibBridge.isLoaded() && TagLibBridge.isSupported(filePath)) {
                 logd { "readFullInfo: Using TagLib for: $filePath" }
                 tagLibInfo = readFullInfoFromTagLib(filePath)
 
@@ -109,7 +113,22 @@ object FfmpegMetadataReader {
     }
 
     private fun readFullInfoFromFfmpeg(filePath: String): FullAudioInfo {
-        val info = FFmpegBridge.getMediaInfo(filePath)
+        val remote = RemoteHttpStreamRegistry.lookup(filePath)
+        val info = if (remote != null) {
+            val resolvedUrl = remote.resolveUrl(filePath)
+            FFmpegBridge.getMediaInfo(
+                filePath = resolvedUrl,
+                headers = remote.resolveHeaders(filePath),
+                userAgent = remote.userAgent,
+            )
+        } else if (filePath.startsWith("http://", true) || filePath.startsWith("https://", true)) {
+            // Never fall back to a naked authenticated HTTP request. The playback/source owner
+            // must register request options first; otherwise return no metadata and let the
+            // player probes resolve stream properties through their authenticated path.
+            null
+        } else {
+            FFmpegBridge.getMediaInfo(filePath)
+        }
         if (info == null) {
             loge { "readFullInfoFromFfmpeg: FFmpegBridge.getMediaInfo returned NULL for $filePath" }
             return FullAudioInfo()
@@ -246,36 +265,43 @@ object FfmpegMetadataReader {
      * 解析 TagLib 返回的 WAV 元数据到 ExtendedTags。
      */
     private fun parseTagLibTags(metadata: Map<String, String>): ExtendedTags {
+        val normalized = HashMap<String, String>(metadata.size * 2)
+        metadata.forEach { (key, value) ->
+            if (value.isNotBlank()) normalized[key.uppercase()] = value
+        }
         fun tag(vararg keys: String): String {
             for (key in keys) {
-                val v = metadata[key]
+                val v = metadata[key] ?: normalized[key.uppercase()]
                 if (!v.isNullOrBlank()) return v
             }
             return ""
         }
 
         return ExtendedTags(
-            title = tag("TIT2", "INAM", "title"),
-            artist = tag("TPE1", "IART", "artist"),
-            album = tag("TALB", "IPRD", "album"),
-            genre = tag("TCON", "IGNR", "genre"),
-            composer = tag("TCOM", "IMUS", "composer"),
-            albumArtist = tag("TPE2", "IART", "artist"),
-            encoder = tag("TSSE", "ISFT", "IENG", "encoder"),
-            lyrics = tag("USLT"),
-            isrc = tag("TSRC", "isrc"),
-            grouping = tag("TIT1"),
-            trackNumber = tag("TRCK", "IPRT", "track").split("/").firstOrNull()?.toIntOrNull() ?: 0,
-            discNumber = tag("TPOS", "part").split("/").firstOrNull()?.toIntOrNull() ?: 1,
-            discTotal = tag("TPOS", "part").split("/").let {
+            title = tag("TITLE", "TIT2", "INAM", "title"),
+            artist = tag("ARTIST", "TPE1", "IART", "artist"),
+            album = tag("ALBUM", "TALB", "IPRD", "album"),
+            genre = tag("GENRE", "TCON", "IGNR", "genre"),
+            composer = tag("COMPOSER", "TCOM", "IMUS", "composer"),
+            albumArtist = tag("ALBUMARTIST", "ALBUM ARTIST", "TPE2", "IART", "artist"),
+            encoder = tag("ENCODER", "ENCODEDBY", "TSSE", "ISFT", "IENG", "encoder"),
+            // MP4/M4A exposes the ©lyr atom as `lyrics` through TagLibBridge. Keep USLT for
+            // ID3-backed formats as well; otherwise a valid embedded translation is discarded
+            // when TagLib is the preferred metadata reader.
+            lyrics = tag("lyrics", "LYRICS", "©lyr", "USLT"),
+            isrc = tag("ISRC", "TSRC", "isrc"),
+            grouping = tag("GROUPING", "TIT1"),
+            trackNumber = tag("TRACKNUMBER", "TRCK", "IPRT", "track").split("/").firstOrNull()?.toIntOrNull() ?: 0,
+            discNumber = tag("DISCNUMBER", "TPOS", "part").split("/").firstOrNull()?.toIntOrNull() ?: 1,
+            discTotal = tag("DISCNUMBER", "TPOS", "part").split("/").let {
                 if (it.size > 1) it[1].toIntOrNull() ?: 1 else 1
             },
-            bpm = tag("TBPM", "IBPM", "bpm").toIntOrNull() ?: 0,
-            year = tag("TYER", "TDRC", "ICRD", "year").substringBefore("-").toIntOrNull() ?: 0,
-            trackGain = parseReplayGain(metadata["replaygain_track_gain"]),
-            trackPeak = parseReplayGainPeak(metadata["replaygain_track_peak"]),
-            albumGain = parseReplayGain(metadata["replaygain_album_gain"]),
-            albumPeak = parseReplayGainPeak(metadata["replaygain_album_peak"]),
+            bpm = tag("BPM", "TBPM", "IBPM", "bpm").toIntOrNull() ?: 0,
+            year = tag("DATE", "YEAR", "TYER", "TDRC", "ICRD", "year").substringBefore("-").toIntOrNull() ?: 0,
+            trackGain = parseReplayGain(tag("REPLAYGAIN_TRACK_GAIN", "replaygain_track_gain")),
+            trackPeak = parseReplayGainPeak(tag("REPLAYGAIN_TRACK_PEAK", "replaygain_track_peak")),
+            albumGain = parseReplayGain(tag("REPLAYGAIN_ALBUM_GAIN", "replaygain_album_gain")),
+            albumPeak = parseReplayGainPeak(tag("REPLAYGAIN_ALBUM_PEAK", "replaygain_album_peak")),
             cueSheet = metadata.entries.firstOrNull { (key, value) ->
                 value.isNotBlank() && key.replace("_", "").replace("-", "")
                     .equals("cuesheet", ignoreCase = true)

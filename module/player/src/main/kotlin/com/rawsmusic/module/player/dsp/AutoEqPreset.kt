@@ -67,6 +67,8 @@ data class AutoEqFilter(
 data class AutoEqPreset(
     val name: String,                      // 耳机名称
     val source: String = "",               // 测量来源 (crinacle, oratory1990 等)
+    val deviceType: String = "",           // 测量设备/耳机类别路径，例如 711 in-ear
+    val originPath: String = "",           // AutoEq results/.../ParametricEQ.txt，缓存唯一身份
     val preamp: Float = 0f,                // 前置放大 (dB)
     val filters: List<AutoEqFilter> = emptyList(),
     val rawText: String = ""               // 原始文本（用于缓存）
@@ -75,7 +77,12 @@ data class AutoEqPreset(
      * 安全化的 preamp（防 NaN/Infinity）
      */
     val safePreamp: Float
-        get() = if (preamp.isFinite()) preamp.coerceIn(-12f, 12f) else 0f
+        get() = sanitizePeqPreamp(preamp)
+
+    /** Stable identity keeps the same headphone from different measurement sources separate. */
+    val cacheIdentity: String
+        get() = originPath.takeIf { it.isNotBlank() }
+            ?: listOf(source, deviceType, name).joinToString("\u001f")
 
     companion object {
         private val gson = Gson()
@@ -98,7 +105,13 @@ data class AutoEqPreset(
          * Filter 2: ON LSC Fc 105 Hz Gain 5.5 dB Q 0.70
          * Filter 3: OFF PK Fc 1000 Hz Gain 0.0 dB Q 1.00  ← 跳过
          */
-        fun parse(name: String, source: String = "", text: String): AutoEqPreset? {
+        fun parse(
+            name: String,
+            source: String = "",
+            deviceType: String = "",
+            originPath: String = "",
+            text: String,
+        ): AutoEqPreset? {
             try {
                 val lines = text.lines().filter { it.isNotBlank() }
                 if (lines.isEmpty()) return null
@@ -111,9 +124,12 @@ data class AutoEqPreset(
 
                     // 解析 Preamp
                     if (trimmed.startsWith("Preamp:", ignoreCase = true)) {
-                        val preampStr = trimmed.substringAfter(":").trim()
-                            .removeSuffix("dB").trim()
-                        preamp = preampStr.toFloatOrNull() ?: 0f
+                        // Parse the numeric token only. This accepts dB/DB casing while refusing a
+                        // malformed preamp instead of silently turning it into 0 dB.
+                        val preampToken = trimmed.substringAfter(":").trim()
+                            .split(Regex("\\s+"))
+                            .firstOrNull()
+                        preamp = preampToken?.toFloatOrNull()?.takeIf { it.isFinite() } ?: return null
                         continue
                     }
 
@@ -131,7 +147,9 @@ data class AutoEqPreset(
                 return AutoEqPreset(
                     name = name,
                     source = source,
-                    preamp = if (preamp.isFinite()) preamp.coerceIn(-12f, 12f) else 0f,
+                    deviceType = deviceType,
+                    originPath = originPath,
+                    preamp = sanitizePeqPreamp(preamp),
                     filters = filters,
                     rawText = text
                 )
@@ -202,10 +220,15 @@ data class AutoEqPreset(
                 val raw = gson.fromJson<AutoEqPreset>(json, type) ?: return null
 
                 raw.copy(
-                    preamp = if (raw.preamp.isFinite()) raw.preamp.coerceIn(-12f, 12f) else 0f,
-                    filters = raw.filters.filter {
+                    name = raw.name.orEmpty().ifBlank { "AutoEq" },
+                    source = raw.source.orEmpty(),
+                    deviceType = raw.deviceType.orEmpty(),
+                    originPath = raw.originPath.orEmpty(),
+                    preamp = sanitizePeqPreamp(raw.preamp),
+                    filters = raw.filters.orEmpty().filter {
                         it.fc.isFinite() && it.q.isFinite() && it.gain.isFinite()
-                    }
+                    },
+                    rawText = raw.rawText.orEmpty(),
                 )
             } catch (e: Exception) {
                 null

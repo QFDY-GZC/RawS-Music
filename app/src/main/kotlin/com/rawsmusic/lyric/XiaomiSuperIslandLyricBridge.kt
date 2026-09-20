@@ -12,6 +12,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.drawable.Icon
 import android.os.Bundle
+import android.os.Build
 import android.os.SystemClock
 import android.widget.RemoteViews
 import androidx.palette.graphics.Palette
@@ -51,6 +52,9 @@ internal class XiaomiSuperIslandLyricBridge(
         const val NOTIFICATION_ID = 0x454c4c53
         private const val DEFAULT_ACCENT = 0xFF3482FF.toInt()
         private const val MIN_RENDER_INTERVAL_MS = 1_500L
+        private const val XMSF_RETRY_INTERVAL_MS = 60_000L
+        private const val FOCUS_TIMEOUT_MINUTES = 120
+        private const val ISLAND_TIMEOUT_SECONDS = 15
     }
 
     private val appContext = context.applicationContext
@@ -68,6 +72,7 @@ internal class XiaomiSuperIslandLyricBridge(
     private var networkJob: Job? = null
     private var dispatchGeneration = 0L
     private var xmsfNetworkingBlocked = false
+    private var xmsfRetryAfterElapsed = 0L
 
     private data class ArtworkCache(
         val source: Bitmap,
@@ -88,15 +93,19 @@ internal class XiaomiSuperIslandLyricBridge(
     )
 
     fun setEnabled(value: Boolean) {
+        if (enabled == value) return
         enabled = value
         lastKey = null
         if (value) ensureChannel() else clear()
     }
 
     fun setSettings(value: XiaomiSuperIslandSettings) {
+        val sanitized = value.sanitized()
+        if (settings == sanitized) return
         val previousMode = settings.xmsfBypassMode
-        settings = value.sanitized()
+        settings = sanitized
         lastKey = null
+        if (previousMode != settings.xmsfBypassMode) xmsfRetryAfterElapsed = 0L
         if (
             previousMode == XiaomiSuperIslandSettings.XMSF_MODE_AGGRESSIVE &&
             settings.xmsfBypassMode != XiaomiSuperIslandSettings.XMSF_MODE_AGGRESSIVE
@@ -129,7 +138,13 @@ internal class XiaomiSuperIslandLyricBridge(
             (positionMs.coerceIn(0L, durationMs) * 100L / durationMs).toInt().coerceIn(0, 100)
         } else 0
         val accent = resolveAccent(active, artworkBitmap)
-        val key = listOf(song.path, line.timeStamp, displayLyric, active.encode(), accent).joinToString("|")
+        val key = listOf(
+            song.path,
+            line.timeStamp,
+            displayLyric,
+            active.encode(),
+            accent
+        ).joinToString("|")
         if (key == lastKey) return
         lastKey = key
         renderThrottled(
@@ -216,6 +231,11 @@ internal class XiaomiSuperIslandLyricBridge(
             return
         }
 
+        if (SystemClock.elapsedRealtime() < xmsfRetryAfterElapsed) {
+            XiaomiSuperIslandLyricService.publish(appContext, notification)
+            return
+        }
+
         networkJob = scope.launch(Dispatchers.IO) {
             networkMutex.withLock {
                 if (generation != dispatchGeneration || !enabled) return@withLock
@@ -243,7 +263,12 @@ internal class XiaomiSuperIslandLyricBridge(
             XiaomiXmsfNetworkHelper.setNetworkingEnabled(appContext, false)
         }
         xmsfNetworkingBlocked = blocked
-        if (!blocked) AppLogger.w(TAG, "XMSF bypass unavailable; sending Focus notification directly")
+        if (!blocked) {
+            xmsfRetryAfterElapsed = SystemClock.elapsedRealtime() + XMSF_RETRY_INTERVAL_MS
+            AppLogger.w(TAG, "XMSF bypass unavailable; direct Focus fallback for 60 seconds")
+        } else {
+            xmsfRetryAfterElapsed = 0L
+        }
     }
 
     private fun restoreXmsfNetworkingAsync(expectedGeneration: Long? = null) {
@@ -299,16 +324,19 @@ internal class XiaomiSuperIslandLyricBridge(
                     active.mediaButtonLayout == XiaomiSuperIslandSettings.MEDIA_BUTTON_LAYOUT_THREE
                 actions {
                     if (showThree) addActionInfo {
+                        type = 0
                         action = createMediaAction(actionBundle, "prev", 3610, PlayerService.ACTION_PREVIOUS, R.drawable.ic_skip_previous, actionPrevious)
                         actionIcon = createPicture("miui.focus.pic_btn_prev", Icon.createWithResource(appContext, R.drawable.ic_skip_previous))
                         clickWithCollapse = false
                     }
                     addActionInfo {
+                        type = 0
                         action = createMediaAction(actionBundle, "play_pause", 3611, PlayerService.ACTION_TOGGLE_PLAYBACK, R.drawable.ic_pause, actionPlayPause)
                         actionIcon = createPicture("miui.focus.pic_btn_play_pause", Icon.createWithResource(appContext, R.drawable.ic_pause))
                         clickWithCollapse = false
                     }
                     addActionInfo {
+                        type = 0
                         action = createMediaAction(actionBundle, "next", 3612, PlayerService.ACTION_NEXT, R.drawable.ic_skip_next, actionNext)
                         actionIcon = createPicture("miui.focus.pic_btn_next", Icon.createWithResource(appContext, R.drawable.ic_skip_next))
                         clickWithCollapse = false
@@ -360,6 +388,9 @@ internal class XiaomiSuperIslandLyricBridge(
         } else {
             standardExtras
         }
+        if (!actionBundle.isEmpty) {
+            extras.putBundle("miui.focus.actions", actionBundle)
+        }
         if (useAdvancedFocus) {
             AppLogger.d(TAG, "Publishing Super Island lyric with advanced RemoteViews")
         }
@@ -367,6 +398,7 @@ internal class XiaomiSuperIslandLyricBridge(
             .setSmallIcon(R.drawable.ic_music_note)
             .setContentTitle(request.fullLyric)
             .setContentText(subtitle.ifBlank { title })
+            .setSubText(appContext.packageName)
             .setContentIntent(createContentIntent(active.clickStyle))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -377,7 +409,11 @@ internal class XiaomiSuperIslandLyricBridge(
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setColor(request.accent)
             .addExtras(extras)
-            .apply { if (!actionBundle.isEmpty) addExtras(actionBundle) }
+            .apply {
+                if (Build.VERSION.SDK_INT >= 31) {
+                    setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+                }
+            }
             .build()
     }
 
@@ -402,6 +438,9 @@ internal class XiaomiSuperIslandLyricBridge(
             enableFloat = false
             updatable = true
             islandFirstFloat = false
+            timeout = FOCUS_TIMEOUT_MINUTES
+            reopen = "reopen"
+            filterWhenNoPermission = false
             hideDeco = true
             aodTitle = request.displayLyric.take(20).ifBlank { lyricPlaceholder }
 
@@ -443,6 +482,10 @@ internal class XiaomiSuperIslandLyricBridge(
 
             island {
                 islandProperty = 1
+                islandTimeout = ISLAND_TIMEOUT_SECONDS
+                dismissIsland = false
+                islandOrder = true
+                needCloseAnimation = true
                 if (active.textColorEnabled) highlightColor = accentHex
                 bigIslandArea {
                     applyLyrics(active, request.displayLyric, request.fullLyric, title, subtitle, islandKey)

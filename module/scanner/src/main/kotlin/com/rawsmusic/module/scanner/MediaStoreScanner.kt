@@ -27,6 +27,13 @@ import java.io.File
 
 object MediaStoreScanner {
 
+    data class FileSystemScanReport(
+        val songs: List<AudioFile>,
+        val skippedDirectoryCount: Int = 0,
+        val directorySnapshots: Map<String, Long> = emptyMap(),
+        val failedDirectories: Set<String> = emptySet()
+    )
+
     private const val TAG = "MediaStoreScanner"
     private val metadataCache = java.util.concurrent.ConcurrentHashMap<String, AudioFile>()
     private const val PROGRESS_STEP = 50
@@ -67,22 +74,27 @@ object MediaStoreScanner {
 
     enum class ScanStage { MEDIASTORE, METADATA, CUE, DONE }
 
-    private val PROJECTION = arrayOf(
-        MediaStore.Audio.Media._ID,
-        MediaStore.Audio.Media.TITLE,
-        MediaStore.Audio.Media.ARTIST,
-        MediaStore.Audio.Media.ALBUM,
-        MediaStore.Audio.Media.ALBUM_ID,
-        MediaStore.Audio.Media.DURATION,
-        MediaStore.Audio.Media.BITRATE,
-        MediaStore.Audio.Media.MIME_TYPE,
-        MediaStore.Audio.Media.SIZE,
-        MediaStore.Audio.Media.TRACK,
-        MediaStore.Audio.Media.YEAR,
-        MediaStore.Audio.Media.DATE_ADDED,
-        MediaStore.Audio.Media.DATE_MODIFIED,
-        MediaStore.Audio.Media.DATA
-    )
+    /**
+     * MediaStore columns are not uniform across Android releases or vendor providers.
+     * In particular BITRATE was added in API 30; requesting it from an Android 9 provider can
+     * fail the complete query with "no such column" before folder/SAF fallbacks get a chance.
+     */
+    internal fun projectionForSdk(sdkInt: Int): Array<String> = buildList {
+        add(MediaStore.Audio.Media._ID)
+        add(MediaStore.Audio.Media.TITLE)
+        add(MediaStore.Audio.Media.ARTIST)
+        add(MediaStore.Audio.Media.ALBUM)
+        add(MediaStore.Audio.Media.ALBUM_ID)
+        add(MediaStore.Audio.Media.DURATION)
+        if (sdkInt >= Build.VERSION_CODES.R) add(MediaStore.Audio.Media.BITRATE)
+        add(MediaStore.Audio.Media.MIME_TYPE)
+        add(MediaStore.Audio.Media.SIZE)
+        add(MediaStore.Audio.Media.TRACK)
+        add(MediaStore.Audio.Media.YEAR)
+        add(MediaStore.Audio.Media.DATE_ADDED)
+        add(MediaStore.Audio.Media.DATE_MODIFIED)
+        add(MediaStore.Audio.Media.DATA)
+    }.toTypedArray()
 
     fun scan(
         context: Context,
@@ -102,7 +114,7 @@ object MediaStoreScanner {
         val rawFiles = mutableListOf<AudioFile>()
 
         try {
-            contentResolver.query(uri, PROJECTION, selection, selectionArgs,
+            contentResolver.query(uri, projectionForSdk(Build.VERSION.SDK_INT), selection, selectionArgs,
                 MediaStore.Audio.Media.DEFAULT_SORT_ORDER)?.use { cursor ->
                 val total = cursor.count
                 emit(ScanProgress.Started(total))
@@ -133,7 +145,9 @@ object MediaStoreScanner {
                     "Android 10 MediaStore returned 0 files, fallback to selected filesystem paths only: $fallbackPaths"
                 )
                 emit(ScanProgress.Progress(0, 0, ScanStage.MEDIASTORE, "Android 10 已选目录兜底扫描"))
-                val fallbackFiles = runCatching { scanCustomPathsByFileSystem(context, fallbackPaths) }
+                val fallbackFiles = runCatching {
+                    scanCustomPathsByFileSystem(context, fallbackPaths, quickScan = quickScan)
+                }
                     .onFailure { e -> android.util.Log.w("MediaStoreScanner", "Android 10 selected filesystem fallback failed", e) }
                     .getOrDefault(emptyList())
 
@@ -649,24 +663,132 @@ object MediaStoreScanner {
     fun scanCustomPathsByFileSystem(
         context: Context,
         customPaths: List<String>,
-        excludedPaths: Set<String> = emptySet()
-    ): List<AudioFile> {
-        val files = SelectedFolderFileWalker.collect(
+        excludedPaths: Set<String> = emptySet(),
+        quickScan: Boolean = false
+    ): List<AudioFile> = scanCustomPathsByFileSystemReport(
+        context = context,
+        customPaths = customPaths,
+        excludedPaths = excludedPaths,
+        quickScan = quickScan
+    ).songs
+
+    /**
+     * Recursively scans selected filesystem folders, optionally using Reference-style
+     * directory timestamps to reuse the already indexed subtree during cold startup.
+     */
+    fun scanCustomPathsByFileSystemReport(
+        context: Context,
+        customPaths: List<String>,
+        excludedPaths: Set<String> = emptySet(),
+        quickScan: Boolean = false,
+        incrementalDirectoryScan: Boolean = false,
+        baselineSongs: List<AudioFile> = emptyList()
+    ): FileSystemScanReport {
+        val directoryState = if (incrementalDirectoryScan) DirectoryScanState.index() else null
+        val walk = SelectedFolderFileWalker.collectReport(
             rootPaths = customPaths,
             excludedPaths = excludedPaths,
-            acceptFile = ::isSupportedAudioFile
+            acceptFile = ::isSupportedAudioFile,
+            shouldSkipDirectory = { directory, modifiedAt ->
+                if (!incrementalDirectoryScan) {
+                    false
+                } else {
+                    val normalized = SelectedFolderFileWalker.normalize(directory.path)
+                    val hasBaseline = baselineSongs.any { song ->
+                        !song.path.startsWith("content://", ignoreCase = true) &&
+                            isPathUnderDirectory(song.path, normalized)
+                    }
+                    directoryState?.canSkip(
+                        DirectoryScanState.fileSystemKey(normalized),
+                        modifiedAt,
+                        hasBaseline
+                    ) == true
+                }},
+            shouldScanFile = { file ->
+                if (!incrementalDirectoryScan) {
+                    true
+                } else {
+                    val candidates = baselineSongs.filter { song ->
+                        !song.path.startsWith("content://", ignoreCase = true) &&
+                            isPathSameFile(song.path, file.path)
+                    }
+                    candidates.isEmpty() || candidates.any { old ->
+                        old.fileSize != file.length() ||
+                            old.dateModified <= 0L ||
+                            old.dateModified != file.lastModified()
+                    }
+                }
+            }
         )
+        val reused = if (incrementalDirectoryScan && walk.skippedDirectories.isNotEmpty()) {
+            baselineSongs.physicalScanRows().filter { song ->
+                !song.path.startsWith("content://", ignoreCase = true) &&
+                    walk.skippedDirectories.any { directory -> isDirectFileUnderDirectory(song.path, directory) }
+            }
+        } else {
+            emptyList()
+        }
+        val files = walk.files
         Log.d(
             TAG,
             "recursive path scan enabled=${AppPreferences.Scanner.legacyFileAccessEnabled}, " +
-                "paths=$customPaths excluded=${excludedPaths.size} discovered=${files.size}"
+                "paths=$customPaths excluded=${excludedPaths.size} discovered=${files.size} " +
+                "skippedDirs=${walk.skippedDirectories.size} reused=${reused.size} failedDirs=${walk.failedDirectories.size}"
         )
 
-        val out = files.mapNotNull { file ->
-            readAudioFileByPath(context, file)
+        val parsed = files.mapNotNull { file ->
+            if (quickScan) quickAudioFileByPath(file) else readAudioFileByPath(context, file)
         }
-        Log.d(TAG, "recursive path parsed: ${out.size} missing files")
-        return out
+        if (incrementalDirectoryScan && walk.failedDirectories.isEmpty()) {
+            DirectoryScanState.commit(walk.directorySnapshots.mapKeys { (path, _) -> DirectoryScanState.fileSystemKey(path) })
+        }
+        val out = (parsed + reused).distinctBy(::scanIdentity)
+        Log.d(TAG, "recursive path parsed: ${out.size} quick=$quickScan")
+        return FileSystemScanReport(
+            songs = out,
+            skippedDirectoryCount = walk.skippedDirectories.size,
+            directorySnapshots = walk.directorySnapshots,
+            failedDirectories = walk.failedDirectories
+        )
+    }
+
+    private fun isPathUnderDirectory(path: String, directory: String): Boolean {
+        val normalizedPath = SelectedFolderFileWalker.normalize(path)
+        val normalizedDirectory = SelectedFolderFileWalker.normalize(directory)
+        return normalizedPath == normalizedDirectory || normalizedPath.startsWith("$normalizedDirectory/")
+    }
+
+    private fun isDirectFileUnderDirectory(path: String, directory: String): Boolean {
+        val normalizedPath = SelectedFolderFileWalker.normalize(path)
+        val normalizedDirectory = SelectedFolderFileWalker.normalize(directory)
+        val parent = normalizedPath.substringBeforeLast('/', missingDelimiterValue = "")
+        return parent == normalizedDirectory
+    }
+
+    private fun isPathSameFile(left: String, right: String): Boolean =
+        SelectedFolderFileWalker.normalize(left) == SelectedFolderFileWalker.normalize(right)
+
+    private fun scanIdentity(song: AudioFile): String = buildString {
+        append(song.path.trim().lowercase())
+        append('|').append(song.cueTrackIndex)
+        append('|').append(song.cueOffsetMs)
+    }
+
+    private fun quickAudioFileByPath(file: java.io.File): AudioFile? {
+        val size = file.length()
+        if (size <= 0L) return null
+        val modified = file.lastModified().coerceAtLeast(0L)
+        val format = guessFormat(file.absolutePath, "")
+        return AudioFile(
+            id = stablePathId(file.absolutePath),
+            path = file.absolutePath,
+            title = file.nameWithoutExtension,
+            format = format,
+            encodingFormat = format,
+            fileSize = size,
+            dateAdded = modified,
+            dateModified = modified
+        )
     }
 
     private fun isSupportedAudioFile(file: java.io.File): Boolean {
@@ -678,25 +800,42 @@ object MediaStoreScanner {
     private fun readAudioFileByPath(context: Context, file: java.io.File): AudioFile? {
         val retriever = MediaMetadataRetriever()
         return try {
-            retriever.setDataSource(file.absolutePath)
-
-            val retrieverDurationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                ?.toLongOrNull() ?: 0L
+            val retrieverReady = runCatching {
+                retriever.setDataSource(file.absolutePath)
+                true
+            }.getOrElse { error ->
+                // MediaMetadataRetriever support is ROM/codec dependent and is especially weak
+                // for DSF/DFF/APE. It is a convenience fallback only; TagLib/FFmpeg below is the
+                // authoritative filesystem-scanner metadata path.
+                Log.d(TAG, "MediaMetadataRetriever unavailable for ${file.absolutePath}: ${error.message}")
+                false
+            }
             val fullInfo = runCatching { FfmpegMetadataReader.readFullInfo(file.absolutePath) }.getOrNull()
+            if (!retrieverReady && fullInfo == null) return null
+            val tags = fullInfo?.tags
+            val stream = fullInfo?.stream
+            fun retrieverText(key: Int): String = if (retrieverReady) {
+                runCatching { retriever.extractMetadata(key).orEmpty() }.getOrDefault("")
+            } else {
+                ""
+            }
+
+            val retrieverDurationMs = retrieverText(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                .toLongOrNull() ?: 0L
             val durationMs = resolveDurationMs(
                 path = file.absolutePath,
-                streamDurationMs = fullInfo?.stream?.durationMs ?: 0L,
+                streamDurationMs = stream?.durationMs ?: 0L,
                 fallbackDurationMs = retrieverDurationMs
             )
-            val encodingFormat = fullInfo?.stream?.codecName
+            val encodingFormat = stream?.codecName
                 ?.takeIf { it.isNotBlank() }
                 ?.let { FfmpegMetadataReader.mapCodecToFormat(it, file.absolutePath) }
                 ?: guessFormat(file.absolutePath, "")
             val bitRate = BitrateNormalizer.toBps(
-                rawBitrate = fullInfo?.stream?.bitRate ?: 0,
+                rawBitrate = stream?.bitRate ?: 0,
                 durationMs = durationMs,
                 fileSizeBytes = file.length(),
-                codecName = fullInfo?.stream?.codecName.orEmpty(),
+                codecName = stream?.codecName.orEmpty(),
                 formatName = encodingFormat,
                 filePath = file.absolutePath
             )
@@ -704,19 +843,29 @@ object MediaStoreScanner {
             val minSec = AppPreferences.Scanner.minTrackDurationSeconds
             if (minSec > 0 && durationMs in 1 until minSec * 1000L) return null
 
-            val title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
-                .orEmpty().ifBlank { file.nameWithoutExtension }
-            val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
-                .orEmpty().ifBlank { "未知艺术家" }
-            val album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
-                .orEmpty().ifBlank { "未知专辑" }
-            val albumArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST).orEmpty()
-            val composer = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COMPOSER).orEmpty()
-            val genre = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE).orEmpty()
-            val year = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR)
-                ?.take(4)?.toIntOrNull() ?: 0
-            val track = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)
-                ?.substringBefore("/")?.toIntOrNull() ?: 0
+            val title = tags?.title.orEmpty()
+                .ifBlank { retrieverText(MediaMetadataRetriever.METADATA_KEY_TITLE) }
+                .ifBlank { file.nameWithoutExtension }
+            val artist = tags?.artist.orEmpty()
+                .ifBlank { retrieverText(MediaMetadataRetriever.METADATA_KEY_ARTIST) }
+                .ifBlank { "未知艺术家" }
+            val album = tags?.album.orEmpty()
+                .ifBlank { retrieverText(MediaMetadataRetriever.METADATA_KEY_ALBUM) }
+                .ifBlank { "未知专辑" }
+            val albumArtist = tags?.albumArtist.orEmpty()
+                .ifBlank { retrieverText(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST) }
+            val composer = tags?.composer.orEmpty()
+                .ifBlank { retrieverText(MediaMetadataRetriever.METADATA_KEY_COMPOSER) }
+            val genre = tags?.genre.orEmpty()
+                .ifBlank { retrieverText(MediaMetadataRetriever.METADATA_KEY_GENRE) }
+            val year = tags?.year?.takeIf { it > 0 }
+                ?: retrieverText(MediaMetadataRetriever.METADATA_KEY_YEAR).take(4).toIntOrNull()
+                ?: 0
+            val track = tags?.trackNumber?.takeIf { it > 0 }
+                ?: retrieverText(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)
+                    .substringBefore("/").toIntOrNull()
+                ?: 0
+            val modifiedSeconds = file.lastModified().coerceAtLeast(0L) / 1000L
 
             AudioFile(
                 id = stablePathId(file.absolutePath),
@@ -729,12 +878,22 @@ object MediaStoreScanner {
                 genre = genre,
                 year = year,
                 trackNumber = track,
+                discNumber = tags?.discNumber ?: 0,
+                bpm = tags?.bpm ?: 0,
                 duration = durationMs,
+                sampleRate = stream?.sampleRate ?: 0,
                 bitRate = bitRate,
+                bitsPerSample = stream?.bitsPerSample ?: 0,
+                channelCount = stream?.channels ?: 0,
                 format = encodingFormat,
                 encodingFormat = encodingFormat,
                 fileSize = file.length(),
-                dateAdded = file.lastModified() / 1000,
+                dateAdded = modifiedSeconds,
+                dateModified = modifiedSeconds,
+                trackGain = tags?.trackGain ?: 0f,
+                trackPeak = tags?.trackPeak ?: 1.0f,
+                albumGain = tags?.albumGain ?: 0f,
+                albumPeak = tags?.albumPeak ?: 1.0f,
                 albumArtPath = ""
             )
         } catch (e: Throwable) {

@@ -184,7 +184,7 @@ fun LiquidGlassStatusBarLyricScreen(
             DesktopSliderRow(
                 label = stringResource(R.string.desktop_lyric_status_top_offset),
                 value = statusTopOffset,
-                valueRange = 0f..120f,
+                valueRange = -64f..120f,
                 valueText = "${statusTopOffset.roundToInt()}dp",
                 enabled = desktopEnabled && desktopStatusBarMode,
                 onValueChange = {

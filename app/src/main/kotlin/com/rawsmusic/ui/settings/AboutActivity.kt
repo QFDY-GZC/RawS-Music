@@ -7,7 +7,10 @@ class AboutActivity : BaseSettingsActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            AboutPage(onBack = { finish() })
+            AboutPage(
+                onBack = { finish() },
+                onSupportAuthor = { navigateToSettings(RewardActivity::class.java) }
+            )
         }
     }
 }

@@ -1,0 +1,1672 @@
+﻿id,name,brand,capability,value
+067410,OPPO Enco X3,oppo,autoFirmwareUpdate,1
+067410,OPPO Enco X3,oppo,batteryInfo,1
+067410,OPPO Enco X3,oppo,callControl,"[{""action"":32,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":33,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656},{""action"":34,""ear"":2,""showEar"":0,""support"":131584}]"
+067410,OPPO Enco X3,oppo,cleanGuide,1
+067410,OPPO Enco X3,oppo,control,"[{""action"":16,""ear"":2,""showEar"":0,""support"":516},{""action"":17,""ear"":2,""showEar"":0,""support"":8805},{""action"":18,""ear"":2,""showEar"":0,""support"":8801},{""action"":5,""ear"":2,""showEar"":0,""support"":3584},{""action"":20,""ear"":2,""showEar"":1}]"
+067410,OPPO Enco X3,oppo,controlAutoVolumeSupport,1
+067410,OPPO Enco X3,oppo,controlGuideSupport,1
+067410,OPPO Enco X3,oppo,customDress,1
+067410,OPPO Enco X3,oppo,customEqualizer,1
+067410,OPPO Enco X3,oppo,dialogTags,[2]
+067410,OPPO Enco X3,oppo,earScan,1
+067410,OPPO Enco X3,oppo,equalizer,4
+067410,OPPO Enco X3,oppo,equalizerMode,"[{""modeType"":26,""protocolIndex"":0,""summaryId"":1,""tag"":3},{""modeType"":27,""protocolIndex"":1,""summaryId"":2,""tag"":3},{""modeType"":28,""protocolIndex"":2,""summaryId"":3,""tag"":3},{""modeType"":29,""protocolIndex"":3,""summaryId"":4,""tag"":3},{""modeType"":30,""protocolIndex"":7,""summaryId"":5,""tag"":3}]"
+067410,OPPO Enco X3,oppo,fastDiscovery,1
+067410,OPPO Enco X3,oppo,feedback,1
+067410,OPPO Enco X3,oppo,fitDetection,1
+067410,OPPO Enco X3,oppo,gameMode,1
+067410,OPPO Enco X3,oppo,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.netease.hyxd.nearme.gamecenter"",""com.crisisfire.android.nearme.gamecenter"",""com.netease.cfxf.nearme.gamecenter"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.cod"",""com.netease.lztg.nearme.gamecenter"",""com.yingxiong.heroo.nearme.gamecenter"",""com.tencent.ig""],""type"":3},{""type"":0}]"
+067410,OPPO Enco X3,oppo,gameSoundMutexes,[1]
+067410,OPPO Enco X3,oppo,headSetSoundRecord,1
+067410,OPPO Enco X3,oppo,hearingEnhancement,1
+067410,OPPO Enco X3,oppo,hearingJudgeDb,1
+067410,OPPO Enco X3,oppo,heyFindDevice,1
+067410,OPPO Enco X3,oppo,highToneQuality,1
+067410,OPPO Enco X3,oppo,multiDevicesConnect,1
+067410,OPPO Enco X3,oppo,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8},{""modeType"":6,""protocolIndex"":9}],""modeType"":2,""protocolIndex"":2}]"
+067410,OPPO Enco X3,oppo,related,1
+067410,OPPO Enco X3,oppo,spatialDescriptionType,1
+067410,OPPO Enco X3,oppo,spatialHiResMutex,1
+067410,OPPO Enco X3,oppo,spatialTypes,"[0,1,2]"
+067410,OPPO Enco X3,oppo,strongNoiseReductionRealTime,1
+067410,OPPO Enco X3,oppo,supportPinch,1
+067410,OPPO Enco X3,oppo,tutorialGuide,1
+067410,OPPO Enco X3,oppo,wearDetection,1
+063C10,OPPO Enco X2,oppo,autoFirmwareUpdate,1
+063C10,OPPO Enco X2,oppo,batteryInfo,1
+063C10,OPPO Enco X2,oppo,callControl,"[{""action"":32,""ear"":2,""showEar"":0,""support"":524288},{""action"":33,""ear"":2,""showEar"":0,""support"":262144}]"
+063C10,OPPO Enco X2,oppo,control,"[{""action"":16,""ear"":2,""showEar"":0,""support"":612},{""action"":17,""ear"":2,""showEar"":0,""support"":613},{""action"":18,""ear"":2,""showEar"":0,""support"":613},{""action"":5,""ear"":2,""showEar"":0,""support"":3584},{""action"":20,""ear"":2,""showEar"":1}]"
+063C10,OPPO Enco X2,oppo,controlGuideSupport,1
+063C10,OPPO Enco X2,oppo,customDress,1
+063C10,OPPO Enco X2,oppo,deviceLostRemind,0
+063C10,OPPO Enco X2,oppo,earScan,1
+063C10,OPPO Enco X2,oppo,equalizer,1
+063C10,OPPO Enco X2,oppo,equalizerMode,"[{""modeType"":10,""protocolIndex"":3},{""modeType"":9,""protocolIndex"":0},{""modeType"":6,""protocolIndex"":1},{""modeType"":8,""protocolIndex"":2}]"
+063C10,OPPO Enco X2,oppo,equalizerModeCompat,"[{""minFirmVersion"":112,""modeType"":16,""order"":1,""protocolIndex"":4}]"
+063C10,OPPO Enco X2,oppo,fastDiscovery,1
+063C10,OPPO Enco X2,oppo,fitDetection,1
+063C10,OPPO Enco X2,oppo,gameMode,1
+063C10,OPPO Enco X2,oppo,headSetSoundRecord,1
+063C10,OPPO Enco X2,oppo,hearingEnhancement,1
+063C10,OPPO Enco X2,oppo,heyFindDevice,1
+063C10,OPPO Enco X2,oppo,hideFromUIList,0
+063C10,OPPO Enco X2,oppo,highAudio,1
+063C10,OPPO Enco X2,oppo,highToneQuality,1
+063C10,OPPO Enco X2,oppo,longPowerMode,0
+063C10,OPPO Enco X2,oppo,multiDevicesConnect,1
+063C10,OPPO Enco X2,oppo,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8},{""modeType"":6,""protocolIndex"":9}],""modeType"":2,""protocolIndex"":2}]"
+063C10,OPPO Enco X2,oppo,personalNoise,1
+063C10,OPPO Enco X2,oppo,related,1
+063C10,OPPO Enco X2,oppo,smartCall,0
+063C10,OPPO Enco X2,oppo,supportPinch,1
+063C10,OPPO Enco X2,oppo,voiceCommand,1
+063C10,OPPO Enco X2,oppo,wearDetection,1
+061410,OPPO Enco X,oppo,autoFirmwareUpdate,1
+061410,OPPO Enco X,oppo,batteryInfo,1
+061410,OPPO Enco X,oppo,control,"[{""action"":2,""ear"":2,""showEar"":0,""support"":612},{""action"":3,""ear"":2,""showEar"":0,""support"":513},{""action"":5,""ear"":2,""showEar"":0,""support"":3584},{""action"":11,""ear"":2,""showEar"":1,""support"":128},{""action"":6,""ear"":2,""showEar"":1,""support"":4608}]"
+061410,OPPO Enco X,oppo,customDress,1
+061410,OPPO Enco X,oppo,equalizer,1
+061410,OPPO Enco X,oppo,equalizerMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":6,""protocolIndex"":1},{""modeType"":7,""protocolIndex"":2}]"
+061410,OPPO Enco X,oppo,fastDiscovery,1
+061410,OPPO Enco X,oppo,fitDetection,1
+061410,OPPO Enco X,oppo,hearingEnhancementNew,1
+061410,OPPO Enco X,oppo,heyFindDevice,1
+061410,OPPO Enco X,oppo,highToneQuality,1
+061410,OPPO Enco X,oppo,noiseReductionMode,"[{""modeType"":4,""protocolIndex"":3},{""modeType"":3,""protocolIndex"":2},{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1}]"
+061410,OPPO Enco X,oppo,wearDetection,1
+06E010,OPPO Enco Clip2,oppo,aiClearCall,1
+06E010,OPPO Enco Clip2,oppo,autoFirmwareUpdate,1
+06E010,OPPO Enco Clip2,oppo,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524800},{""action"":30,""ear"":2,""showEar"":0,""support"":131584}]"
+06E010,OPPO Enco Clip2,oppo,carouselDress,1
+06E010,OPPO Enco Clip2,oppo,collectLogs,1
+06E010,OPPO Enco Clip2,oppo,control,"[{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8825},{""action"":5,""ear"":2,""entryStrModify"":[{""summaryVersion"":2,""targetFunction"":1024}],""showEar"":0,""support"":1536}]"
+06E010,OPPO Enco Clip2,oppo,controlAutoVolumeSupport,1
+06E010,OPPO Enco Clip2,oppo,controlGuideSupport,1
+06E010,OPPO Enco Clip2,oppo,customDress,1
+06E010,OPPO Enco Clip2,oppo,deviceLostRemind,1
+06E010,OPPO Enco Clip2,oppo,equalizer,4
+06E010,OPPO Enco Clip2,oppo,equalizerMode,"[{""modeType"":26,""protocolIndex"":0,""summaryId"":6,""tag"":3},{""modeType"":34,""protocolIndex"":3,""summaryId"":7,""tag"":3},{""modeType"":28,""protocolIndex"":2,""summaryId"":3,""tag"":3},{""modeType"":30,""protocolIndex"":4,""summaryId"":5,""tag"":3}]"
+06E010,OPPO Enco Clip2,oppo,equalizerModeByVersion,"[{""minAppVersion"":16009000,""minFirmVersion"":130,""modeType"":41,""order"":5,""protocolIndex"":1,""summaryId"":10,""tag"":3}]"
+06E010,OPPO Enco Clip2,oppo,fastDiscovery,1
+06E010,OPPO Enco Clip2,oppo,findDevice,1
+06E010,OPPO Enco Clip2,oppo,firmwareFileCheckFlags,7
+06E010,OPPO Enco Clip2,oppo,firmwareTrack,1
+06E010,OPPO Enco Clip2,oppo,functionIntroductionGuide,1
+06E010,OPPO Enco Clip2,oppo,gameMode,1
+06E010,OPPO Enco Clip2,oppo,highToneQuality,1
+06E010,OPPO Enco Clip2,oppo,incomingCallControl,0
+06E010,OPPO Enco Clip2,oppo,introductionGuideList,"[2,1,6,12,15,5]"
+06E010,OPPO Enco Clip2,oppo,minOtaBattery,30
+06E010,OPPO Enco Clip2,oppo,multiConnectFunctions,"[{""functionType"":""displayPairedDevice"",""minFirmVersion"":0},{""functionType"":""connectDisconnectDevice"",""minFirmVersion"":0},{""functionType"":""unpairDevice"",""minFirmVersion"":0},{""functionType"":""setPriorityDevice"",""minFirmVersion"":0}]"
+06E010,OPPO Enco Clip2,oppo,multiDevicesConnect,2
+06E010,OPPO Enco Clip2,oppo,pairingInBoxCount,1
+06E010,OPPO Enco Clip2,oppo,pairingModeTip,1
+06E010,OPPO Enco Clip2,oppo,promptVolume,1
+06E010,OPPO Enco Clip2,oppo,related,1
+06E010,OPPO Enco Clip2,oppo,spatialDescriptionType,2
+06E010,OPPO Enco Clip2,oppo,spatialHiResMutex,1
+06E010,OPPO Enco Clip2,oppo,spatialTypes,"[0,1]"
+06E010,OPPO Enco Clip2,oppo,swiftPair,1
+06E010,OPPO Enco Clip2,oppo,tutorialGuide,1
+06E010,OPPO Enco Clip2,oppo,voiceCommand,2
+06E010,OPPO Enco Clip2,oppo,voiceCommandItems,"[1,2,3,4,5,6,9,10]"
+06E010,OPPO Enco Clip2,oppo,wearDetection,1
+06E010,OPPO Enco Clip2,oppo,wearingVideoTutorial,1
+06E010,OPPO Enco Clip2,oppo,whiteNoise,1
+06B810,OPPO Enco Clip,oppo,aiClearCall,1
+06B810,OPPO Enco Clip,oppo,autoFirmwareUpdate,1
+06B810,OPPO Enco Clip,oppo,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":30,""ear"":2,""showEar"":0,""support"":131584}]"
+06B810,OPPO Enco Clip,oppo,control,"[{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8825},{""action"":4,""ear"":2,""showEar"":0,""support"":536}]"
+06B810,OPPO Enco Clip,oppo,controlAutoVolumeSupport,1
+06B810,OPPO Enco Clip,oppo,controlGuideSupport,1
+06B810,OPPO Enco Clip,oppo,customDress,1
+06B810,OPPO Enco Clip,oppo,equalizer,4
+06B810,OPPO Enco Clip,oppo,equalizerMode,"[{""modeType"":35,""protocolIndex"":0,""summaryId"":6},{""modeType"":34,""protocolIndex"":1,""summaryId"":7},{""modeType"":28,""protocolIndex"":2,""summaryId"":3}]"
+06B810,OPPO Enco Clip,oppo,equalizerModeByVersion,"[{""minAppVersion"":15007000,""modeType"":12,""order"":4,""protocolIndex"":3,""summaryId"":9}]"
+06B810,OPPO Enco Clip,oppo,fastDiscovery,1
+06B810,OPPO Enco Clip,oppo,functionIntroductionGuide,1
+06B810,OPPO Enco Clip,oppo,gameMode,1
+06B810,OPPO Enco Clip,oppo,heyFindDevice,1
+06B810,OPPO Enco Clip,oppo,introductionGuideList,"[2,1,4,6,7,9,5]"
+06B810,OPPO Enco Clip,oppo,longPressVolume,1
+06B810,OPPO Enco Clip,oppo,minOtaBattery,30
+06B810,OPPO Enco Clip,oppo,multiConnectFunctions,"[{""functionType"":""displayPairedDevice"",""minFirmVersion"":20},{""functionType"":""connectDisconnectDevice"",""minFirmVersion"":20},{""functionType"":""unpairDevice"",""minFirmVersion"":20}]"
+06B810,OPPO Enco Clip,oppo,multiDevicesConnect,1
+06B810,OPPO Enco Clip,oppo,pairingModeTip,1
+06B810,OPPO Enco Clip,oppo,promptVolume,1
+06B810,OPPO Enco Clip,oppo,related,1
+06B810,OPPO Enco Clip,oppo,spatialDescriptionType,2
+06B810,OPPO Enco Clip,oppo,spatialTypes,"[0,1]"
+06B810,OPPO Enco Clip,oppo,tapLevelSetting,1
+06B810,OPPO Enco Clip,oppo,tutorialGuide,1
+06B810,OPPO Enco Clip,oppo,wearDetection,1
+06B810,OPPO Enco Clip,oppo,wearingVideoTutorial,1
+06BC10,OPPO Enco X3s,oppo,autoFirmwareUpdate,1
+06BC10,OPPO Enco X3s,oppo,batteryInfo,1
+06BC10,OPPO Enco X3s,oppo,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":30,""ear"":2,""showEar"":0,""support"":131584},{""action"":31,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656}]"
+06BC10,OPPO Enco X3s,oppo,cleanGuide,1
+06BC10,OPPO Enco X3s,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":27,""ear"":2,""minSelectCount"":1,""showEar"":0},{""action"":5,""ear"":2,""showEar"":0,""support"":3584}]"
+06BC10,OPPO Enco X3s,oppo,controlAutoVolumeSupport,1
+06BC10,OPPO Enco X3s,oppo,controlGuideSupport,1
+06BC10,OPPO Enco X3s,oppo,customDress,1
+06BC10,OPPO Enco X3s,oppo,customEqualizer,1
+06BC10,OPPO Enco X3s,oppo,dialogTags,[2]
+06BC10,OPPO Enco X3s,oppo,earScan,1
+06BC10,OPPO Enco X3s,oppo,equalizer,4
+06BC10,OPPO Enco X3s,oppo,equalizerMode,"[{""modeType"":26,""protocolIndex"":0},{""modeType"":28,""protocolIndex"":1},{""modeType"":29,""protocolIndex"":2},{""modeType"":30,""protocolIndex"":3,""tag"":3}]"
+06BC10,OPPO Enco X3s,oppo,equalizerModeByVersion,"[{""minAppVersion"":15011000,""minFirmVersion"":136,""modeType"":40,""order"":5,""protocolIndex"":8,""tag"":3}]"
+06BC10,OPPO Enco X3s,oppo,fastDiscovery,1
+06BC10,OPPO Enco X3s,oppo,feedback,1
+06BC10,OPPO Enco X3s,oppo,fitDetection,1
+06BC10,OPPO Enco X3s,oppo,functionIntroductionGuide,1
+06BC10,OPPO Enco X3s,oppo,gameMode,1
+06BC10,OPPO Enco X3s,oppo,headSetSoundRecord,0
+06BC10,OPPO Enco X3s,oppo,hearingEnhancement,1
+06BC10,OPPO Enco X3s,oppo,hearingJudgeDb,1
+06BC10,OPPO Enco X3s,oppo,heyFindDevice,1
+06BC10,OPPO Enco X3s,oppo,hideFromUIList,1
+06BC10,OPPO Enco X3s,oppo,highToneQuality,1
+06BC10,OPPO Enco X3s,oppo,multiDevicesConnect,1
+06BC10,OPPO Enco X3s,oppo,noiseReductionMode,"[{""childrenMode"":[{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6},{""modeType"":7,""protocolIndex"":7}],""modeType"":5,""protocolIndex"":1},{""modeType"":10,""protocolIndex"":11},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0}]"
+06BC10,OPPO Enco X3s,oppo,noiseReductionUIVersion,2
+06BC10,OPPO Enco X3s,oppo,promptVolume,1
+06BC10,OPPO Enco X3s,oppo,related,1
+06BC10,OPPO Enco X3s,oppo,spatialDescriptionType,2
+06BC10,OPPO Enco X3s,oppo,spatialHiResMutex,1
+06BC10,OPPO Enco X3s,oppo,spatialTypes,"[0,1]"
+06BC10,OPPO Enco X3s,oppo,strongNoiseReductionRealTime,1
+06BC10,OPPO Enco X3s,oppo,wearDetection,1
+066810,OPPO Enco X3i,oppo,autoFirmwareUpdate,1
+066810,OPPO Enco X3i,oppo,bassEngineSupport,1
+066810,OPPO Enco X3i,oppo,batteryInfo,1
+066810,OPPO Enco X3i,oppo,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+066810,OPPO Enco X3i,oppo,cleanGuide,1
+066810,OPPO Enco X3i,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":27,""ear"":2,""showEar"":0},{""action"":5,""ear"":2,""showEar"":0,""support"":3584}]"
+066810,OPPO Enco X3i,oppo,controlAutoVolumeSupport,1
+066810,OPPO Enco X3i,oppo,controlGuideSupport,1
+066810,OPPO Enco X3i,oppo,customDress,1
+066810,OPPO Enco X3i,oppo,earScan,1
+066810,OPPO Enco X3i,oppo,equalizer,2
+066810,OPPO Enco X3i,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+066810,OPPO Enco X3i,oppo,equalizerModeCompat,"[{""minFirmVersion"":119,""modeType"":13,""order"":4,""protocolIndex"":3,""tag"":0}]"
+066810,OPPO Enco X3i,oppo,fastDiscovery,1
+066810,OPPO Enco X3i,oppo,fitDetection,1
+066810,OPPO Enco X3i,oppo,gameMode,1
+066810,OPPO Enco X3i,oppo,headSetSoundRecord,0
+066810,OPPO Enco X3i,oppo,hearingEnhancement,1
+066810,OPPO Enco X3i,oppo,heyFindDevice,1
+066810,OPPO Enco X3i,oppo,hideFromUIList,1
+066810,OPPO Enco X3i,oppo,highToneQuality,1
+066810,OPPO Enco X3i,oppo,multiDevicesConnect,1
+066810,OPPO Enco X3i,oppo,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+066810,OPPO Enco X3i,oppo,related,1
+066810,OPPO Enco X3i,oppo,spatialDescriptionType,2
+066810,OPPO Enco X3i,oppo,spatialTypes,"[0,1]"
+066810,OPPO Enco X3i,oppo,wearDetection,1
+068C10,OPPO Enco Free4,oppo,autoFirmwareUpdate,1
+068C10,OPPO Enco Free4,oppo,batteryInfo,1
+068C10,OPPO Enco Free4,oppo,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":30,""ear"":2,""showEar"":0,""support"":131584},{""action"":31,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656}]"
+068C10,OPPO Enco Free4,oppo,cleanGuide,1
+068C10,OPPO Enco Free4,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":27,""ear"":2,""minSelectCount"":1,""showEar"":0},{""action"":5,""ear"":2,""showEar"":0,""support"":3584}]"
+068C10,OPPO Enco Free4,oppo,controlAutoVolumeSupport,1
+068C10,OPPO Enco Free4,oppo,controlGuideSupport,1
+068C10,OPPO Enco Free4,oppo,customDress,1
+068C10,OPPO Enco Free4,oppo,customEqualizer,1
+068C10,OPPO Enco Free4,oppo,dialogTags,[2]
+068C10,OPPO Enco Free4,oppo,earScan,1
+068C10,OPPO Enco Free4,oppo,equalizer,4
+068C10,OPPO Enco Free4,oppo,equalizerMode,"[{""modeType"":26,""protocolIndex"":0},{""modeType"":28,""protocolIndex"":1},{""modeType"":29,""protocolIndex"":2}]"
+068C10,OPPO Enco Free4,oppo,equalizerModeCompat,"[{""minFirmVersion"":118,""modeType"":34,""order"":4,""protocolIndex"":7,""tag"":0}]"
+068C10,OPPO Enco Free4,oppo,fastDiscovery,1
+068C10,OPPO Enco Free4,oppo,feedback,1
+068C10,OPPO Enco Free4,oppo,fitDetection,1
+068C10,OPPO Enco Free4,oppo,functionIntroductionGuide,1
+068C10,OPPO Enco Free4,oppo,gameMode,1
+068C10,OPPO Enco Free4,oppo,headSetSoundRecord,0
+068C10,OPPO Enco Free4,oppo,hearingEnhancement,1
+068C10,OPPO Enco Free4,oppo,hearingJudgeDb,1
+068C10,OPPO Enco Free4,oppo,heyFindDevice,1
+068C10,OPPO Enco Free4,oppo,highToneQuality,1
+068C10,OPPO Enco Free4,oppo,multiDevicesConnect,1
+068C10,OPPO Enco Free4,oppo,noiseReductionMode,"[{""childrenMode"":[{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6},{""modeType"":7,""protocolIndex"":7}],""modeType"":5,""protocolIndex"":1},{""modeType"":10,""protocolIndex"":11},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0}]"
+068C10,OPPO Enco Free4,oppo,noiseReductionUIVersion,2
+068C10,OPPO Enco Free4,oppo,promptVolume,1
+068C10,OPPO Enco Free4,oppo,related,1
+068C10,OPPO Enco Free4,oppo,spatialDescriptionType,2
+068C10,OPPO Enco Free4,oppo,spatialHiResMutex,1
+068C10,OPPO Enco Free4,oppo,spatialTypes,"[0,1]"
+068C10,OPPO Enco Free4,oppo,strongNoiseReductionRealTime,1
+068C10,OPPO Enco Free4,oppo,wearDetection,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,autoFirmwareUpdate,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,batteryInfo,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":30,""ear"":2,""showEar"":0,""support"":131584},{""action"":31,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656}]"
+06C010,OPPO Enco Free4（丹拿版）,oppo,cleanGuide,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":27,""ear"":2,""minSelectCount"":1,""showEar"":0},{""action"":5,""ear"":2,""showEar"":0,""support"":3584}]"
+06C010,OPPO Enco Free4（丹拿版）,oppo,controlAutoVolumeSupport,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,controlGuideSupport,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,customDress,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,customEqualizer,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,dialogTags,[2]
+06C010,OPPO Enco Free4（丹拿版）,oppo,earScan,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,equalizer,4
+06C010,OPPO Enco Free4（丹拿版）,oppo,equalizerMode,"[{""modeType"":26,""order"":1,""protocolIndex"":0},{""modeType"":28,""order"":2,""protocolIndex"":1},{""modeType"":29,""order"":3,""protocolIndex"":2},{""modeType"":30,""order"":5,""protocolIndex"":3,""tag"":3}]"
+06C010,OPPO Enco Free4（丹拿版）,oppo,equalizerModeByVersion,"[{""minAppVersion"":15011000,""minFirmVersion"":136,""modeType"":40,""order"":6,""protocolIndex"":8,""tag"":3}]"
+06C010,OPPO Enco Free4（丹拿版）,oppo,equalizerModeCompat,"[{""minFirmVersion"":118,""modeType"":34,""order"":4,""protocolIndex"":7,""tag"":0}]"
+06C010,OPPO Enco Free4（丹拿版）,oppo,fastDiscovery,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,feedback,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,fitDetection,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,functionIntroductionGuide,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,gameMode,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,headSetSoundRecord,0
+06C010,OPPO Enco Free4（丹拿版）,oppo,hearingEnhancement,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,hearingJudgeDb,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,heyFindDevice,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,highToneQuality,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,multiDevicesConnect,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,noiseReductionMode,"[{""childrenMode"":[{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6},{""modeType"":7,""protocolIndex"":7}],""modeType"":5,""protocolIndex"":1},{""modeType"":10,""protocolIndex"":11},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0}]"
+06C010,OPPO Enco Free4（丹拿版）,oppo,noiseReductionUIVersion,2
+06C010,OPPO Enco Free4（丹拿版）,oppo,promptVolume,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,related,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,spatialDescriptionType,2
+06C010,OPPO Enco Free4（丹拿版）,oppo,spatialHiResMutex,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,spatialTypes,"[0,1]"
+06C010,OPPO Enco Free4（丹拿版）,oppo,strongNoiseReductionRealTime,1
+06C010,OPPO Enco Free4（丹拿版）,oppo,wearDetection,1
+066010,OPPO Enco Free3,oppo,autoFirmwareUpdate,1
+066010,OPPO Enco Free3,oppo,batteryInfo,1
+066010,OPPO Enco Free3,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536},{""action"":11,""ear"":2,""showEar"":1}]"
+066010,OPPO Enco Free3,oppo,controlGuideSupport,1
+066010,OPPO Enco Free3,oppo,customDress,1
+066010,OPPO Enco Free3,oppo,earScan,1
+066010,OPPO Enco Free3,oppo,equalizer,2
+066010,OPPO Enco Free3,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":20,""protocolIndex"":2}]"
+066010,OPPO Enco Free3,oppo,fastDiscovery,1
+066010,OPPO Enco Free3,oppo,fitDetection,1
+066010,OPPO Enco Free3,oppo,gameMode,1
+066010,OPPO Enco Free3,oppo,hearingEnhancement,1
+066010,OPPO Enco Free3,oppo,heyFindDevice,1
+066010,OPPO Enco Free3,oppo,highAudio,1
+066010,OPPO Enco Free3,oppo,highToneQuality,1
+066010,OPPO Enco Free3,oppo,multiDevicesConnect,1
+066010,OPPO Enco Free3,oppo,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+066010,OPPO Enco Free3,oppo,personalNoiseCompat,"{""minFirmVersion"":150,""personalNoise"":1}"
+066010,OPPO Enco Free3,oppo,related,1
+066010,OPPO Enco Free3,oppo,spatialDescriptionType,2
+066010,OPPO Enco Free3,oppo,spatialTypes,"[0,1]"
+066010,OPPO Enco Free3,oppo,wearDetection,1
+062010,OPPO Enco Free2,oppo,autoFirmwareUpdate,1
+062010,OPPO Enco Free2,oppo,batteryInfo,1
+062010,OPPO Enco Free2,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":612},{""action"":3,""ear"":2,""showEar"":0,""support"":8705},{""action"":11,""ear"":2,""showEar"":1},{""action"":5,""ear"":2,""showEar"":0,""support"":3584}]"
+062010,OPPO Enco Free2,oppo,customDress,1
+062010,OPPO Enco Free2,oppo,equalizer,1
+062010,OPPO Enco Free2,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2},{""modeType"":4,""protocolIndex"":3}]"
+062010,OPPO Enco Free2,oppo,fastDiscovery,1
+062010,OPPO Enco Free2,oppo,fitDetection,1
+062010,OPPO Enco Free2,oppo,gameMode,1
+062010,OPPO Enco Free2,oppo,hearingEnhancement,1
+062010,OPPO Enco Free2,oppo,heyFindDevice,1
+062010,OPPO Enco Free2,oppo,multiDevicesConnect,1
+062010,OPPO Enco Free2,oppo,noiseReductionMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":1,""protocolIndex"":1},{""modeType"":2,""protocolIndex"":2},{""decideByEarDevice"":true,""modeType"":6,""protocolIndex"":3}]"
+062010,OPPO Enco Free2,oppo,personalNoise,1
+062010,OPPO Enco Free2,oppo,wearDetection,1
+064010,OPPO Enco Free2i,oppo,autoFirmwareUpdate,1
+064010,OPPO Enco Free2i,oppo,batteryInfo,1
+064010,OPPO Enco Free2i,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":612},{""action"":3,""ear"":2,""showEar"":0,""support"":8705},{""action"":11,""ear"":2,""showEar"":1},{""action"":5,""ear"":2,""showEar"":0,""support"":3584}]"
+064010,OPPO Enco Free2i,oppo,customDress,1
+064010,OPPO Enco Free2i,oppo,equalizer,1
+064010,OPPO Enco Free2i,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2},{""modeType"":4,""protocolIndex"":3}]"
+064010,OPPO Enco Free2i,oppo,fastDiscovery,1
+064010,OPPO Enco Free2i,oppo,fitDetection,1
+064010,OPPO Enco Free2i,oppo,gameMode,1
+064010,OPPO Enco Free2i,oppo,heyFindDevice,1
+064010,OPPO Enco Free2i,oppo,multiDevicesConnect,1
+064010,OPPO Enco Free2i,oppo,noiseReductionMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":1,""protocolIndex"":1},{""modeType"":2,""protocolIndex"":2},{""decideByEarDevice"":true,""modeType"":6,""protocolIndex"":3}]"
+064010,OPPO Enco Free2i,oppo,personalNoise,1
+064010,OPPO Enco Free2i,oppo,wearDetection,1
+060410,OPPO Enco Free,oppo,autoFirmwareUpdate,1
+060410,OPPO Enco Free,oppo,batteryInfo,1
+060410,OPPO Enco Free,oppo,control,"[{""action"":2,""ear"":2,""showEar"":0,""support"":5},{""action"":7},{""action"":8}]"
+060410,OPPO Enco Free,oppo,customDress,1
+060410,OPPO Enco Free,oppo,fastDiscovery,1
+060410,OPPO Enco Free,oppo,heyFindDevice,1
+06C410,OPPO Enco Air5 Pro,oppo,autoFirmwareUpdate,1
+06C410,OPPO Enco Air5 Pro,oppo,bassEngineSupport,1
+06C410,OPPO Enco Air5 Pro,oppo,batteryInfo,1
+06C410,OPPO Enco Air5 Pro,oppo,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""ear"":2,""showEar"":0,""support"":262656}]"
+06C410,OPPO Enco Air5 Pro,oppo,cleanGuide,1
+06C410,OPPO Enco Air5 Pro,oppo,collectLogs,1
+06C410,OPPO Enco Air5 Pro,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":5,""ear"":2,""showEar"":0,""support"":3584},{""action"":11,""ear"":2,""showEar"":0}]"
+06C410,OPPO Enco Air5 Pro,oppo,controlGuideSupport,1
+06C410,OPPO Enco Air5 Pro,oppo,customDress,1
+06C410,OPPO Enco Air5 Pro,oppo,customEqFrequency,"[31,62,125,250,500,1000,2000,4000,8000,16000]"
+06C410,OPPO Enco Air5 Pro,oppo,customEqUiVersion,2
+06C410,OPPO Enco Air5 Pro,oppo,customEqualizer,1
+06C410,OPPO Enco Air5 Pro,oppo,earScan,1
+06C410,OPPO Enco Air5 Pro,oppo,equalizer,4
+06C410,OPPO Enco Air5 Pro,oppo,equalizerMode,"[{""modeType"":26,""protocolIndex"":0},{""modeType"":28,""protocolIndex"":2},{""modeType"":29,""protocolIndex"":1}]"
+06C410,OPPO Enco Air5 Pro,oppo,fastDiscovery,1
+06C410,OPPO Enco Air5 Pro,oppo,feedback,1
+06C410,OPPO Enco Air5 Pro,oppo,findDevice,1
+06C410,OPPO Enco Air5 Pro,oppo,firmwareFileCheckFlags,7
+06C410,OPPO Enco Air5 Pro,oppo,firmwareTrack,1
+06C410,OPPO Enco Air5 Pro,oppo,fitDetection,1
+06C410,OPPO Enco Air5 Pro,oppo,functionIntroductionGuide,1
+06C410,OPPO Enco Air5 Pro,oppo,gameMode,1
+06C410,OPPO Enco Air5 Pro,oppo,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.tencent.tmgp.codev"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.dfm"",""com.tencent.ig"",""com.dts.freefireth"",""com.activision.callofduty.shooter""],""type"":3},{""type"":0}]"
+06C410,OPPO Enco Air5 Pro,oppo,gameSoundMutexes,"[1,2]"
+06C410,OPPO Enco Air5 Pro,oppo,hearingEnhancement,1
+06C410,OPPO Enco Air5 Pro,oppo,highToneQuality,1
+06C410,OPPO Enco Air5 Pro,oppo,introductionGuideList,"[2,1,3,5]"
+06C410,OPPO Enco Air5 Pro,oppo,longPressType,8833
+06C410,OPPO Enco Air5 Pro,oppo,multiConnectFunctions,"[{""functionType"":""displayPairedDevice"",""minFirmVersion"":0},{""functionType"":""connectDisconnectDevice"",""minFirmVersion"":0},{""functionType"":""unpairDevice"",""minFirmVersion"":0},{""functionType"":""setPriorityDevice"",""minFirmVersion"":0}]"
+06C410,OPPO Enco Air5 Pro,oppo,multiDevicesConnect,2
+06C410,OPPO Enco Air5 Pro,oppo,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+06C410,OPPO Enco Air5 Pro,oppo,promptVolume,1
+06C410,OPPO Enco Air5 Pro,oppo,promptVolumeRange,"{""max"":10,""min"":2}"
+06C410,OPPO Enco Air5 Pro,oppo,related,1
+06C410,OPPO Enco Air5 Pro,oppo,spatialDescriptionType,2
+06C410,OPPO Enco Air5 Pro,oppo,spatialHiResMutex,1
+06C410,OPPO Enco Air5 Pro,oppo,spatialTypes,"[0,1]"
+06C410,OPPO Enco Air5 Pro,oppo,strongNoiseReductionRealTime,1
+06C410,OPPO Enco Air5 Pro,oppo,swiftPair,1
+06C410,OPPO Enco Air5 Pro,oppo,upgradeMtu,1
+06C410,OPPO Enco Air5 Pro,oppo,wearDetection,1
+06C410,OPPO Enco Air5 Pro,oppo,whiteNoise,1
+06C810,OPPO Enco Air5s,oppo,autoFirmwareUpdate,1
+06C810,OPPO Enco Air5s,oppo,bassEngineSupport,1
+06C810,OPPO Enco Air5s,oppo,batteryInfo,1
+06C810,OPPO Enco Air5s,oppo,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""ear"":2,""showEar"":0,""support"":262656}]"
+06C810,OPPO Enco Air5s,oppo,cleanGuide,1
+06C810,OPPO Enco Air5s,oppo,collectLogs,1
+06C810,OPPO Enco Air5s,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":5,""ear"":2,""showEar"":0,""support"":3584},{""action"":11,""ear"":2,""showEar"":0}]"
+06C810,OPPO Enco Air5s,oppo,controlGuideSupport,1
+06C810,OPPO Enco Air5s,oppo,customDress,1
+06C810,OPPO Enco Air5s,oppo,customEqFrequency,"[31,62,125,250,500,1000,2000,4000,8000,16000]"
+06C810,OPPO Enco Air5s,oppo,customEqUiVersion,2
+06C810,OPPO Enco Air5s,oppo,customEqualizer,1
+06C810,OPPO Enco Air5s,oppo,earScan,1
+06C810,OPPO Enco Air5s,oppo,equalizer,4
+06C810,OPPO Enco Air5s,oppo,equalizerMode,"[{""modeType"":26,""protocolIndex"":0},{""modeType"":28,""protocolIndex"":2},{""modeType"":29,""protocolIndex"":1}]"
+06C810,OPPO Enco Air5s,oppo,fastDiscovery,1
+06C810,OPPO Enco Air5s,oppo,feedback,1
+06C810,OPPO Enco Air5s,oppo,findDevice,1
+06C810,OPPO Enco Air5s,oppo,firmwareFileCheckFlags,7
+06C810,OPPO Enco Air5s,oppo,firmwareTrack,1
+06C810,OPPO Enco Air5s,oppo,functionIntroductionGuide,1
+06C810,OPPO Enco Air5s,oppo,gameMode,1
+06C810,OPPO Enco Air5s,oppo,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.tencent.tmgp.codev"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.dfm"",""com.tencent.ig"",""com.dts.freefireth"",""com.activision.callofduty.shooter""],""type"":3},{""type"":0}]"
+06C810,OPPO Enco Air5s,oppo,gameSoundMutexes,"[1,2]"
+06C810,OPPO Enco Air5s,oppo,hearingEnhancement,1
+06C810,OPPO Enco Air5s,oppo,highToneQuality,1
+06C810,OPPO Enco Air5s,oppo,introductionGuideList,"[2,1,3,6,5,11]"
+06C810,OPPO Enco Air5s,oppo,longPressType,8833
+06C810,OPPO Enco Air5s,oppo,multiConnectFunctions,"[{""functionType"":""displayPairedDevice"",""minFirmVersion"":0},{""functionType"":""connectDisconnectDevice"",""minFirmVersion"":0},{""functionType"":""unpairDevice"",""minFirmVersion"":0},{""functionType"":""setPriorityDevice"",""minFirmVersion"":0}]"
+06C810,OPPO Enco Air5s,oppo,multiDevicesConnect,2
+06C810,OPPO Enco Air5s,oppo,noiseReductionMode,"[{""childrenMode"":[{""intellectNoiseReductionSummary"":1,""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":3,""protocolIndex"":6,""weakNoiseReductionSummary"":1}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+06C810,OPPO Enco Air5s,oppo,promptVolume,1
+06C810,OPPO Enco Air5s,oppo,promptVolumeRange,"{""max"":10,""min"":2}"
+06C810,OPPO Enco Air5s,oppo,related,1
+06C810,OPPO Enco Air5s,oppo,spatialDescriptionType,2
+06C810,OPPO Enco Air5s,oppo,spatialTypes,"[0,1]"
+06C810,OPPO Enco Air5s,oppo,strongNoiseReductionRealTime,1
+06C810,OPPO Enco Air5s,oppo,swiftPair,1
+06C810,OPPO Enco Air5s,oppo,upgradeMtu,1
+06C810,OPPO Enco Air5s,oppo,wearDetection,1
+06C810,OPPO Enco Air5s,oppo,whiteNoise,1
+06E810,OPPO Enco Air5s（星光版）,oppo,autoFirmwareUpdate,1
+06E810,OPPO Enco Air5s（星光版）,oppo,bassEngineSupport,1
+06E810,OPPO Enco Air5s（星光版）,oppo,batteryInfo,1
+06E810,OPPO Enco Air5s（星光版）,oppo,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""ear"":2,""showEar"":0,""support"":262656}]"
+06E810,OPPO Enco Air5s（星光版）,oppo,cleanGuide,1
+06E810,OPPO Enco Air5s（星光版）,oppo,collectLogs,1
+06E810,OPPO Enco Air5s（星光版）,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":5,""ear"":2,""showEar"":0,""support"":3584},{""action"":11,""ear"":2,""showEar"":0}]"
+06E810,OPPO Enco Air5s（星光版）,oppo,controlGuideSupport,1
+06E810,OPPO Enco Air5s（星光版）,oppo,customDress,1
+06E810,OPPO Enco Air5s（星光版）,oppo,customEqFrequency,"[31,62,125,250,500,1000,2000,4000,8000,16000]"
+06E810,OPPO Enco Air5s（星光版）,oppo,customEqUiVersion,2
+06E810,OPPO Enco Air5s（星光版）,oppo,customEqualizer,1
+06E810,OPPO Enco Air5s（星光版）,oppo,earScan,1
+06E810,OPPO Enco Air5s（星光版）,oppo,equalizer,4
+06E810,OPPO Enco Air5s（星光版）,oppo,equalizerMode,"[{""modeType"":26,""protocolIndex"":0},{""modeType"":28,""protocolIndex"":2},{""modeType"":29,""protocolIndex"":1}]"
+06E810,OPPO Enco Air5s（星光版）,oppo,fastDiscovery,1
+06E810,OPPO Enco Air5s（星光版）,oppo,feedback,1
+06E810,OPPO Enco Air5s（星光版）,oppo,findDevice,1
+06E810,OPPO Enco Air5s（星光版）,oppo,firmwareFileCheckFlags,7
+06E810,OPPO Enco Air5s（星光版）,oppo,firmwareTrack,1
+06E810,OPPO Enco Air5s（星光版）,oppo,functionIntroductionGuide,1
+06E810,OPPO Enco Air5s（星光版）,oppo,gameMode,1
+06E810,OPPO Enco Air5s（星光版）,oppo,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.tencent.tmgp.codev"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.dfm"",""com.tencent.ig"",""com.dts.freefireth"",""com.activision.callofduty.shooter""],""type"":3},{""type"":0}]"
+06E810,OPPO Enco Air5s（星光版）,oppo,gameSoundMutexes,"[1,2]"
+06E810,OPPO Enco Air5s（星光版）,oppo,hearingEnhancement,1
+06E810,OPPO Enco Air5s（星光版）,oppo,highToneQuality,1
+06E810,OPPO Enco Air5s（星光版）,oppo,introductionGuideList,"[2,1,3,6,5,11]"
+06E810,OPPO Enco Air5s（星光版）,oppo,longPressType,8833
+06E810,OPPO Enco Air5s（星光版）,oppo,multiConnectFunctions,"[{""functionType"":""displayPairedDevice"",""minFirmVersion"":0},{""functionType"":""connectDisconnectDevice"",""minFirmVersion"":0},{""functionType"":""unpairDevice"",""minFirmVersion"":0},{""functionType"":""setPriorityDevice"",""minFirmVersion"":0}]"
+06E810,OPPO Enco Air5s（星光版）,oppo,multiDevicesConnect,2
+06E810,OPPO Enco Air5s（星光版）,oppo,noiseReductionMode,"[{""childrenMode"":[{""intellectNoiseReductionSummary"":1,""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":3,""protocolIndex"":6,""weakNoiseReductionSummary"":1}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+06E810,OPPO Enco Air5s（星光版）,oppo,promptVolume,1
+06E810,OPPO Enco Air5s（星光版）,oppo,promptVolumeRange,"{""max"":10,""min"":2}"
+06E810,OPPO Enco Air5s（星光版）,oppo,related,1
+06E810,OPPO Enco Air5s（星光版）,oppo,spatialDescriptionType,2
+06E810,OPPO Enco Air5s（星光版）,oppo,spatialTypes,"[0,1]"
+06E810,OPPO Enco Air5s（星光版）,oppo,strongNoiseReductionRealTime,1
+06E810,OPPO Enco Air5s（星光版）,oppo,swiftPair,1
+06E810,OPPO Enco Air5s（星光版）,oppo,upgradeMtu,1
+06E810,OPPO Enco Air5s（星光版）,oppo,wearDetection,1
+06E810,OPPO Enco Air5s（星光版）,oppo,whiteNoise,1
+06D810,OPPO Enco Air5,oppo,autoFirmwareUpdate,1
+06D810,OPPO Enco Air5,oppo,batteryInfo,1
+06D810,OPPO Enco Air5,oppo,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""ear"":2,""showEar"":0,""support"":262656}]"
+06D810,OPPO Enco Air5,oppo,cleanGuide,1
+06D810,OPPO Enco Air5,oppo,collectLogs,1
+06D810,OPPO Enco Air5,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""entryStrModify"":[{""categoryVersion"":2}],""showEar"":0,""support"":536},{""action"":11,""ear"":2,""showEar"":0}]"
+06D810,OPPO Enco Air5,oppo,customDress,1
+06D810,OPPO Enco Air5,oppo,customEqFrequency,"[31,62,125,250,500,1000,2000,4000,8000,16000]"
+06D810,OPPO Enco Air5,oppo,customEqUiVersion,2
+06D810,OPPO Enco Air5,oppo,customEqualizer,1
+06D810,OPPO Enco Air5,oppo,earScan,1
+06D810,OPPO Enco Air5,oppo,equalizer,4
+06D810,OPPO Enco Air5,oppo,equalizerMode,"[{""modeType"":26,""protocolIndex"":0},{""modeType"":28,""protocolIndex"":1},{""modeType"":29,""protocolIndex"":2}]"
+06D810,OPPO Enco Air5,oppo,fastDiscovery,1
+06D810,OPPO Enco Air5,oppo,feedback,1
+06D810,OPPO Enco Air5,oppo,findDevice,1
+06D810,OPPO Enco Air5,oppo,firmwareFileCheckFlags,7
+06D810,OPPO Enco Air5,oppo,fitDetection,1
+06D810,OPPO Enco Air5,oppo,gameMode,1
+06D810,OPPO Enco Air5,oppo,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.tencent.tmgp.codev"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.dfm"",""com.tencent.ig"",""com.dts.freefireth"",""com.activision.callofduty.shooter"",""com.garena.game.codm""],""type"":3},{""type"":0}]"
+06D810,OPPO Enco Air5,oppo,gameSoundMutexes,[1]
+06D810,OPPO Enco Air5,oppo,hearingEnhancement,1
+06D810,OPPO Enco Air5,oppo,introductionGuideList,"[2,3,6,5]"
+06D810,OPPO Enco Air5,oppo,longPressType,8833
+06D810,OPPO Enco Air5,oppo,multiConnectFunctions,"[{""functionType"":""displayPairedDevice"",""minFirmVersion"":0},{""functionType"":""connectDisconnectDevice"",""minFirmVersion"":0},{""functionType"":""unpairDevice"",""minFirmVersion"":0}]"
+06D810,OPPO Enco Air5,oppo,multiDevicesConnect,2
+06D810,OPPO Enco Air5,oppo,newFunctionGuide,0
+06D810,OPPO Enco Air5,oppo,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+06D810,OPPO Enco Air5,oppo,promptVolume,1
+06D810,OPPO Enco Air5,oppo,related,1
+06D810,OPPO Enco Air5,oppo,spatialDescriptionType,2
+06D810,OPPO Enco Air5,oppo,spatialTypes,"[0,1]"
+06D810,OPPO Enco Air5,oppo,strongNoiseReductionRealTime,1
+06D810,OPPO Enco Air5,oppo,swiftPair,1
+06D810,OPPO Enco Air5,oppo,wearDetection,1
+06D810,OPPO Enco Air5,oppo,whiteNoise,1
+067C10,OPPO Enco Air4 Pro,oppo,autoFirmwareUpdate,1
+067C10,OPPO Enco Air4 Pro,oppo,batteryInfo,1
+067C10,OPPO Enco Air4 Pro,oppo,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+067C10,OPPO Enco Air4 Pro,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536},{""action"":11,""ear"":2,""showEar"":1}]"
+067C10,OPPO Enco Air4 Pro,oppo,controlGuideSupport,1
+067C10,OPPO Enco Air4 Pro,oppo,customDress,1
+067C10,OPPO Enco Air4 Pro,oppo,earScan,1
+067C10,OPPO Enco Air4 Pro,oppo,equalizer,2
+067C10,OPPO Enco Air4 Pro,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+067C10,OPPO Enco Air4 Pro,oppo,fastDiscovery,1
+067C10,OPPO Enco Air4 Pro,oppo,feedback,1
+067C10,OPPO Enco Air4 Pro,oppo,fitDetection,1
+067C10,OPPO Enco Air4 Pro,oppo,gameMode,1
+067C10,OPPO Enco Air4 Pro,oppo,hearingEnhancement,1
+067C10,OPPO Enco Air4 Pro,oppo,heyFindDevice,1
+067C10,OPPO Enco Air4 Pro,oppo,highToneQuality,1
+067C10,OPPO Enco Air4 Pro,oppo,multiDevicesConnect,1
+067C10,OPPO Enco Air4 Pro,oppo,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+067C10,OPPO Enco Air4 Pro,oppo,personalNoise,1
+067C10,OPPO Enco Air4 Pro,oppo,personalNoiseCompat,"{""minFirmVersion"":150,""personalNoise"":1}"
+067C10,OPPO Enco Air4 Pro,oppo,related,1
+067C10,OPPO Enco Air4 Pro,oppo,spatialDescriptionType,2
+067C10,OPPO Enco Air4 Pro,oppo,spatialTypes,"[0,1]"
+067C10,OPPO Enco Air4 Pro,oppo,wearDetection,1
+06F010,OPPO Enco Air4s,oppo,autoFirmwareUpdate,1
+06F010,OPPO Enco Air4s,oppo,batteryInfo,1
+06F010,OPPO Enco Air4s,oppo,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+06F010,OPPO Enco Air4s,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536},{""action"":11,""ear"":2,""minSelectCount"":1,""showEar"":1}]"
+06F010,OPPO Enco Air4s,oppo,controlGuideSupport,1
+06F010,OPPO Enco Air4s,oppo,customDress,1
+06F010,OPPO Enco Air4s,oppo,earScan,1
+06F010,OPPO Enco Air4s,oppo,equalizer,2
+06F010,OPPO Enco Air4s,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+06F010,OPPO Enco Air4s,oppo,fastDiscovery,1
+06F010,OPPO Enco Air4s,oppo,feedback,1
+06F010,OPPO Enco Air4s,oppo,gameMode,1
+06F010,OPPO Enco Air4s,oppo,hearingEnhancement,1
+06F010,OPPO Enco Air4s,oppo,heyFindDevice,1
+06F010,OPPO Enco Air4s,oppo,hideFromUIList,1
+06F010,OPPO Enco Air4s,oppo,multiDevicesConnect,1
+06F010,OPPO Enco Air4s,oppo,noiseReductionMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":1,""protocolIndex"":1},{""modeType"":2,""protocolIndex"":2}]"
+06F010,OPPO Enco Air4s,oppo,related,1
+06F010,OPPO Enco Air4s,oppo,spatialDescriptionType,2
+06F010,OPPO Enco Air4s,oppo,spatialTypes,"[0,1]"
+06B050,OPPO Enco Air4（新声版）,oppo,autoFirmwareUpdate,1
+06B050,OPPO Enco Air4（新声版）,oppo,batteryInfo,1
+06B050,OPPO Enco Air4（新声版）,oppo,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656}]"
+06B050,OPPO Enco Air4（新声版）,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536}]"
+06B050,OPPO Enco Air4（新声版）,oppo,controlGuideSupport,1
+06B050,OPPO Enco Air4（新声版）,oppo,customDress,1
+06B050,OPPO Enco Air4（新声版）,oppo,equalizer,3
+06B050,OPPO Enco Air4（新声版）,oppo,equalizerMode,"[{""modeType"":22,""protocolIndex"":0},{""modeType"":31,""protocolIndex"":2},{""modeType"":32,""protocolIndex"":1}]"
+06B050,OPPO Enco Air4（新声版）,oppo,fastDiscovery,1
+06B050,OPPO Enco Air4（新声版）,oppo,gameMode,1
+06B050,OPPO Enco Air4（新声版）,oppo,heyFindDevice,1
+06B050,OPPO Enco Air4（新声版）,oppo,holdInBoxPairing,1
+06B050,OPPO Enco Air4（新声版）,oppo,multiDevicesConnect,1
+06B050,OPPO Enco Air4（新声版）,oppo,openBoxPairing,1
+06B050,OPPO Enco Air4（新声版）,oppo,promptVolume,1
+06B050,OPPO Enco Air4（新声版）,oppo,related,1
+06B050,OPPO Enco Air4（新声版）,oppo,spatialDescriptionType,2
+06B050,OPPO Enco Air4（新声版）,oppo,spatialTypes,"[0,1]"
+069010,OPPO Enco Air4,oppo,autoFirmwareUpdate,1
+069010,OPPO Enco Air4,oppo,batteryInfo,1
+069010,OPPO Enco Air4,oppo,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+069010,OPPO Enco Air4,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536},{""action"":11,""ear"":2,""minSelectCount"":1,""showEar"":1}]"
+069010,OPPO Enco Air4,oppo,controlGuideSupport,1
+069010,OPPO Enco Air4,oppo,customDress,1
+069010,OPPO Enco Air4,oppo,earScan,1
+069010,OPPO Enco Air4,oppo,equalizer,2
+069010,OPPO Enco Air4,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+069010,OPPO Enco Air4,oppo,fastDiscovery,1
+069010,OPPO Enco Air4,oppo,feedback,1
+069010,OPPO Enco Air4,oppo,gameMode,1
+069010,OPPO Enco Air4,oppo,hearingEnhancement,1
+069010,OPPO Enco Air4,oppo,heyFindDevice,1
+069010,OPPO Enco Air4,oppo,multiDevicesConnect,1
+069010,OPPO Enco Air4,oppo,noiseReductionMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":1,""protocolIndex"":1},{""modeType"":2,""protocolIndex"":2}]"
+069010,OPPO Enco Air4,oppo,related,1
+069010,OPPO Enco Air4,oppo,spatialDescriptionType,2
+069010,OPPO Enco Air4,oppo,spatialTypes,"[0,1]"
+065C10,OPPO Enco Air3 Pro,oppo,autoFirmwareUpdate,1
+065C10,OPPO Enco Air3 Pro,oppo,batteryInfo,1
+065C10,OPPO Enco Air3 Pro,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536},{""action"":11,""ear"":2,""showEar"":1}]"
+065C10,OPPO Enco Air3 Pro,oppo,controlGuideSupport,1
+065C10,OPPO Enco Air3 Pro,oppo,customDress,1
+065C10,OPPO Enco Air3 Pro,oppo,earScan,1
+065C10,OPPO Enco Air3 Pro,oppo,equalizer,2
+065C10,OPPO Enco Air3 Pro,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":20,""protocolIndex"":2}]"
+065C10,OPPO Enco Air3 Pro,oppo,fastDiscovery,1
+065C10,OPPO Enco Air3 Pro,oppo,fitDetection,1
+065C10,OPPO Enco Air3 Pro,oppo,gameMode,1
+065C10,OPPO Enco Air3 Pro,oppo,hearingEnhancement,1
+065C10,OPPO Enco Air3 Pro,oppo,heyFindDevice,1
+065C10,OPPO Enco Air3 Pro,oppo,hideFromUIList,1
+065C10,OPPO Enco Air3 Pro,oppo,highAudio,1
+065C10,OPPO Enco Air3 Pro,oppo,highToneQuality,1
+065C10,OPPO Enco Air3 Pro,oppo,multiDevicesConnect,1
+065C10,OPPO Enco Air3 Pro,oppo,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+065C10,OPPO Enco Air3 Pro,oppo,personalNoiseCompat,"{""minFirmVersion"":150,""personalNoise"":1}"
+065C10,OPPO Enco Air3 Pro,oppo,related,1
+065C10,OPPO Enco Air3 Pro,oppo,spatialDescriptionType,2
+065C10,OPPO Enco Air3 Pro,oppo,spatialTypes,"[0,1]"
+065C10,OPPO Enco Air3 Pro,oppo,wearDetection,1
+064C10,OPPO Enco Air3,oppo,autoFirmwareUpdate,1
+064C10,OPPO Enco Air3,oppo,batteryInfo,1
+064C10,OPPO Enco Air3,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":4,""ear"":2,""showEar"":0,""support"":536}]"
+064C10,OPPO Enco Air3,oppo,controlGuideSupport,1
+064C10,OPPO Enco Air3,oppo,customDress,1
+064C10,OPPO Enco Air3,oppo,equalizer,2
+064C10,OPPO Enco Air3,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+064C10,OPPO Enco Air3,oppo,fastDiscovery,1
+064C10,OPPO Enco Air3,oppo,gameMode,1
+064C10,OPPO Enco Air3,oppo,heyFindDevice,1
+064C10,OPPO Enco Air3,oppo,multiDevicesConnect,1
+064C10,OPPO Enco Air3,oppo,related,1
+064C10,OPPO Enco Air3,oppo,spatialDescriptionType,2
+064C10,OPPO Enco Air3,oppo,spatialTypes,"[0,1]"
+067010,OPPO Enco Air3i,oppo,batteryInfo,1
+067010,OPPO Enco Air3i,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":4,""ear"":2,""showEar"":0,""support"":536}]"
+067010,OPPO Enco Air3i,oppo,controlGuideSupport,1
+067010,OPPO Enco Air3i,oppo,customDress,1
+067010,OPPO Enco Air3i,oppo,equalizer,2
+067010,OPPO Enco Air3i,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+067010,OPPO Enco Air3i,oppo,fastDiscovery,1
+067010,OPPO Enco Air3i,oppo,gameMode,1
+067010,OPPO Enco Air3i,oppo,hideFromUIList,1
+067010,OPPO Enco Air3i,oppo,inBoxStatus,0
+067010,OPPO Enco Air3i,oppo,related,1
+067010,OPPO Enco Air3i,oppo,spatialDescriptionType,2
+067010,OPPO Enco Air3i,oppo,spatialTypes,"[0,1]"
+067810,OPPO Enco Air3s,oppo,autoFirmwareUpdate,1
+067810,OPPO Enco Air3s,oppo,batteryInfo,1
+067810,OPPO Enco Air3s,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":4,""ear"":2,""showEar"":0,""support"":536}]"
+067810,OPPO Enco Air3s,oppo,controlGuideSupport,1
+067810,OPPO Enco Air3s,oppo,customDress,1
+067810,OPPO Enco Air3s,oppo,equalizer,2
+067810,OPPO Enco Air3s,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+067810,OPPO Enco Air3s,oppo,fastDiscovery,1
+067810,OPPO Enco Air3s,oppo,gameMode,1
+067810,OPPO Enco Air3s,oppo,heyFindDevice,1
+067810,OPPO Enco Air3s,oppo,hideFromUIList,1
+067810,OPPO Enco Air3s,oppo,multiDevicesConnect,1
+067810,OPPO Enco Air3s,oppo,related,1
+067810,OPPO Enco Air3s,oppo,spatialDescriptionType,2
+067810,OPPO Enco Air3s,oppo,spatialTypes,"[0,1]"
+063810,OPPO Enco Air2 Pro,oppo,autoFirmwareUpdate,1
+063810,OPPO Enco Air2 Pro,oppo,batteryInfo,1
+063810,OPPO Enco Air2 Pro,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":33380},{""action"":3,""ear"":2,""showEar"":0,""support"":41473},{""action"":6,""ear"":2,""showEar"":0,""support"":4632},{""action"":11,""ear"":2,""showEar"":1}]"
+063810,OPPO Enco Air2 Pro,oppo,controlGuideSupport,1
+063810,OPPO Enco Air2 Pro,oppo,customDress,1
+063810,OPPO Enco Air2 Pro,oppo,equalizer,2
+063810,OPPO Enco Air2 Pro,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+063810,OPPO Enco Air2 Pro,oppo,fastDiscovery,1
+063810,OPPO Enco Air2 Pro,oppo,gameMode,1
+063810,OPPO Enco Air2 Pro,oppo,heyFindDevice,1
+063810,OPPO Enco Air2 Pro,oppo,noiseReductionMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":1,""protocolIndex"":1},{""modeType"":2,""protocolIndex"":2},{""decideByEarDevice"":true,""modeType"":6,""protocolIndex"":3}]"
+063810,OPPO Enco Air2 Pro,oppo,related,1
+063810,OPPO Enco Air2 Pro,oppo,wearDetection,1
+066C10,OPPO Enco Air2（新声版）,oppo,batteryInfo,1
+066C10,OPPO Enco Air2（新声版）,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":4,""ear"":2,""showEar"":0,""support"":536}]"
+066C10,OPPO Enco Air2（新声版）,oppo,controlGuideSupport,1
+066C10,OPPO Enco Air2（新声版）,oppo,customDress,1
+066C10,OPPO Enco Air2（新声版）,oppo,equalizer,2
+066C10,OPPO Enco Air2（新声版）,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+066C10,OPPO Enco Air2（新声版）,oppo,fastDiscovery,1
+066C10,OPPO Enco Air2（新声版）,oppo,gameMode,1
+066C10,OPPO Enco Air2（新声版）,oppo,inBoxStatus,0
+066C10,OPPO Enco Air2（新声版）,oppo,related,1
+066C10,OPPO Enco Air2（新声版）,oppo,spatialDescriptionType,2
+066C10,OPPO Enco Air2（新声版）,oppo,spatialTypes,"[0,1]"
+063410,OPPO Enco Air2,oppo,autoFirmwareUpdate,1
+063410,OPPO Enco Air2,oppo,batteryInfo,1
+063410,OPPO Enco Air2,oppo,control,"[{""action"":2,""ear"":2,""showEar"":0,""support"":612},{""action"":3,""ear"":2,""showEar"":0,""support"":8705},{""action"":4,""ear"":2,""showEar"":0,""support"":536}]"
+063410,OPPO Enco Air2,oppo,controlGuideSupport,1
+063410,OPPO Enco Air2,oppo,controlList,"[{""control"":[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":4,""ear"":2,""showEar"":0,""support"":536}],""version"":120}]"
+063410,OPPO Enco Air2,oppo,customDress,1
+063410,OPPO Enco Air2,oppo,equalizer,1
+063410,OPPO Enco Air2,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+063410,OPPO Enco Air2,oppo,fastDiscovery,1
+063410,OPPO Enco Air2,oppo,gameMode,1
+063410,OPPO Enco Air2,oppo,related,1
+069850,OPPO Enco Air4i,oppo,autoFirmwareUpdate,1
+069850,OPPO Enco Air4i,oppo,batteryInfo,1
+069850,OPPO Enco Air4i,oppo,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656}]"
+069850,OPPO Enco Air4i,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536}]"
+069850,OPPO Enco Air4i,oppo,controlGuideSupport,1
+069850,OPPO Enco Air4i,oppo,customDress,1
+069850,OPPO Enco Air4i,oppo,customEqualizer,1
+069850,OPPO Enco Air4i,oppo,equalizer,4
+069850,OPPO Enco Air4i,oppo,equalizerMode,"[{""modeType"":22,""protocolIndex"":0},{""modeType"":31,""protocolIndex"":2},{""modeType"":32,""protocolIndex"":1}]"
+069850,OPPO Enco Air4i,oppo,fastDiscovery,1
+069850,OPPO Enco Air4i,oppo,firmwareCheckCommandId,0
+069850,OPPO Enco Air4i,oppo,gameMode,1
+069850,OPPO Enco Air4i,oppo,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.netease.hyxd.nearme.gamecenter"",""com.crisisfire.android.nearme.gamecenter"",""com.netease.cfxf.nearme.gamecenter"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.cod"",""com.netease.lztg.nearme.gamecenter"",""com.yingxiong.heroo.nearme.gamecenter"",""com.tencent.ig""],""type"":3},{""type"":0}]"
+069850,OPPO Enco Air4i,oppo,gameSoundMutexes,[1]
+069850,OPPO Enco Air4i,oppo,heyFindDevice,1
+069850,OPPO Enco Air4i,oppo,holdInBoxPairing,1
+069850,OPPO Enco Air4i,oppo,multiDevicesConnect,1
+069850,OPPO Enco Air4i,oppo,openBoxPairing,1
+069850,OPPO Enco Air4i,oppo,pairingModeTip,5
+069850,OPPO Enco Air4i,oppo,promptVolume,1
+069850,OPPO Enco Air4i,oppo,related,1
+069850,OPPO Enco Air4i,oppo,spatialDescriptionType,2
+069850,OPPO Enco Air4i,oppo,spatialTypes,"[0,1]"
+068810,OPPO Enco Air 3i,oppo,batteryInfo,1
+068810,OPPO Enco Air 3i,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":4,""ear"":2,""showEar"":0,""support"":536}]"
+068810,OPPO Enco Air 3i,oppo,controlGuideSupport,1
+068810,OPPO Enco Air 3i,oppo,customDress,1
+068810,OPPO Enco Air 3i,oppo,equalizer,2
+068810,OPPO Enco Air 3i,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+068810,OPPO Enco Air 3i,oppo,fastDiscovery,1
+068810,OPPO Enco Air 3i,oppo,gameMode,1
+068810,OPPO Enco Air 3i,oppo,related,1
+064410,OPPO Enco Air2i,oppo,batteryInfo,1
+064410,OPPO Enco Air2i,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":4,""ear"":2,""showEar"":0,""support"":536}]"
+064410,OPPO Enco Air2i,oppo,controlGuideSupport,1
+064410,OPPO Enco Air2i,oppo,customDress,1
+064410,OPPO Enco Air2i,oppo,equalizer,2
+064410,OPPO Enco Air2i,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+064410,OPPO Enco Air2i,oppo,fastDiscovery,1
+064410,OPPO Enco Air2i,oppo,gameMode,1
+064410,OPPO Enco Air2i,oppo,related,1
+061810,OPPO Enco Air,oppo,autoFirmwareUpdate,1
+061810,OPPO Enco Air,oppo,batteryInfo,1
+061810,OPPO Enco Air,oppo,control,"[{""action"":2,""ear"":2,""showEar"":0,""support"":613},{""action"":3,""ear"":2,""showEar"":0,""support"":8705},{""action"":4,""ear"":2,""showEar"":0,""support"":536},{""action"":13}]"
+061810,OPPO Enco Air,oppo,customDress,1
+061810,OPPO Enco Air,oppo,fastDiscovery,1
+061810,OPPO Enco Air,oppo,heyFindDevice,1
+061810,OPPO Enco Air,oppo,inBoxStatus,0
+062810,OPPO Enco Air Lite,oppo,autoFirmwareUpdate,1
+062810,OPPO Enco Air Lite,oppo,batteryInfo,1
+062810,OPPO Enco Air Lite,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":612},{""action"":3,""ear"":2,""showEar"":0,""support"":8705},{""action"":4,""ear"":2,""showEar"":0,""support"":536},{""action"":12}]"
+062810,OPPO Enco Air Lite,oppo,customDress,1
+062810,OPPO Enco Air Lite,oppo,fastDiscovery,1
+062810,OPPO Enco Air Lite,oppo,gameMode,1
+062810,OPPO Enco Air Lite,oppo,openBoxPairing,0
+06B450,OPPO Enco R5,oppo,autoFirmwareUpdate,1
+06B450,OPPO Enco R5,oppo,batteryInfo,1
+06B450,OPPO Enco R5,oppo,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656}]"
+06B450,OPPO Enco R5,oppo,collectLogs,1
+06B450,OPPO Enco R5,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536}]"
+06B450,OPPO Enco R5,oppo,controlGuideSupport,1
+06B450,OPPO Enco R5,oppo,customDress,1
+06B450,OPPO Enco R5,oppo,equalizer,3
+06B450,OPPO Enco R5,oppo,equalizerMode,"[{""modeType"":22,""protocolIndex"":0},{""modeType"":31,""protocolIndex"":2},{""modeType"":32,""protocolIndex"":1}]"
+06B450,OPPO Enco R5,oppo,fastDiscovery,1
+06B450,OPPO Enco R5,oppo,firmwareTrack,1
+06B450,OPPO Enco R5,oppo,gameMode,1
+06B450,OPPO Enco R5,oppo,heyFindDevice,1
+06B450,OPPO Enco R5,oppo,hideFromUIList,1
+06B450,OPPO Enco R5,oppo,holdInBoxPairing,1
+06B450,OPPO Enco R5,oppo,multiDevicesConnect,1
+06B450,OPPO Enco R5,oppo,openBoxPairing,1
+06B450,OPPO Enco R5,oppo,promptVolume,1
+06B450,OPPO Enco R5,oppo,related,1
+06B450,OPPO Enco R5,oppo,spatialDescriptionType,2
+06B450,OPPO Enco R5,oppo,spatialTypes,"[0,1]"
+06AC50,OPPO Enco R4,oppo,autoFirmwareUpdate,1
+06AC50,OPPO Enco R4,oppo,batteryInfo,1
+06AC50,OPPO Enco R4,oppo,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656}]"
+06AC50,OPPO Enco R4,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536}]"
+06AC50,OPPO Enco R4,oppo,controlGuideSupport,1
+06AC50,OPPO Enco R4,oppo,customDress,1
+06AC50,OPPO Enco R4,oppo,customEqualizer,1
+06AC50,OPPO Enco R4,oppo,equalizer,4
+06AC50,OPPO Enco R4,oppo,equalizerMode,"[{""modeType"":22,""protocolIndex"":0},{""modeType"":31,""protocolIndex"":2},{""modeType"":32,""protocolIndex"":1}]"
+06AC50,OPPO Enco R4,oppo,fastDiscovery,1
+06AC50,OPPO Enco R4,oppo,firmwareCheckCommandId,0
+06AC50,OPPO Enco R4,oppo,gameMode,1
+06AC50,OPPO Enco R4,oppo,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.netease.hyxd.nearme.gamecenter"",""com.crisisfire.android.nearme.gamecenter"",""com.netease.cfxf.nearme.gamecenter"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.cod"",""com.netease.lztg.nearme.gamecenter"",""com.yingxiong.heroo.nearme.gamecenter"",""com.tencent.ig""],""type"":3},{""type"":0}]"
+06AC50,OPPO Enco R4,oppo,gameSoundMutexes,[1]
+06AC50,OPPO Enco R4,oppo,heyFindDevice,1
+06AC50,OPPO Enco R4,oppo,holdInBoxPairing,1
+06AC50,OPPO Enco R4,oppo,multiDevicesConnect,1
+06AC50,OPPO Enco R4,oppo,openBoxPairing,1
+06AC50,OPPO Enco R4,oppo,pairingModeTip,5
+06AC50,OPPO Enco R4,oppo,promptVolume,1
+06AC50,OPPO Enco R4,oppo,related,1
+06AC50,OPPO Enco R4,oppo,spatialDescriptionType,2
+06AC50,OPPO Enco R4,oppo,spatialTypes,"[0,1]"
+069C10,OPPO Enco R3 Pro,oppo,autoFirmwareUpdate,1
+069C10,OPPO Enco R3 Pro,oppo,batteryInfo,1
+069C10,OPPO Enco R3 Pro,oppo,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+069C10,OPPO Enco R3 Pro,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536},{""action"":11,""ear"":2,""showEar"":1}]"
+069C10,OPPO Enco R3 Pro,oppo,controlGuideSupport,1
+069C10,OPPO Enco R3 Pro,oppo,customDress,1
+069C10,OPPO Enco R3 Pro,oppo,earScan,1
+069C10,OPPO Enco R3 Pro,oppo,equalizer,2
+069C10,OPPO Enco R3 Pro,oppo,equalizerMode,"[{""modeType"":33,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+069C10,OPPO Enco R3 Pro,oppo,fastDiscovery,1
+069C10,OPPO Enco R3 Pro,oppo,feedback,1
+069C10,OPPO Enco R3 Pro,oppo,fitDetection,1
+069C10,OPPO Enco R3 Pro,oppo,gameMode,1
+069C10,OPPO Enco R3 Pro,oppo,hearingEnhancement,1
+069C10,OPPO Enco R3 Pro,oppo,heyFindDevice,1
+069C10,OPPO Enco R3 Pro,oppo,highToneQuality,1
+069C10,OPPO Enco R3 Pro,oppo,multiDevicesConnect,1
+069C10,OPPO Enco R3 Pro,oppo,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+069C10,OPPO Enco R3 Pro,oppo,personalNoise,1
+069C10,OPPO Enco R3 Pro,oppo,personalNoiseCompat,"{""minFirmVersion"":150,""personalNoise"":1}"
+069C10,OPPO Enco R3 Pro,oppo,related,1
+069C10,OPPO Enco R3 Pro,oppo,spatialDescriptionType,2
+069C10,OPPO Enco R3 Pro,oppo,spatialTypes,"[0,1]"
+069C10,OPPO Enco R3 Pro,oppo,wearDetection,1
+068410,OPPO Enco R3,oppo,batteryInfo,1
+068410,OPPO Enco R3,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":4,""ear"":2,""showEar"":0,""support"":536}]"
+068410,OPPO Enco R3,oppo,controlGuideSupport,1
+068410,OPPO Enco R3,oppo,customDress,1
+068410,OPPO Enco R3,oppo,equalizer,2
+068410,OPPO Enco R3,oppo,equalizerMode,"[{""modeType"":25,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+068410,OPPO Enco R3,oppo,fastDiscovery,1
+068410,OPPO Enco R3,oppo,gameMode,1
+068410,OPPO Enco R3,oppo,inBoxStatus,0
+068410,OPPO Enco R3,oppo,related,1
+068410,OPPO Enco R3,oppo,spatialDescriptionType,2
+068410,OPPO Enco R3,oppo,spatialTypes,"[0,1]"
+065010,OPPO Enco R Pro,oppo,autoFirmwareUpdate,1
+065010,OPPO Enco R Pro,oppo,batteryInfo,1
+065010,OPPO Enco R Pro,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":612},{""action"":3,""ear"":2,""showEar"":0,""support"":8705},{""action"":6,""ear"":2,""showEar"":0,""support"":4632},{""action"":11,""ear"":2,""showEar"":1}]"
+065010,OPPO Enco R Pro,oppo,controlGuideSupport,1
+065010,OPPO Enco R Pro,oppo,customDress,1
+065010,OPPO Enco R Pro,oppo,equalizer,2
+065010,OPPO Enco R Pro,oppo,equalizerMode,"[{""modeType"":18,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+065010,OPPO Enco R Pro,oppo,fastDiscovery,1
+065010,OPPO Enco R Pro,oppo,gameMode,1
+065010,OPPO Enco R Pro,oppo,heyFindDevice,1
+065010,OPPO Enco R Pro,oppo,noiseReductionMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":1,""protocolIndex"":1},{""modeType"":2,""protocolIndex"":2},{""decideByEarDevice"":true,""modeType"":6,""protocolIndex"":3}]"
+065010,OPPO Enco R Pro,oppo,related,1
+065010,OPPO Enco R Pro,oppo,wearDetection,1
+065810,OPPO Enco R2,oppo,autoFirmwareUpdate,1
+065810,OPPO Enco R2,oppo,batteryInfo,1
+065810,OPPO Enco R2,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":4,""ear"":2,""showEar"":0,""support"":536}]"
+065810,OPPO Enco R2,oppo,controlGuideSupport,1
+065810,OPPO Enco R2,oppo,customDress,1
+065810,OPPO Enco R2,oppo,equalizer,2
+065810,OPPO Enco R2,oppo,equalizerMode,"[{""modeType"":21,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+065810,OPPO Enco R2,oppo,fastDiscovery,1
+065810,OPPO Enco R2,oppo,gameMode,1
+065810,OPPO Enco R2,oppo,heyFindDevice,1
+065810,OPPO Enco R2,oppo,hideFromUIList,0
+065810,OPPO Enco R2,oppo,multiDevicesConnect,1
+065810,OPPO Enco R2,oppo,related,1
+065810,OPPO Enco R2,oppo,spatialDescriptionType,2
+065810,OPPO Enco R2,oppo,spatialTypes,"[0,1]"
+063010,OPPO Enco R,oppo,autoFirmwareUpdate,1
+063010,OPPO Enco R,oppo,batteryInfo,1
+063010,OPPO Enco R,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":4,""ear"":2,""showEar"":0,""support"":536}]"
+063010,OPPO Enco R,oppo,controlGuideSupport,1
+063010,OPPO Enco R,oppo,customDress,1
+063010,OPPO Enco R,oppo,equalizer,1
+063010,OPPO Enco R,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2},{""modeType"":4,""protocolIndex"":3}]"
+063010,OPPO Enco R,oppo,fastDiscovery,1
+063010,OPPO Enco R,oppo,gameMode,1
+063010,OPPO Enco R,oppo,related,1
+060C10,OPPO Enco W51,oppo,autoFirmwareUpdate,1
+060C10,OPPO Enco W51,oppo,batteryInfo,1
+060C10,OPPO Enco W51,oppo,control,"[{""action"":2,""ear"":2,""showEar"":0,""support"":741},{""action"":3,""ear"":2,""showEar"":0,""support"":513}]"
+060C10,OPPO Enco W51,oppo,customDress,1
+060C10,OPPO Enco W51,oppo,fastDiscovery,1
+060C10,OPPO Enco W51,oppo,heyFindDevice,1
+060C10,OPPO Enco W51,oppo,wearDetection,1
+060810,OPPO Enco W31,oppo,autoFirmwareUpdate,1
+060810,OPPO Enco W31,oppo,batteryInfo,1
+060810,OPPO Enco W31,oppo,customDress,1
+060810,OPPO Enco W31,oppo,fastDiscovery,1
+061C10,OPPO Enco Play,oppo,autoFirmwareUpdate,1
+061C10,OPPO Enco Play,oppo,batteryInfo,1
+061C10,OPPO Enco Play,oppo,control,"[{""action"":2,""ear"":2,""showEar"":0,""support"":613},{""action"":3,""ear"":2,""showEar"":0,""support"":8705},{""action"":4,""ear"":2,""showEar"":0,""support"":536},{""action"":13}]"
+061C10,OPPO Enco Play,oppo,customDress,1
+061C10,OPPO Enco Play,oppo,fastDiscovery,1
+061C10,OPPO Enco Play,oppo,heyFindDevice,1
+061C10,OPPO Enco Play,oppo,inBoxStatus,0
+061C10,OPPO Enco Play,oppo,vocalEnhance,1
+06F450,OPPO Enco Buds3s,oppo,autoFirmwareUpdate,1
+06F450,OPPO Enco Buds3s,oppo,batteryInfo,1
+06F450,OPPO Enco Buds3s,oppo,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656}]"
+06F450,OPPO Enco Buds3s,oppo,collectLogs,1
+06F450,OPPO Enco Buds3s,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536}]"
+06F450,OPPO Enco Buds3s,oppo,controlGuideSupport,1
+06F450,OPPO Enco Buds3s,oppo,customDress,1
+06F450,OPPO Enco Buds3s,oppo,customEqualizer,1
+06F450,OPPO Enco Buds3s,oppo,equalizer,4
+06F450,OPPO Enco Buds3s,oppo,equalizerMode,"[{""modeType"":26,""protocolIndex"":0},{""modeType"":28,""protocolIndex"":2},{""modeType"":29,""protocolIndex"":1}]"
+06F450,OPPO Enco Buds3s,oppo,fastDiscovery,1
+06F450,OPPO Enco Buds3s,oppo,firmwareCheckCommandId,0
+06F450,OPPO Enco Buds3s,oppo,firmwareTrack,1
+06F450,OPPO Enco Buds3s,oppo,gameMode,1
+06F450,OPPO Enco Buds3s,oppo,gameSoundMutexes,[1]
+06F450,OPPO Enco Buds3s,oppo,heyFindDevice,1
+06F450,OPPO Enco Buds3s,oppo,hideFromUIList,1
+06F450,OPPO Enco Buds3s,oppo,holdInBoxPairing,1
+06F450,OPPO Enco Buds3s,oppo,multiDevicesConnect,1
+06F450,OPPO Enco Buds3s,oppo,openBoxPairing,1
+06F450,OPPO Enco Buds3s,oppo,pairingModeTip,5
+06F450,OPPO Enco Buds3s,oppo,promptVolume,1
+06F450,OPPO Enco Buds3s,oppo,related,1
+06F450,OPPO Enco Buds3s,oppo,spatialDescriptionType,2
+06F450,OPPO Enco Buds3s,oppo,spatialTypes,"[0,1]"
+06A010,OPPO Enco Buds3 Pro+,oppo,autoFirmwareUpdate,1
+06A010,OPPO Enco Buds3 Pro+,oppo,batteryInfo,1
+06A010,OPPO Enco Buds3 Pro+,oppo,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+06A010,OPPO Enco Buds3 Pro+,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536},{""action"":11,""ear"":2,""minSelectCount"":1,""showEar"":1}]"
+06A010,OPPO Enco Buds3 Pro+,oppo,controlGuideSupport,1
+06A010,OPPO Enco Buds3 Pro+,oppo,earScan,1
+06A010,OPPO Enco Buds3 Pro+,oppo,equalizer,2
+06A010,OPPO Enco Buds3 Pro+,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+06A010,OPPO Enco Buds3 Pro+,oppo,fastDiscovery,1
+06A010,OPPO Enco Buds3 Pro+,oppo,feedback,1
+06A010,OPPO Enco Buds3 Pro+,oppo,gameMode,1
+06A010,OPPO Enco Buds3 Pro+,oppo,hearingEnhancement,1
+06A010,OPPO Enco Buds3 Pro+,oppo,heyFindDevice,1
+06A010,OPPO Enco Buds3 Pro+,oppo,hideFromUIList,1
+06A010,OPPO Enco Buds3 Pro+,oppo,multiDevicesConnect,1
+06A010,OPPO Enco Buds3 Pro+,oppo,noiseReductionMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":1,""protocolIndex"":1},{""modeType"":2,""protocolIndex"":2}]"
+06A010,OPPO Enco Buds3 Pro+,oppo,related,1
+06A010,OPPO Enco Buds3 Pro+,oppo,spatialDescriptionType,2
+06A010,OPPO Enco Buds3 Pro+,oppo,spatialTypes,"[0,1]"
+06A850,OPPO Enco Buds3 Pro,oppo,autoFirmwareUpdate,1
+06A850,OPPO Enco Buds3 Pro,oppo,batteryInfo,1
+06A850,OPPO Enco Buds3 Pro,oppo,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656}]"
+06A850,OPPO Enco Buds3 Pro,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536}]"
+06A850,OPPO Enco Buds3 Pro,oppo,controlGuideSupport,1
+06A850,OPPO Enco Buds3 Pro,oppo,customDress,1
+06A850,OPPO Enco Buds3 Pro,oppo,customEqualizer,1
+06A850,OPPO Enco Buds3 Pro,oppo,equalizer,4
+06A850,OPPO Enco Buds3 Pro,oppo,equalizerMode,"[{""modeType"":22,""protocolIndex"":0},{""modeType"":31,""protocolIndex"":2},{""modeType"":32,""protocolIndex"":1}]"
+06A850,OPPO Enco Buds3 Pro,oppo,fastDiscovery,1
+06A850,OPPO Enco Buds3 Pro,oppo,firmwareCheckCommandId,0
+06A850,OPPO Enco Buds3 Pro,oppo,gameMode,1
+06A850,OPPO Enco Buds3 Pro,oppo,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.netease.hyxd.nearme.gamecenter"",""com.crisisfire.android.nearme.gamecenter"",""com.netease.cfxf.nearme.gamecenter"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.cod"",""com.netease.lztg.nearme.gamecenter"",""com.yingxiong.heroo.nearme.gamecenter"",""com.tencent.ig""],""type"":3},{""type"":0}]"
+06A850,OPPO Enco Buds3 Pro,oppo,gameSoundMutexes,[1]
+06A850,OPPO Enco Buds3 Pro,oppo,heyFindDevice,1
+06A850,OPPO Enco Buds3 Pro,oppo,hideFromUIList,1
+06A850,OPPO Enco Buds3 Pro,oppo,holdInBoxPairing,1
+06A850,OPPO Enco Buds3 Pro,oppo,multiDevicesConnect,1
+06A850,OPPO Enco Buds3 Pro,oppo,openBoxPairing,1
+06A850,OPPO Enco Buds3 Pro,oppo,pairingModeTip,5
+06A850,OPPO Enco Buds3 Pro,oppo,promptVolume,1
+06A850,OPPO Enco Buds3 Pro,oppo,related,1
+06A850,OPPO Enco Buds3 Pro,oppo,spatialDescriptionType,2
+06A850,OPPO Enco Buds3 Pro,oppo,spatialTypes,"[0,1]"
+068010,OPPO Enco Buds2 Pro,oppo,batteryInfo,1
+068010,OPPO Enco Buds2 Pro,oppo,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+068010,OPPO Enco Buds2 Pro,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":1,""support"":4608}]"
+068010,OPPO Enco Buds2 Pro,oppo,controlGuideSupport,1
+068010,OPPO Enco Buds2 Pro,oppo,customDress,1
+068010,OPPO Enco Buds2 Pro,oppo,equalizer,2
+068010,OPPO Enco Buds2 Pro,oppo,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":12,""protocolIndex"":2},{""modeType"":13,""protocolIndex"":1}]"
+068010,OPPO Enco Buds2 Pro,oppo,fastDiscovery,1
+068010,OPPO Enco Buds2 Pro,oppo,gameMode,1
+068010,OPPO Enco Buds2 Pro,oppo,heyFindDevice,1
+068010,OPPO Enco Buds2 Pro,oppo,hideFromUIList,1
+068010,OPPO Enco Buds2 Pro,oppo,holdInBoxPairing,1
+068010,OPPO Enco Buds2 Pro,oppo,inBoxStatus,0
+068010,OPPO Enco Buds2 Pro,oppo,openBoxPairing,1
+068010,OPPO Enco Buds2 Pro,oppo,related,1
+06A450,OPPO Enco Buds3,oppo,autoFirmwareUpdate,1
+06A450,OPPO Enco Buds3,oppo,batteryInfo,1
+06A450,OPPO Enco Buds3,oppo,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656}]"
+06A450,OPPO Enco Buds3,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536}]"
+06A450,OPPO Enco Buds3,oppo,controlGuideSupport,1
+06A450,OPPO Enco Buds3,oppo,customDress,1
+06A450,OPPO Enco Buds3,oppo,equalizer,3
+06A450,OPPO Enco Buds3,oppo,equalizerMode,"[{""modeType"":22,""protocolIndex"":0},{""modeType"":31,""protocolIndex"":2},{""modeType"":32,""protocolIndex"":1}]"
+06A450,OPPO Enco Buds3,oppo,fastDiscovery,1
+06A450,OPPO Enco Buds3,oppo,gameMode,1
+06A450,OPPO Enco Buds3,oppo,heyFindDevice,1
+06A450,OPPO Enco Buds3,oppo,hideFromUIList,1
+06A450,OPPO Enco Buds3,oppo,holdInBoxPairing,1
+06A450,OPPO Enco Buds3,oppo,multiDevicesConnect,1
+06A450,OPPO Enco Buds3,oppo,openBoxPairing,1
+06A450,OPPO Enco Buds3,oppo,promptVolume,1
+06A450,OPPO Enco Buds3,oppo,related,1
+06A450,OPPO Enco Buds3,oppo,spatialDescriptionType,2
+06A450,OPPO Enco Buds3,oppo,spatialTypes,"[0,1]"
+064810,OPPO Enco Buds2,oppo,batteryInfo,1
+064810,OPPO Enco Buds2,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":4,""ear"":2,""showEar"":0,""support"":536}]"
+064810,OPPO Enco Buds2,oppo,controlGuideSupport,1
+064810,OPPO Enco Buds2,oppo,customDress,1
+064810,OPPO Enco Buds2,oppo,equalizer,2
+064810,OPPO Enco Buds2,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1},{""modeType"":3,""protocolIndex"":2}]"
+064810,OPPO Enco Buds2,oppo,fastDiscovery,1
+064810,OPPO Enco Buds2,oppo,gameMode,1
+064810,OPPO Enco Buds2,oppo,hideFromUIList,1
+064810,OPPO Enco Buds2,oppo,related,1
+062410,OPPO Enco Buds,oppo,autoFirmwareUpdate,1
+062410,OPPO Enco Buds,oppo,batteryInfo,1
+062410,OPPO Enco Buds,oppo,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":612},{""action"":3,""ear"":2,""showEar"":0,""support"":8705},{""action"":4,""ear"":2,""showEar"":0,""support"":536},{""action"":12}]"
+062410,OPPO Enco Buds,oppo,customDress,1
+062410,OPPO Enco Buds,oppo,fastDiscovery,1
+062410,OPPO Enco Buds,oppo,gameMode,1
+062410,OPPO Enco Buds,oppo,openBoxPairing,0
+050C10,OPPO Enco M33,oppo,autoFirmwareUpdate,1
+050C10,OPPO Enco M33,oppo,bassEngineSupport,1
+050C10,OPPO Enco M33,oppo,batteryInfo,1
+050C10,OPPO Enco M33,oppo,callControl,"[{""action"":36,""ear"":2,""showEar"":1,""support"":524288},{""action"":37,""ear"":2,""showEar"":1,""support"":262144}]"
+050C10,OPPO Enco M33,oppo,control,"[{""action"":25,""ear"":2,""minSelectCount"":2,""showEar"":1},{""action"":26,""ear"":2,""showEar"":1,""support"":4608}]"
+050C10,OPPO Enco M33,oppo,controlGuideSupport,1
+050C10,OPPO Enco M33,oppo,equalizer,2
+050C10,OPPO Enco M33,oppo,equalizerMode,"[{""modeType"":1,""protocolIndex"":0},{""modeType"":13,""protocolIndex"":2},{""modeType"":3,""protocolIndex"":3},{""modeType"":2,""protocolIndex"":1}]"
+050C10,OPPO Enco M33,oppo,fastDiscovery,1
+050C10,OPPO Enco M33,oppo,fitDetection,1
+050C10,OPPO Enco M33,oppo,heyFindDevice,1
+050C10,OPPO Enco M33,oppo,minOtaBattery,50
+050C10,OPPO Enco M33,oppo,noiseReductionMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":1,""protocolIndex"":1},{""modeType"":2,""protocolIndex"":2}]"
+050C10,OPPO Enco M33,oppo,related,1
+050410,OPPO Enco M31,oppo,autoFirmwareUpdate,1
+050410,OPPO Enco M31,oppo,batteryInfo,1
+050410,OPPO Enco M31,oppo,fastDiscovery,1
+067414,OnePlus Flow Buds,OnePlus,autoFirmwareUpdate,1
+067414,OnePlus Flow Buds,OnePlus,bassEngineSupport,1
+067414,OnePlus Flow Buds,OnePlus,batteryInfo,1
+067414,OnePlus Flow Buds,OnePlus,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""ear"":2,""showEar"":0,""support"":262656}]"
+067414,OnePlus Flow Buds,OnePlus,cleanGuide,1
+067414,OnePlus Flow Buds,OnePlus,collectLogs,1
+067414,OnePlus Flow Buds,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":5,""ear"":2,""showEar"":0,""support"":3584},{""action"":11,""ear"":2,""showEar"":0}]"
+067414,OnePlus Flow Buds,OnePlus,controlGuideSupport,1
+067414,OnePlus Flow Buds,OnePlus,customDress,1
+067414,OnePlus Flow Buds,OnePlus,customEqFrequency,"[31,62,125,250,500,1000,2000,4000,8000,16000]"
+067414,OnePlus Flow Buds,OnePlus,customEqUiVersion,2
+067414,OnePlus Flow Buds,OnePlus,customEqualizer,1
+067414,OnePlus Flow Buds,OnePlus,earScan,1
+067414,OnePlus Flow Buds,OnePlus,equalizer,4
+067414,OnePlus Flow Buds,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":14,""protocolIndex"":2},{""modeType"":12,""protocolIndex"":1}]"
+067414,OnePlus Flow Buds,OnePlus,fastDiscovery,1
+067414,OnePlus Flow Buds,OnePlus,feedback,1
+067414,OnePlus Flow Buds,OnePlus,findDevice,1
+067414,OnePlus Flow Buds,OnePlus,firmwareFileCheckFlags,7
+067414,OnePlus Flow Buds,OnePlus,firmwareTrack,1
+067414,OnePlus Flow Buds,OnePlus,functionIntroductionGuide,1
+067414,OnePlus Flow Buds,OnePlus,gameMode,1
+067414,OnePlus Flow Buds,OnePlus,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.tencent.tmgp.codev"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.dfm"",""com.tencent.ig"",""com.dts.freefireth"",""com.activision.callofduty.shooter""],""type"":3},{""type"":0}]"
+067414,OnePlus Flow Buds,OnePlus,gameSoundMutexes,"[1,2]"
+067414,OnePlus Flow Buds,OnePlus,hearingEnhancement,1
+067414,OnePlus Flow Buds,OnePlus,hideFromUIList,1
+067414,OnePlus Flow Buds,OnePlus,highToneQuality,1
+067414,OnePlus Flow Buds,OnePlus,introductionGuideList,"[2,1,3,6,5,11]"
+067414,OnePlus Flow Buds,OnePlus,longPressType,8833
+067414,OnePlus Flow Buds,OnePlus,multiConnectFunctions,"[{""functionType"":""displayPairedDevice"",""minFirmVersion"":0},{""functionType"":""connectDisconnectDevice"",""minFirmVersion"":0},{""functionType"":""unpairDevice"",""minFirmVersion"":0},{""functionType"":""setPriorityDevice"",""minFirmVersion"":0}]"
+067414,OnePlus Flow Buds,OnePlus,multiDevicesConnect,2
+067414,OnePlus Flow Buds,OnePlus,noiseReductionMode,"[{""childrenMode"":[{""intellectNoiseReductionSummary"":1,""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":3,""protocolIndex"":6,""weakNoiseReductionSummary"":1}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+067414,OnePlus Flow Buds,OnePlus,promptVolume,1
+067414,OnePlus Flow Buds,OnePlus,promptVolumeRange,"{""max"":10,""min"":2}"
+067414,OnePlus Flow Buds,OnePlus,related,1
+067414,OnePlus Flow Buds,OnePlus,spatialDescriptionType,4
+067414,OnePlus Flow Buds,OnePlus,spatialTypes,"[0,1]"
+067414,OnePlus Flow Buds,OnePlus,strongNoiseReductionRealTime,1
+067414,OnePlus Flow Buds,OnePlus,swiftPair,1
+067414,OnePlus Flow Buds,OnePlus,upgradeMtu,1
+067414,OnePlus Flow Buds,OnePlus,wearDetection,1
+067414,OnePlus Flow Buds,OnePlus,whiteNoise,1
+064014,OnePlus Buds Pro 3,OnePlus,autoFirmwareUpdate,1
+064014,OnePlus Buds Pro 3,OnePlus,bassEngineSupport,1
+064014,OnePlus Buds Pro 3,OnePlus,batteryInfo,1
+064014,OnePlus Buds Pro 3,OnePlus,callControl,"[{""action"":32,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":33,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656},{""action"":34,""ear"":2,""showEar"":0,""support"":131584}]"
+064014,OnePlus Buds Pro 3,OnePlus,cleanGuide,1
+064014,OnePlus Buds Pro 3,OnePlus,control,"[{""action"":16,""ear"":2,""showEar"":0,""support"":516},{""action"":17,""ear"":2,""showEar"":0,""support"":8805},{""action"":18,""ear"":2,""showEar"":0,""support"":8801},{""action"":5,""ear"":2,""showEar"":0,""support"":3584},{""action"":20,""ear"":2,""showEar"":1}]"
+064014,OnePlus Buds Pro 3,OnePlus,controlAutoVolumeSupport,1
+064014,OnePlus Buds Pro 3,OnePlus,controlGuideSupport,1
+064014,OnePlus Buds Pro 3,OnePlus,customDress,1
+064014,OnePlus Buds Pro 3,OnePlus,customEqualizer,1
+064014,OnePlus Buds Pro 3,OnePlus,dialogTags,[2]
+064014,OnePlus Buds Pro 3,OnePlus,earScan,1
+064014,OnePlus Buds Pro 3,OnePlus,equalizer,4
+064014,OnePlus Buds Pro 3,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0,""summaryId"":1,""tag"":3},{""modeType"":13,""protocolIndex"":1,""summaryId"":2,""tag"":3},{""modeType"":14,""protocolIndex"":2,""summaryId"":3,""tag"":3},{""modeType"":12,""protocolIndex"":3,""summaryId"":4,""tag"":3},{""modeType"":30,""protocolIndex"":7,""summaryId"":5,""tag"":3}]"
+064014,OnePlus Buds Pro 3,OnePlus,fastDiscovery,1
+064014,OnePlus Buds Pro 3,OnePlus,feedback,1
+064014,OnePlus Buds Pro 3,OnePlus,fitDetection,1
+064014,OnePlus Buds Pro 3,OnePlus,gameMode,1
+064014,OnePlus Buds Pro 3,OnePlus,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.netease.hyxd.nearme.gamecenter"",""com.crisisfire.android.nearme.gamecenter"",""com.netease.cfxf.nearme.gamecenter"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.cod"",""com.netease.lztg.nearme.gamecenter"",""com.yingxiong.heroo.nearme.gamecenter"",""com.tencent.ig""],""type"":3},{""type"":0}]"
+064014,OnePlus Buds Pro 3,OnePlus,gameSoundMutexes,[1]
+064014,OnePlus Buds Pro 3,OnePlus,headSetSoundRecord,1
+064014,OnePlus Buds Pro 3,OnePlus,hearingEnhancement,1
+064014,OnePlus Buds Pro 3,OnePlus,hearingJudgeDb,1
+064014,OnePlus Buds Pro 3,OnePlus,heyFindDevice,1
+064014,OnePlus Buds Pro 3,OnePlus,highToneQuality,1
+064014,OnePlus Buds Pro 3,OnePlus,multiDevicesConnect,1
+064014,OnePlus Buds Pro 3,OnePlus,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+064014,OnePlus Buds Pro 3,OnePlus,related,1
+064014,OnePlus Buds Pro 3,OnePlus,spatialDescriptionType,1
+064014,OnePlus Buds Pro 3,OnePlus,spatialHiResMutex,1
+064014,OnePlus Buds Pro 3,OnePlus,spatialTypes,"[0,1,2]"
+064014,OnePlus Buds Pro 3,OnePlus,strongNoiseReductionRealTime,1
+064014,OnePlus Buds Pro 3,OnePlus,supportPinch,1
+064014,OnePlus Buds Pro 3,OnePlus,tutorialGuide,1
+064014,OnePlus Buds Pro 3,OnePlus,wearDetection,1
+065C14,OnePlus Open Buds,OnePlus,aiClearCall,1
+065C14,OnePlus Open Buds,OnePlus,autoFirmwareUpdate,1
+065C14,OnePlus Open Buds,OnePlus,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":30,""ear"":2,""showEar"":0,""support"":131584}]"
+065C14,OnePlus Open Buds,OnePlus,control,"[{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8825},{""action"":4,""ear"":2,""showEar"":0,""support"":536}]"
+065C14,OnePlus Open Buds,OnePlus,controlAutoVolumeSupport,1
+065C14,OnePlus Open Buds,OnePlus,controlGuideSupport,1
+065C14,OnePlus Open Buds,OnePlus,customDress,1
+065C14,OnePlus Open Buds,OnePlus,equalizer,4
+065C14,OnePlus Open Buds,OnePlus,equalizerMode,"[{""modeType"":35,""protocolIndex"":0,""summaryId"":6},{""modeType"":34,""protocolIndex"":1,""summaryId"":7},{""modeType"":28,""protocolIndex"":2,""summaryId"":3}]"
+065C14,OnePlus Open Buds,OnePlus,equalizerModeByVersion,"[{""minAppVersion"":15007000,""modeType"":12,""order"":4,""protocolIndex"":3,""summaryId"":9}]"
+065C14,OnePlus Open Buds,OnePlus,fastDiscovery,1
+065C14,OnePlus Open Buds,OnePlus,functionIntroductionGuide,1
+065C14,OnePlus Open Buds,OnePlus,gameMode,1
+065C14,OnePlus Open Buds,OnePlus,heyFindDevice,1
+065C14,OnePlus Open Buds,OnePlus,hideFromUIList,1
+065C14,OnePlus Open Buds,OnePlus,introductionGuideList,"[2,1,4,6,7,9,5]"
+065C14,OnePlus Open Buds,OnePlus,longPressVolume,1
+065C14,OnePlus Open Buds,OnePlus,minOtaBattery,30
+065C14,OnePlus Open Buds,OnePlus,multiConnectFunctions,"[{""functionType"":""displayPairedDevice"",""minFirmVersion"":20},{""functionType"":""connectDisconnectDevice"",""minFirmVersion"":20},{""functionType"":""unpairDevice"",""minFirmVersion"":20}]"
+065C14,OnePlus Open Buds,OnePlus,multiDevicesConnect,1
+065C14,OnePlus Open Buds,OnePlus,pairingModeTip,1
+065C14,OnePlus Open Buds,OnePlus,promptVolume,1
+065C14,OnePlus Open Buds,OnePlus,related,1
+065C14,OnePlus Open Buds,OnePlus,spatialDescriptionType,4
+065C14,OnePlus Open Buds,OnePlus,spatialTypes,"[0,1]"
+065C14,OnePlus Open Buds,OnePlus,tapLevelSetting,1
+065C14,OnePlus Open Buds,OnePlus,tutorialGuide,1
+065C14,OnePlus Open Buds,OnePlus,wearDetection,1
+065C14,OnePlus Open Buds,OnePlus,wearingVideoTutorial,1
+062014,OnePlus Buds Pro 2,OnePlus,autoFirmwareUpdate,1
+062014,OnePlus Buds Pro 2,OnePlus,bassEngineSupport,1
+062014,OnePlus Buds Pro 2,OnePlus,batteryInfo,1
+062014,OnePlus Buds Pro 2,OnePlus,callControl,"[{""action"":32,""ear"":2,""showEar"":0,""support"":524288},{""action"":33,""ear"":2,""showEar"":0,""support"":262144}]"
+062014,OnePlus Buds Pro 2,OnePlus,control,"[{""action"":16,""ear"":2,""showEar"":0,""support"":516},{""action"":17,""ear"":2,""showEar"":0,""support"":8805},{""action"":18,""ear"":2,""showEar"":0,""support"":8801},{""action"":20,""ear"":2,""showEar"":1}]"
+062014,OnePlus Buds Pro 2,OnePlus,controlAutoVolumeSupport,1
+062014,OnePlus Buds Pro 2,OnePlus,controlGuideSupport,1
+062014,OnePlus Buds Pro 2,OnePlus,customDress,1
+062014,OnePlus Buds Pro 2,OnePlus,customEqualizer,1
+062014,OnePlus Buds Pro 2,OnePlus,earScan,1
+062014,OnePlus Buds Pro 2,OnePlus,equalizer,4
+062014,OnePlus Buds Pro 2,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0,""tag"":3},{""modeType"":13,""protocolIndex"":3,""tag"":3},{""modeType"":14,""protocolIndex"":2,""tag"":3},{""modeType"":12,""protocolIndex"":1,""tag"":3}]"
+062014,OnePlus Buds Pro 2,OnePlus,equalizerModeCompat,"[{""minFirmVersion"":165,""modeType"":19,""protocolIndex"":7}]"
+062014,OnePlus Buds Pro 2,OnePlus,fastDiscovery,1
+062014,OnePlus Buds Pro 2,OnePlus,firmwareDiscovery,1
+062014,OnePlus Buds Pro 2,OnePlus,fitDetection,1
+062014,OnePlus Buds Pro 2,OnePlus,gameMode,1
+062014,OnePlus Buds Pro 2,OnePlus,headSetSoundRecord,0
+062014,OnePlus Buds Pro 2,OnePlus,hearingEnhancement,1
+062014,OnePlus Buds Pro 2,OnePlus,heyFindDevice,1
+062014,OnePlus Buds Pro 2,OnePlus,highToneQuality,1
+062014,OnePlus Buds Pro 2,OnePlus,multiDevicesConnect,1
+062014,OnePlus Buds Pro 2,OnePlus,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+062014,OnePlus Buds Pro 2,OnePlus,personalNoise,1
+062014,OnePlus Buds Pro 2,OnePlus,related,1
+062014,OnePlus Buds Pro 2,OnePlus,supportPinch,1
+062014,OnePlus Buds Pro 2,OnePlus,wearDetection,1
+062014,OnePlus Buds Pro 2,OnePlus,zenMode,1
+063414,OnePlus Buds Pro 2R,OnePlus,autoFirmwareUpdate,1
+063414,OnePlus Buds Pro 2R,OnePlus,bassEngineSupport,1
+063414,OnePlus Buds Pro 2R,OnePlus,batteryInfo,1
+063414,OnePlus Buds Pro 2R,OnePlus,callControl,"[{""action"":32,""ear"":2,""showEar"":0,""support"":524288},{""action"":33,""ear"":2,""showEar"":0,""support"":262144}]"
+063414,OnePlus Buds Pro 2R,OnePlus,control,"[{""action"":16,""ear"":2,""showEar"":0,""support"":516},{""action"":17,""ear"":2,""showEar"":0,""support"":8805},{""action"":18,""ear"":2,""showEar"":0,""support"":8801},{""action"":20,""ear"":2,""showEar"":1}]"
+063414,OnePlus Buds Pro 2R,OnePlus,controlAutoVolumeSupport,1
+063414,OnePlus Buds Pro 2R,OnePlus,controlGuideSupport,1
+063414,OnePlus Buds Pro 2R,OnePlus,customDress,1
+063414,OnePlus Buds Pro 2R,OnePlus,customEqualizer,1
+063414,OnePlus Buds Pro 2R,OnePlus,earScan,1
+063414,OnePlus Buds Pro 2R,OnePlus,equalizer,4
+063414,OnePlus Buds Pro 2R,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0,""tag"":3},{""modeType"":13,""protocolIndex"":3,""tag"":3},{""modeType"":14,""protocolIndex"":2,""tag"":3},{""modeType"":12,""protocolIndex"":1,""tag"":3}]"
+063414,OnePlus Buds Pro 2R,OnePlus,equalizerModeCompat,"[{""minFirmVersion"":165,""modeType"":19,""protocolIndex"":7}]"
+063414,OnePlus Buds Pro 2R,OnePlus,fastDiscovery,1
+063414,OnePlus Buds Pro 2R,OnePlus,firmwareDiscovery,1
+063414,OnePlus Buds Pro 2R,OnePlus,fitDetection,1
+063414,OnePlus Buds Pro 2R,OnePlus,gameMode,1
+063414,OnePlus Buds Pro 2R,OnePlus,headSetSoundRecord,0
+063414,OnePlus Buds Pro 2R,OnePlus,hearingEnhancement,1
+063414,OnePlus Buds Pro 2R,OnePlus,heyFindDevice,1
+063414,OnePlus Buds Pro 2R,OnePlus,hideFromUIList,1
+063414,OnePlus Buds Pro 2R,OnePlus,highToneQuality,1
+063414,OnePlus Buds Pro 2R,OnePlus,multiDevicesConnect,1
+063414,OnePlus Buds Pro 2R,OnePlus,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+063414,OnePlus Buds Pro 2R,OnePlus,personalNoise,1
+063414,OnePlus Buds Pro 2R,OnePlus,related,1
+063414,OnePlus Buds Pro 2R,OnePlus,supportPinch,1
+063414,OnePlus Buds Pro 2R,OnePlus,wearDetection,1
+063414,OnePlus Buds Pro 2R,OnePlus,zenMode,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,autoFirmwareUpdate,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,bassEngineSupport,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,batteryInfo,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,callControl,"[{""action"":32,""ear"":2,""showEar"":0,""support"":524288},{""action"":33,""ear"":2,""showEar"":0,""support"":262144}]"
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,control,"[{""action"":16,""ear"":2,""showEar"":0,""support"":516},{""action"":17,""ear"":2,""showEar"":0,""support"":8805},{""action"":18,""ear"":2,""showEar"":0,""support"":8801},{""action"":20,""ear"":2,""showEar"":1}]"
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,controlAutoVolumeSupport,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,controlGuideSupport,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,customDress,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,customEqualizer,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,earScan,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,equalizer,4
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0,""tag"":3},{""modeType"":13,""protocolIndex"":3,""tag"":3},{""modeType"":14,""protocolIndex"":2,""tag"":3},{""modeType"":12,""protocolIndex"":1,""tag"":3}]"
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,equalizerModeCompat,"[{""minFirmVersion"":165,""modeType"":19,""protocolIndex"":7}]"
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,fastDiscovery,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,firmwareDiscovery,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,fitDetection,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,gameMode,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,headSetSoundRecord,0
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,hearingEnhancement,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,heyFindDevice,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,highToneQuality,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,multiDevicesConnect,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,personalNoise,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,related,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,supportPinch,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,wearDetection,1
+063014,OnePlus Buds Pro 2（轻享版）,OnePlus,zenMode,1
+060C14,OnePlus Buds Pro,OnePlus,autoFirmwareUpdate,1
+060C14,OnePlus Buds Pro,OnePlus,batteryInfo,1
+060C14,OnePlus Buds Pro,OnePlus,control,"[{""action"":3,""ear"":2,""showEar"":0,""support"":33},{""action"":11,""ear"":2,""showEar"":1,""support"":128},{""action"":14,""ear"":2,""showEar"":1},{""action"":15,""ear"":2,""showEar"":1}]"
+060C14,OnePlus Buds Pro,OnePlus,customDress,1
+060C14,OnePlus Buds Pro,OnePlus,customEqualizer,1
+060C14,OnePlus Buds Pro,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":13,""protocolIndex"":3},{""modeType"":14,""protocolIndex"":2},{""modeType"":12,""protocolIndex"":1}]"
+060C14,OnePlus Buds Pro,OnePlus,fastDiscovery,1
+060C14,OnePlus Buds Pro,OnePlus,fitDetection,1
+060C14,OnePlus Buds Pro,OnePlus,hearingEnhancement,1
+060C14,OnePlus Buds Pro,OnePlus,heyFindDevice,1
+060C14,OnePlus Buds Pro,OnePlus,multiDevicesConnect,1
+060C14,OnePlus Buds Pro,OnePlus,noiseReductionMode,"[{""modeType"":7,""protocolIndex"":4},{""modeType"":4,""protocolIndex"":3},{""modeType"":3,""protocolIndex"":2},{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1}]"
+060C14,OnePlus Buds Pro,OnePlus,opsReduction,1
+060C14,OnePlus Buds Pro,OnePlus,wearDetection,1
+060C14,OnePlus Buds Pro,OnePlus,zenMode,1
+065414,OnePlus Buds 4,OnePlus,autoFirmwareUpdate,1
+065414,OnePlus Buds 4,OnePlus,bassEngineSupport,1
+065414,OnePlus Buds 4,OnePlus,batteryInfo,1
+065414,OnePlus Buds 4,OnePlus,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":30,""ear"":2,""showEar"":0,""support"":131584},{""action"":31,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656}]"
+065414,OnePlus Buds 4,OnePlus,cleanGuide,1
+065414,OnePlus Buds 4,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":27,""ear"":2,""minSelectCount"":1,""showEar"":0},{""action"":5,""ear"":2,""showEar"":0,""support"":3584}]"
+065414,OnePlus Buds 4,OnePlus,controlAutoVolumeSupport,1
+065414,OnePlus Buds 4,OnePlus,controlGuideSupport,1
+065414,OnePlus Buds 4,OnePlus,customDress,1
+065414,OnePlus Buds 4,OnePlus,customEqualizer,1
+065414,OnePlus Buds 4,OnePlus,dialogTags,[2]
+065414,OnePlus Buds 4,OnePlus,earScan,1
+065414,OnePlus Buds 4,OnePlus,equalizer,4
+065414,OnePlus Buds 4,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":14,""protocolIndex"":1},{""modeType"":12,""protocolIndex"":2}]"
+065414,OnePlus Buds 4,OnePlus,fastDiscovery,1
+065414,OnePlus Buds 4,OnePlus,feedback,1
+065414,OnePlus Buds 4,OnePlus,fitDetection,1
+065414,OnePlus Buds 4,OnePlus,functionIntroductionGuide,1
+065414,OnePlus Buds 4,OnePlus,gameMode,1
+065414,OnePlus Buds 4,OnePlus,headSetSoundRecord,0
+065414,OnePlus Buds 4,OnePlus,hearingEnhancement,1
+065414,OnePlus Buds 4,OnePlus,hearingJudgeDb,1
+065414,OnePlus Buds 4,OnePlus,heyFindDevice,1
+065414,OnePlus Buds 4,OnePlus,highToneQuality,1
+065414,OnePlus Buds 4,OnePlus,multiDevicesConnect,1
+065414,OnePlus Buds 4,OnePlus,noiseReductionMode,"[{""childrenMode"":[{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6},{""modeType"":7,""protocolIndex"":7}],""modeType"":5,""protocolIndex"":1},{""modeType"":10,""protocolIndex"":11},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0}]"
+065414,OnePlus Buds 4,OnePlus,noiseReductionUIVersion,2
+065414,OnePlus Buds 4,OnePlus,promptVolume,1
+065414,OnePlus Buds 4,OnePlus,related,1
+065414,OnePlus Buds 4,OnePlus,spatialDescriptionType,4
+065414,OnePlus Buds 4,OnePlus,spatialHiResMutex,1
+065414,OnePlus Buds 4,OnePlus,spatialTypes,"[0,1]"
+065414,OnePlus Buds 4,OnePlus,strongNoiseReductionRealTime,1
+065414,OnePlus Buds 4,OnePlus,wearDetection,1
+063C14,OnePlus Buds 3,OnePlus,autoFirmwareUpdate,1
+063C14,OnePlus Buds 3,OnePlus,bassEngineSupport,1
+063C14,OnePlus Buds 3,OnePlus,batteryInfo,1
+063C14,OnePlus Buds 3,OnePlus,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+063C14,OnePlus Buds 3,OnePlus,cleanGuide,1
+063C14,OnePlus Buds 3,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":27,""ear"":2,""minSelectCount"":1,""showEar"":0},{""action"":5,""ear"":2,""showEar"":0,""support"":3584}]"
+063C14,OnePlus Buds 3,OnePlus,controlAutoVolumeSupport,1
+063C14,OnePlus Buds 3,OnePlus,controlGuideSupport,1
+063C14,OnePlus Buds 3,OnePlus,customDress,1
+063C14,OnePlus Buds 3,OnePlus,customEqualizer,1
+063C14,OnePlus Buds 3,OnePlus,earScan,1
+063C14,OnePlus Buds 3,OnePlus,equalizer,4
+063C14,OnePlus Buds 3,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":14,""protocolIndex"":2},{""modeType"":12,""protocolIndex"":1}]"
+063C14,OnePlus Buds 3,OnePlus,equalizerModeCompat,"[{""minFirmVersion"":119,""modeType"":13,""order"":4,""protocolIndex"":3,""tag"":0}]"
+063C14,OnePlus Buds 3,OnePlus,fastDiscovery,1
+063C14,OnePlus Buds 3,OnePlus,fitDetection,1
+063C14,OnePlus Buds 3,OnePlus,gameMode,1
+063C14,OnePlus Buds 3,OnePlus,gameSoundList,"[{""packageName"":""com.tencent.tmgp.pubgmhd"",""type"":1},{""type"":0}]"
+063C14,OnePlus Buds 3,OnePlus,gameSoundMutexes,"[1,2,3]"
+063C14,OnePlus Buds 3,OnePlus,headSetSoundRecord,0
+063C14,OnePlus Buds 3,OnePlus,hearingEnhancement,1
+063C14,OnePlus Buds 3,OnePlus,heyFindDevice,1
+063C14,OnePlus Buds 3,OnePlus,highToneQuality,1
+063C14,OnePlus Buds 3,OnePlus,multiDevicesConnect,1
+063C14,OnePlus Buds 3,OnePlus,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+063C14,OnePlus Buds 3,OnePlus,related,1
+063C14,OnePlus Buds 3,OnePlus,spatialDescriptionType,4
+063C14,OnePlus Buds 3,OnePlus,spatialTypes,"[0,1]"
+063C14,OnePlus Buds 3,OnePlus,wearDetection,1
+066414,OnePlus Buds Ace 3,OnePlus,autoFirmwareUpdate,1
+066414,OnePlus Buds Ace 3,OnePlus,bassEngineSupport,1
+066414,OnePlus Buds Ace 3,OnePlus,batteryInfo,1
+066414,OnePlus Buds Ace 3,OnePlus,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""ear"":2,""showEar"":0,""support"":262656}]"
+066414,OnePlus Buds Ace 3,OnePlus,cleanGuide,1
+066414,OnePlus Buds Ace 3,OnePlus,collectLogs,1
+066414,OnePlus Buds Ace 3,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":5,""ear"":2,""showEar"":0,""support"":3584},{""action"":11,""ear"":2,""showEar"":0}]"
+066414,OnePlus Buds Ace 3,OnePlus,controlGuideSupport,1
+066414,OnePlus Buds Ace 3,OnePlus,customDress,1
+066414,OnePlus Buds Ace 3,OnePlus,customEqFrequency,"[31,62,125,250,500,1000,2000,4000,8000,16000]"
+066414,OnePlus Buds Ace 3,OnePlus,customEqUiVersion,2
+066414,OnePlus Buds Ace 3,OnePlus,customEqualizer,1
+066414,OnePlus Buds Ace 3,OnePlus,earScan,1
+066414,OnePlus Buds Ace 3,OnePlus,equalizer,4
+066414,OnePlus Buds Ace 3,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":14,""protocolIndex"":2},{""modeType"":12,""protocolIndex"":1}]"
+066414,OnePlus Buds Ace 3,OnePlus,fastDiscovery,1
+066414,OnePlus Buds Ace 3,OnePlus,feedback,1
+066414,OnePlus Buds Ace 3,OnePlus,findDevice,1
+066414,OnePlus Buds Ace 3,OnePlus,firmwareFileCheckFlags,7
+066414,OnePlus Buds Ace 3,OnePlus,firmwareTrack,1
+066414,OnePlus Buds Ace 3,OnePlus,fitDetection,1
+066414,OnePlus Buds Ace 3,OnePlus,functionIntroductionGuide,1
+066414,OnePlus Buds Ace 3,OnePlus,gameMode,1
+066414,OnePlus Buds Ace 3,OnePlus,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.tencent.tmgp.codev"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.dfm"",""com.tencent.ig"",""com.dts.freefireth"",""com.activision.callofduty.shooter""],""type"":3},{""type"":0}]"
+066414,OnePlus Buds Ace 3,OnePlus,gameSoundMutexes,"[1,2,3]"
+066414,OnePlus Buds Ace 3,OnePlus,hearingEnhancement,1
+066414,OnePlus Buds Ace 3,OnePlus,hideFromUIList,1
+066414,OnePlus Buds Ace 3,OnePlus,highToneQuality,1
+066414,OnePlus Buds Ace 3,OnePlus,introductionGuideList,"[2,1,3,5]"
+066414,OnePlus Buds Ace 3,OnePlus,longPressType,8833
+066414,OnePlus Buds Ace 3,OnePlus,multiConnectFunctions,"[{""functionType"":""displayPairedDevice"",""minFirmVersion"":0},{""functionType"":""connectDisconnectDevice"",""minFirmVersion"":0},{""functionType"":""unpairDevice"",""minFirmVersion"":0},{""functionType"":""setPriorityDevice"",""minFirmVersion"":0}]"
+066414,OnePlus Buds Ace 3,OnePlus,multiDevicesConnect,2
+066414,OnePlus Buds Ace 3,OnePlus,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+066414,OnePlus Buds Ace 3,OnePlus,promptVolume,1
+066414,OnePlus Buds Ace 3,OnePlus,promptVolumeRange,"{""max"":10,""min"":2}"
+066414,OnePlus Buds Ace 3,OnePlus,related,1
+066414,OnePlus Buds Ace 3,OnePlus,spatialDescriptionType,4
+066414,OnePlus Buds Ace 3,OnePlus,spatialHiResMutex,1
+066414,OnePlus Buds Ace 3,OnePlus,spatialTypes,"[0,1]"
+066414,OnePlus Buds Ace 3,OnePlus,strongNoiseReductionRealTime,1
+066414,OnePlus Buds Ace 3,OnePlus,swiftPair,1
+066414,OnePlus Buds Ace 3,OnePlus,upgradeMtu,1
+066414,OnePlus Buds Ace 3,OnePlus,wearDetection,1
+066414,OnePlus Buds Ace 3,OnePlus,whiteNoise,1
+064C14,OnePlus Buds Ace 2,OnePlus,autoFirmwareUpdate,1
+064C14,OnePlus Buds Ace 2,OnePlus,bassEngineSupport,1
+064C14,OnePlus Buds Ace 2,OnePlus,batteryInfo,1
+064C14,OnePlus Buds Ace 2,OnePlus,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+064C14,OnePlus Buds Ace 2,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536},{""action"":11,""ear"":2,""minSelectCount"":1,""showEar"":1}]"
+064C14,OnePlus Buds Ace 2,OnePlus,controlGuideSupport,1
+064C14,OnePlus Buds Ace 2,OnePlus,customDress,1
+064C14,OnePlus Buds Ace 2,OnePlus,customEqualizer,1
+064C14,OnePlus Buds Ace 2,OnePlus,earScan,1
+064C14,OnePlus Buds Ace 2,OnePlus,equalizer,4
+064C14,OnePlus Buds Ace 2,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":3},{""modeType"":14,""protocolIndex"":4},{""modeType"":12,""protocolIndex"":5}]"
+064C14,OnePlus Buds Ace 2,OnePlus,fastDiscovery,1
+064C14,OnePlus Buds Ace 2,OnePlus,feedback,1
+064C14,OnePlus Buds Ace 2,OnePlus,gameMode,1
+064C14,OnePlus Buds Ace 2,OnePlus,hearingEnhancement,1
+064C14,OnePlus Buds Ace 2,OnePlus,heyFindDevice,1
+064C14,OnePlus Buds Ace 2,OnePlus,multiDevicesConnect,1
+064C14,OnePlus Buds Ace 2,OnePlus,noiseReductionMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":1,""protocolIndex"":1},{""modeType"":2,""protocolIndex"":2}]"
+064C14,OnePlus Buds Ace 2,OnePlus,related,1
+064C14,OnePlus Buds Ace 2,OnePlus,spatialDescriptionType,4
+064C14,OnePlus Buds Ace 2,OnePlus,spatialTypes,"[0,1]"
+061014,OnePlus Buds Z2,OnePlus,autoFirmwareUpdate,1
+061014,OnePlus Buds Z2,OnePlus,batteryInfo,1
+061014,OnePlus Buds Z2,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":612},{""action"":2,""ear"":2,""showEar"":0,""support"":613},{""action"":3,""ear"":2,""showEar"":0,""support"":613},{""action"":11,""ear"":2,""showEar"":1,""support"":128},{""action"":6,""ear"":2,""showEar"":1,""support"":4608}]"
+061014,OnePlus Buds Z2,OnePlus,customDress,1
+061014,OnePlus Buds Z2,OnePlus,customEqualizer,1
+061014,OnePlus Buds Z2,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":13,""protocolIndex"":3},{""modeType"":14,""protocolIndex"":2},{""modeType"":12,""protocolIndex"":1}]"
+061014,OnePlus Buds Z2,OnePlus,fastDiscovery,1
+061014,OnePlus Buds Z2,OnePlus,fitDetection,1
+061014,OnePlus Buds Z2,OnePlus,heyFindDevice,1
+061014,OnePlus Buds Z2,OnePlus,noiseReductionMode,"[{""modeType"":4,""protocolIndex"":3},{""modeType"":3,""protocolIndex"":2},{""modeType"":1,""protocolIndex"":0},{""modeType"":2,""protocolIndex"":1}]"
+061014,OnePlus Buds Z2,OnePlus,wearDetection,1
+060814,OnePlus Buds Z,OnePlus,autoFirmwareUpdate,1
+060814,OnePlus Buds Z,OnePlus,batteryInfo,1
+060814,OnePlus Buds Z,OnePlus,control,"[{""action"":2,""ear"":2,""showEar"":0,""support"":101}]"
+060814,OnePlus Buds Z,OnePlus,customDress,1
+060814,OnePlus Buds Z,OnePlus,fastDiscovery,1
+060814,OnePlus Buds Z,OnePlus,heyFindDevice,1
+068814,OnePlus Buds Z,OnePlus,autoFirmwareUpdate,1
+068814,OnePlus Buds Z,OnePlus,batteryInfo,1
+068814,OnePlus Buds Z,OnePlus,control,"[{""action"":2,""ear"":2,""showEar"":0,""support"":101}]"
+068814,OnePlus Buds Z,OnePlus,fastDiscovery,1
+068814,OnePlus Buds Z,OnePlus,heyFindDevice,1
+062814,OnePlus Buds Ace,OnePlus,autoFirmwareUpdate,1
+062814,OnePlus Buds Ace,OnePlus,bassEngineSupport,1
+062814,OnePlus Buds Ace,OnePlus,batteryInfo,1
+062814,OnePlus Buds Ace,OnePlus,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+062814,OnePlus Buds Ace,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":11,""ear"":2,""showEar"":1},{""action"":6,""ear"":2,""showEar"":1,""support"":4608}]"
+062814,OnePlus Buds Ace,OnePlus,controlGuideSupport,1
+062814,OnePlus Buds Ace,OnePlus,customDress,1
+062814,OnePlus Buds Ace,OnePlus,customEqMax,2
+062814,OnePlus Buds Ace,OnePlus,customEqualizer,1
+062814,OnePlus Buds Ace,OnePlus,equalizer,4
+062814,OnePlus Buds Ace,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":13,""protocolIndex"":2},{""modeType"":12,""protocolIndex"":1}]"
+062814,OnePlus Buds Ace,OnePlus,fastDiscovery,1
+062814,OnePlus Buds Ace,OnePlus,gameMode,1
+062814,OnePlus Buds Ace,OnePlus,heyFindDevice,1
+062814,OnePlus Buds Ace,OnePlus,noiseReductionMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":1,""protocolIndex"":1},{""modeType"":2,""protocolIndex"":2}]"
+062814,OnePlus Buds Ace,OnePlus,related,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,autoFirmwareUpdate,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,bassEngineSupport,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,batteryInfo,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""ear"":2,""showEar"":0,""support"":262656}]"
+066814,OnePlus Nord Buds 4 Pro,OnePlus,cleanGuide,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,collectLogs,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":5,""ear"":2,""showEar"":0,""support"":3584},{""action"":11,""ear"":2,""showEar"":0}]"
+066814,OnePlus Nord Buds 4 Pro,OnePlus,controlGuideSupport,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,customDress,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,customEqFrequency,"[31,62,125,250,500,1000,2000,4000,8000,16000]"
+066814,OnePlus Nord Buds 4 Pro,OnePlus,customEqUiVersion,2
+066814,OnePlus Nord Buds 4 Pro,OnePlus,customEqualizer,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,earScan,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,equalizer,4
+066814,OnePlus Nord Buds 4 Pro,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":14,""protocolIndex"":2},{""modeType"":12,""protocolIndex"":1}]"
+066814,OnePlus Nord Buds 4 Pro,OnePlus,fastDiscovery,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,feedback,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,findDevice,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,firmwareFileCheckFlags,7
+066814,OnePlus Nord Buds 4 Pro,OnePlus,firmwareTrack,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,fitDetection,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,functionIntroductionGuide,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,gameMode,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.tencent.tmgp.codev"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.dfm"",""com.tencent.ig"",""com.dts.freefireth"",""com.activision.callofduty.shooter""],""type"":3},{""type"":0}]"
+066814,OnePlus Nord Buds 4 Pro,OnePlus,gameSoundMutexes,"[1,2,3]"
+066814,OnePlus Nord Buds 4 Pro,OnePlus,hearingEnhancement,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,hideFromUIList,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,highToneQuality,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,introductionGuideList,"[2,1,3,5]"
+066814,OnePlus Nord Buds 4 Pro,OnePlus,longPressType,8833
+066814,OnePlus Nord Buds 4 Pro,OnePlus,multiConnectFunctions,"[{""functionType"":""displayPairedDevice"",""minFirmVersion"":0},{""functionType"":""connectDisconnectDevice"",""minFirmVersion"":0},{""functionType"":""unpairDevice"",""minFirmVersion"":0},{""functionType"":""setPriorityDevice"",""minFirmVersion"":0}]"
+066814,OnePlus Nord Buds 4 Pro,OnePlus,multiDevicesConnect,2
+066814,OnePlus Nord Buds 4 Pro,OnePlus,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+066814,OnePlus Nord Buds 4 Pro,OnePlus,promptVolume,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,promptVolumeRange,"{""max"":10,""min"":2}"
+066814,OnePlus Nord Buds 4 Pro,OnePlus,related,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,spatialDescriptionType,4
+066814,OnePlus Nord Buds 4 Pro,OnePlus,spatialHiResMutex,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,spatialTypes,"[0,1]"
+066814,OnePlus Nord Buds 4 Pro,OnePlus,strongNoiseReductionRealTime,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,swiftPair,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,upgradeMtu,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,wearDetection,1
+066814,OnePlus Nord Buds 4 Pro,OnePlus,whiteNoise,1
+067014,OnePlus Nord Buds 4,OnePlus,autoFirmwareUpdate,1
+067014,OnePlus Nord Buds 4,OnePlus,bassEngineSupport,1
+067014,OnePlus Nord Buds 4,OnePlus,batteryInfo,1
+067014,OnePlus Nord Buds 4,OnePlus,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""ear"":2,""showEar"":0,""support"":262656}]"
+067014,OnePlus Nord Buds 4,OnePlus,cleanGuide,1
+067014,OnePlus Nord Buds 4,OnePlus,collectLogs,1
+067014,OnePlus Nord Buds 4,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""entryStrModify"":[{""categoryVersion"":2}],""showEar"":0,""support"":536},{""action"":11,""ear"":2,""showEar"":0}]"
+067014,OnePlus Nord Buds 4,OnePlus,customDress,1
+067014,OnePlus Nord Buds 4,OnePlus,customEqFrequency,"[31,62,125,250,500,1000,2000,4000,8000,16000]"
+067014,OnePlus Nord Buds 4,OnePlus,customEqUiVersion,2
+067014,OnePlus Nord Buds 4,OnePlus,customEqualizer,1
+067014,OnePlus Nord Buds 4,OnePlus,earScan,1
+067014,OnePlus Nord Buds 4,OnePlus,equalizer,4
+067014,OnePlus Nord Buds 4,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":14,""protocolIndex"":1},{""modeType"":12,""protocolIndex"":2}]"
+067014,OnePlus Nord Buds 4,OnePlus,fastDiscovery,1
+067014,OnePlus Nord Buds 4,OnePlus,feedback,1
+067014,OnePlus Nord Buds 4,OnePlus,findDevice,1
+067014,OnePlus Nord Buds 4,OnePlus,fitDetection,1
+067014,OnePlus Nord Buds 4,OnePlus,gameMode,1
+067014,OnePlus Nord Buds 4,OnePlus,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.tencent.tmgp.codev"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.dfm"",""com.tencent.ig"",""com.dts.freefireth"",""com.activision.callofduty.shooter"",""com.garena.game.codm""],""type"":3},{""type"":0}]"
+067014,OnePlus Nord Buds 4,OnePlus,gameSoundMutexes,[1]
+067014,OnePlus Nord Buds 4,OnePlus,hearingEnhancement,1
+067014,OnePlus Nord Buds 4,OnePlus,hideFromUIList,1
+067014,OnePlus Nord Buds 4,OnePlus,introductionGuideList,"[2,3,6,5]"
+067014,OnePlus Nord Buds 4,OnePlus,longPressType,8833
+067014,OnePlus Nord Buds 4,OnePlus,multiConnectFunctions,"[{""functionType"":""displayPairedDevice"",""minFirmVersion"":0},{""functionType"":""connectDisconnectDevice"",""minFirmVersion"":0},{""functionType"":""unpairDevice"",""minFirmVersion"":0}]"
+067014,OnePlus Nord Buds 4,OnePlus,multiDevicesConnect,2
+067014,OnePlus Nord Buds 4,OnePlus,newFunctionGuide,0
+067014,OnePlus Nord Buds 4,OnePlus,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+067014,OnePlus Nord Buds 4,OnePlus,promptVolume,1
+067014,OnePlus Nord Buds 4,OnePlus,related,1
+067014,OnePlus Nord Buds 4,OnePlus,spatialDescriptionType,4
+067014,OnePlus Nord Buds 4,OnePlus,spatialTypes,"[0,1]"
+067014,OnePlus Nord Buds 4,OnePlus,strongNoiseReductionRealTime,1
+067014,OnePlus Nord Buds 4,OnePlus,swiftPair,1
+067014,OnePlus Nord Buds 4,OnePlus,wearDetection,1
+067014,OnePlus Nord Buds 4,OnePlus,whiteNoise,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,autoFirmwareUpdate,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,bassEngineSupport,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,batteryInfo,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+064414,OnePlus Nord Buds 3 Pro,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536},{""action"":11,""ear"":2,""showEar"":1}]"
+064414,OnePlus Nord Buds 3 Pro,OnePlus,controlGuideSupport,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,customDress,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,customEqualizer,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,earScan,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,equalizer,4
+064414,OnePlus Nord Buds 3 Pro,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":3},{""modeType"":14,""protocolIndex"":4},{""modeType"":12,""protocolIndex"":5}]"
+064414,OnePlus Nord Buds 3 Pro,OnePlus,fastDiscovery,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,feedback,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,fitDetection,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,gameMode,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,hearingEnhancement,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,heyFindDevice,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,hideFromUIList,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,highToneQuality,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,multiDevicesConnect,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,noiseReductionMode,"[{""childrenMode"":[{""modeType"":7,""protocolIndex"":7},{""modeType"":4,""protocolIndex"":4},{""modeType"":8,""protocolIndex"":5},{""modeType"":3,""protocolIndex"":6}],""modeType"":5,""protocolIndex"":1},{""childrenMode"":[{""modeType"":1,""protocolIndex"":3}],""modeType"":1,""protocolIndex"":0},{""childrenMode"":[{""modeType"":2,""protocolIndex"":8}],""modeType"":2,""protocolIndex"":2}]"
+064414,OnePlus Nord Buds 3 Pro,OnePlus,personalNoise,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,personalNoiseCompat,"{""minFirmVersion"":150,""personalNoise"":1}"
+064414,OnePlus Nord Buds 3 Pro,OnePlus,related,1
+064414,OnePlus Nord Buds 3 Pro,OnePlus,spatialDescriptionType,4
+064414,OnePlus Nord Buds 3 Pro,OnePlus,spatialTypes,"[0,1]"
+064414,OnePlus Nord Buds 3 Pro,OnePlus,wearDetection,1
+065014,OnePlus Nord Buds 3,OnePlus,autoFirmwareUpdate,1
+065014,OnePlus Nord Buds 3,OnePlus,bassEngineSupport,1
+065014,OnePlus Nord Buds 3,OnePlus,batteryInfo,1
+065014,OnePlus Nord Buds 3,OnePlus,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+065014,OnePlus Nord Buds 3,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536},{""action"":11,""ear"":2,""minSelectCount"":1,""showEar"":1}]"
+065014,OnePlus Nord Buds 3,OnePlus,controlGuideSupport,1
+065014,OnePlus Nord Buds 3,OnePlus,customDress,1
+065014,OnePlus Nord Buds 3,OnePlus,customEqualizer,1
+065014,OnePlus Nord Buds 3,OnePlus,earScan,1
+065014,OnePlus Nord Buds 3,OnePlus,equalizer,4
+065014,OnePlus Nord Buds 3,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":3},{""modeType"":14,""protocolIndex"":4},{""modeType"":12,""protocolIndex"":5}]"
+065014,OnePlus Nord Buds 3,OnePlus,fastDiscovery,1
+065014,OnePlus Nord Buds 3,OnePlus,feedback,1
+065014,OnePlus Nord Buds 3,OnePlus,gameMode,1
+065014,OnePlus Nord Buds 3,OnePlus,hearingEnhancement,1
+065014,OnePlus Nord Buds 3,OnePlus,heyFindDevice,1
+065014,OnePlus Nord Buds 3,OnePlus,hideFromUIList,1
+065014,OnePlus Nord Buds 3,OnePlus,multiDevicesConnect,1
+065014,OnePlus Nord Buds 3,OnePlus,noiseReductionMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":1,""protocolIndex"":1},{""modeType"":2,""protocolIndex"":2}]"
+065014,OnePlus Nord Buds 3,OnePlus,related,1
+065014,OnePlus Nord Buds 3,OnePlus,spatialDescriptionType,4
+065014,OnePlus Nord Buds 3,OnePlus,spatialTypes,"[0,1]"
+062414,OnePlus Nord Buds 2,OnePlus,autoFirmwareUpdate,1
+062414,OnePlus Nord Buds 2,OnePlus,bassEngineSupport,1
+062414,OnePlus Nord Buds 2,OnePlus,batteryInfo,1
+062414,OnePlus Nord Buds 2,OnePlus,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+062414,OnePlus Nord Buds 2,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":11,""ear"":2,""showEar"":1},{""action"":6,""ear"":2,""showEar"":1,""support"":4608}]"
+062414,OnePlus Nord Buds 2,OnePlus,controlGuideSupport,1
+062414,OnePlus Nord Buds 2,OnePlus,customDress,1
+062414,OnePlus Nord Buds 2,OnePlus,customEqMax,2
+062414,OnePlus Nord Buds 2,OnePlus,customEqualizer,1
+062414,OnePlus Nord Buds 2,OnePlus,equalizer,4
+062414,OnePlus Nord Buds 2,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":13,""protocolIndex"":2},{""modeType"":14,""protocolIndex"":3},{""modeType"":12,""protocolIndex"":1}]"
+062414,OnePlus Nord Buds 2,OnePlus,fastDiscovery,1
+062414,OnePlus Nord Buds 2,OnePlus,gameMode,1
+062414,OnePlus Nord Buds 2,OnePlus,heyFindDevice,1
+062414,OnePlus Nord Buds 2,OnePlus,hideFromUIList,1
+062414,OnePlus Nord Buds 2,OnePlus,noiseReductionMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":1,""protocolIndex"":1},{""modeType"":2,""protocolIndex"":2}]"
+062414,OnePlus Nord Buds 2,OnePlus,related,1
+066054,OnePlus Buds 3V,OnePlus,autoFirmwareUpdate,1
+066054,OnePlus Buds 3V,OnePlus,batteryInfo,1
+066054,OnePlus Buds 3V,OnePlus,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656}]"
+066054,OnePlus Buds 3V,OnePlus,collectLogs,1
+066054,OnePlus Buds 3V,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536}]"
+066054,OnePlus Buds 3V,OnePlus,controlGuideSupport,1
+066054,OnePlus Buds 3V,OnePlus,customDress,1
+066054,OnePlus Buds 3V,OnePlus,customEqualizer,1
+066054,OnePlus Buds 3V,OnePlus,equalizer,4
+066054,OnePlus Buds 3V,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":14,""protocolIndex"":2},{""modeType"":12,""protocolIndex"":1}]"
+066054,OnePlus Buds 3V,OnePlus,fastDiscovery,1
+066054,OnePlus Buds 3V,OnePlus,firmwareCheckCommandId,0
+066054,OnePlus Buds 3V,OnePlus,firmwareTrack,1
+066054,OnePlus Buds 3V,OnePlus,gameMode,1
+066054,OnePlus Buds 3V,OnePlus,gameSoundList,"[{""packageNameList"":[""com.tencent.tmgp.pubgmhd"",""com.netease.hyxd.nearme.gamecenter"",""com.crisisfire.android.nearme.gamecenter"",""com.netease.cfxf.nearme.gamecenter"",""com.tencent.tmgp.cf"",""com.tencent.tmgp.cod"",""com.netease.lztg.nearme.gamecenter"",""com.yingxiong.heroo.nearme.gamecenter"",""com.tencent.ig""],""type"":3},{""type"":0}]"
+066054,OnePlus Buds 3V,OnePlus,gameSoundMutexes,[1]
+066054,OnePlus Buds 3V,OnePlus,heyFindDevice,1
+066054,OnePlus Buds 3V,OnePlus,holdInBoxPairing,1
+066054,OnePlus Buds 3V,OnePlus,multiDevicesConnect,1
+066054,OnePlus Buds 3V,OnePlus,openBoxPairing,1
+066054,OnePlus Buds 3V,OnePlus,pairingModeTip,5
+066054,OnePlus Buds 3V,OnePlus,promptVolume,1
+066054,OnePlus Buds 3V,OnePlus,related,1
+066054,OnePlus Buds 3V,OnePlus,spatialDescriptionType,4
+066054,OnePlus Buds 3V,OnePlus,spatialTypes,"[0,1]"
+064814,OnePlus Buds V,OnePlus,batteryInfo,1
+064814,OnePlus Buds V,OnePlus,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+064814,OnePlus Buds V,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":1,""support"":4608}]"
+064814,OnePlus Buds V,OnePlus,controlGuideSupport,1
+064814,OnePlus Buds V,OnePlus,customDress,1
+064814,OnePlus Buds V,OnePlus,customEqualizer,1
+064814,OnePlus Buds V,OnePlus,equalizer,4
+064814,OnePlus Buds V,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":12,""protocolIndex"":2},{""modeType"":13,""protocolIndex"":1}]"
+064814,OnePlus Buds V,OnePlus,fastDiscovery,1
+064814,OnePlus Buds V,OnePlus,gameMode,1
+064814,OnePlus Buds V,OnePlus,heyFindDevice,1
+064814,OnePlus Buds V,OnePlus,holdInBoxPairing,1
+064814,OnePlus Buds V,OnePlus,inBoxStatus,0
+064814,OnePlus Buds V,OnePlus,openBoxPairing,1
+064814,OnePlus Buds V,OnePlus,related,1
+061414,OnePlus Buds N,OnePlus,autoFirmwareUpdate,1
+061414,OnePlus Buds N,OnePlus,batteryInfo,1
+061414,OnePlus Buds N,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":613},{""action"":3,""ear"":2,""showEar"":0,""support"":609},{""action"":6,""ear"":2,""showEar"":1,""support"":4608}]"
+061414,OnePlus Buds N,OnePlus,controlGuideSupport,1
+061414,OnePlus Buds N,OnePlus,controlList,"[{""control"":[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":1,""support"":4608}],""version"":108}]"
+061414,OnePlus Buds N,OnePlus,customDress,1
+061414,OnePlus Buds N,OnePlus,customEqualizer,1
+061414,OnePlus Buds N,OnePlus,equalizer,4
+061414,OnePlus Buds N,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":13,""protocolIndex"":3},{""modeType"":14,""protocolIndex"":2},{""modeType"":12,""protocolIndex"":1}]"
+061414,OnePlus Buds N,OnePlus,fastDiscovery,1
+061414,OnePlus Buds N,OnePlus,gameModeList,"[{""gameMode"":1,""version"":108}]"
+061414,OnePlus Buds N,OnePlus,heyFindDevice,1
+061414,OnePlus Buds N,OnePlus,related,1
+065854,OnePlus Nord Buds 3r,OnePlus,autoFirmwareUpdate,1
+065854,OnePlus Nord Buds 3r,OnePlus,batteryInfo,1
+065854,OnePlus Nord Buds 3r,OnePlus,callControl,"[{""action"":29,""defaultFunction"":524288,""ear"":2,""showEar"":0,""support"":524800},{""action"":31,""defaultFunction"":262144,""ear"":2,""showEar"":0,""support"":262656}]"
+065854,OnePlus Nord Buds 3r,OnePlus,collectLogs,1
+065854,OnePlus Nord Buds 3r,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":0,""support"":536}]"
+065854,OnePlus Nord Buds 3r,OnePlus,controlGuideSupport,1
+065854,OnePlus Nord Buds 3r,OnePlus,customDress,1
+065854,OnePlus Nord Buds 3r,OnePlus,customEqualizer,1
+065854,OnePlus Nord Buds 3r,OnePlus,equalizer,4
+065854,OnePlus Nord Buds 3r,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":14,""protocolIndex"":2},{""modeType"":12,""protocolIndex"":1}]"
+065854,OnePlus Nord Buds 3r,OnePlus,fastDiscovery,1
+065854,OnePlus Nord Buds 3r,OnePlus,firmwareCheckCommandId,0
+065854,OnePlus Nord Buds 3r,OnePlus,firmwareTrack,1
+065854,OnePlus Nord Buds 3r,OnePlus,gameMode,1
+065854,OnePlus Nord Buds 3r,OnePlus,gameSoundMutexes,[1]
+065854,OnePlus Nord Buds 3r,OnePlus,heyFindDevice,1
+065854,OnePlus Nord Buds 3r,OnePlus,hideFromUIList,1
+065854,OnePlus Nord Buds 3r,OnePlus,holdInBoxPairing,1
+065854,OnePlus Nord Buds 3r,OnePlus,multiDevicesConnect,1
+065854,OnePlus Nord Buds 3r,OnePlus,openBoxPairing,1
+065854,OnePlus Nord Buds 3r,OnePlus,pairingModeTip,5
+065854,OnePlus Nord Buds 3r,OnePlus,promptVolume,1
+065854,OnePlus Nord Buds 3r,OnePlus,related,1
+065854,OnePlus Nord Buds 3r,OnePlus,spatialDescriptionType,4
+065854,OnePlus Nord Buds 3r,OnePlus,spatialTypes,"[0,1]"
+062C14,OnePlus Nord Buds 2r,OnePlus,batteryInfo,1
+062C14,OnePlus Nord Buds 2r,OnePlus,callControl,"[{""action"":29,""ear"":2,""showEar"":0,""support"":524288},{""action"":31,""ear"":2,""showEar"":0,""support"":262144}]"
+062C14,OnePlus Nord Buds 2r,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801},{""action"":6,""ear"":2,""showEar"":1,""support"":4608}]"
+062C14,OnePlus Nord Buds 2r,OnePlus,controlGuideSupport,1
+062C14,OnePlus Nord Buds 2r,OnePlus,customDress,1
+062C14,OnePlus Nord Buds 2r,OnePlus,customEqualizer,1
+062C14,OnePlus Nord Buds 2r,OnePlus,equalizer,4
+062C14,OnePlus Nord Buds 2r,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":12,""protocolIndex"":2},{""modeType"":13,""protocolIndex"":1}]"
+062C14,OnePlus Nord Buds 2r,OnePlus,fastDiscovery,1
+062C14,OnePlus Nord Buds 2r,OnePlus,gameMode,1
+062C14,OnePlus Nord Buds 2r,OnePlus,heyFindDevice,1
+062C14,OnePlus Nord Buds 2r,OnePlus,hideFromUIList,1
+062C14,OnePlus Nord Buds 2r,OnePlus,holdInBoxPairing,1
+062C14,OnePlus Nord Buds 2r,OnePlus,inBoxStatus,0
+062C14,OnePlus Nord Buds 2r,OnePlus,openBoxPairing,1
+062C14,OnePlus Nord Buds 2r,OnePlus,related,1
+061C14,OnePlus Nord Buds CE,OnePlus,autoFirmwareUpdate,1
+061C14,OnePlus Nord Buds CE,OnePlus,batteryInfo,1
+061C14,OnePlus Nord Buds CE,OnePlus,control,"[{""action"":1,""ear"":2,""showEar"":0,""support"":516},{""action"":2,""ear"":2,""showEar"":0,""support"":8805},{""action"":3,""ear"":2,""showEar"":0,""support"":8801}]"
+061C14,OnePlus Nord Buds CE,OnePlus,controlGuideSupport,1
+061C14,OnePlus Nord Buds CE,OnePlus,equalizer,4
+061C14,OnePlus Nord Buds CE,OnePlus,equalizerMode,"[{""modeType"":12,""protocolIndex"":1},{""modeType"":17,""protocolIndex"":0},{""modeType"":14,""protocolIndex"":2},{""modeType"":15,""protocolIndex"":3}]"
+061C14,OnePlus Nord Buds CE,OnePlus,fastDiscovery,1
+061C14,OnePlus Nord Buds CE,OnePlus,gameMode,1
+061C14,OnePlus Nord Buds CE,OnePlus,hideFromUIList,1
+061C14,OnePlus Nord Buds CE,OnePlus,related,1
+060414,OnePlus Buds,OnePlus,autoFirmwareUpdate,1
+060414,OnePlus Buds,OnePlus,batteryInfo,1
+060414,OnePlus Buds,OnePlus,control,"[{""action"":2,""ear"":2,""showEar"":0,""support"":101}]"
+060414,OnePlus Buds,OnePlus,customDress,1
+060414,OnePlus Buds,OnePlus,fastDiscovery,1
+060414,OnePlus Buds,OnePlus,heyFindDevice,1
+060414,OnePlus Buds,OnePlus,inBoxStatus,0
+068414,OnePlus Buds,OnePlus,autoFirmwareUpdate,1
+068414,OnePlus Buds,OnePlus,batteryInfo,1
+068414,OnePlus Buds,OnePlus,control,"[{""action"":2,""ear"":2,""showEar"":0,""support"":101}]"
+068414,OnePlus Buds,OnePlus,fastDiscovery,1
+068414,OnePlus Buds,OnePlus,heyFindDevice,1
+068414,OnePlus Buds,OnePlus,inBoxStatus,0
+051014,OnePlus Bullets Wireless Z3,OnePlus,autoFirmwareUpdate,1
+051014,OnePlus Bullets Wireless Z3,OnePlus,bassEngineSupport,1
+051014,OnePlus Bullets Wireless Z3,OnePlus,batteryInfo,1
+051014,OnePlus Bullets Wireless Z3,OnePlus,callControl,"[{""action"":1,""button"":5,""ear"":2,""showEar"":1,""support"":524288},{""action"":4,""button"":5,""ear"":2,""showEar"":1,""support"":262144}]"
+051014,OnePlus Bullets Wireless Z3,OnePlus,control,"[{""action"":1,""button"":5,""ear"":2,""showEar"":1,""support"":4},{""action"":2,""button"":5,""ear"":2,""showEar"":1,""support"":64},{""action"":3,""button"":5,""ear"":2,""showEar"":1,""support"":32},{""action"":4,""button"":5,""ear"":2,""showEar"":1,""support"":1}]"
+051014,OnePlus Bullets Wireless Z3,OnePlus,controlGuideSupport,1
+051014,OnePlus Bullets Wireless Z3,OnePlus,customEqMax,3
+051014,OnePlus Bullets Wireless Z3,OnePlus,customEqualizer,0
+051014,OnePlus Bullets Wireless Z3,OnePlus,equalizer,4
+051014,OnePlus Bullets Wireless Z3,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":14,""protocolIndex"":3},{""modeType"":12,""protocolIndex"":1},{""modeType"":13,""protocolIndex"":2,""tag"":0}]"
+051014,OnePlus Bullets Wireless Z3,OnePlus,fastDiscovery,1
+051014,OnePlus Bullets Wireless Z3,OnePlus,hideFromUIList,1
+051014,OnePlus Bullets Wireless Z3,OnePlus,minOtaBattery,50
+051014,OnePlus Bullets Wireless Z3,OnePlus,musicControl,"[{""action"":1,""button"":2,""ear"":2,""showEar"":1,""support"":8},{""action"":1,""button"":3,""ear"":2,""showEar"":1,""support"":16},{""action"":4,""button"":2,""ear"":2,""showEar"":1,""support"":8},{""action"":4,""button"":3,""ear"":2,""showEar"":1,""support"":16}]"
+051014,OnePlus Bullets Wireless Z3,OnePlus,spatialDescriptionType,4
+051014,OnePlus Bullets Wireless Z3,OnePlus,spatialTypes,"[0,1]"
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,autoFirmwareUpdate,1
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,bassEngineSupport,1
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,batteryInfo,1
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,callControl,"[{""action"":36,""ear"":2,""showEar"":1,""support"":524288},{""action"":37,""ear"":2,""showEar"":1,""support"":262144}]"
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,control,"[{""action"":25,""ear"":2,""showEar"":1},{""action"":26,""ear"":2,""showEar"":1,""support"":4608}]"
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,controlGuideSupport,1
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,customEqMax,3
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,customEqualizer,1
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,equalizer,4
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,equalizerMode,"[{""modeType"":11,""protocolIndex"":0},{""modeType"":13,""protocolIndex"":2},{""modeType"":14,""protocolIndex"":3},{""modeType"":12,""protocolIndex"":1}]"
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,fastDiscovery,1
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,fitDetection,1
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,heyFindDevice,1
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,hideFromUIList,1
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,minOtaBattery,50
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,noiseReductionMode,"[{""modeType"":5,""protocolIndex"":0},{""modeType"":1,""protocolIndex"":1},{""modeType"":2,""protocolIndex"":2}]"
+050C14,OnePlus BulletsWireless Z2 ANC,OnePlus,related,1

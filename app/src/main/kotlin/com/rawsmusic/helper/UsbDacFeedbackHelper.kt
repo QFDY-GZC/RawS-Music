@@ -4,11 +4,13 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.widget.Toast
 import com.rawsmusic.R
 import androidx.core.content.FileProvider
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.core.common.utils.UsbIncidentArchive
 import com.rawsmusic.module.player.PlayerController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -29,7 +31,10 @@ class UsbDacFeedbackHelper(
         val reportFile = withContext(Dispatchers.IO) {
             createPlaybackReportFile(controller)
         } ?: return withContext(Dispatchers.Main) {
-            Toast.makeText(context, context.getString(R.string.ui_no_exportable_logs), Toast.LENGTH_SHORT).show()
+            AppNoticeBus.post(
+                message = context.getString(R.string.ui_no_exportable_logs),
+                icon = AppNoticeIcon.ERROR,
+            )
             false
         }
 
@@ -41,7 +46,7 @@ class UsbDacFeedbackHelper(
                     reportFile
                 )
                 val intent = Intent(Intent.ACTION_SEND).apply {
-                    type = "message/rfc822"
+                    type = "text/plain"
                     putExtra(Intent.EXTRA_EMAIL, arrayOf(FEEDBACK_EMAIL))
                     putExtra(Intent.EXTRA_SUBJECT, buildMailSubject(controller))
                     putExtra(
@@ -52,10 +57,13 @@ class UsbDacFeedbackHelper(
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     clipData = ClipData.newRawUri(reportFile.name, uri)
                 }
-                context.startActivity(Intent.createChooser(intent, "通过邮箱反馈 USB DAC 日志"))
+                context.startActivity(Intent.createChooser(intent, "保存或分享 USB 故障日志"))
                 true
             } catch (t: Throwable) {
-                Toast.makeText(context, context.getString(R.string.ui_no_email_app), Toast.LENGTH_SHORT).show()
+                AppNoticeBus.post(
+                    message = context.getString(R.string.ui_no_email_app),
+                    icon = AppNoticeIcon.ERROR,
+                )
                 false
             }
         }
@@ -64,15 +72,17 @@ class UsbDacFeedbackHelper(
     private fun createPlaybackReportFile(controller: PlayerController?): File? {
         val sessionLog = AppLogger.getPlaybackReportContent()?.trim().orEmpty()
         val fullLog = AppLogger.getLogContent()?.trim().orEmpty()
-        val effectiveLog = sessionLog.ifBlank { fullLog }
-        if (effectiveLog.isBlank()) return null
+        val effectiveLog = UsbIncidentArchive.describePersistedLog(sessionLog.ifBlank { fullLog })
+        val incidentLog = UsbIncidentArchive.export(context)
+        if (effectiveLog.isBlank() && incidentLog.isBlank()) return null
 
         val dir = File(context.cacheDir, REPORT_DIR).apply { mkdirs() }
         val fileName = "RawSMusic_USB_DAC_Report_${
             SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
         }.log"
         val outFile = File(dir, fileName)
-        outFile.writeText(buildReportContent(controller, effectiveLog), Charsets.UTF_8)
+        outFile.writeText(buildReportContent(controller, effectiveLog) +
+            "\n=== PERSISTED USB INCIDENTS (PREVIOUS PROCESSES / BOOTS) ===\n" + incidentLog, Charsets.UTF_8)
         return outFile
     }
 
@@ -113,7 +123,8 @@ class UsbDacFeedbackHelper(
                 appendLine("ExclusiveActive=${usbStatus.exclusiveActive}")
                 appendLine("Initialized=${usbStatus.initialized}")
                 appendLine("Running=${usbStatus.running}")
-                appendLine("BitPerfect=${usbStatus.bitPerfect}")
+                appendLine("BitPerfectPolicy=${usbStatus.bitPerfectPolicy}")
+                appendLine("BitPerfectEffective=${usbStatus.bitPerfect}")
                 appendLine("PlaybackMode=${usbStatus.playbackMode}")
                 appendLine("SourceFormat=${usbStatus.sourceFormat}")
                 appendLine("TargetFormat=${usbStatus.targetFormat}")
@@ -128,6 +139,7 @@ class UsbDacFeedbackHelper(
                 appendLine("AudibleDiagnostics=${usbStatus.audibleDiagnostics}")
                 appendLine("FeedbackDiagnostics=${usbStatus.feedbackDiagnostics}")
                 appendLine("ClockDiagnostics=${usbStatus.clockDiagnostics}")
+                appendLine("PcmInputDiagnostics=${usbStatus.pcmInputDiagnostics}")
                 appendLine("FeatureUnitDiagnostics=${usbStatus.featureUnitDiagnostics}")
                 appendLine("ProfileDiagnostics=${usbStatus.profileDiagnostics}")
                 appendLine("RecoveryDiagnostics=${usbStatus.recoveryDiagnostics}")

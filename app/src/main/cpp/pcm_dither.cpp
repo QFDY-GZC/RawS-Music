@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "raw_pcm_neon_codec.h"
+
 namespace {
 
 constexpr const char* kTag = "PcmDither";
@@ -197,6 +199,9 @@ struct DitherState {
 
     int processS32ToS16(const uint8_t* src, int length, uint8_t* dst, int dstLength) {
         const int samples = std::min(length / 4, dstLength / 2);
+        if (mode == kOff) {
+            return rawsmusic::dsp::convertS32ToS16Rounded(src, length, dst, dstLength);
+        }
         for (int i = 0; i < samples; ++i) {
             const int32_t value = static_cast<int32_t>(
                 static_cast<uint32_t>(src[i * 4]) |
@@ -273,6 +278,26 @@ Java_com_rawsmusic_module_player_PcmDitherEngine_nativeProcessS32ToS16(
         return 0;
     }
     const int result = state->processS32ToS16(
+        reinterpret_cast<const uint8_t*>(src), sourceLength,
+        reinterpret_cast<uint8_t*>(dst), destinationLength);
+    env->ReleaseByteArrayElements(source, src, JNI_ABORT);
+    env->ReleaseByteArrayElements(destination, dst, 0);
+    return result;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rawsmusic_module_player_PcmDitherEngine_nativeProcessS32ToS16Rounded(
+    JNIEnv* env, jclass, jbyteArray source, jint sourceLength,
+    jbyteArray destination, jint destinationLength) {
+    if (!source || !destination || sourceLength <= 0 || destinationLength <= 0) return 0;
+    jbyte* src = env->GetByteArrayElements(source, nullptr);
+    jbyte* dst = env->GetByteArrayElements(destination, nullptr);
+    if (!src || !dst) {
+        if (src) env->ReleaseByteArrayElements(source, src, JNI_ABORT);
+        if (dst) env->ReleaseByteArrayElements(destination, dst, 0);
+        return 0;
+    }
+    const int result = rawsmusic::dsp::convertS32ToS16Rounded(
         reinterpret_cast<const uint8_t*>(src), sourceLength,
         reinterpret_cast<uint8_t*>(dst), destinationLength);
     env->ReleaseByteArrayElements(source, src, JNI_ABORT);

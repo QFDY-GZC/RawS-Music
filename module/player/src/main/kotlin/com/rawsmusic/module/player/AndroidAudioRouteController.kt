@@ -318,6 +318,16 @@ internal class AndroidAudioRouteController(
         // Do not enqueue external-device retargeting on the playback executor. During normal
         // AudioTrack playback the executor is occupied by the long-running streaming write loop.
         if (nativeAudioEngineProvider() != null) {
+            val engine = nativeAudioEngineProvider()
+            if (engine?.actualMode == AudioOutputMode.DIRECT && external.isBluetoothRouteDevice()) {
+                AppLogger.w(
+                    TAG,
+                    "DIRECT Bluetooth route change requires output rebuild: reason=$reason " +
+                        "device=${external.shortRouteName()}"
+                )
+                requestNativeOutputRebuild("${reason}_external_direct_bluetooth", external.id)
+                return
+            }
             val ok = retargetNativeOutputDevice("${reason}_external", forcedDeviceId = external.id)
             if (!ok) {
                 // OpenSL ES cannot retarget an already-created stream. Recreate the native
@@ -408,6 +418,7 @@ internal class AndroidAudioRouteController(
 internal fun AudioDeviceInfo.isBluetoothRouteDevice(): Boolean {
     return type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
         type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+        type == 23 || // TYPE_HEARING_AID
         type == 26 || // TYPE_BLE_HEADSET
         type == 27    // TYPE_BLE_SPEAKER
 }

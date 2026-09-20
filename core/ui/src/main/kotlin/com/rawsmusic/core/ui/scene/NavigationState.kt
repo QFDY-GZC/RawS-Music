@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 
 /**
  * 纯 Compose 导航状态管理。
@@ -74,10 +75,25 @@ class NavigationState {
     var transitionToScene by mutableStateOf(NavScene.HOME)
         internal set
 
+    /** Concrete route/provider identity frozen with [transitionFromScene]. */
+    var transitionFromArgument by mutableStateOf("")
+        internal set
+
+    /** Concrete route/provider identity frozen with [transitionToScene]. */
+    var transitionToArgument by mutableStateOf("")
+        internal set
+
+    /** Monotonic visual handoff id. It also changes when a route request supersedes an active one. */
+    var transitionRequestId by mutableIntStateOf(0)
+        internal set
+
     // ==================== 手势拖拽返回状态 ====================
 
     var isDraggingBack by mutableStateOf(false)
         internal set
+
+    var isSettlingBack by mutableStateOf(false)
+        private set
 
     var dragBackProgress by mutableFloatStateOf(0f)
         internal set
@@ -140,10 +156,14 @@ class NavigationState {
 
     /**
      * 导航到目标场景，加入返回栈。
-     * 如果正在过渡或目标已是当前场景，忽略。
+     *
+     * isTransitioning remains a presentation/ownership flag rather than a global navigation mutex.
+     * Shared-item re-entry is gated at the concrete VirtualList holder while its promoted View is
+     * still owned by the previous transition; unrelated navigation must not inherit that visual
+     * lifecycle or keep old shared actors alive across scenes.
      */
     fun navigateTo(scene: NavScene, argument: String = "") {
-        if (isTransitioning) return
+        if (isAnimatingBack || isDraggingBack || isSettlingBack) return
         navigationMotionHint = NavigationMotionHint.DEFAULT
         clearBackPreview()
         if (scene == NavScene.HOME) {
@@ -151,11 +171,16 @@ class NavigationState {
             return
         }
         if (scene == currentScene) return
-        _backStack.add(scene)
-        argumentStack.add(argument)
-        entryMotionStack.add(NavigationMotionHint.DEFAULT)
-        currentArgument = argument
-        currentScene = scene
+        val fromScene = currentScene
+        val fromArgument = currentArgument
+        Snapshot.withMutableSnapshot {
+            _backStack.add(scene)
+            argumentStack.add(argument)
+            entryMotionStack.add(NavigationMotionHint.DEFAULT)
+            beginForwardTransition(fromScene, scene, fromArgument, argument)
+            currentArgument = argument
+            currentScene = scene
+        }
     }
 
     /**
@@ -169,7 +194,7 @@ class NavigationState {
      * 栈顶。返回栈最终是一个按最近访问顺序排列、且没有重复项的底栏入口列表。
      */
     fun navigateFromBottomNavigation(scene: NavScene, argument: String = "") {
-        if (isTransitioning) return
+        if (isAnimatingBack || isDraggingBack || isSettlingBack) return
         if (scene == currentScene) return
 
         clearBackPreview()
@@ -178,7 +203,9 @@ class NavigationState {
     }
 
     private fun moveBottomNavigationEntryToTop(scene: NavScene, argument: String) {
+        val fromScene = currentScene
         if (scene == NavScene.HOME) {
+            beginForwardTransition(fromScene, NavScene.HOME)
             _backStack.clear()
             _backStack.add(NavScene.HOME)
             argumentStack.clear()
@@ -212,17 +239,20 @@ class NavigationState {
         argumentStack.add(argument)
         entryMotionStack.add(NavigationMotionHint.BOTTOM_NAVIGATION)
         currentArgument = argument
+        beginForwardTransition(fromScene, scene)
         currentScene = scene
     }
 
     fun navigateToSettings(scene: NavScene = NavScene.SETTINGS) {
-        if (isTransitioning) return
+        if (isAnimatingBack || isDraggingBack || isSettlingBack) return
         navigationMotionHint = NavigationMotionHint.DEFAULT
         clearBackPreview()
         if (scene !in settingsScenes) {
             navigateTo(scene)
             return
         }
+        if (scene == currentScene) return
+        val fromScene = currentScene
 
         if (scene == NavScene.SETTINGS) {
             val rootIndex = _backStack.indexOf(NavScene.SETTINGS)
@@ -242,6 +272,7 @@ class NavigationState {
                 }
             }
             currentArgument = ""
+            beginForwardTransition(fromScene, NavScene.SETTINGS)
             currentScene = NavScene.SETTINGS
             return
         }
@@ -257,6 +288,7 @@ class NavigationState {
             argumentStack.add("")
             entryMotionStack.add(NavigationMotionHint.DEFAULT)
             currentArgument = ""
+            beginForwardTransition(fromScene, scene)
             currentScene = scene
         }
     }
@@ -266,7 +298,7 @@ class NavigationState {
      * @return true 如果成功返回
      */
     fun navigateBack(): Boolean {
-        if (isTransitioning) return false
+        if (isAnimatingBack || isDraggingBack || isSettlingBack) return false
         navigationMotionHint = NavigationMotionHint.DEFAULT
         if (!canNavigateBack()) return false
         popBackStack()
@@ -282,24 +314,39 @@ class NavigationState {
      * @return true 如果可以返回
      */
     fun navigateBackAnimated(): Boolean {
-        if (isTransitioning || isAnimatingBack) return false
+        if (isAnimatingBack || isDraggingBack || isSettlingBack) return false
         navigationMotionHint = NavigationMotionHint.DEFAULT
         if (!canNavigateBack()) return false
         backNavigationMotionHint = currentEntryMotionHint()
         dragBackDirection = 1f
         backPreviewScene = getPreviousScene()
+        beginBackTransition(
+            currentScene,
+            backPreviewScene,
+            currentArgument,
+            getPreviousArgument(),
+        )
         isAnimatingBack = true
         animatingBackProgress = 0f
         return true
     }
 
     fun startBackDrag(direction: Float = 1f): Boolean {
-        if (isTransitioning || isAnimatingBack || isDraggingBack) return false
+        if (isTransitioning || isAnimatingBack || isDraggingBack || isSettlingBack) {
+            com.rawsmusic.core.ui.perf.TransitionPerfTrace.count(com.rawsmusic.core.ui.perf.TransitionPerfEvent.GESTURE_BUSY_REJECTED)
+            return false
+        }
         navigationMotionHint = NavigationMotionHint.DEFAULT
         if (!canNavigateBack()) return false
         backNavigationMotionHint = currentEntryMotionHint()
         dragBackDirection = if (direction < 0f) -1f else 1f
         backPreviewScene = getPreviousScene()
+        beginBackTransition(
+            currentScene,
+            backPreviewScene,
+            currentArgument,
+            getPreviousArgument(),
+        )
         isDraggingBack = true
         dragBackProgress = 0f
         dragBackReleaseProgress = 0f
@@ -309,12 +356,17 @@ class NavigationState {
     }
 
     fun startSiblingDrag(target: NavScene, direction: Float): Boolean {
-        if (isTransitioning || isAnimatingBack || isDraggingBack || target == currentScene) return false
+        if (isTransitioning || isAnimatingBack || isDraggingBack || isSettlingBack) {
+            com.rawsmusic.core.ui.perf.TransitionPerfTrace.count(com.rawsmusic.core.ui.perf.TransitionPerfEvent.GESTURE_BUSY_REJECTED)
+            return false
+        }
+        if (target == currentScene) return false
         navigationMotionHint = NavigationMotionHint.BOTTOM_NAVIGATION
         backNavigationMotionHint = NavigationMotionHint.BOTTOM_NAVIGATION
         dragBackDirection = if (direction < 0f) -1f else 1f
         siblingDragTarget = target
         backPreviewScene = target
+        beginBackTransition(currentScene, target)
         isDraggingBack = true
         dragBackProgress = 0f
         dragBackReleaseProgress = 0f
@@ -325,6 +377,11 @@ class NavigationState {
 
     /** Clears an interrupted predictive-back preview after foreground/window restoration. */
     fun resetTransientBackState() {
+        isSettlingBack = false
+        // A predictive-back release can still be inside a frame-clock coroutine when the
+        // Activity is stopped/resumed. Invalidate that coroutine before clearing the state; it
+        // must not commit an old page after the window has already restored the current scene.
+        transitionRequestId += 1
         isDraggingBack = false
         dragBackProgress = 0f
         dragBackReleaseProgress = 0f
@@ -335,6 +392,10 @@ class NavigationState {
         siblingDragTarget = null
         clearBackPreview()
         backNavigationMotionHint = NavigationMotionHint.DEFAULT
+        isTransitioning = false
+        transitionProgress = 1f
+        transitionFromScene = currentScene
+        transitionToScene = currentScene
     }
 
     fun updateBackDrag(progress: Float) {
@@ -344,6 +405,7 @@ class NavigationState {
 
     fun releaseBackDrag(commit: Boolean, velocity: Float = 0f) {
         if (!isDraggingBack) return
+        isSettlingBack = true
         dragBackReleaseCommit = commit
         dragBackReleaseProgress = dragBackProgress
         dragBackReleaseVelocity = velocity
@@ -363,10 +425,32 @@ class NavigationState {
         }
         clearBackPreview()
         backNavigationMotionHint = NavigationMotionHint.DEFAULT
+        completeTransitionAt(currentScene)
+    }
+
+    /**
+     * Abort a programmatic back whose SceneTransitionHost owner was cancelled before commit.
+     * Keep the current route authoritative; only retire transient back/preview ownership.
+     */
+    internal fun abortAnimatingBack() {
+        if (!isAnimatingBack && !isDraggingBack && !isSettlingBack) return
+        isAnimatingBack = false
+        animatingBackProgress = 0f
+        isDraggingBack = false
+        isSettlingBack = false
+        dragBackProgress = 0f
+        dragBackReleaseProgress = 0f
+        dragBackReleaseVelocity = 0f
+        dragBackReleaseCommit = false
+        siblingDragTarget = null
+        clearBackPreview()
+        backNavigationMotionHint = NavigationMotionHint.DEFAULT
+        completeTransitionAt(currentScene)
     }
 
     /** SceneTransitionHost 在手势提交或取消的回弹结束后统一收口状态。 */
     internal fun completeBackDrag(commit: Boolean) {
+        isSettlingBack = false
         val siblingTarget = siblingDragTarget
         if (commit) {
             if (siblingTarget != null) {
@@ -381,15 +465,18 @@ class NavigationState {
         dragBackReleaseVelocity = 0f
         clearBackPreview()
         backNavigationMotionHint = NavigationMotionHint.DEFAULT
+        completeTransitionAt(currentScene)
     }
 
     /**
      * 返回主页，清空返回栈。
      */
     fun navigateHome() {
-        if (isTransitioning) return
+        if (isAnimatingBack || isDraggingBack || isSettlingBack) return
         navigationMotionHint = NavigationMotionHint.DEFAULT
         clearBackPreview()
+        if (currentScene == NavScene.HOME) return
+        val fromScene = currentScene
         _backStack.clear()
         _backStack.add(NavScene.HOME)
         argumentStack.clear()
@@ -398,6 +485,7 @@ class NavigationState {
         entryMotionStack.add(NavigationMotionHint.DEFAULT)
         backNavigationMotionHint = NavigationMotionHint.DEFAULT
         currentArgument = ""
+        beginForwardTransition(fromScene, NavScene.HOME)
         currentScene = NavScene.HOME
     }
 
@@ -406,9 +494,16 @@ class NavigationState {
      * 用于从播放器返回时恢复之前的场景。
      */
     fun switchToSilent(scene: NavScene) {
+        // Invalidate any suspended SceneTransitionHost coroutine before publishing the silent
+        // restore. Otherwise its finally block can mistake the restored route for its own endpoint.
+        transitionRequestId += 1
         navigationMotionHint = NavigationMotionHint.DEFAULT
         backNavigationMotionHint = NavigationMotionHint.DEFAULT
         clearBackPreview()
+        isTransitioning = false
+        transitionProgress = 0f
+        transitionFromScene = scene
+        transitionToScene = scene
         currentScene = scene
     }
 
@@ -430,6 +525,9 @@ class NavigationState {
         return if (_backStack.size > 1) _backStack[_backStack.lastIndex - 1] else null
     }
 
+    private fun getPreviousArgument(): String =
+        if (argumentStack.size > 1) argumentStack[argumentStack.lastIndex - 1] else ""
+
     private fun popBackStack() {
         _backStack.removeAt(_backStack.lastIndex)
         argumentStack.removeAt(argumentStack.lastIndex)
@@ -445,6 +543,47 @@ class NavigationState {
 
     private fun clearBackPreview() {
         backPreviewScene = null
+    }
+
+    private fun beginForwardTransition(
+        from: NavScene,
+        to: NavScene,
+        fromArgument: String = currentArgument,
+        toArgument: String = currentArgument,
+    ) {
+        if (from == to) return
+        transitionRequestId += 1
+        isTransitioning = true
+        transitionProgress = 0f
+        transitionFromScene = from
+        transitionToScene = to
+        transitionFromArgument = fromArgument
+        transitionToArgument = toArgument
+    }
+
+    private fun beginBackTransition(
+        from: NavScene,
+        to: NavScene?,
+        fromArgument: String = currentArgument,
+        toArgument: String = currentArgument,
+    ) {
+        if (to == null || from == to) return
+        transitionRequestId += 1
+        isTransitioning = true
+        transitionProgress = 0f
+        transitionFromScene = from
+        transitionToScene = to
+        transitionFromArgument = fromArgument
+        transitionToArgument = toArgument
+    }
+
+    internal fun completeTransitionAt(scene: NavScene) {
+        isTransitioning = false
+        transitionProgress = 1f
+        transitionFromScene = scene
+        transitionToScene = scene
+        transitionFromArgument = currentArgument
+        transitionToArgument = currentArgument
     }
 
     // ==================== 持久化接口 ====================
@@ -491,6 +630,7 @@ class NavigationState {
         currentScene = scene
         currentArgument = argument
 
+        transitionRequestId += 1
         navigationMotionHint = NavigationMotionHint.DEFAULT
         backNavigationMotionHint = NavigationMotionHint.DEFAULT
         isTransitioning = false

@@ -1,10 +1,32 @@
 package com.rawsmusic.core.common.model
 
+data class LyricRubySyllable(
+    val begin: Long? = null,
+    val end: Long? = null,
+    val text: String = ""
+)
+
+data class LyricTtmlAgent(
+    val id: String = "",
+    val type: String? = null,
+    val name: String? = null,
+    val attributes: Map<String, String> = emptyMap()
+)
+
+data class LyricTtmlMetadataElement(
+    val name: String = "",
+    val namespace: String? = null,
+    val attributes: Map<String, String> = emptyMap(),
+    val text: String = "",
+    val children: List<LyricTtmlMetadataElement> = emptyList()
+)
+
 data class LyricWord(
     val text: String = "",
     val begin: Long = 0,
     val end: Long = 0,
-    val duration: Long = if (end > begin) end - begin else 0
+    val duration: Long = if (end > begin) end - begin else 0,
+    val ruby: List<LyricRubySyllable> = emptyList()
 )
 
 data class LyricLine(
@@ -23,7 +45,8 @@ data class LyricLine(
     val backgroundTranslation: String? = null,
     val backgroundStartTime: Long? = null,
     val backgroundEndTime: Long? = null,
-    val isTtml: Boolean = false
+    val isTtml: Boolean = false,
+    val extensions: Map<String, String> = emptyMap()
 ) : Comparable<LyricLine> {
 
     override fun compareTo(other: LyricLine): Int {
@@ -103,7 +126,14 @@ enum class LyricMode {
 
 data class LyricData(
     val lines: List<LyricLine> = emptyList(),
-    val offset: Long = 0
+    val offset: Long = 0,
+    val ttmlAgents: List<LyricTtmlAgent> = emptyList(),
+    val ttmlMetadata: List<LyricTtmlMetadataElement> = emptyList(),
+    val ttmlTiming: String? = null,
+    val language: String? = null,
+    val translatedLanguage: String? = null,
+    val romanizationLanguage: String? = null,
+    val bodyDur: String? = null
 ) {
     val isEmpty: Boolean get() = lines.isEmpty()
 

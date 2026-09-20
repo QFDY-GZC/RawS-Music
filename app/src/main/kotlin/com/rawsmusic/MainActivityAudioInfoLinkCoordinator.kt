@@ -1,9 +1,9 @@
 package com.rawsmusic
 
 import android.content.Intent
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.core.content.FileProvider
+import com.rawsmusic.core.common.ui.AppNoticeBus
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.scene.NavigationState
@@ -78,14 +78,14 @@ internal class MainActivityAudioInfoLinkCoordinator(
                 activity.startActivity(Intent.createChooser(intent, activity.getString(R.string.ui_audio_open_file)))
             }.onFailure { error ->
                 AppLogger.e("AudioInfoLink", "open_content_file_failed uri=$path", error)
-                Toast.makeText(activity, activity.getString(R.string.ui_no_audio_app), Toast.LENGTH_SHORT).show()
+                AppNoticeBus.error(activity.getString(R.string.ui_no_audio_app))
             }
             return
         }
 
         val file = File(path)
         if (!file.exists()) {
-            Toast.makeText(activity, activity.getString(R.string.ui_file_missing, file.name), Toast.LENGTH_SHORT).show()
+            AppNoticeBus.error(activity.getString(R.string.ui_file_missing, file.name))
             return
         }
         runCatching {
@@ -96,7 +96,7 @@ internal class MainActivityAudioInfoLinkCoordinator(
             activity.startActivity(Intent.createChooser(intent, activity.getString(R.string.ui_audio_open_file)))
         }.onFailure { error ->
             AppLogger.e("AudioInfoLink", "open_file_failed path=$path", error)
-            Toast.makeText(activity, activity.getString(R.string.ui_no_audio_app), Toast.LENGTH_SHORT).show()
+            AppNoticeBus.error(activity.getString(R.string.ui_no_audio_app))
         }
     }
 }

@@ -2,12 +2,12 @@ package com.rawsmusic.module.data.prefs
 
 import android.content.Context
 import android.util.Log
+import com.rawsmusic.module.scanner.webdav.AuthMode
 import com.rawsmusic.module.scanner.webdav.WebDavClient
 import com.rawsmusic.module.scanner.webdav.WebDavConfig
-import com.rawsmusic.module.scanner.webdav.AuthMode
+import com.rawsmusic.module.scanner.webdav.WebDavHeaderCodec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 
 object WebDavBackupManager {
 
@@ -15,22 +15,22 @@ object WebDavBackupManager {
     private const val BACKUP_DIR = "RawSMusic-Backup/"
     private const val BACKUP_FILE = "rawsmusic_backup.json"
 
-    suspend fun backup(context: Context): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun backup(context: Context): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val config = getConfig() ?: return@withContext Result.failure(Exception("未配置WebDAV"))
             val client = WebDavClient()
+            val backupDir = client.resolveChildUrl(config.url, BACKUP_DIR, directory = true)
+            if (!client.createDirectory(config, backupDir)) {
+                return@withContext Result.failure(Exception("无法创建 WebDAV 备份目录"))
+            }
 
-            client.createDirectory(config, config.url + BACKUP_DIR)
-
-            val json = JSONObject()
-            json.put("version", 1)
-            json.put("timestamp", System.currentTimeMillis())
-            json.put("playlists", PlaylistStore.getInstance(context).exportJson())
-            json.put("playback", PlaybackStatsStore.getInstance(context).exportJson())
-
-            val remotePath = config.url + BACKUP_DIR + BACKUP_FILE
-            val success = client.uploadFile(config, remotePath, json.toString().toByteArray(Charsets.UTF_8))
-            if (success) Result.success("备份成功")
+            val remotePath = client.resolveChildUrl(backupDir, BACKUP_FILE, directory = false)
+            val success = client.uploadFile(
+                config,
+                remotePath,
+                BackupArchiveManager.exportBytes(context),
+            )
+            if (success) Result.success(Unit)
             else Result.failure(Exception("上传失败"))
         } catch (e: Exception) {
             Log.e(TAG, "backup failed", e)
@@ -38,25 +38,16 @@ object WebDavBackupManager {
         }
     }
 
-    suspend fun restore(context: Context): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun restore(context: Context): Result<BackupArchiveManager.RestoreReport> = withContext(Dispatchers.IO) {
         try {
             val config = getConfig() ?: return@withContext Result.failure(Exception("未配置WebDAV"))
             val client = WebDavClient()
-
-            val remotePath = config.url + BACKUP_DIR + BACKUP_FILE
+            val backupDir = client.resolveChildUrl(config.url, BACKUP_DIR, directory = true)
+            val remotePath = client.resolveChildUrl(backupDir, BACKUP_FILE, directory = false)
             val bytes = client.downloadFile(config, remotePath)
                 ?: return@withContext Result.failure(Exception("下载失败或无备份文件"))
 
-            val json = JSONObject(String(bytes, Charsets.UTF_8))
-
-            json.optJSONObject("playlists")?.let {
-                PlaylistStore.getInstance(context).restoreJson(it)
-            }
-            json.optJSONObject("playback")?.let {
-                PlaybackStatsStore.getInstance(context).restoreJson(it)
-            }
-
-            Result.success("恢复成功")
+            Result.success(BackupArchiveManager.restoreBytes(context, bytes))
         } catch (e: Exception) {
             Log.e(TAG, "restore failed", e)
             Result.failure(e)
@@ -74,7 +65,8 @@ object WebDavBackupManager {
                 1 -> AuthMode.BASIC
                 2 -> AuthMode.DIGEST
                 else -> AuthMode.AUTO
-            }
+            },
+            extraHeaders = WebDavHeaderCodec.parseOrEmpty(AppPreferences.WebDav.extraHeadersText),
         )
     }
 }

@@ -23,6 +23,46 @@ class PlayerTransportControlCoordinatorTest {
     }
 
     @Test
+    fun manualSwitchReceivesLiveLatestRequestGuard() {
+        val harness = Harness()
+
+        harness.coordinator.play(harness.manual)
+
+        assertEquals(listOf(true, false), harness.manualLatestChecks)
+    }
+
+    @Test
+    fun automaticAdvanceBypassesExplicitSelectionAndManualTransitionPolicies() {
+        val harness = Harness()
+
+        assertTrue(harness.coordinator.automaticAdvance(harness.manual, listOf(harness.manual), 0))
+
+        assertEquals(listOf("play:manual"), harness.backendCalls)
+        assertTrue(harness.primedTitles.isEmpty())
+        assertTrue(harness.manualLatestChecks.isEmpty())
+    }
+
+    @Test
+    fun settingsRestartNeverSupersedesANewerExplicitPlayToken() {
+        val harness = Harness()
+        val oldSong = harness.normal
+        val expectedToken = harness.currentPlayToken()
+
+        harness.supersedePlayToken()
+
+        val queued = harness.coordinator.restartAfterSettingsIfUncontested(
+            song = oldSong,
+            queue = listOf(oldSong),
+            index = 0,
+            expectedPlayRequestToken = expectedToken,
+        )
+
+        assertEquals(false, queued)
+        assertTrue(harness.backendCalls.isEmpty())
+        assertTrue(harness.primedTitles.isEmpty())
+    }
+
+    @Test
     fun pauseKeepsUsbWarmButPublishesSystemPauseImmediately() {
         val harness = Harness()
         harness.backendState = PlayerTransportControlCoordinator.BackendState.PLAYING
@@ -61,6 +101,18 @@ class PlayerTransportControlCoordinatorTest {
     }
 
     @Test
+    fun pausedSelectionStartsSelectedSeedInsteadOfResumingRetiringRenderer() {
+        val harness = Harness()
+        harness.backendState = PlayerTransportControlCoordinator.BackendState.PAUSED
+        harness.pausedSelectionPendingStart = true
+
+        harness.coordinator.playPause()
+
+        assertEquals(0, harness.resumeCount)
+        assertEquals(listOf("play:seed"), harness.backendCalls)
+    }
+
+    @Test
     fun stopUsesSerializedEventSink() {
         val harness = Harness()
         harness.coordinator.stop()
@@ -79,8 +131,17 @@ class PlayerTransportControlCoordinatorTest {
         var systemBackendPauseCount = 0
         var resumeCount = 0
         var stopCount = 0
+        var pausedSelectionPendingStart = false
         val primedTitles = mutableListOf<String>()
         val backendCalls = mutableListOf<String>()
+        val manualLatestChecks = mutableListOf<Boolean>()
+        private val latestToken = AtomicLong(0L)
+
+        fun currentPlayToken(): Long = latestToken.get()
+
+        fun supersedePlayToken() {
+            latestToken.incrementAndGet()
+        }
 
         private val eventSink = object : PlayerTransportEventQueue {
             override fun submitPlay(
@@ -103,12 +164,16 @@ class PlayerTransportControlCoordinatorTest {
             override fun submitStop(handler: suspend () -> Unit) {
                 runBlocking { handler() }
             }
+
+            override fun submitGeneric(eventType: String, handler: suspend () -> Unit) {
+                runBlocking { handler() }
+            }
         }
 
         val coordinator = PlayerTransportControlCoordinator(
             eventQueue = eventSink,
             transportMutex = Mutex(),
-            latestPlayRequestToken = AtomicLong(0L),
+            latestPlayRequestToken = latestToken,
             callbacks = PlayerTransportControlCoordinator.Callbacks(
                 isReleased = { false },
                 clearAutomaticFocusResume = {},
@@ -118,7 +183,12 @@ class PlayerTransportControlCoordinatorTest {
                 },
                 primeSongSelectionForUi = { primedTitles += it.title },
                 shouldRouteExplicitPlayThroughManualSwitch = { it.path == "manual" },
-                playManualSwitchFromStartLocked = { song, _, _, reason ->
+                playManualSwitchFromStartLocked = { song, _, _, reason, isStillLatest ->
+                    manualLatestChecks += isStillLatest()
+                    if (song.path == "manual") {
+                        latestToken.incrementAndGet()
+                        manualLatestChecks += isStillLatest()
+                    }
                     backendCalls += "manual:$reason:${song.path}"
                 },
                 playInternal = { song, _, _ -> backendCalls += "play:${song.path}" },
@@ -126,6 +196,7 @@ class PlayerTransportControlCoordinatorTest {
                 backendStateAgeMs = { preparingAgeMs },
                 backendStateSummary = { backendState.name },
                 resolvePlayPauseSeedSong = { AudioFile(path = "seed", title = "seed") },
+                hasPausedSelectionPendingStart = { pausedSelectionPendingStart },
                 transitionPlayState = { state, _ -> controllerState = state },
                 forcePlayState = { state, _ -> controllerState = state },
                 isUsbExclusiveActive = { usbExclusive },

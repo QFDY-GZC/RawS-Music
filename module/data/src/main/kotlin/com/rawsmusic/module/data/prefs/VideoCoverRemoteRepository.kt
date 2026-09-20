@@ -23,13 +23,13 @@ data class VideoCoverSearchCandidate(
     val artworkUrl: String,
     val selectionUrl: String,
     val score: Int,
-    val provider: String = "Spotify Canvas",
+    val provider: String = "external video",
 )
 
 /**
  * Resolves real animated cover media without coupling the player to a catalog scraper.
  *
- * The remote catalog is Spotify Canvas as indexed by Canvas Downloader. Search results only
+ * The remote catalog is external video as indexed by Canvas Downloader. Search results only
  * become candidates after a real canvaz MP4 URL has been found, so an artwork thumbnail can
  * never be mistaken for an importable animation. Direct MP4/WebP/WebM/HLS links remain
  * supported for manual imports.
@@ -42,7 +42,7 @@ object VideoCoverRemoteRepository {
         "https://raw.githubusercontent.com/kywagaha/spotify-canvases/main/canvases.json"
     private const val GITHUB_CANVAS_DATASET_FALLBACK =
         "https://cdn.jsdelivr.net/gh/kywagaha/spotify-canvases@main/canvases.json"
-    private const val SPOTIFY_OEMBED = "https://open.spotify.com/oembed"
+    private const val EXTERNAL_OEMBED = "https://open.spotify.com/oembed"
     private const val MAX_BYTES = 96L * 1024L * 1024L
     private const val MAX_CANDIDATES = 12
     private const val MAX_ARTIST_RESULTS = 3
@@ -62,26 +62,26 @@ object VideoCoverRemoteRepository {
             val source = input.trim()
             Log.i(
                 TAG,
-                "import_start provider=spotify_canvas title=${title.take(80)} " +
+                "import_start provider=external_video title=${title.take(80)} " +
                     "artist=${artist.take(80)} album=${album.take(80)} " +
                     "direct=${source.isDirectMediaUrl()}",
             )
             require(source.isNotBlank() || artist.isNotBlank() || title.isNotBlank()) {
-                "请输入 Spotify 歌曲链接、媒体直链，或先补全歌曲信息"
+                "请输入 External 歌曲链接、媒体直链，或先补全歌曲信息"
             }
 
             val mediaUrls = when {
                 source.isDirectMediaUrl() -> listOf(source)
-                source.isSpotifyTrackUrl() -> findTrackCanvas(source.spotifyTrackId().orEmpty())
+                source.isSourceTrackUrl() -> findTrackCanvas(source.sourceTrackId().orEmpty())
                 source.isBlank() -> findAvailableCandidates(artist, album, title)
                     .map(VideoCoverSearchCandidate::selectionUrl)
                 else -> emptyList()
             }
-            Log.i(TAG, "match_candidates provider=spotify_canvas count=${mediaUrls.size}")
+            Log.i(TAG, "match_candidates provider=external_video count=${mediaUrls.size}")
             val selected = mediaUrls.firstOrNull()
-                ?: error("没有找到可用的 Spotify Canvas 动态封面")
-            require(selected.isDirectMediaUrl()) { "Spotify Canvas 返回的资源不是可播放媒体" }
-            Log.i(TAG, "match_selected provider=spotify_canvas type=${selected.mediaType()}")
+                ?: error("没有找到可用的 external video 动态封面")
+            require(selected.isDirectMediaUrl()) { "external video 返回的资源不是可播放媒体" }
+            Log.i(TAG, "match_selected provider=external_video type=${selected.mediaType()}")
 
             if (selected.isHlsUrl()) {
                 selected
@@ -89,18 +89,18 @@ object VideoCoverRemoteRepository {
                 Uri.fromFile(download(context, selected)).toString()
             }
         }.onSuccess { uri ->
-            Log.i(TAG, "import_success provider=spotify_canvas uri=${uri.take(160)}")
+            Log.i(TAG, "import_success provider=external_video uri=${uri.take(160)}")
         }.onFailure { error ->
             Log.e(
                 TAG,
-                "import_failed provider=spotify_canvas type=${error.javaClass.simpleName} " +
+                "import_failed provider=external_video type=${error.javaClass.simpleName} " +
                     "message=${error.message}",
                 error,
             )
         }
     }
 
-    /** Returns only Spotify candidates backed by an actual Canvas MP4 URL. */
+    /** Returns only External candidates backed by an actual Canvas MP4 URL. */
     suspend fun searchCandidates(
         artist: String,
         album: String,
@@ -111,7 +111,7 @@ object VideoCoverRemoteRepository {
         }.onFailure { error ->
             Log.e(
                 TAG,
-                "preview_search_failed provider=spotify_canvas " +
+                "preview_search_failed provider=external_video " +
                     "type=${error.javaClass.simpleName} message=${error.message}",
                 error,
             )
@@ -124,23 +124,23 @@ object VideoCoverRemoteRepository {
         title: String,
     ): List<VideoCoverSearchCandidate> {
         val apiCandidates = runCatching {
-            SpotifyCanvasApi.search(artist = artist, title = title, album = album)
+            VideoCanvasApi.search(artist = artist, title = title, album = album)
                 .map { it.toSearchCandidate() }
         }.onFailure { error ->
             Log.w(
                 TAG,
-                "spotify_api_unavailable type=${error.javaClass.simpleName} " +
+                "external_api_unavailable type=${error.javaClass.simpleName} " +
                     "message=${error.message}",
             )
         }.getOrNull().orEmpty()
         if (apiCandidates.isNotEmpty()) return apiCandidates
 
         val liveCandidates = runCatching {
-            findSpotifyCanvasCandidates(artist, album, title)
+            findVideoCanvasCandidates(artist, album, title)
         }.onFailure { error ->
             Log.w(
                 TAG,
-                "spotify_canvas_unavailable type=${error.javaClass.simpleName} " +
+                "external_video_unavailable type=${error.javaClass.simpleName} " +
                     "message=${error.message}",
             )
         }.getOrNull().orEmpty()
@@ -151,11 +151,11 @@ object VideoCoverRemoteRepository {
     }
 
     private fun findTrackCanvas(trackId: String): List<String> {
-        val apiMedia = runCatching { SpotifyCanvasApi.resolveTrack(trackId) }
+        val apiMedia = runCatching { VideoCanvasApi.resolveTrack(trackId) }
             .onFailure { error ->
                 Log.w(
                     TAG,
-                    "spotify_api_track_unavailable track=$trackId " +
+                    "external_api_track_unavailable track=$trackId " +
                         "type=${error.javaClass.simpleName} message=${error.message}",
                 )
             }
@@ -163,12 +163,12 @@ object VideoCoverRemoteRepository {
         if (apiMedia.isNotEmpty()) return apiMedia
 
         val liveMedia = runCatching {
-            resolveSpotifyTrackCanvas("https://open.spotify.com/track/$trackId")
+            resolveVideoTrackCanvas("https://open.spotify.com/track/$trackId")
         }
             .onFailure { error ->
                 Log.w(
                     TAG,
-                    "spotify_canvas_track_unavailable track=$trackId " +
+                    "external_video_track_unavailable track=$trackId " +
                         "type=${error.javaClass.simpleName} message=${error.message}",
                 )
             }
@@ -186,7 +186,7 @@ object VideoCoverRemoteRepository {
         return cached
     }
 
-    private fun SpotifyCanvasApi.Match.toSearchCandidate(): VideoCoverSearchCandidate =
+    private fun VideoCanvasApi.Match.toSearchCandidate(): VideoCoverSearchCandidate =
         VideoCoverSearchCandidate(
             id = id,
             title = title,
@@ -195,7 +195,7 @@ object VideoCoverRemoteRepository {
             artworkUrl = artworkUrl,
             selectionUrl = mediaUrl,
             score = score,
-            provider = "Spotify Canvas API",
+            provider = "external video API",
         )
 
     private fun findGithubCanvasCandidates(
@@ -209,7 +209,7 @@ object VideoCoverRemoteRepository {
             val artistScore = matchScore(artist, entry.artist)
             if (title.isNotBlank() && titleScore == 0) return@mapNotNull null
             if (artist.isNotBlank() && artistScore == 0) return@mapNotNull null
-            val metadata = runCatching { querySpotifyOEmbed(entry.trackId) }
+            val metadata = runCatching { queryExternalOEmbed(entry.trackId) }
                 .getOrNull()
             val score = titleScore * 8 + artistScore * 3 + matchScore(album, entry.title)
             VideoCoverSearchCandidate(
@@ -263,7 +263,7 @@ object VideoCoverRemoteRepository {
             val entries = buildList {
                 for (index in 0 until array.length()) {
                     val item = array.optJSONObject(index) ?: continue
-                    val trackId = item.optString("uri").spotifyTrackId() ?: continue
+                    val trackId = item.optString("uri").sourceTrackId() ?: continue
                     val mediaUrl = item.optString("canvas").trim()
                     if (!mediaUrl.isDirectMediaUrl()) continue
                     add(
@@ -285,13 +285,13 @@ object VideoCoverRemoteRepository {
         }
     }
 
-    private fun findSpotifyCanvasCandidates(
+    private fun findVideoCanvasCandidates(
         artist: String,
         album: String,
         title: String,
     ): List<VideoCoverSearchCandidate> {
         require(title.isNotBlank() || artist.isNotBlank()) { "歌曲标题或艺术家为空" }
-        val artistResults = linkedMapOf<String, SpotifyArtist>()
+        val artistResults = linkedMapOf<String, VideoCanvasArtist>()
         val artistQueries = linkedSetOf(
             artist,
             artist.substringBefore("[").trim(),
@@ -300,7 +300,7 @@ object VideoCoverRemoteRepository {
         ).filter(String::isNotBlank)
 
         for (query in artistQueries) {
-            Log.d(TAG, "spotify_canvas_artist_search query=${query.take(100)}")
+            Log.d(TAG, "external_video_artist_search query=${query.take(100)}")
             val root = JSONObject(requestCanvas("/api/search?q=${encode(query)}"))
             val results = root.optJSONArray("artists") ?: continue
             for (index in 0 until results.length()) {
@@ -311,27 +311,27 @@ object VideoCoverRemoteRepository {
                 val score = matchScore(artist, name)
                 val old = artistResults[slug]
                 if (old == null || score > old.score) {
-                    artistResults[slug] = SpotifyArtist(name, slug, score)
+                    artistResults[slug] = VideoCanvasArtist(name, slug, score)
                 }
             }
             if (artistResults.isNotEmpty()) break
         }
 
         val selectedArtists = artistResults.values
-            .sortedByDescending(SpotifyArtist::score)
+            .sortedByDescending(VideoCanvasArtist::score)
             .take(MAX_ARTIST_RESULTS)
-        Log.i(TAG, "spotify_canvas_artist_matches count=${selectedArtists.size}")
+        Log.i(TAG, "external_video_artist_matches count=${selectedArtists.size}")
         if (selectedArtists.isEmpty()) return emptyList()
 
         val candidates = linkedMapOf<String, VideoCoverSearchCandidate>()
-        for (spotifyArtist in selectedArtists) {
-            val tracks = findArtistCanvasTracks(spotifyArtist)
+        for (videoArtist in selectedArtists) {
+            val tracks = findArtistCanvasTracks(videoArtist)
             for (track in tracks) {
-                val metadata = runCatching { querySpotifyOEmbed(track.trackId) }
+                val metadata = runCatching { queryExternalOEmbed(track.trackId) }
                     .onFailure { error ->
                         Log.d(
                             TAG,
-                            "spotify_canvas_oembed_failed track=${track.trackId} " +
+                            "external_video_oembed_failed track=${track.trackId} " +
                                 "type=${error.javaClass.simpleName} message=${error.message}",
                         )
                     }
@@ -339,13 +339,13 @@ object VideoCoverRemoteRepository {
                     ?: continue
                 val titleScore = matchScore(title, metadata.title)
                 val artistScore = maxOf(
-                    matchScore(artist, spotifyArtist.name),
-                    spotifyArtist.score,
+                    matchScore(artist, videoArtist.name),
+                    videoArtist.score,
                 )
                 val albumScore = matchScore(album, metadata.title)
                 Log.d(
                     TAG,
-                    "spotify_canvas_candidate_metadata track=${track.trackId} " +
+                    "external_video_candidate_metadata track=${track.trackId} " +
                         "title=${metadata.title.take(100)} titleScore=$titleScore " +
                         "artistScore=$artistScore",
                 )
@@ -354,12 +354,12 @@ object VideoCoverRemoteRepository {
                 val candidate = VideoCoverSearchCandidate(
                     id = track.trackId,
                     title = metadata.title,
-                    artist = spotifyArtist.name,
-                    album = "Spotify Canvas",
+                    artist = videoArtist.name,
+                    album = "external video",
                     artworkUrl = metadata.thumbnailUrl,
                     selectionUrl = track.mediaUrl,
                     score = score,
-                    provider = "Spotify Canvas",
+                    provider = "external video",
                 )
                 val old = candidates[candidate.id]
                 if (old == null || candidate.score > old.score) {
@@ -371,11 +371,11 @@ object VideoCoverRemoteRepository {
         val sorted = candidates.values
             .sortedWith(compareByDescending<VideoCoverSearchCandidate> { it.score }.thenBy { it.title })
             .take(MAX_CANDIDATES)
-        Log.i(TAG, "preview_search_result provider=spotify_canvas count=${sorted.size}")
+        Log.i(TAG, "preview_search_result provider=external_video count=${sorted.size}")
         sorted.forEachIndexed { index, candidate ->
             Log.d(
                 TAG,
-                "preview_search_match provider=spotify_canvas rank=${index + 1} " +
+                "preview_search_match provider=external_video rank=${index + 1} " +
                     "score=${candidate.score} title=${candidate.title.take(80)} " +
                     "track=${candidate.id} media=${candidate.selectionUrl.take(180)}",
             )
@@ -383,8 +383,8 @@ object VideoCoverRemoteRepository {
         return sorted
     }
 
-    private fun findArtistCanvasTracks(artist: SpotifyArtist): List<SpotifyCanvasTrack> {
-        val tracks = linkedMapOf<String, SpotifyCanvasTrack>()
+    private fun findArtistCanvasTracks(artist: VideoCanvasArtist): List<VideoCanvasTrack> {
+        val tracks = linkedMapOf<String, VideoCanvasTrack>()
         for (page in 1..MAX_ARTIST_PAGES) {
             val html = runCatching {
                 requestCanvas(
@@ -395,7 +395,7 @@ object VideoCoverRemoteRepository {
                 .onFailure { error ->
                     Log.w(
                         TAG,
-                        "spotify_canvas_artist_page_failed artist=${artist.name.take(80)} page=$page " +
+                        "external_video_artist_page_failed artist=${artist.name.take(80)} page=$page " +
                             "type=${error.javaClass.simpleName} message=${error.message}",
                     )
                 }
@@ -414,21 +414,21 @@ object VideoCoverRemoteRepository {
                 val trackId = trackIds[index]
                 val mediaUrl = mediaUrls[index].substringBefore('#')
                 if (trackId.isBlank() || !mediaUrl.isDirectMediaUrl()) continue
-                tracks.putIfAbsent(trackId, SpotifyCanvasTrack(trackId, mediaUrl))
+                tracks.putIfAbsent(trackId, VideoCanvasTrack(trackId, mediaUrl))
             }
             if (tracks.size >= MAX_TRACKS_PER_ARTIST || count == 0) break
         }
         Log.i(
             TAG,
-            "spotify_canvas_artist_tracks artist=${artist.name.take(80)} count=${tracks.size}",
+            "external_video_artist_tracks artist=${artist.name.take(80)} count=${tracks.size}",
         )
         return tracks.values.take(MAX_TRACKS_PER_ARTIST)
     }
 
-    private fun resolveSpotifyTrackCanvas(source: String): List<String> {
-        val trackId = source.spotifyTrackId() ?: return emptyList()
+    private fun resolveVideoTrackCanvas(source: String): List<String> {
+        val trackId = source.sourceTrackId() ?: return emptyList()
         val normalizedUrl = "https://open.spotify.com/track/$trackId"
-        Log.i(TAG, "spotify_canvas_track_lookup track=$trackId")
+        Log.i(TAG, "external_video_track_lookup track=$trackId")
         val html = requestCanvas(
             "/canvas?link=${encode(normalizedUrl)}",
             "text/html,application/xhtml+xml",
@@ -438,17 +438,17 @@ object VideoCoverRemoteRepository {
             .filter { it.isDirectMediaUrl() }
             .distinct()
             .toList()
-        Log.i(TAG, "spotify_canvas_track_result track=$trackId count=${media.size}")
+        Log.i(TAG, "external_video_track_result track=$trackId count=${media.size}")
         return media
     }
 
-    private fun querySpotifyOEmbed(trackId: String): SpotifyTrackMetadata {
+    private fun queryExternalOEmbed(trackId: String): ExternalTrackMetadata {
         val trackUrl = "https://open.spotify.com/track/$trackId"
-        val endpoint = "$SPOTIFY_OEMBED?url=${encode(trackUrl)}"
+        val endpoint = "$EXTERNAL_OEMBED?url=${encode(trackUrl)}"
         val root = JSONObject(request(endpoint))
         val title = root.optString("title").trim()
-        require(title.isNotBlank()) { "Spotify oEmbed 未返回歌曲标题" }
-        return SpotifyTrackMetadata(
+        require(title.isNotBlank()) { "External oEmbed 未返回歌曲标题" }
+        return ExternalTrackMetadata(
             title = title,
             thumbnailUrl = root.optString("thumbnail_url").trim(),
         )
@@ -464,19 +464,19 @@ object VideoCoverRemoteRepository {
                 lastError = error
                 Log.w(
                     TAG,
-                    "spotify_canvas_host_failed host=${index + 1} " +
+                    "external_video_host_failed host=${index + 1} " +
                         "type=${error.javaClass.simpleName} message=${error.message}",
                 )
             }
         }
-        throw lastError ?: error("Spotify Canvas 查询失败")
+        throw lastError ?: error("external video 查询失败")
     }
 
     private fun request(
         endpoint: String,
         accept: String = "application/json",
         userAgent: String = DEFAULT_USER_AGENT,
-        provider: String = "spotify_canvas",
+        provider: String = "external_video",
     ): String {
         var lastError: Throwable? = null
         repeat(3) { attempt ->
@@ -505,7 +505,7 @@ object VideoCoverRemoteRepository {
                 if (attempt < 2) Thread.sleep(700L * (attempt + 1))
             }
         }
-        throw lastError ?: error("Spotify Canvas 查询失败")
+        throw lastError ?: error("external video 查询失败")
     }
 
     private fun download(context: Context, source: String): File {
@@ -602,9 +602,9 @@ object VideoCoverRemoteRepository {
         return if (index >= 0) substring(0, index) else this
     }
 
-    private fun String.isSpotifyTrackUrl(): Boolean = spotifyTrackId() != null
+    private fun String.isSourceTrackUrl(): Boolean = sourceTrackId() != null
 
-    private fun String.spotifyTrackId(): String? = SPOTIFY_TRACK_REGEX
+    private fun String.sourceTrackId(): String? = EXTERNAL_TRACK_REGEX
         .find(this)
         ?.groupValues
         ?.getOrNull(1)
@@ -650,26 +650,26 @@ object VideoCoverRemoteRepository {
 
     private inline fun <T> HttpURLConnection.useAndRead(block: HttpURLConnection.() -> T): T {
         try {
-            Log.d(TAG, "http_response provider=spotify_canvas code=$responseCode contentLength=$contentLengthLong")
-            require(responseCode in 200..299) { "Spotify Canvas 查询失败：HTTP $responseCode" }
+            Log.d(TAG, "http_response provider=external_video code=$responseCode contentLength=$contentLengthLong")
+            require(responseCode in 200..299) { "external video 查询失败：HTTP $responseCode" }
             return block()
         } finally {
             disconnect()
         }
     }
 
-    private data class SpotifyArtist(
+    private data class VideoCanvasArtist(
         val name: String,
         val slug: String,
         val score: Int,
     )
 
-    private data class SpotifyCanvasTrack(
+    private data class VideoCanvasTrack(
         val trackId: String,
         val mediaUrl: String,
     )
 
-    private data class SpotifyTrackMetadata(
+    private data class ExternalTrackMetadata(
         val title: String,
         val thumbnailUrl: String,
     )
@@ -686,7 +686,7 @@ object VideoCoverRemoteRepository {
         val entries: List<GithubCanvasEntry>,
     )
 
-    private val SPOTIFY_TRACK_REGEX = Regex(
+    private val EXTERNAL_TRACK_REGEX = Regex(
         "(?:open\\.spotify\\.com/(?:intl-[^/]+/)?track/|spotify:track:)([A-Za-z0-9]+)",
         RegexOption.IGNORE_CASE,
     )

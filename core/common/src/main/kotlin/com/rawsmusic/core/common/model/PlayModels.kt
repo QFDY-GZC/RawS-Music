@@ -66,6 +66,18 @@ enum class PlayMode {
         fun cycle(current: PlayMode): PlayMode {
             return entries[(current.ordinal + 1) % entries.size]
         }
+
+        /**
+         * Short-tap cycle used by the compact player button. Keep consecutive states visually
+         * distinct: SHUFFLE_ALL and SHUFFLE_ONCE intentionally share the same shuffle icon, so
+         * cycling through both makes one tap appear to do nothing. SHUFFLE_ONCE remains available
+         * from the long-press mode picker.
+         */
+        fun quickCycle(current: PlayMode): PlayMode = when (current) {
+            SEQUENTIAL -> SHUFFLE_ALL
+            SHUFFLE_ALL, SHUFFLE_ONCE -> REPEAT_ONE
+            REPEAT_ONE -> SEQUENTIAL
+        }
     }
 }
 
@@ -87,8 +99,10 @@ enum class SortOrder {
     FILE_NAME_DESC,
     PATH_ASC,
     PATH_DESC,
-    PLAYBACK_INFO_DESC
-}
+    PLAYBACK_INFO_DESC,
+    DATE_MODIFIED_ASC,
+    DATE_MODIFIED_DESC,
+  }
 
 enum class PlayState {
     IDLE,
@@ -118,12 +132,23 @@ data class PlayQueue(
     val currentIndex: Int = -1,
     val repeatMode: RepeatMode = RepeatMode.OFF,
     val isShuffle: Boolean = false,
-    val originalSongs: List<AudioFile> = emptyList()
+    val originalSongs: List<AudioFile> = emptyList(),
+    /**
+     * Stable identity for every queue entry.  The song path is the media identity; this id is the
+     * identity of the queue row, matching Reference's queue._id.  It lets duplicate/cue entries
+     * survive reorder and cold restore without falling back to a fragile array index.
+     */
+    val entryIds: List<Long> = emptyList(),
 ) {
     val currentSong: AudioFile?
         get() = if (currentIndex in songs.indices) songs[currentIndex] else null
 
     val size: Int get() = songs.size
+
+    val currentEntryId: Long?
+        get() = entryIds.getOrNull(currentIndex)
+
+    fun entryIdAt(index: Int): Long? = entryIds.getOrNull(index)
 
     fun isEmpty(): Boolean = songs.isEmpty()
 

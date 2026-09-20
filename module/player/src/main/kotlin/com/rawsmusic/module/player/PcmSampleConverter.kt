@@ -12,6 +12,19 @@ import java.nio.ByteOrder
 internal object PcmSampleConverter {
     private const val S32_FLOAT_SCALE = 2147483648.0f
 
+    fun floatToS16Pcm(src: ByteArray, length: Int, dst: ByteArray): Int {
+        val count = minOf(length, src.size) / 4
+        val samples = minOf(count, dst.size / 2)
+        val input = ByteBuffer.wrap(src).order(ByteOrder.LITTLE_ENDIAN)
+        val output = ByteBuffer.wrap(dst).order(ByteOrder.LITTLE_ENDIAN)
+        for (i in 0 until samples) {
+            val value = input.getFloat(i * 4)
+            val finite = if (value.isFinite()) value.toDouble().coerceIn(-1.0, 1.0) else 0.0
+            output.putShort(i * 2, (finite * 32768.0).toInt().coerceIn(-32768, 32767).toShort())
+        }
+        return samples * 2
+    }
+
     fun s32ToFloatPcm(src: ByteArray, length: Int, dst: ByteArray): Int {
         val samplesToWrite = minOf(length / 4, dst.size / 4)
         val bytesToWrite = samplesToWrite * 4

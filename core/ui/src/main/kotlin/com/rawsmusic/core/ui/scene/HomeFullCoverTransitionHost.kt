@@ -54,7 +54,7 @@ import kotlin.math.roundToInt
  * The transition intentionally mirrors the proven landscape player/full-cover path: one real shared
  * artwork lane interpolates between the measured source holder and the exact portrait-dial centre;
  * source-only and target-only scene content scale/fade around it; target side lanes reveal along
- * their PowerList depth track. The shared lane exists only while the scene is moving, so settled
+ * their VirtualList depth track. The shared lane exists only while the scene is moving, so settled
  * states return ownership atomically to the real home/full-screen holders.
  */
 @Composable
@@ -78,11 +78,6 @@ internal fun HomeFullCoverTransitionHost(
     val availableSongs = remember(songs, currentSong) {
         songs.ifEmpty { listOfNotNull(currentSong) }
     }
-    val dialArtworkTransitionState = rememberPlaybackArtworkTransitionState(
-        currentKey = currentSong.resolvePlaybackArtworkKey(null),
-        queueCurrentIndex = queueCurrentIndex,
-        queueSize = availableSongs.size,
-    )
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     var fullCoverVisible by remember { mutableStateOf(false) }
@@ -100,6 +95,17 @@ internal fun HomeFullCoverTransitionHost(
     var fullscreenCenterArtworkKey by remember { mutableStateOf("") }
     var fullscreenCenterArtworkDescription by remember { mutableStateOf<String?>(null) }
     var returningToHome by remember { mutableStateOf(false) }
+    // Keep the dial state object for the full-cover session, but do not let a hidden HOME overlay
+    // passively follow every playback change.  The main player already owns the live artwork pager; a
+    // second hidden state was issuing a duplicate provider flight for the same new song (one owner
+    // logged it as current while the visible pager logged it as target).
+    val fullCoverArtworkOwnerActive = fullCoverVisible || transitionRunning || pendingOpenAnimation || predictiveBackActive
+    val dialArtworkTransitionState = rememberPlaybackArtworkTransitionState(
+        currentKey = currentSong.resolvePlaybackArtworkKey(null),
+        queueCurrentIndex = queueCurrentIndex,
+        queueSize = availableSongs.size,
+        passiveBindingEnabled = fullCoverArtworkOwnerActive,
+    )
     val backOwner = remember { Any() }
 
     fun finishClosed() {
@@ -173,6 +179,10 @@ internal fun HomeFullCoverTransitionHost(
         if (sourceLocal.width <= 1f || sourceLocal.height <= 1f) return
 
         val sceneArtworkKey = currentSong.resolvePlaybackArtworkKey(null).orEmpty()
+        // Hidden full-cover ownership is intentionally dormant. Bind the exact current identity at
+        // the user-owned open boundary before the fullscreen lane becomes visible; the following
+        // passiveBindingEnabled recomposition then observes the same state instead of showing stale art.
+        dialArtworkTransitionState.bindSong(sceneArtworkKey, queueCurrentIndex, availableSongs.size)
         transitionJob?.cancel()
         transitionJob = null
         sourceBoundsInHost = sourceLocal
@@ -431,7 +441,7 @@ internal fun HomeFullCoverTransitionHost(
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop,
                             // Match the already-visible home/player high tier for an immediate sharp
-                            // first frame, while warmFullCoverArt prepares the settled 1440px holder.
+                            // first frame, while warmFullCoverArt prepares the settled provider-high holder.
                             targetWidth = homePortraitDialSharedArtworkPolicy.movingTargetSidePx,
                             targetHeight = homePortraitDialSharedArtworkPolicy.movingTargetSidePx,
                             priority = BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,

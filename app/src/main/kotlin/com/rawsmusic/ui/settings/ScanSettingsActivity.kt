@@ -8,6 +8,8 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.widget.Toast
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import androidx.activity.result.contract.ActivityResultContracts
 import com.rawsmusic.R
 import com.rawsmusic.core.ui.scene.pages.ScanSettingsPage
@@ -69,15 +71,14 @@ class ScanSettingsActivity : BaseSettingsActivity() {
 
     private fun updateLegacyAccessState(granted: Boolean) {
         AppPreferences.Scanner.legacyFileAccessEnabled = granted
-        Toast.makeText(
-            this,
-            if (granted) {
-                getString(R.string.scan_settings_legacy_access_enabled_toast)
-            } else {
-                getString(R.string.scan_settings_legacy_access_denied_toast)
-            },
-            Toast.LENGTH_SHORT
-        ).show()
+        if (granted) {
+            AppNoticeBus.post(
+                message = getString(R.string.scan_settings_legacy_access_enabled_toast),
+                icon = AppNoticeIcon.SCAN,
+            )
+        } else {
+            AppNoticeBus.error(getString(R.string.scan_settings_legacy_access_denied_toast))
+        }
         if (granted) {
             ScanScheduler.requestDirScan(this, getString(R.string.scan_settings_rescan_reason_manual))
         }

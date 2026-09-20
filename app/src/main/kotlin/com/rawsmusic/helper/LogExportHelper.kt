@@ -4,52 +4,102 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.core.content.FileProvider
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.core.common.utils.UsbIncidentArchive
 import java.io.File
 
 class LogExportHelper(
     private val context: Context
 ) {
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private fun exportContent(): String = UsbIncidentArchive.describePersistedLog(AppLogger.getLogContent().orEmpty()) +
+        "\n=== PERSISTED USB INCIDENTS / REBOOT EVIDENCE ===\n" + UsbIncidentArchive.export(context)
+
+    fun createShareFile(): File = File(context.cacheDir, createExportFileName()).apply {
+        writeText(exportContent(), Charsets.UTF_8)
+    }
     fun createExportFileName(): String {
         return AppLogger.generateExportFileName()
     }
 
     fun exportTo(uri: Uri) {
-        try {
-            val logContent = AppLogger.getLogContent()
-            if (logContent.isNullOrBlank()) {
-                Toast.makeText(context, context.getString(com.rawsmusic.R.string.logs_empty), Toast.LENGTH_SHORT).show()
-                return
-            }
+        Thread({
+            try {
+                val rootEvidence = UsbIncidentArchive.refreshRootEvidenceForExport(context)
+                AppLogger.i("LogExportHelper", "Reboot evidence refresh before export: $rootEvidence")
+                val logContent = exportContent()
+                if (logContent.isBlank()) {
+                    mainHandler.post {
+                        AppNoticeBus.error(context.getString(com.rawsmusic.R.string.logs_empty))
+                    }
+                    return@Thread
+                }
 
-            context.contentResolver.openOutputStream(uri)?.use { output ->
-                output.write(logContent.toByteArray(Charsets.UTF_8))
+                val wrote = context.contentResolver.openOutputStream(uri)?.use { output ->
+                    output.write(logContent.toByteArray(Charsets.UTF_8))
+                    true
+                } ?: false
+                mainHandler.post {
+                    if (wrote) {
+                        AppNoticeBus.post(
+                            message = context.getString(com.rawsmusic.R.string.logs_exported),
+                            icon = AppNoticeIcon.DOWNLOAD,
+                        )
+                    } else {
+                        AppNoticeBus.error(
+                            context.getString(
+                                com.rawsmusic.R.string.logs_export_failed,
+                                "openOutputStream returned null",
+                            )
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                mainHandler.post {
+                    AppNoticeBus.error(
+                        context.getString(com.rawsmusic.R.string.logs_export_failed, e.message.orEmpty())
+                    )
+                }
             }
-            Toast.makeText(context, context.getString(com.rawsmusic.R.string.logs_exported), Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            Toast.makeText(context, context.getString(com.rawsmusic.R.string.logs_export_failed, e.message.orEmpty()), Toast.LENGTH_SHORT).show()
-        }
+        }, "raw-log-export").apply { isDaemon = true; start() }
     }
 
     fun shareCurrentLog() {
-        try {
-            val logContent = AppLogger.getLogContent()
-            val file = AppLogger.getLogFile()
-            if (logContent.isNullOrBlank() || file == null || !file.exists()) {
-                Toast.makeText(context, context.getString(com.rawsmusic.R.string.logs_empty), Toast.LENGTH_SHORT).show()
-                return
+        Thread({
+            try {
+                val rootEvidence = UsbIncidentArchive.refreshRootEvidenceForExport(context)
+                AppLogger.i("LogExportHelper", "Reboot evidence refresh before share: $rootEvidence")
+                val file = createShareFile()
+                mainHandler.post {
+                    runCatching {
+                        shareFile(file, context.getString(com.rawsmusic.R.string.ui_log_share_title))
+                    }.onFailure { error ->
+                        AppNoticeBus.error(
+                            context.getString(
+                                com.rawsmusic.R.string.logs_export_failed,
+                                error.message.orEmpty(),
+                            )
+                        )
+                    }
+                }
+            } catch (error: Exception) {
+                mainHandler.post {
+                    AppNoticeBus.error(
+                        context.getString(
+                            com.rawsmusic.R.string.logs_export_failed,
+                            error.message.orEmpty(),
+                        )
+                    )
+                }
             }
-
-            shareFile(file, context.getString(com.rawsmusic.R.string.ui_log_share_title))
-        } catch (error: Exception) {
-            Toast.makeText(
-                context,
-                context.getString(com.rawsmusic.R.string.logs_export_failed, error.message.orEmpty()),
-                Toast.LENGTH_SHORT
-            ).show()
-        }
+        }, "raw-log-share").apply { isDaemon = true; start() }
     }
 
     fun shareSuperIslandLog() {
@@ -60,7 +110,7 @@ class LogExportHelper(
                 .filter { line -> markers.any(line::contains) }
                 .toList()
             if (lines.isEmpty()) {
-                Toast.makeText(context, context.getString(com.rawsmusic.R.string.logs_empty), Toast.LENGTH_SHORT).show()
+                AppNoticeBus.error(context.getString(com.rawsmusic.R.string.logs_empty))
                 return
             }
 
@@ -78,11 +128,9 @@ class LogExportHelper(
             }
             shareFile(export, context.getString(com.rawsmusic.R.string.settings_xiaomi_super_island_export_log))
         } catch (error: Exception) {
-            Toast.makeText(
-                context,
-                context.getString(com.rawsmusic.R.string.logs_export_failed, error.message.orEmpty()),
-                Toast.LENGTH_SHORT
-            ).show()
+            AppNoticeBus.error(
+                context.getString(com.rawsmusic.R.string.logs_export_failed, error.message.orEmpty())
+            )
         }
     }
 

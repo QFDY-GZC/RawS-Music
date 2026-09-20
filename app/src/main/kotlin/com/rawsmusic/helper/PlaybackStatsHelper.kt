@@ -13,6 +13,11 @@ class PlaybackStatsHelper(
     context: Context,
     private val getPlayerController: () -> PlayerController?
 ) {
+    private companion object {
+        private const val PLAYING_TICK_MS = 1_000L
+        private const val PAUSED_TICK_MS = 5_000L
+    }
+
     private val playbackStatsStore by lazy {
         PlaybackStatsStore.getInstance(context.applicationContext)
     }
@@ -20,7 +25,8 @@ class PlaybackStatsHelper(
     private val statsTickRunnable = object : Runnable {
         override fun run() {
             updatePlaybackStats()
-            statsHandler.postDelayed(this, 1000L)
+            val isPlaying = getPlayerController()?.playState?.value == PlayState.PLAYING
+            statsHandler.postDelayed(this, if (isPlaying) PLAYING_TICK_MS else PAUSED_TICK_MS)
         }
     }
 

@@ -74,4 +74,41 @@ class PlayerRestoreControlCoordinatorTest {
         assertEquals(1, cleared)
         assertEquals(listOf("restore_last_song_done"), traces)
     }
+
+    @Test
+    fun `queue-only snapshot restores selected queue row without starting decoder`() {
+        val songs = listOf(
+            AudioFile(path = "/music/a.flac", title = "A"),
+            AudioFile(path = "/music/b.flac", title = "B"),
+        )
+        val restored = RestoredPlayerState(
+            song = null,
+            queue = songs,
+            queueIndex = -1,
+            positionMs = 0L,
+            source = "queue_database_only",
+            repositorySongCount = 2,
+        )
+        var current: AudioFile? = null
+        var queue = PlayQueue()
+        val coordinator = PlayerRestoreControlCoordinator(
+            PlayerRestoreControlCoordinator.Callbacks(
+                elapsedRealtimeMs = { 100L },
+                restoreSnapshot = { restored },
+                applyCurrentSong = { current = it },
+                clearRequestedSong = {},
+                applyDurationMs = {},
+                applyPositionMs = {},
+                armPendingSeek = { _, _ -> },
+                applyQueue = { queue = it },
+                logInfo = {},
+                traceStartup = { _, _, _ -> },
+            )
+        )
+
+        assertEquals(songs.first(), coordinator.restoreLastSong())
+        assertEquals(songs.first(), current)
+        assertEquals(songs, queue.songs)
+        assertEquals(0, queue.currentIndex)
+    }
 }

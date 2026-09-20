@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -24,12 +25,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalContext
@@ -40,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.scene.BottomNavigationEntryIcon
 import com.rawsmusic.core.ui.scene.CoverTransitionTarget
 import com.rawsmusic.core.ui.scene.NavScene
@@ -47,8 +52,12 @@ import com.rawsmusic.core.ui.scene.bottomNavigationLabel
 import com.rawsmusic.core.ui.systemui.rawReducedNavigationBottomPadding
 import com.rawsmusic.core.ui.widget.ComposeMiniPlayer
 import com.rawsmusic.core.ui.widget.flow.darkAlbumGradient
+import com.rawsmusic.module.data.prefs.PersonalizationPreferences
+import com.rawsmusic.module.data.prefs.MiniPlayerSecondaryAction
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.ListView
 import kotlin.math.abs
 import kotlin.math.exp
 
@@ -86,6 +95,7 @@ fun NormalBottomChrome(
     onPlayPause: () -> Unit,
     onSkipPrevious: () -> Unit,
     onSkipNext: () -> Unit,
+    onOpenQueue: () -> Unit = {},
     onExpandDragStart: () -> Unit = {},
     onExpandDragProgress: (Float) -> Unit = {},
     onExpandDragEnd: (Boolean, Float) -> Unit = { _, _ -> },
@@ -93,10 +103,14 @@ fun NormalBottomChrome(
     playerSceneProgressState: State<Float>? = null,
     onCoverBoundsChanged: (android.graphics.RectF?) -> Unit = {},
     onCoverTargetChanged: (CoverTransitionTarget?) -> Unit = {},
+    onMiniPlayerBoundsChanged: (Rect?) -> Unit = {},
+    onNavigationBoundsChanged: (Rect?) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
     val context = LocalContext.current
+    val miniPlayerStyle by PersonalizationPreferences.miniPlayerStyle.collectAsState()
+    val miniPlayerControls by PersonalizationPreferences.miniPlayerControls.collectAsState()
     val windowInfo = LocalWindowInfo.current
     val flingVelocityBoundsPx = remember(context) {
         ViewConfiguration.get(context).let { config ->
@@ -116,17 +130,19 @@ fun NormalBottomChrome(
     val latestExpandDragEnd by rememberUpdatedState(onExpandDragEnd)
     val miniPlayerHeight = 66.dp
     val navigationHeight = 56.dp
-    // AppMainLayout lifts NORMAL chrome by the same reduced gesture-navigation inset. Include
-    // that inset in both the bottom-sheet peek height and the stacked navigation exit distance.
+    // Keep the NORMAL chrome substrate edge-to-edge. The gesture-navigation safe inset belongs
+    // *inside* the navigation background, not outside the whole chrome as transparent padding.
+    // This preserves the old content position while making the visual surface reach the screen edge.
     val reducedNavigationBottomPadding = rawReducedNavigationBottomPadding(reduceBy = 12.dp)
+    val navigationContainerHeight = navigationHeight + reducedNavigationBottomPadding
     val miniPlayerHeightPx = with(density) { miniPlayerHeight.toPx() }
     val navigationHeightPx = with(density) { navigationHeight.toPx() }
     val reducedNavigationBottomPaddingPx = with(density) { reducedNavigationBottomPadding.toPx() }
+    val navigationContainerHeightPx = navigationHeightPx + reducedNavigationBottomPaddingPx
     val expandedDistancePx = (
         windowInfo.containerSize.height.toFloat() -
             miniPlayerHeightPx -
-            navigationHeightPx -
-            reducedNavigationBottomPaddingPx
+            navigationContainerHeightPx
     ).coerceAtLeast(1f)
     fun currentExpansion(): Float = if (drivePlayerScene && playerSceneProgressState != null) {
         playerSceneProgressState.value.coerceIn(0f, 1f)
@@ -234,7 +250,10 @@ fun NormalBottomChrome(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(miniPlayerHeight)
-                .background(Brush.horizontalGradient(backgroundColors)),
+                .background(Brush.horizontalGradient(backgroundColors))
+                .onGloballyPositioned { coordinates ->
+                    onMiniPlayerBoundsChanged(coordinates.boundsInRoot())
+                },
         ) {
             Box(
                 modifier = Modifier
@@ -269,6 +288,14 @@ fun NormalBottomChrome(
                 clipContent = false,
                 contentPaddingHorizontal = 16.dp,
                 contentPaddingVertical = 6.dp,
+                showPreviousControl = miniPlayerControls.showPrevious,
+                previousIconRes = R.drawable.ic_rewind_fill,
+                playPausePosition = miniPlayerControls.playPausePosition,
+                showSkipNextControl = miniPlayerControls.secondaryAction == MiniPlayerSecondaryAction.QUEUE,
+                skipNextIconRes = R.drawable.ic_queue_music,
+                skipNextImageVector = MiuixIcons.Regular.ListView,
+                artworkSize = miniPlayerStyle.artworkSizeDp.dp,
+                originalArtworkCornerRadius = miniPlayerStyle.originalArtworkCornerRadiusDp.dp,
                 primaryContentColor = Color.White,
                 secondaryContentColor = Color.White,
                 onClick = {
@@ -276,7 +303,13 @@ fun NormalBottomChrome(
                 },
                 onPlayPause = onPlayPause,
                 onSkipPrevious = onSkipPrevious,
+                // Keep pager transport independent from the optional Queue secondary control.
                 onSkipNext = onSkipNext,
+                onSecondaryAction = if (miniPlayerControls.secondaryAction == MiniPlayerSecondaryAction.QUEUE) {
+                    onOpenQueue
+                } else {
+                    onSkipNext
+                },
                 onCoverBoundsChanged = onCoverBoundsChanged,
                 onCoverTargetChanged = onCoverTargetChanged,
                 modifier = Modifier.fillMaxWidth(),
@@ -287,28 +320,38 @@ fun NormalBottomChrome(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(navigationHeight)
+                .height(navigationContainerHeight)
                 .background(Brush.horizontalGradient(backgroundColors))
                 .graphicsLayer {
-                    // This is a translation, not a fade or a scale. It mirrors
-                    // PlayerActivity.StackedBottomNavigationHolder.c(float).
-                    translationY = (navigationHeightPx + reducedNavigationBottomPaddingPx) *
+                    // Translate the visible navigation plus its internal safe-area substrate as one
+                    // sibling. The content remains 56dp high; only the background extends to bottom.
+                    translationY = navigationContainerHeightPx *
                         (1f - exp(-20f * currentExpansion()))
                 },
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(1.dp)
-                    .background(dividerColor),
-            )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
                     .height(navigationHeight)
-                    .padding(horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .onGloballyPositioned { coordinates ->
+                        // Gesture/navigation hit geometry remains the actual 56dp control region,
+                        // not the decorative system-gesture substrate below it.
+                        onNavigationBoundsChanged(coordinates.boundsInRoot())
+                    },
             ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(dividerColor),
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(navigationHeight)
+                        .padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                 tabScenes.forEachIndexed { index, scene ->
                     val selected = index == selectedTabIndex
                     val tint = if (selected) selectedColor else unselectedColor
@@ -335,6 +378,7 @@ fun NormalBottomChrome(
                     }
                 }
             }
+        }
         }
     }
 }

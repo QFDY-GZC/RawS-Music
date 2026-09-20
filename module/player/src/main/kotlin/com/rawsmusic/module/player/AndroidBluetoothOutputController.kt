@@ -9,6 +9,7 @@ import android.media.AudioManager
 import android.os.Build
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.player.devicecontrol.bluetooth.BluetoothAudioRouteSnapshot
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
@@ -43,13 +44,18 @@ internal class AndroidBluetoothOutputController(
         private const val TAG = "AndroidBluetoothOutput"
         private const val POLL_INTERVAL_MS = 3_000L
         private const val PROFILE_PROXY_TIMEOUT_SECONDS = 1L
+        private const val TYPE_HEARING_AID_COMPAT = 23
         private const val TYPE_BLE_HEADSET_COMPAT = 26
+        private const val TYPE_BLE_SPEAKER_COMPAT = 27
     }
 
     private val appContext = context.applicationContext
     private val _isBluetoothOutput = MutableStateFlow(false)
     val isBluetoothOutputFlow: StateFlow<Boolean> = _isBluetoothOutput.asStateFlow()
     val isBluetoothOutput: Boolean get() = _isBluetoothOutput.value
+
+    private val _currentBluetoothRoute = MutableStateFlow<BluetoothAudioRouteSnapshot?>(null)
+    val currentBluetoothRoute: StateFlow<BluetoothAudioRouteSnapshot?> = _currentBluetoothRoute.asStateFlow()
 
     private val _hfpOnlyDeviceDetected = MutableStateFlow(false)
     val hfpOnlyDeviceDetected: StateFlow<Boolean> = _hfpOnlyDeviceDetected.asStateFlow()
@@ -96,6 +102,7 @@ internal class AndroidBluetoothOutputController(
         monitorJob = null
         releaseA2dpProxy()
         _isBluetoothOutput.value = false
+        _currentBluetoothRoute.value = null
         _hfpOnlyDeviceDetected.value = false
         lastDetectedCodecType = -1
     }
@@ -103,15 +110,31 @@ internal class AndroidBluetoothOutputController(
     private suspend fun checkBluetoothOutput() {
         val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         val bluetoothDevice = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).firstOrNull { device ->
-                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                    device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                    device.type == TYPE_BLE_HEADSET_COMPAT
-            }
+            audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                .filter { device ->
+                    device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                        device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        device.type == TYPE_HEARING_AID_COMPAT ||
+                        device.type == TYPE_BLE_HEADSET_COMPAT ||
+                        device.type == TYPE_BLE_SPEAKER_COMPAT
+                }
+                .maxByOrNull { device -> bluetoothMediaRoutePriority(device.type) }
         } else {
             null
         }
         val bluetoothConnected = bluetoothDevice != null
+        _currentBluetoothRoute.value = bluetoothDevice?.let { device ->
+            BluetoothAudioRouteSnapshot(
+                audioDeviceId = device.id,
+                audioDeviceType = device.type,
+                productName = device.productName?.toString(),
+                routeAddress = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    device.address.takeIf { it.isNotBlank() }
+                } else {
+                    null
+                },
+            )
+        }
 
         if (bluetoothDevice != null) {
             AppLogger.d(
@@ -215,6 +238,15 @@ internal class AndroidBluetoothOutputController(
         }.onFailure { error ->
             AppLogger.w(TAG, "Reading A2DP codec status failed", error)
         }.getOrDefault(-1)
+    }
+
+    private fun bluetoothMediaRoutePriority(type: Int): Int = when (type) {
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+        TYPE_HEARING_AID_COMPAT,
+        TYPE_BLE_HEADSET_COMPAT,
+        TYPE_BLE_SPEAKER_COMPAT -> 100
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> 10
+        else -> 0
     }
 
     private fun codecTypeName(codecType: Int): String = when (codecType) {

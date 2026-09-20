@@ -7,12 +7,10 @@ import android.os.Bundle
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
-import coil.ImageLoader
-import coil.ImageLoaderFactory
 import com.rawsmusic.core.common.CoreInit
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.theme.ThemeManager
-import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.module.data.DataModule
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.PlayerService
@@ -23,13 +21,11 @@ import com.rawsmusic.locale.AppLocaleManager
 import com.rawsmusic.lyric.DesktopLyricService
 import com.rawsmusic.ui.songs.PlayerHolder
 
-class RawSMusicApp : Application(), ImageLoaderFactory {
+class RawSMusicApp : Application() {
 
     override fun attachBaseContext(base: Context) {
         super.attachBaseContext(AppLocaleManager.wrap(base))
     }
-
-    override fun newImageLoader(): ImageLoader = CoilArtworkRuntime.newImageLoader(this)
 
     override fun onCreate() {
         super.onCreate()
@@ -47,6 +43,11 @@ class RawSMusicApp : Application(), ImageLoaderFactory {
         }
         CoreInit.init(this)
         DataModule.init(this)
+        // VirtualList's retained artwork-style Modifier.Node talks directly to BitmapProvider rather
+        // than Coil. Initialize the provider once at process start so cold list/grid holders have
+        // a live worker lane before their first loadViewportThumbnail() request. init() is
+        // idempotent and keeps decoding off the Compose/UI thread.
+        BitmapProvider.init(this)
         LibraryScannerDependencies.install { MusicRepositoryAudioLibraryRepository() }
         com.rawsmusic.module.scanner.LyricOverrideStore.install(
             java.io.File(filesDir, "lyric_overrides")

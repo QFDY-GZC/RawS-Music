@@ -18,7 +18,7 @@ data class LandscapeFullCoverTransitionFrame(
  *
  * The artwork is the shared lane: its real player bounds interpolate to the exact centre-lane
  * bounds returned by [resolveFullscreenArtworkCarouselMetrics]. Everything else follows the same
- * source-only / target-only rule used by PowerList transitions.
+ * source-only / target-only rule used by VirtualList transitions.
  */
 fun resolveLandscapeFullCoverTransitionFrame(
     sourceLeftPx: Float,

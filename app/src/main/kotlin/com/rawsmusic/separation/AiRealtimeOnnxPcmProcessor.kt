@@ -6,6 +6,7 @@ import android.util.Log
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.module.player.RealtimePlaybackPcmProcessor
 import java.io.Closeable
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.ArrayDeque
@@ -16,35 +17,49 @@ import kotlin.math.roundToInt
 /**
  * Model-backed, process-local playback separator.
  *
- * Two model chunks are decoded ahead before output starts. That initial delay lets
- * inference remain ahead of AudioTrack without writing intermediate stem files.
+ * Two MDX chunks are queued before normal separated playback starts. The second queued chunk is
+ * the realtime safety margin: while chunk N is being heard, the AI worker can finish chunk N+1
+ * without ever blocking the AudioTrack write path. AI-performance mode is different because it
+ * deliberately passes the dry PCM through during transformer warm-up, so that path still uses a
+ * single initial chunk below.
  */
 object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
     private const val TAG = "AiRealtimeOnnx"
     private const val CHANNELS = 2
     private const val INITIAL_SEGMENTS = 2
     private const val MAX_WAIT_MS = 15_000L
+    private const val SHARED_TRANSFORM_BLOCK_MS = 750
+    private const val SHARED_TRANSFORM_MIN_FRAMES = 12_288
 
     private val lock = Object()
     private val executor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "RawS-AI-Realtime").apply { isDaemon = true }
+        Thread(runnable, "RawS-AI-Realtime-MDX").apply { isDaemon = true }
+    }
+    private val transformExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "RawS-AI-Realtime-MID").apply { isDaemon = true }
     }
     private val tasks = ArrayDeque<SegmentTask>()
+    private val transformTasks = ArrayDeque<TransformTask>()
     private val outputs = ArrayDeque<OutputBlock>()
     private val modelSamples = FloatQueue()
+    private val sharedMixtureSamples = FloatQueue()
 
     @Volatile private var initialized = false
+    @Volatile private var desiredEnabled = false
     @Volatile private var enabled = false
     @Volatile private var ready = false
     @Volatile private var stem = AiSeparationStem.VOCALS
     @Volatile private var strength = 1f
     @Volatile private var generation = 0L
+    @Volatile private var modelOpenGeneration = 0L
+    @Volatile private var modelOpenInFlight = false
     @Volatile private var onPreparingChanged: (Boolean) -> Unit = {}
     @Volatile private var onPhaseChanged: (AiRealtimeSeparationPhase) -> Unit = {}
     @Volatile private var onFailure: (String) -> Unit = {}
     @Volatile private var publishedPhase = AiRealtimeSeparationPhase.IDLE
     @Volatile private var playbackPositionProvider: () -> Long = { 0L }
     @Volatile private var songIdentityProvider: () -> String = { "" }
+    @Volatile private var separatedBlockTransformer: AiRealtimeSeparatedBlockTransformer? = null
 
     private lateinit var appContext: Context
     private var runtimeSession: AiOnnxRuntimeSession? = null
@@ -56,16 +71,36 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
     private var submittedSegments = 0
     private var playbackStarted = false
     private var workerScheduled = false
+    private var transformWorkerScheduled = false
     private var outputOffsetFrames = 0
+    private var modelTimelineStartMs = 0L
+    private var submittedTimelineFrames = 0L
+    private var submittedSourceFrames = 0L
+    private var performanceTimelineFrames = 0L
     private var inputEnded = false
-    private var cachedResult: AiSeparationResult? = null
+    private var cachedDependency: AiStemDependency? = null
     private var cachedSongIdentity = ""
     private var cachedDecoder = 0L
     private var cachedDecoderPath = ""
     private var cachedDecodeBuffer = ByteArray(0)
+    private var sharedStreamTaskId = ""
+    private var sharedPlaybackSongIdentity = ""
+    private var sharedTimelineStartMs = 0L
+    private var sharedSubmittedFrames = 0L
+    private var firstInputLogged = false
+    private var performanceWarmupLogged = false
+    // Single model worker owns these buffers. Reuse them across chunks so a 5.9s MDX segment does
+    // not allocate two multi-megabyte direct buffers on every inference boundary.
+    private var mixtureInferenceBuffer: ByteBuffer? = null
+    private var vocalInferenceBuffer: ByteBuffer? = null
 
     override val active: Boolean
-        get() = enabled && (ready || cachedResult != null)
+        get() = enabled && (
+            ready ||
+                sharedStreamTaskId.isNotBlank() ||
+                (cachedDependency != null &&
+                    (separatedBlockTransformer == null || separatedBlockTransformer?.realtimePlaybackSafe == true))
+            )
 
     fun initialize(
         context: Context,
@@ -86,34 +121,70 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
 
     fun setEnabled(value: Boolean) {
         check(initialized) { "Realtime ONNX processor is not initialized" }
+        desiredEnabled = value
         if (!value) {
             enabled = false
             ready = false
+            val disableModelGeneration = synchronized(lock) {
+                modelOpenInFlight = false
+                ++modelOpenGeneration
+            }
             onPreparingChanged(false)
             publishPhase(AiRealtimeSeparationPhase.IDLE)
             reset("disabled")
             executor.execute {
                 synchronized(lock) {
-                    runtimeSession?.close()
-                    runtimeSession = null
-                    installedModel = null
-                    contract = null
+                    if (!desiredEnabled && disableModelGeneration == modelOpenGeneration) {
+                        runtimeSession?.close()
+                        runtimeSession = null
+                        installedModel = null
+                        contract = null
+                    }
                 }
             }
             Log.i(TAG, "AI_REALTIME_MODEL disabled storage=memory")
             return
         }
-        if (enabled && ready) return
+        armEnabled("set_enabled")
+    }
+
+    private fun armEnabled(reason: String) {
+        if (!desiredEnabled) return
+        val cachedDirect = synchronized(lock) { canUseCachedDirectLocked() }
+        val sharedDirect = synchronized(lock) { canUseSharedDirectLocked() }
+        if (enabled && (ready || cachedDirect || sharedDirect || modelOpenInFlight)) return
         enabled = true
+        Log.i(
+            TAG,
+            "AI_REALTIME_MODEL enable reason=$reason ready=$ready opening=$modelOpenInFlight " +
+                "cachedDirect=$cachedDirect sharedDirect=$sharedDirect",
+        )
+        if (cachedDirect) {
+            ready = false
+            onPreparingChanged(false)
+            publishPhase(AiRealtimeSeparationPhase.ACTIVE)
+            Log.i(TAG, "AI_REALTIME_MODEL cached-direct enabled; model inference not required")
+            return
+        }
+        if (sharedDirect) {
+            ready = false
+            onPreparingChanged(true)
+            publishPhase(AiRealtimeSeparationPhase.BUFFERING_AUDIO)
+            Log.i(TAG, "AI_REALTIME_MODEL shared-stem enabled; second separation model not required")
+            return
+        }
         ready = false
         onPreparingChanged(true)
         publishPhase(AiRealtimeSeparationPhase.LOADING_MODEL)
-        val openGeneration = ++generation
+        val openGeneration = synchronized(lock) {
+            modelOpenInFlight = true
+            ++modelOpenGeneration
+        }
         executor.execute {
             runCatching {
                 val store = AiSeparationPluginStore.get(appContext)
-                val selected = requireNotNull(store.selectedRealtimeInstalledModel()) {
-                    "请先下载并选择实时人声分离模型"
+                val selected = requireNotNull(store.preferredRealtimeInstalledModel()) {
+                    "请先下载并选择可实时运行的 MDX 人声分离模型"
                 }
                 val modelContract = requireNotNull(selected.catalog.contract) {
                     "当前模型不包含可执行参数"
@@ -122,13 +193,14 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
                 require(modelContract.tensorLayout == "bcft_complex_channels") {
                     "当前高质量波形模型仅支持离线分离；实时播放请选择 MDX 模型"
                 }
-                val modelFile = requireNotNull(store.selectedRealtimeModelFile()) {
-                    "当前实时模型文件不存在"
-                }
+                val modelFile = File(selected.directory, selected.catalog.modelFile).takeIf(File::isFile)
+                    ?: error("当前实时模型文件不存在")
                 val session = AiOnnxRuntimeSession.open(appContext, modelFile, modelContract)
                 val accepted = synchronized(lock) {
-                    if (!enabled || openGeneration != generation) {
+                    val directNow = canUseCachedDirectLocked() || canUseSharedDirectLocked()
+                    if (!desiredEnabled || !enabled || openGeneration != modelOpenGeneration || directNow) {
                         session.close()
+                        if (openGeneration == modelOpenGeneration) modelOpenInFlight = false
                         false
                     } else {
                         runtimeSession?.close()
@@ -137,6 +209,7 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
                         contract = modelContract
                         clearPipelineLocked("model_ready")
                         ready = true
+                        modelOpenInFlight = false
                         true
                     }
                 }
@@ -148,7 +221,9 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
                         "segment=${selected.catalog.segmentSamples} sr=${selected.catalog.sampleRate}",
                 )
             }.onFailure { error ->
-                if (openGeneration == generation) {
+                if (openGeneration == modelOpenGeneration) {
+                    modelOpenInFlight = false
+                    desiredEnabled = false
                     enabled = false
                     ready = false
                     onPreparingChanged(false)
@@ -172,21 +247,54 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
         strength = value.coerceIn(0f, 1f)
     }
 
-    fun setCachedResult(result: AiSeparationResult?, songIdentity: String) {
-        synchronized(lock) {
-            if (cachedResult?.id == result?.id && cachedSongIdentity == songIdentity) return
-            closeCachedDecoderLocked()
-            cachedResult = result
-            cachedSongIdentity = songIdentity
-            clearPipelineLocked("cached_result_changed")
+    fun setSeparatedBlockTransformer(value: AiRealtimeSeparatedBlockTransformer?) {
+        val previous = separatedBlockTransformer
+        if (previous === value) return
+        separatedBlockTransformer = value
+        reset("separated_transform_changed")
+        if (previous != null) {
+            // Serialize close after an in-flight transform has returned. reset() clears queued stale work.
+            transformExecutor.execute { previous.runCatching { close() } }
         }
-        if (enabled && result != null) {
+    }
+
+    fun setCachedDependency(dependency: AiStemDependency?, songIdentity: String) {
+        synchronized(lock) {
+            if (cachedDependency?.dependencyFingerprint == dependency?.dependencyFingerprint &&
+                cachedSongIdentity == songIdentity
+            ) return
+            closeCachedDecoderLocked()
+            cachedDependency = dependency
+            cachedSongIdentity = songIdentity
+            clearPipelineLocked("cached_dependency_changed")
+        }
+        val cachedDirect = synchronized(lock) { canUseCachedDirectLocked() }
+        if (enabled && cachedDirect && dependency != null) {
             publishPhase(AiRealtimeSeparationPhase.ACTIVE)
             onPreparingChanged(false)
-            Log.i(TAG, "AI_REALTIME_CACHE hit result=${result.id} format=${result.outputFormat}")
-        } else if (enabled && !ready) {
+            Log.i(
+                TAG,
+                "AI_REALTIME_CACHE hit dependency=${dependency.dependencyFingerprint.take(12)} " +
+                    "result=${dependency.separationResultId} format=${dependency.outputFormat}",
+            )
+        } else if (enabled && !ready && sharedStreamTaskId.isBlank()) {
+            // A cached result disappeared and no shared separation owns the stem stream.
+            setEnabled(true)
+        }
+    }
+
+    fun setSharedLiveStream(stream: AiSeparationLiveStreamState?, playbackSongIdentity: String) {
+        synchronized(lock) {
+            val nextTaskId = stream?.takeIf { it.active && it.sourceIdentity.isNotBlank() }?.taskId.orEmpty()
+            if (sharedStreamTaskId == nextTaskId && sharedPlaybackSongIdentity == playbackSongIdentity) return
+            sharedStreamTaskId = nextTaskId
+            sharedPlaybackSongIdentity = if (nextTaskId.isBlank()) "" else playbackSongIdentity
+            clearPipelineLocked("shared_live_stream_changed")
+        }
+        if (enabled && stream != null && stream.active && stream.ready) {
+            ready = false
             onPreparingChanged(true)
-            publishPhase(AiRealtimeSeparationPhase.LOADING_MODEL)
+            publishPhase(AiRealtimeSeparationPhase.BUFFERING_AUDIO)
         }
     }
 
@@ -217,18 +325,39 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
 
         synchronized(lock) {
             if (!active) return byteCount
-            if (cachedResult != null) {
+            if (!firstInputLogged) {
+                firstInputLogged = true
+                Log.i(
+                    TAG,
+                    "AI_REALTIME_MODEL first_input position_ms=${playbackPositionProvider().coerceAtLeast(0L)} " +
+                        "channels=$channels sr=$sampleRate bits=$bitsPerSample " +
+                        "cachedDirect=${canUseCachedDirectLocked()} sharedDirect=${canUseSharedDirectLocked()}",
+                )
+            }
+            val directCached = canUseCachedDirectLocked()
+            if (directCached) {
                 if (cachedSongIdentity != songIdentityProvider()) {
                     closeCachedDecoderLocked()
-                    cachedResult = null
+                    cachedDependency = null
                     return byteCount
                 }
                 return processCachedLocked(buffer, byteCount, frames, format, dry)
+            }
+            if (canUseSharedDirectLocked()) {
+                if (sharedPlaybackSongIdentity != songIdentityProvider()) {
+                    sharedStreamTaskId = ""
+                    sharedPlaybackSongIdentity = ""
+                    clearPipelineLocked("shared_song_changed")
+                    return byteCount
+                }
+                return processSharedLiveLocked(buffer, frames, format, dry)
             }
             if (inputEnded) return 0
             if (sourceFormat != format) {
                 clearPipelineLocked("format_changed")
                 sourceFormat = format
+                modelTimelineStartMs = playbackPositionProvider().coerceAtLeast(0L)
+                submittedTimelineFrames = 0L
                 val modelRate = installedModel?.catalog?.sampleRate ?: return byteCount
                 inputResampler = StreamingStereoResampler(sampleRate, modelRate)
             }
@@ -236,9 +365,21 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
             modelSamples.append(converted)
             enqueueAvailableSegmentsLocked(format)
 
+            // AI performance adds a second, heavier transform after separation. Do not turn its
+            // warm-up into audible silence: emit the original PCM until a processed block covers
+            // the exact timeline position, then consume that block in place.
+            if (separatedBlockTransformer != null) {
+                if (tryWritePerformanceOutputLocked(buffer, frames, format)) {
+                    return frames * format.channels * format.bytesPerSample
+                }
+                markPerformancePassthroughLocked(frames)
+                return byteCount
+            }
+
             if (!playbackStarted) {
                 publishPhase(AiRealtimeSeparationPhase.BUFFERING_AUDIO)
-                if (submittedSegments < INITIAL_SEGMENTS && outputs.isEmpty()) {
+                val initialSegments = if (separatedBlockTransformer != null) 1 else INITIAL_SEGMENTS
+                if (submittedSegments < initialSegments && outputs.isEmpty()) {
                     return 0
                 }
                 waitForOutputLocked()
@@ -254,17 +395,40 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
     override fun drain(buffer: ByteArray, maxByteCount: Int): Int {
         synchronized(lock) {
             if (!active) return -1
-            if (cachedResult != null) return -1
+            if (cachedDependency != null) return -1
+            if (separatedBlockTransformer != null) {
+                // Performance output is an in-place replacement for PCM that may already have
+                // been emitted during warm-up. Never drain it again at EOF, or the tail is heard
+                // twice. Invalidate workers that are still finishing the already-played timeline.
+                generation++
+                inputEnded = true
+                transformTasks.clear()
+                outputs.clear()
+                outputOffsetFrames = 0
+                lock.notifyAll()
+                return -1
+            }
             val format = sourceFormat ?: return -1
+            if (sharedStreamTaskId.isNotBlank()) {
+                if (!inputEnded) {
+                    inputEnded = true
+                    enqueueSharedAvailableLocked(format, allowPartial = true)
+                }
+                if (outputs.isEmpty() && hasPendingWorkLocked()) waitForOutputLocked()
+                if (outputs.isEmpty()) return if (hasPendingWorkLocked()) 0 else -1
+                val frameSize = format.channels * format.bytesPerSample
+                val requestedFrames = (minOf(maxByteCount, buffer.size) / frameSize).coerceAtLeast(1)
+                return writeOutputLocked(buffer, requestedFrames, format)
+            }
             if (!inputEnded) {
                 inputEnded = true
                 enqueueTailSegmentLocked(format)
             }
-            if (outputs.isEmpty() && (tasks.isNotEmpty() || workerScheduled)) {
+            if (outputs.isEmpty() && hasPendingWorkLocked()) {
                 waitForOutputLocked()
             }
             if (outputs.isEmpty()) {
-                return if (tasks.isEmpty() && !workerScheduled) -1 else 0
+                return if (!hasPendingWorkLocked()) -1 else 0
             }
             val frameSize = format.channels * format.bytesPerSample
             val requestedFrames = (minOf(maxByteCount, buffer.size) / frameSize).coerceAtLeast(1)
@@ -273,16 +437,44 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
     }
 
     override fun reset(reason: String) {
+        val rearm: Boolean
         synchronized(lock) {
             generation++
             clearPipelineLocked(reason)
+            rearm = AiRealtimeResetPolicy.shouldRearm(
+                desiredEnabled = desiredEnabled,
+                ready = ready,
+                cachedDirect = canUseCachedDirectLocked(),
+                sharedDirect = canUseSharedDirectLocked(),
+                modelOpenInFlight = modelOpenInFlight,
+            )
+        }
+        separatedBlockTransformer?.runCatching { reset(reason) }
+        if (reason == "new_play_request" && desiredEnabled && separatedBlockTransformer != null) {
+            Log.i(
+                TAG,
+                "AI_PERF_REARM_AFTER_PLAY_REQUEST rearm=$rearm ready=$ready opening=$modelOpenInFlight " +
+                    "song=${Integer.toHexString(songIdentityProvider().hashCode())}",
+            )
+        }
+        if (rearm) {
+            Log.i(TAG, "AI_REALTIME_MODEL rearm reason=$reason desired=true")
+            armEnabled("reset:$reason")
         }
     }
 
     override fun close() {
+        desiredEnabled = false
         enabled = false
         ready = false
+        synchronized(lock) {
+            modelOpenGeneration++
+            modelOpenInFlight = false
+        }
         reset("close")
+        val transformer = separatedBlockTransformer
+        separatedBlockTransformer = null
+        transformer?.runCatching { close() }
         executor.execute {
             synchronized(lock) {
                 runtimeSession?.close()
@@ -290,6 +482,95 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
             }
         }
     }
+
+    private fun processSharedLiveLocked(
+        destination: ByteArray,
+        requestedFrames: Int,
+        format: PcmFormat,
+        dry: FloatArray,
+    ): Int {
+        if (inputEnded) return 0
+        if (sourceFormat != format) {
+            clearPipelineLocked("shared_format_changed")
+            sourceFormat = format
+            sharedTimelineStartMs = playbackPositionProvider().coerceAtLeast(0L)
+            sharedSubmittedFrames = 0L
+        }
+        sharedMixtureSamples.append(dry)
+        enqueueSharedAvailableLocked(format, allowPartial = false)
+        if (separatedBlockTransformer != null) {
+            if (tryWritePerformanceOutputLocked(destination, requestedFrames, format)) {
+                return requestedFrames * format.channels * format.bytesPerSample
+            }
+            markPerformancePassthroughLocked(requestedFrames)
+            return requestedFrames * format.channels * format.bytesPerSample
+        }
+        if (!playbackStarted) {
+            publishPhase(AiRealtimeSeparationPhase.BUFFERING_AUDIO)
+            if (outputs.isEmpty() && !hasPendingWorkLocked()) return 0
+            waitForOutputLocked()
+            if (outputs.isNotEmpty()) playbackStarted = true
+        } else if (outputs.isEmpty() && hasPendingWorkLocked()) {
+            waitForOutputLocked()
+        }
+        if (outputs.isEmpty()) return 0
+        return writeOutputLocked(destination, requestedFrames, format)
+    }
+
+    private fun enqueueSharedAvailableLocked(format: PcmFormat, allowPartial: Boolean) {
+        val transformer = separatedBlockTransformer ?: return
+        val latest = currentSharedStreamLocked() ?: return
+        val targetFrames = maxOf(SHARED_TRANSFORM_MIN_FRAMES, format.sampleRate * SHARED_TRANSFORM_BLOCK_MS / 1000)
+        while (sharedMixtureSamples.frameCount >= if (allowPartial) 1 else targetFrames) {
+            val frames = if (sharedMixtureSamples.frameCount >= targetFrames) {
+                targetFrames
+            } else {
+                sharedMixtureSamples.frameCount
+            }
+            val blockStartMs = sharedTimelineStartMs +
+                sharedSubmittedFrames * 1000L / format.sampleRate.coerceAtLeast(1)
+            val vocal = AiSharedStemWavReader.readStereoAt(
+                stream = latest,
+                playbackPositionMs = blockStartMs,
+                outputFrames = frames,
+                outputSampleRate = format.sampleRate,
+            ) ?: break
+            val mixture = FloatArray(frames * CHANNELS)
+            sharedMixtureSamples.copyFramesTo(mixture, 0, 0, frames)
+            sharedMixtureSamples.discardFrames(frames)
+            transformTasks.addLast(
+                TransformTask(
+                    generation = generation,
+                    transformer = transformer,
+                    mixture = mixture,
+                    vocal = vocal,
+                    modelSampleRate = format.sampleRate,
+                    sourceSampleRate = format.sampleRate,
+                    playbackPositionMs = blockStartMs,
+                    timelineStartFrame = sharedSubmittedFrames,
+                    separationMs = 0L,
+                )
+            )
+            sharedSubmittedFrames += frames.toLong()
+            submittedSegments++
+            scheduleTransformWorkerLocked()
+            if (allowPartial) break
+        }
+    }
+
+    private fun currentSharedStreamLocked(): AiSeparationLiveStreamState? {
+        val taskId = sharedStreamTaskId
+        if (taskId.isBlank()) return null
+        return AiSeparationLiveStreamBus.state.value.takeIf { state ->
+            state.taskId == taskId && state.active && state.ready
+        }
+    }
+
+    private fun canUseSharedDirectLocked(): Boolean =
+        separatedBlockTransformer != null &&
+            sharedPlaybackSongIdentity.isNotBlank() &&
+            sharedPlaybackSongIdentity == songIdentityProvider() &&
+            currentSharedStreamLocked() != null
 
     private fun enqueueAvailableSegmentsLocked(format: PcmFormat) {
         val selected = installedModel ?: return
@@ -304,6 +585,7 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
         if (usefulFrames <= 0) return
         val requiredFutureFrames = usefulFrames + trim
         while (modelSamples.frameCount >= requiredFutureFrames) {
+            val sourceStartFrame = submittedSourceFrames
             val segment = FloatArray(segmentFrames * CHANNELS)
             if (trim > 0 && previousContext.isNotEmpty()) {
                 previousContext.copyInto(segment, 0)
@@ -329,9 +611,14 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
                     usefulMixture = useful,
                     sourceSampleRate = format.sampleRate,
                     trimFrames = trim,
+                    playbackPositionMs = modelTimelineStartMs +
+                        submittedTimelineFrames * 1000L / selected.catalog.sampleRate.coerceAtLeast(1),
+                    timelineStartFrame = sourceStartFrame,
                 )
             )
             submittedSegments++
+            submittedTimelineFrames += usefulFrames.toLong()
+            submittedSourceFrames += usefulFrames.toLong() * format.sampleRate / selected.catalog.sampleRate
         }
         scheduleWorkerLocked()
     }
@@ -352,6 +639,7 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
         }
         val writableFrames = minOf(remainingFrames, (segmentFrames - trim).coerceAtLeast(0))
         if (writableFrames <= 0) return
+        val sourceStartFrame = submittedSourceFrames
         modelSamples.copyFramesTo(
             destination = segment,
             destinationFrameOffset = trim,
@@ -368,9 +656,14 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
                 usefulMixture = useful,
                 sourceSampleRate = format.sampleRate,
                 trimFrames = trim,
+                playbackPositionMs = modelTimelineStartMs +
+                    submittedTimelineFrames * 1000L / selected.catalog.sampleRate.coerceAtLeast(1),
+                timelineStartFrame = sourceStartFrame,
             )
         )
         submittedSegments++
+        submittedTimelineFrames += writableFrames.toLong()
+        submittedSourceFrames += writableFrames.toLong() * format.sampleRate / selected.catalog.sampleRate
         scheduleWorkerLocked()
         Log.i(TAG, "AI_REALTIME_MODEL eof_tail frames=$writableFrames")
     }
@@ -394,6 +687,17 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
         }
     }
 
+    private fun reusableInferenceBuffer(current: ByteBuffer?, byteCount: Int): ByteBuffer {
+        val buffer = if (current == null || current.capacity() < byteCount) {
+            ByteBuffer.allocateDirect(byteCount).order(ByteOrder.nativeOrder())
+        } else {
+            current
+        }
+        buffer.clear()
+        buffer.limit(byteCount)
+        return buffer
+    }
+
     private fun processTask(task: SegmentTask) {
         val session: AiOnnxRuntimeSession
         val selected: AiSeparationInstalledModel
@@ -404,10 +708,13 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
             modelContract = contract ?: return
         }
         val segmentFrames = selected.catalog.segmentSamples.toInt()
-        val mixtureBytes = ByteBuffer.allocateDirect(task.segment.size * Float.SIZE_BYTES)
-            .order(ByteOrder.nativeOrder())
-        val vocalBytes = ByteBuffer.allocateDirect(task.segment.size * Float.SIZE_BYTES)
-            .order(ByteOrder.nativeOrder())
+        val byteCount = task.segment.size * Float.SIZE_BYTES
+        val mixtureBytes = reusableInferenceBuffer(mixtureInferenceBuffer, byteCount).also {
+            mixtureInferenceBuffer = it
+        }
+        val vocalBytes = reusableInferenceBuffer(vocalInferenceBuffer, byteCount).also {
+            vocalInferenceBuffer = it
+        }
         mixtureBytes.asFloatBuffer().put(task.segment)
         if (!playbackStarted) {
             publishPhase(AiRealtimeSeparationPhase.RUNNING_MODEL)
@@ -425,30 +732,132 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
             fail(result.exceptionOrNull()?.message ?: "实时模型推理失败")
             return
         }
-        val vocalFull = FloatArray(task.segment.size)
         vocalBytes.rewind()
-        vocalBytes.asFloatBuffer().get(vocalFull)
         val usefulFrames = task.usefulMixture.size / CHANNELS
         val vocalStart = task.trimFrames * CHANNELS
-        val modelOutput = FloatArray(usefulFrames * 4)
+        val usefulVocal = FloatArray(usefulFrames * CHANNELS)
+        vocalBytes.asFloatBuffer().apply {
+            position(vocalStart)
+            get(usefulVocal, 0, usefulVocal.size)
+        }
+        val inferMs = SystemClock.elapsedRealtime() - started
+        val transformer = separatedBlockTransformer
+        if (transformer != null) {
+            synchronized(lock) {
+                if (enabled && task.generation == generation) {
+                    transformTasks.addLast(
+                        TransformTask(
+                            generation = task.generation,
+                            transformer = transformer,
+                            mixture = task.usefulMixture,
+                            vocal = usefulVocal,
+                            modelSampleRate = selected.catalog.sampleRate,
+                            sourceSampleRate = task.sourceSampleRate,
+                            playbackPositionMs = task.playbackPositionMs,
+                            timelineStartFrame = task.timelineStartFrame,
+                            separationMs = inferMs,
+                        )
+                    )
+                    scheduleTransformWorkerLocked()
+                    lock.notifyAll()
+                }
+            }
+            Log.i(TAG, "AI_REALTIME_MODEL separated infer_ms=$inferMs queued_transform=true")
+            return
+        }
+
+        val preparedAtModelRate = FloatArray(usefulFrames * 4)
         for (frame in 0 until usefulFrames) {
             val source = frame * CHANNELS
-            val vocal = vocalStart + source
             val target = frame * 4
-            modelOutput[target] = task.usefulMixture[source]
-            modelOutput[target + 1] = task.usefulMixture[source + 1]
-            modelOutput[target + 2] = vocalFull[vocal]
-            modelOutput[target + 3] = vocalFull[vocal + 1]
+            preparedAtModelRate[target] = task.usefulMixture[source]
+            preparedAtModelRate[target + 1] = task.usefulMixture[source + 1]
+            preparedAtModelRate[target + 2] = usefulVocal[source]
+            preparedAtModelRate[target + 3] = usefulVocal[source + 1]
         }
         val output = resampleBlock(
-            input = modelOutput,
+            input = preparedAtModelRate,
             channels = 4,
             inputRate = selected.catalog.sampleRate,
             outputRate = task.sourceSampleRate,
         )
+        publishOutput(task.generation, output, 4)
+        Log.i(
+            TAG,
+            "AI_REALTIME_MODEL segment infer_ms=$inferMs out_frames=${output.size / 4}",
+        )
+    }
+
+    private fun canUseCachedDirectLocked(): Boolean = cachedDependency != null &&
+        (separatedBlockTransformer == null || separatedBlockTransformer?.realtimePlaybackSafe == true)
+
+    private fun waitForOutputLocked() {
+        val deadline = SystemClock.elapsedRealtime() + MAX_WAIT_MS
+        while (enabled && outputs.isEmpty() && hasPendingWorkLocked()) {
+            val remaining = deadline - SystemClock.elapsedRealtime()
+            if (remaining <= 0L) break
+            lock.wait(remaining.coerceAtMost(250L))
+        }
+    }
+
+    private fun hasPendingWorkLocked(): Boolean =
+        tasks.isNotEmpty() || workerScheduled || transformTasks.isNotEmpty() || transformWorkerScheduled
+
+    private fun scheduleTransformWorkerLocked() {
+        if (transformWorkerScheduled || transformTasks.isEmpty()) return
+        transformWorkerScheduled = true
+        transformExecutor.execute {
+            while (true) {
+                val task = synchronized(lock) {
+                    transformTasks.pollFirst().also {
+                        if (it == null) transformWorkerScheduled = false
+                    }
+                } ?: return@execute
+                processTransformTask(task)
+            }
+        }
+    }
+
+    private fun processTransformTask(task: TransformTask) {
+        val started = SystemClock.elapsedRealtime()
+        val transformed = try {
+            task.transformer.transformAt(
+                mixtureStereo = task.mixture,
+                vocalStereo = task.vocal,
+                sampleRate = task.modelSampleRate,
+                playbackPositionMs = task.playbackPositionMs,
+            ).also { output ->
+                require(output.size == task.mixture.size) {
+                    "实时 AI transform 必须保持原始 frame count"
+                }
+            }
+        } catch (error: Throwable) {
+            fail(error.message ?: "实时 AI transform 失败")
+            return
+        }
+        val output = resampleBlock(
+            input = transformed,
+            channels = CHANNELS,
+            inputRate = task.modelSampleRate,
+            outputRate = task.sourceSampleRate,
+        )
+        publishOutput(task.generation, output, CHANNELS, task.timelineStartFrame)
+        Log.i(
+            TAG,
+            "AI_REALTIME_MODEL transform separation_ms=${task.separationMs} " +
+                "transform_ms=${SystemClock.elapsedRealtime() - started} out_frames=${output.size / CHANNELS}",
+        )
+    }
+
+    private fun publishOutput(
+        taskGeneration: Long,
+        output: FloatArray,
+        outputChannels: Int,
+        timelineStartFrame: Long = Long.MIN_VALUE,
+    ) {
         synchronized(lock) {
-            if (enabled && task.generation == generation) {
-                outputs.addLast(OutputBlock(output))
+            if (enabled && taskGeneration == generation) {
+                outputs.addLast(OutputBlock(output, outputChannels, timelineStartFrame))
                 if (!playbackStarted) {
                     publishPhase(AiRealtimeSeparationPhase.ACTIVE)
                     onPreparingChanged(false)
@@ -456,20 +865,82 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
                 lock.notifyAll()
             }
         }
-        Log.i(
-            TAG,
-            "AI_REALTIME_MODEL segment infer_ms=${SystemClock.elapsedRealtime() - started} " +
-                "out_frames=${output.size / 4}",
-        )
     }
 
-    private fun waitForOutputLocked() {
-        val deadline = SystemClock.elapsedRealtime() + MAX_WAIT_MS
-        while (enabled && outputs.isEmpty() && (tasks.isNotEmpty() || workerScheduled)) {
-            val remaining = deadline - SystemClock.elapsedRealtime()
-            if (remaining <= 0L) break
-            lock.wait(remaining.coerceAtMost(250L))
+    private fun markPerformancePassthroughLocked(frames: Int) {
+        if (!playbackStarted) {
+            playbackStarted = true
+            publishPhase(AiRealtimeSeparationPhase.ACTIVE)
+            onPreparingChanged(false)
         }
+        performanceTimelineFrames += frames.toLong()
+        if (!performanceWarmupLogged) {
+            performanceWarmupLogged = true
+            Log.i(
+                TAG,
+                "AI_PERF realtime_passthrough frames=$frames " +
+                    "timeline=$performanceTimelineFrames queued=${outputs.size}",
+            )
+        }
+    }
+
+    private fun tryWritePerformanceOutputLocked(
+        destination: ByteArray,
+        requestedFrames: Int,
+        format: PcmFormat,
+    ): Boolean {
+        if (requestedFrames <= 0) return false
+        discardStalePerformanceOutputLocked()
+        if (!hasPerformanceFramesLocked(requestedFrames)) return false
+        val written = writeOutputLocked(destination, requestedFrames, format)
+        if (written != requestedFrames * format.channels * format.bytesPerSample) {
+            return false
+        }
+        if (!playbackStarted) {
+            playbackStarted = true
+            publishPhase(AiRealtimeSeparationPhase.ACTIVE)
+            onPreparingChanged(false)
+        }
+        performanceTimelineFrames += requestedFrames.toLong()
+        return true
+    }
+
+    private fun discardStalePerformanceOutputLocked() {
+        while (outputs.isNotEmpty()) {
+            val block = outputs.first()
+            if (block.timelineStartFrame == Long.MIN_VALUE) return
+            val blockFrames = block.samples.size / block.channels
+            val blockPosition = block.timelineStartFrame + outputOffsetFrames
+            val staleFrames = performanceTimelineFrames - blockPosition
+            if (staleFrames <= 0L) return
+            outputOffsetFrames += staleFrames.coerceAtMost((blockFrames - outputOffsetFrames).toLong()).toInt()
+            if (outputOffsetFrames >= blockFrames) {
+                outputs.removeFirst()
+                outputOffsetFrames = 0
+            }
+        }
+    }
+
+    private fun hasPerformanceFramesLocked(requestedFrames: Int): Boolean {
+        var cursor = performanceTimelineFrames
+        var remaining = requestedFrames
+        var first = true
+        for (block in outputs) {
+            if (block.timelineStartFrame == Long.MIN_VALUE) return false
+            val offset = if (first) outputOffsetFrames else 0
+            first = false
+            val blockFrames = block.samples.size / block.channels
+            val blockPosition = block.timelineStartFrame + offset
+            if (blockPosition > cursor) return false
+            val skip = (cursor - blockPosition).coerceAtMost((blockFrames - offset).toLong()).toInt()
+            val available = blockFrames - offset - skip
+            if (available <= 0) continue
+            val take = minOf(remaining, available)
+            cursor += take.toLong()
+            remaining -= take
+            if (remaining == 0) return true
+        }
+        return false
     }
 
     private fun writeOutputLocked(
@@ -480,19 +951,30 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
         var writtenFrames = 0
         while (writtenFrames < requestedFrames && outputs.isNotEmpty()) {
             val block = outputs.first()
-            val blockFrames = block.samples.size / 4
+            val blockFrames = block.samples.size / block.channels
             val available = blockFrames - outputOffsetFrames
             val take = minOf(requestedFrames - writtenFrames, available)
-            encodeMixed(
-                source = block.samples,
-                sourceFrameOffset = outputOffsetFrames,
-                destination = destination,
-                destinationFrameOffset = writtenFrames,
-                frames = take,
-                format = format,
-                selectedStem = stem,
-                selectedStrength = strength,
-            )
+            if (block.channels == CHANNELS) {
+                encodeStereo(
+                    source = block.samples,
+                    sourceFrameOffset = outputOffsetFrames,
+                    destination = destination,
+                    destinationFrameOffset = writtenFrames,
+                    frames = take,
+                    format = format,
+                )
+            } else {
+                encodeMixed(
+                    source = block.samples,
+                    sourceFrameOffset = outputOffsetFrames,
+                    destination = destination,
+                    destinationFrameOffset = writtenFrames,
+                    frames = take,
+                    format = format,
+                    selectedStem = stem,
+                    selectedStrength = strength,
+                )
+            }
             writtenFrames += take
             outputOffsetFrames += take
             if (outputOffsetFrames >= blockFrames) {
@@ -510,14 +992,11 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
         format: PcmFormat,
         dry: FloatArray,
     ): Int {
-        val result = cachedResult ?: return byteCount
-        val selectedFile = if (stem == AiSeparationStem.VOCALS) {
-            result.vocalsFile
-        } else {
-            result.instrumentalFile
-        }
+        val dependency = cachedDependency ?: return byteCount
+        val transformer = separatedBlockTransformer?.takeIf { it.realtimePlaybackSafe }
+        val selectedFile = if (transformer != null) dependency.vocalsFile else dependency.fileFor(stem)
         if (!selectedFile.isFile) {
-            cachedResult = null
+            cachedDependency = null
             closeCachedDecoderLocked()
             return byteCount
         }
@@ -530,7 +1009,7 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
                 format.channels,
             )
             if (cachedDecoder == 0L) {
-                cachedResult = null
+                cachedDependency = null
                 return byteCount
             }
             cachedDecoderPath = selectedFile.absolutePath
@@ -548,6 +1027,37 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
         val cachedFrames = decodedBytes / (cachedFormat.channels * cachedFormat.bytesPerSample)
         val stemSamples = decodeStereo(cachedDecodeBuffer, cachedFrames, cachedFormat)
         val outputFrames = minOf(requestedFrames, cachedFrames)
+        if (transformer != null) {
+            val dryExact = if (outputFrames * CHANNELS == dry.size) dry else dry.copyOf(outputFrames * CHANNELS)
+            val vocalExact = if (outputFrames * CHANNELS == stemSamples.size) stemSamples else
+                stemSamples.copyOf(outputFrames * CHANNELS)
+            val transformed = try {
+                transformer.transformAt(
+                    mixtureStereo = dryExact,
+                    vocalStereo = vocalExact,
+                    sampleRate = format.sampleRate,
+                    playbackPositionMs = playbackPositionProvider().coerceAtLeast(0L),
+                )
+            } catch (error: Throwable) {
+                fail(error.message ?: "MID 实时演奏失败")
+                return 0
+            }
+            require(transformed.size == outputFrames * CHANNELS) { "MID transform frame count mismatch" }
+            encodeStereo(
+                source = transformed,
+                sourceFrameOffset = 0,
+                destination = destination,
+                destinationFrameOffset = 0,
+                frames = outputFrames,
+                format = format,
+            )
+            if (!playbackStarted) {
+                playbackStarted = true
+                publishPhase(AiRealtimeSeparationPhase.ACTIVE)
+                onPreparingChanged(false)
+            }
+            return outputFrames * format.channels * format.bytesPerSample
+        }
         val mix = strength
         for (frame in 0 until outputFrames) {
             val sample = frame * CHANNELS
@@ -572,8 +1082,10 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
     private fun clearPipelineLocked(reason: String) {
         closeCachedDecoderLocked()
         tasks.clear()
+        transformTasks.clear()
         outputs.clear()
         modelSamples.clear()
+        sharedMixtureSamples.clear()
         inputResampler = null
         sourceFormat = null
         previousContext = FloatArray(0)
@@ -581,8 +1093,20 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
         playbackStarted = false
         outputOffsetFrames = 0
         inputEnded = false
+        modelTimelineStartMs = 0L
+        submittedTimelineFrames = 0L
+        sharedTimelineStartMs = 0L
+        sharedSubmittedFrames = 0L
+        submittedSourceFrames = 0L
+        performanceTimelineFrames = 0L
+        firstInputLogged = false
+        performanceWarmupLogged = false
         lock.notifyAll()
-        Log.i(TAG, "AI_REALTIME_MODEL reset reason=$reason")
+        Log.i(
+            TAG,
+            "AI_REALTIME_MODEL reset reason=$reason desired=$desiredEnabled enabled=$enabled " +
+                "ready=$ready opening=$modelOpenInFlight",
+        )
     }
 
     private fun closeCachedDecoderLocked() {
@@ -594,6 +1118,7 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
     }
 
     private fun fail(message: String) {
+        desiredEnabled = false
         enabled = false
         ready = false
         synchronized(lock) {
@@ -636,6 +1161,29 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
             Float.fromBits(bits).takeIf { it.isFinite() }?.coerceIn(-1f, 1f) ?: 0f
         } else {
             bits.toFloat() / 2147483648f
+        }
+    }
+
+    private fun encodeStereo(
+        source: FloatArray,
+        sourceFrameOffset: Int,
+        destination: ByteArray,
+        destinationFrameOffset: Int,
+        frames: Int,
+        format: PcmFormat,
+    ) {
+        val frameSize = format.channels * format.bytesPerSample
+        for (index in 0 until frames) {
+            val sourceBase = (sourceFrameOffset + index) * CHANNELS
+            val left = source[sourceBase]
+            val right = source[sourceBase + 1]
+            val destinationBase = (destinationFrameOffset + index) * frameSize
+            if (format.channels == 1) {
+                writeSample(destination, destinationBase, (left + right) * 0.5f, format)
+            } else {
+                writeSample(destination, destinationBase, left, format)
+                writeSample(destination, destinationBase + format.bytesPerSample, right, format)
+            }
         }
     }
 
@@ -748,9 +1296,27 @@ object AiRealtimeOnnxPcmProcessor : RealtimePlaybackPcmProcessor, Closeable {
         val usefulMixture: FloatArray,
         val sourceSampleRate: Int,
         val trimFrames: Int,
+        val playbackPositionMs: Long,
+        val timelineStartFrame: Long,
     )
 
-    private data class OutputBlock(val samples: FloatArray)
+    private data class TransformTask(
+        val generation: Long,
+        val transformer: AiRealtimeSeparatedBlockTransformer,
+        val mixture: FloatArray,
+        val vocal: FloatArray,
+        val modelSampleRate: Int,
+        val sourceSampleRate: Int,
+        val playbackPositionMs: Long,
+        val timelineStartFrame: Long,
+        val separationMs: Long,
+    )
+
+    private data class OutputBlock(
+        val samples: FloatArray,
+        val channels: Int,
+        val timelineStartFrame: Long = Long.MIN_VALUE,
+    )
 
     private data class PcmFormat(
         val channels: Int,

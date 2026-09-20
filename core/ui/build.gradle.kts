@@ -38,9 +38,6 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.lifecycle.livedata.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
-    // Experimental PowerList A/B branch: Coil handles list/grid Compose request state while
-    // BitmapProvider keeps RawSMusic-specific audio/folder/embedded artwork decoding.
-    implementation("io.coil-kt:coil-compose:2.7.0")
     implementation(libs.lottie)
     implementation(libs.lottie.compose)
 

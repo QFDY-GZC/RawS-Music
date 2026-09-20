@@ -6,8 +6,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.scene.NavScene
-import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
-import com.rawsmusic.core.ui.widget.powerlist.rememberComposePowerListState
+import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListState
+import com.rawsmusic.core.ui.widget.virtuallist.rememberComposeVirtualListState
 
 private const val RECENT_WINDOW_MS = 7L * 24L * 60L * 60L * 1000L
 
@@ -16,7 +16,9 @@ fun RecentlyAddedPage(
     songs: List<AudioFile>,
     onBack: () -> Unit,
     onSongClick: (AudioFile, Int) -> Unit,
-    onShuffle: (List<AudioFile>) -> Unit
+    selectionActions: LibrarySongSelectionActions = LibrarySongSelectionActions(),
+    onShuffle: (List<AudioFile>) -> Unit,
+    virtualListState: ComposeVirtualListState = rememberComposeVirtualListState("recently_added"),
 ) {
     val recentSongs = remember(songs) {
         val cutoff = System.currentTimeMillis() - RECENT_WINDOW_MS
@@ -25,20 +27,21 @@ fun RecentlyAddedPage(
             .sortedByDescending { maxOf(it.dateAdded, it.dateModified) }
             .toList()
     }
-    val state = rememberComposePowerListState("recently_added")
     LibraryListScaffold(
         title = stringResource(com.rawsmusic.core.ui.R.string.library_title_recently_added),
         sceneId = NavScene.RECENTLY_ADDED.name,
+        statisticsText = stringResource(com.rawsmusic.core.ui.R.string.library_statistics_recent, recentSongs.size),
         onBack = onBack,
-        powerListState = state,
+        virtualListState = virtualListState,
         onShuffle = { if (recentSongs.isNotEmpty()) onShuffle(recentSongs) }
     ) { topPadding, backdropSource ->
-        ComposePowerListFull(
+        SelectableSongList(
             songs = recentSongs,
-            state = state,
+            state = virtualListState,
             contentTopPadding = topPadding,
             modifier = Modifier.then(backdropSource),
-            onSongClick = onSongClick
+            selectionActions = selectionActions,
+            onSongClick = onSongClick,
         )
     }
 }

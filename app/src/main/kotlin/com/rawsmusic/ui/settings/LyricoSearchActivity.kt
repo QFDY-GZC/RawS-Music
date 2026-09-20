@@ -8,6 +8,7 @@ import android.app.RecoverableSecurityException
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -51,10 +52,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import coil.compose.AsyncImage
 import com.rawsmusic.R
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
 import com.rawsmusic.lyrico.LyricoAudioWriteAccess
 import com.rawsmusic.lyrico.LyricoPluginStore
 import com.rawsmusic.lyrico.LyricoCoverCandidate
@@ -62,6 +67,7 @@ import com.rawsmusic.lyrico.LyricoLyricTiming
 import com.rawsmusic.lyrico.LyricoSongCandidate
 import com.rawsmusic.lyrico.LyricoSourceEngine
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
@@ -104,8 +110,14 @@ class LyricoSearchActivity : BaseSettingsActivity() {
                 song = song,
                 onBack = ::finish,
                 requestCoverWriteAccess = ::requestCoverWriteAccess,
-                onApplied = {
-                    setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_SONG_PATH, song.path))
+                onApplied = { lyricsChanged, artworkChanged ->
+                    setResult(
+                        Activity.RESULT_OK,
+                        Intent()
+                            .putExtra(EXTRA_SONG_PATH, song.path)
+                            .putExtra(EXTRA_CHANGED_LYRICS, lyricsChanged)
+                            .putExtra(EXTRA_CHANGED_ARTWORK, artworkChanged)
+                    )
                     finish()
                 }
             )
@@ -166,6 +178,8 @@ class LyricoSearchActivity : BaseSettingsActivity() {
     companion object {
         const val EXTRA_SONG = "lyrico_song"
         const val EXTRA_SONG_PATH = "lyrico_song_path"
+        const val EXTRA_CHANGED_LYRICS = "lyrico_changed_lyrics"
+        const val EXTRA_CHANGED_ARTWORK = "lyrico_changed_artwork"
     }
 }
 
@@ -174,7 +188,7 @@ private fun LyricoSearchScreen(
     song: AudioFile,
     onBack: () -> Unit,
     requestCoverWriteAccess: suspend (AudioFile) -> Boolean,
-    onApplied: () -> Unit
+    onApplied: (lyricsChanged: Boolean, artworkChanged: Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -206,31 +220,85 @@ private fun LyricoSearchScreen(
         scope.launch {
             searching = true
             status = context.getString(R.string.lyrico_search_searching)
-            results = withContext(Dispatchers.IO) { engine.search(song, query.trim()) }
-            status = if (results.isEmpty()) {
-                context.getString(R.string.lyrico_search_empty)
-            } else {
-                context.getString(R.string.lyrico_search_count, results.size)
+            try {
+                val newResults = withContext(Dispatchers.IO) {
+                    val songResults = engine.search(song, query.trim())
+                    val directSources = store.listInstalled()
+                        .asSequence()
+                        .filter { it.enabled }
+                        .filter { plugin ->
+                            !engine.sourceSupports(plugin.manifest.id, "searchSongs") &&
+                                (engine.sourceSupports(plugin.manifest.id, "getLyrics") ||
+                                    engine.sourceSupports(plugin.manifest.id, "searchCovers"))
+                        }
+                        .map { plugin ->
+                            LyricoSongCandidate(
+                                pluginId = plugin.manifest.id,
+                                pluginName = plugin.manifest.name.ifBlank { plugin.manifest.id },
+                                id = "local:${song.id}",
+                                title = song.title,
+                                artist = song.artist,
+                                album = song.album,
+                                durationMs = song.duration,
+                                coverUrl = "",
+                                supportsCoverSearch = engine.sourceSupports(plugin.manifest.id, "searchCovers"),
+                                fields = emptyMap(),
+                                internal = emptyMap()
+                            )
+                        }
+                        .toList()
+                    songResults + directSources
+                }
+                results = newResults
+                status = if (newResults.isEmpty()) {
+                    context.getString(R.string.lyrico_search_empty)
+                } else {
+                    context.getString(R.string.lyrico_search_count, newResults.size)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                Log.e("LyricoSearch", "Lyric search failed", error)
+                status = context.getString(
+                    R.string.lyrico_search_failed,
+                    error.message.orEmpty().ifBlank { error.javaClass.simpleName }
+                )
+            } finally {
+                searching = false
             }
-            searching = false
         }
     }
 
     LaunchedEffect(song.path) {
-        availableSources = withContext(Dispatchers.IO) {
-            store.listInstalled()
-                .filter { it.enabled }
-                .map { plugin ->
-                    LyricoSourceFilter(
-                        id = plugin.manifest.id,
-                        name = plugin.manifest.name.ifBlank { plugin.manifest.id }
-                    )
-                }
-        }
-        if (availableSources.isEmpty()) {
-            status = context.getString(R.string.lyrico_search_no_sources)
-        } else {
-            search()
+        try {
+            availableSources = withContext(Dispatchers.IO) {
+                store.listInstalled()
+                    .filter { it.enabled }
+                    .filter { plugin ->
+                        engine.sourceSupports(plugin.manifest.id, "searchSongs") ||
+                            engine.sourceSupports(plugin.manifest.id, "getLyrics") ||
+                            engine.sourceSupports(plugin.manifest.id, "searchCovers")
+                    }
+                    .map { plugin ->
+                        LyricoSourceFilter(
+                            id = plugin.manifest.id,
+                            name = plugin.manifest.name.ifBlank { plugin.manifest.id }
+                        )
+                    }
+            }
+            if (availableSources.isEmpty()) {
+                status = context.getString(R.string.lyrico_search_no_sources)
+            } else {
+                search()
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            Log.e("LyricoSearch", "Unable to enumerate lyric sources", error)
+            status = context.getString(
+                R.string.lyrico_search_failed,
+                error.message.orEmpty().ifBlank { error.javaClass.simpleName }
+            )
         }
     }
 
@@ -344,6 +412,8 @@ private fun LyricoSearchScreen(
             scope.launch {
                 val failures = mutableListOf<String>()
                 var appliedParts = 0
+                var lyricsApplied = false
+                var artworkApplied = false
 
                 if (shouldWriteLyrics && loadedLyrics != null) {
                     val prepared = engine.prepareLyrics(
@@ -356,6 +426,7 @@ private fun LyricoSearchScreen(
                         runCatching { engine.writeOverride(song, prepared) }
                     }.onSuccess {
                         appliedParts++
+                        lyricsApplied = true
                     }.onFailure { error ->
                         failures += context.getString(
                             R.string.lyrico_search_lyrics_failed,
@@ -375,6 +446,7 @@ private fun LyricoSearchScreen(
                             }
                         }.onSuccess {
                             appliedParts++
+                            artworkApplied = true
                         }.onFailure { error ->
                             failures += context.getString(
                                 R.string.lyrico_search_cover_failed,
@@ -394,18 +466,23 @@ private fun LyricoSearchScreen(
                             failures.joinToString("; ")
                         )
                     }
-                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                    if (failures.isEmpty()) {
+                        AppNoticeBus.post(
+                            message = message,
+                            icon = AppNoticeIcon.LYRICS,
+                        )
+                    } else {
+                        AppNoticeBus.error(message)
+                    }
                     previewCandidate = null
-                    onApplied()
+                    onApplied(lyricsApplied, artworkApplied)
                 } else {
-                    Toast.makeText(
-                        context,
+                    AppNoticeBus.error(
                         context.getString(
                             R.string.lyrico_search_apply_failed,
                             failures.joinToString("; ").ifBlank { "Unknown error" }
-                        ),
-                        Toast.LENGTH_LONG
-                    ).show()
+                        )
+                    )
                 }
             }
         }
@@ -684,11 +761,16 @@ private fun LyricoCoverPreview(
             )
             .clickable(onClick = onClick)
     ) {
-        AsyncImage(
-            model = cover.url,
+        BitmapImage(
+            key = cover.url,
             contentDescription = cover.title,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
+            targetWidth = 192,
+            targetHeight = 192,
+            priority = BitmapRequest.Priority.LOADING_LIST,
+            surface = ArtworkSurface.List,
+            showDefaultArtwork = false,
         )
         resolution?.let { size ->
             Text(

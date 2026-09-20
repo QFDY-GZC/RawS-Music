@@ -30,7 +30,7 @@ object RawArtworkPolicy {
     /** Stable viewport delay before source/indexer work is allowed. */
     const val VIEWPORT_SETTLE_MS = 120L
 
-    /** Idle wait before optional offscreen prewarm. Kept disabled by default in ComposePowerList. */
+    /** Idle wait before optional offscreen prewarm. Kept disabled by default in ComposeVirtualList. */
     const val OFFSCREEN_PREWARM_IDLE_MS = 220L
 
     enum class DecodeStage {

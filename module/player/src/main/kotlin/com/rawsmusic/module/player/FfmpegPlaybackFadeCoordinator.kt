@@ -12,8 +12,11 @@ internal class FfmpegPlaybackFadeCoordinator(
     fun armNextStartFadeIn(durationMs: Int, reason: String) =
         runtime.armNextStartFadeIn(durationMs, reason)
 
-    fun fadeOutForTransitionBlocking(durationMs: Int, reason: String): Boolean =
-        runtime.fadeOutForTransitionBlocking(durationMs, reason)
+    fun fadeOutForTransitionBlocking(
+        durationMs: Int,
+        reason: String,
+        shouldContinue: () -> Boolean = { true },
+    ): Boolean = runtime.fadeOutForTransitionBlocking(durationMs, reason, shouldContinue)
 
     fun armConfiguredStartFade(reason: String) = runtime.armConfiguredStartFade(reason)
 
@@ -46,4 +49,6 @@ internal class FfmpegPlaybackFadeCoordinator(
             outputIsPacked24 = outputIsPacked24,
         )
     }
+
+    fun close() = runtime.close()
 }

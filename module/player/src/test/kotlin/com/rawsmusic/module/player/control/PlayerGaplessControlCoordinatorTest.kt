@@ -24,6 +24,22 @@ class PlayerGaplessControlCoordinatorTest {
         assertEquals(false, plan?.automaticCrossfadeEnabled)
     }
 
+
+    @Test
+    fun `manual overlap alone does not arm natural next decoder`() {
+        var plan: GaplessPlaybackPlan? = null
+        coordinator(
+            gaplessEnabled = false,
+            automaticCrossfadeEnabled = false,
+            manualOverlapEnabled = true,
+            queue = PlayQueue(listOf(song("/a"), song("/b")), currentIndex = 0),
+            apply = { plan = it },
+        ).prepareNextSong()
+
+        assertNull(plan?.nextSongPath)
+        assertEquals(false, plan?.automaticCrossfadeEnabled)
+    }
+
     @Test
     fun `sequential and repeat one resolve next decoder source`() {
         val songs = listOf(song("/a"), song("/b"))
@@ -83,6 +99,7 @@ class PlayerGaplessControlCoordinatorTest {
     private fun coordinator(
         gaplessEnabled: Boolean = true,
         automaticCrossfadeEnabled: Boolean = false,
+        manualOverlapEnabled: Boolean = false,
         queue: PlayQueue,
         playMode: PlayMode = PlayMode.SEQUENTIAL,
         apply: (GaplessPlaybackPlan) -> Unit,

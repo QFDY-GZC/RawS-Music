@@ -3,11 +3,13 @@ package com.rawsmusic.core.ui.widget.flow
 import android.content.Context
 import android.graphics.Bitmap as AndroidBitmap
 import android.graphics.Canvas as AndroidCanvas
+import android.graphics.Matrix as AndroidMatrix
 import android.graphics.Paint as AndroidPaint
 import android.graphics.RadialGradient
 import android.graphics.Shader
 import android.graphics.Color as AndroidColor
 import android.util.LruCache
+import android.util.Log
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -58,6 +60,8 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -69,10 +73,16 @@ import androidx.compose.ui.unit.sp
 import androidx.palette.graphics.Palette
 import com.rawsmusic.core.common.utils.PowerTraceLogger
 import com.rawsmusic.core.ui.R
+import com.rawsmusic.core.ui.perf.TransitionPerfTrace
 import com.rawsmusic.core.ui.theme.RawThemeRuntimeState
 import com.rawsmusic.core.ui.theme.ThemeManager
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
-import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkBitmapRuntime
+import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkPerfStage
+import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkPerfTrace
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import android.os.SystemClock
 import kotlin.math.PI
 import kotlin.math.abs
@@ -82,6 +92,8 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlin.math.sin
 import top.yukonga.miuix.kmp.basic.RadioButton
+import top.yukonga.miuix.kmp.basic.ColorPicker
+import top.yukonga.miuix.kmp.basic.ColorSpace
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.Slider
@@ -91,6 +103,60 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
+
+/**
+ * Retained FLOW blob shader.
+ *
+ * Blob position/radius changes every frame, while its palette color usually stays unchanged for
+ * many seconds. Rebuilding Brush.radialGradient() on every draw creates five Shader/Brush graphs
+ * per frame and makes scene motion compete with the renderer for command-issue time. Keep one unit
+ * radial shader per blob and move/scale it through Shader.localMatrix; rebuild only while the
+ * actual color endpoint is animating.
+ */
+private class RetainedFlowRadialBlob(
+    private val stops: FloatArray,
+    private val alphaMultipliers: FloatArray,
+) {
+    private val paint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG)
+    private val matrix = AndroidMatrix()
+    private var shader: RadialGradient? = null
+    private var colorKey = Long.MIN_VALUE
+
+    fun draw(
+        canvas: AndroidCanvas,
+        color: Color,
+        coreAlpha: Float,
+        centerX: Float,
+        centerY: Float,
+        radius: Float,
+    ) {
+        if (radius <= 0f) return
+        val baseArgb = color.toArgb()
+        val key = (baseArgb.toLong() shl 32) xor coreAlpha.toRawBits().toLong()
+        var activeShader = shader
+        if (activeShader == null || colorKey != key) {
+            val colors = IntArray(alphaMultipliers.size) { index ->
+                color.copy(alpha = (coreAlpha * alphaMultipliers[index]).coerceIn(0f, 1f)).toArgb()
+            }
+            activeShader = RadialGradient(
+                0f,
+                0f,
+                1f,
+                colors,
+                stops,
+                Shader.TileMode.CLAMP,
+            )
+            shader = activeShader
+            paint.shader = activeShader
+            colorKey = key
+        }
+        matrix.reset()
+        matrix.setScale(radius, radius)
+        matrix.postTranslate(centerX, centerY)
+        activeShader.setLocalMatrix(matrix)
+        canvas.drawCircle(centerX, centerY, radius, paint)
+    }
+}
 
 enum class RawBackgroundSurface {
     SCENE,
@@ -108,6 +174,7 @@ private const val STATIC_BLUR_KEY = "static_blur"
 private const val STATIC_DETAIL_KEY = "static_detail"
 private const val STATIC_BRIGHTNESS_KEY = "static_brightness"
 private const val STATIC_SATURATION_KEY = "static_saturation"
+private const val STATIC_GRADIENT_COLOR_KEY = "static_gradient_color"
 private const val FLOW_MAX_COLOR_COUNT = 5
 private const val FLOW_FRAME_INTERVAL_MS = 16L
 private const val FLOW_DISABLED_FRAME_INTERVAL_MS = 0L
@@ -116,8 +183,19 @@ private val FLOW_GLOBAL_EPOCH_NS = System.nanoTime()
 private val FLOW_PALETTE_RETRY_DELAYS_MS = longArrayOf(0L, 420L, 1400L)
 private val flowPaletteCache = LruCache<String, List<Color>>(48)
 
+private object RawFlowPaletteRuntimeState {
+    var revision by mutableIntStateOf(0)
+        private set
+
+    fun bump() {
+        revision += 1
+    }
+}
+
 fun clearRawFlowMemoryCache() {
     flowPaletteCache.evictAll()
+    RawFlowPaletteRuntimeState.bump()
+    clearRawStaticArtworkCache()
 }
 
 /**
@@ -163,6 +241,8 @@ object RawFlowTuningState {
         private set
     var staticSaturation by mutableFloatStateOf(1.5f)
         private set
+    var staticGradientColor by mutableIntStateOf(0xff000000.toInt())
+        private set
     var revision by mutableIntStateOf(0)
         private set
 
@@ -182,6 +262,7 @@ object RawFlowTuningState {
         staticDetail = prefs.getFloat(STATIC_DETAIL_KEY, 5f).coerceIn(0f, 10f)
         staticBrightness = prefs.getFloat(STATIC_BRIGHTNESS_KEY, 1f).coerceIn(0f, 2.5f)
         staticSaturation = prefs.getFloat(STATIC_SATURATION_KEY, 1.5f).coerceIn(0f, 3f)
+        staticGradientColor = prefs.getInt(STATIC_GRADIENT_COLOR_KEY, 0xff000000.toInt())
         initialized = true
     }
 
@@ -239,6 +320,12 @@ object RawFlowTuningState {
         persist(context)
     }
 
+    fun setStaticGradientColor(context: Context, value: Int) {
+        ensureInitialized(context)
+        staticGradientColor = value
+        persist(context)
+    }
+
     fun resetStatic(context: Context) {
         ensureInitialized(context)
         staticGradient = 4f
@@ -246,6 +333,7 @@ object RawFlowTuningState {
         staticDetail = 5f
         staticBrightness = 1f
         staticSaturation = 1.5f
+        staticGradientColor = 0xff000000.toInt()
         persist(context)
     }
 
@@ -261,6 +349,7 @@ object RawFlowTuningState {
             .putFloat(STATIC_DETAIL_KEY, staticDetail)
             .putFloat(STATIC_BRIGHTNESS_KEY, staticBrightness)
             .putFloat(STATIC_SATURATION_KEY, staticSaturation)
+            .putInt(STATIC_GRADIENT_COLOR_KEY, staticGradientColor)
             .apply()
         revision++
     }
@@ -368,6 +457,66 @@ fun rememberRawFlowModeState(): MutableState<RawFlowMode> {
     return state
 }
 
+/**
+ * Lightweight color bridge for chrome that needs to visually merge into RawFlow without sampling
+ * the rendered screen. It only reads the already-prepared palette cache; if artwork colors are not
+ * ready yet, callers keep their current theme/background fallback and automatically update when the
+ * palette cache is populated.
+ */
+@Composable
+fun rememberRawFlowChromeBaseColor(
+    sourceCoverKey: String?,
+    mode: RawFlowMode,
+    fallback: Color = MiuixTheme.colorScheme.background,
+): Color {
+    val context = LocalContext.current.applicationContext
+    RawFlowTuningState.ensureInitialized(context)
+    val isSystemDark = rememberRawFlowIsDarkTheme()
+    val flowMode = RawFlowRuntimeState.mode ?: mode
+    val backgroundStyle = RawFlowTuningState.style
+    val runtimeRevision = RawFlowRuntimeState.revision
+    val tuningRevision = RawFlowTuningState.revision
+    val paletteRevision = RawFlowPaletteRuntimeState.revision
+    val saturationScale = RawFlowTuningState.saturation
+    val brightnessScale = RawFlowTuningState.brightness
+
+    return remember(
+        context,
+        sourceCoverKey,
+        flowMode,
+        backgroundStyle,
+        isSystemDark,
+        runtimeRevision,
+        tuningRevision,
+        paletteRevision,
+        saturationScale,
+        brightnessScale,
+        fallback,
+    ) {
+        when {
+            flowMode == RawFlowMode.OFF || backgroundStyle != RawBackgroundStyle.FLOW -> fallback
+            else -> {
+                val fallbackColors = defaultFlowColors(flowMode, isSystemDark)
+                val cached = resolveFlowColorsFromMemory(
+                    context = context,
+                    sourceCoverKey = sourceCoverKey,
+                    mode = flowMode,
+                    isSystemDark = isSystemDark,
+                    fallbackColors = fallbackColors,
+                    backgroundStyle = RawBackgroundStyle.FLOW,
+                )
+                val dominant = cached?.firstOrNull()
+                    ?.let { tuneFlowColor(it, saturationScale, brightnessScale) }
+                if (dominant != null) {
+                    baseFlowColor(flowMode, isSystemDark, dominant)
+                } else {
+                    fallback
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun ProvideRawFlowMode(
     state: MutableState<RawFlowMode>,
@@ -411,6 +560,8 @@ private fun resolveFlowColorsFromMemory(
     fallbackColors: List<Color>,
     backgroundStyle: RawBackgroundStyle = RawBackgroundStyle.FLOW,
 ): List<Color>? {
+    @Suppress("UNUSED_PARAMETER") val ignoredContext = context
+    @Suppress("UNUSED_PARAMETER") val ignoredFallback = fallbackColors
     if (
         sourceCoverKey.isNullOrBlank() ||
         mode == RawFlowMode.OFF ||
@@ -418,25 +569,592 @@ private fun resolveFlowColorsFromMemory(
     ) {
         return null
     }
+    // Composition may only peek an already prepared palette. Palette extraction/bitmap work is
+    // intentionally kept out of the UI phase; programmatic track changes used to do this exactly
+    // when the first artwork frame started, producing the visible start hitch.
+    return flowPaletteCache.get(
+        flowPaletteCacheKey(mode, isSystemDark, sourceCoverKey, backgroundStyle)
+    )
+}
+
+
+private suspend fun loadRawFlowEndpointColors(
+    context: Context,
+    sourceCoverKey: String?,
+    sourceArtwork: AndroidBitmap?,
+    mode: RawFlowMode,
+    isSystemDark: Boolean,
+    fallbackColors: List<Color>,
+    backgroundStyle: RawBackgroundStyle,
+    traceLane: String,
+): List<Color> {
+    if (
+        sourceCoverKey.isNullOrBlank() ||
+        mode == RawFlowMode.OFF ||
+        (backgroundStyle != RawBackgroundStyle.STATIC && mode == RawFlowMode.UNIVERSAL)
+    ) {
+        return fallbackColors
+    }
     val cacheKey = flowPaletteCacheKey(mode, isSystemDark, sourceCoverKey, backgroundStyle)
-    flowPaletteCache.get(cacheKey)?.let { return it }
-    val bitmap = CoilArtworkRuntime.peekBitmap(
+    flowPaletteCache.get(cacheKey)?.let { cached ->
+        PlaybackArtworkPerfTrace.mark(
+            "background_flow_cache_hit",
+            "lane=$traceLane key=${PlaybackArtworkPerfTrace.keyTag(sourceCoverKey)} colors=${cached.size}",
+        )
+        return cached
+    }
+
+    val endpointStartNs = if (PlaybackArtworkPerfTrace.isActive()) System.nanoTime() else 0L
+    val supplied = sourceArtwork?.takeUnless { it.isRecycled }
+    val bitmap = resolveRawFlowPixelAnalysisBitmap(context, sourceCoverKey, supplied)
+    PlaybackArtworkPerfTrace.mark(
+        "background_flow_source",
+        "lane=$traceLane key=${PlaybackArtworkPerfTrace.keyTag(sourceCoverKey)} supplied=${supplied != null} " +
+            "bitmap=${bitmap?.let { "${it.width}x${it.height}" } ?: "-"}",
+    )
+    val completed = bitmap?.takeUnless { it.isRecycled }?.let { artwork ->
+        val paletteStartNs = if (PlaybackArtworkPerfTrace.isActive()) System.nanoTime() else 0L
+        try {
+            withContext(Dispatchers.Default) {
+                extractRawBackgroundColors(
+                    bitmap = artwork,
+                    backgroundStyle = backgroundStyle,
+                    mode = mode,
+                    isSystemDark = isSystemDark,
+                ).takeIf { it.isNotEmpty() }?.let { extracted ->
+                    finalizeExtractedBackgroundColors(extracted, fallbackColors, backgroundStyle)
+                }
+            }
+        } finally {
+            if (paletteStartNs != 0L) {
+                PlaybackArtworkPerfTrace.recordDuration(
+                    PlaybackArtworkPerfStage.BACKGROUND_FLOW_PALETTE,
+                    System.nanoTime() - paletteStartNs,
+                )
+            }
+        }
+    }
+    if (endpointStartNs != 0L) {
+        val durationNs = System.nanoTime() - endpointStartNs
+        PlaybackArtworkPerfTrace.recordDuration(
+            PlaybackArtworkPerfStage.BACKGROUND_FLOW_ENDPOINT,
+            durationNs,
+        )
+        PlaybackArtworkPerfTrace.mark(
+            "background_flow_ready",
+            "lane=$traceLane key=${PlaybackArtworkPerfTrace.keyTag(sourceCoverKey)} duration=${"%.2f".format(durationNs / 1_000_000.0)}ms " +
+                "resolved=${completed != null}",
+        )
+    }
+    if (completed != null) {
+        flowPaletteCache.put(cacheKey, completed)
+        RawFlowPaletteRuntimeState.bump()
+        return completed
+    }
+    // Do not cache fallback as the artwork's palette. A prefetched neighbour may still be a
+    // synthetic holder on the first frame and upgrade to the exact bitmap later.
+    return fallbackColors
+}
+
+private suspend fun resolveRawFlowPixelAnalysisBitmap(
+    context: Context,
+    sourceCoverKey: String,
+    supplied: AndroidBitmap?,
+): AndroidBitmap? {
+    val usable = supplied?.takeUnless { it.isRecycled }
+    if (
+        usable != null &&
+        !(android.os.Build.VERSION.SDK_INT >= 26 && usable.config == AndroidBitmap.Config.HARDWARE)
+    ) {
+        return usable
+    }
+    return ArtworkBitmapRuntime.executePixelAnalysisBitmap(
         context = context,
         key = sourceCoverKey,
-        width = FLOW_EXTRACT_SIZE,
-        height = FLOW_EXTRACT_SIZE,
-        surface = ArtworkSurface.Playback
+        targetSide = FLOW_EXTRACT_SIZE,
     )
-    if (bitmap == null || bitmap.isRecycled) return null
-    val extracted = extractRawBackgroundColors(
-        bitmap = bitmap,
-        backgroundStyle = backgroundStyle,
-        mode = mode,
-        isSystemDark = isSystemDark,
+}
+
+internal class RawFlowAaLiveSlots {
+    var currentKey: String? = null
+        private set
+    var currentEndpoint: List<Color> = emptyList()
+        private set
+    var secondaryKey: String? = null
+        private set
+    var secondaryEndpoint: List<Color> = emptyList()
+        private set
+    var secondaryEndpointReady: Boolean = false
+        private set
+    var secondaryReadyAtProgress: Float = 0f
+        private set
+    private var currentEndpointLocked: Boolean = false
+    var revision by mutableIntStateOf(0)
+        private set
+
+    fun syncCurrent(key: String?, fallback: List<Color>) {
+        if (currentKey == key) {
+            // A same-identity recomposition is not a new artwork prepare. In particular, after commit the
+            // promoted secondary endpoint must remain byte-for-byte the visible endpoint that reached
+            // ratio=1. A newer cached palette may be kept for a future prepare, but it must not replace
+            // the live current slot and make the whole FLOW scene repaint after the transition ended.
+            return
+        }
+        if (key != null && key == secondaryKey) {
+            // Reference prepared-artwork promotion/StaticArtworkRenderer.native_commit_aa() swaps/promotes prepared artwork slots;
+            // commit does not rebuild the just-visible slot. Lock the promoted endpoint until this
+            // identity leaves the current slot so post-commit artwork/palette upgrades stay invisible.
+            currentKey = secondaryKey
+            currentEndpoint = secondaryEndpoint.ifEmpty { fallback }
+            PlaybackArtworkPerfTrace.backgroundCurrentCommit(
+                lane = "flow",
+                key = currentKey,
+                detail = "colors=${currentEndpoint.size}",
+            )
+            // Only a genuinely prepared secondary palette may become an immutable committed
+            // endpoint. If commit happened while the secondary slot still carried the inherited
+            // outgoing palette, allow the new current artwork's async palette to replace it.
+            currentEndpointLocked = secondaryEndpointReady
+            secondaryKey = null
+            secondaryEndpoint = emptyList()
+            secondaryEndpointReady = false
+            secondaryReadyAtProgress = 0f
+            return
+        }
+        currentKey = key
+        currentEndpoint = fallback
+        currentEndpointLocked = false
+        secondaryKey = null
+        secondaryEndpoint = emptyList()
+        secondaryEndpointReady = false
+        secondaryReadyAtProgress = 0f
+    }
+
+    fun prepareSecondary(key: String?, preparedEndpoint: List<Color>?, fallback: List<Color>) {
+        if (key.isNullOrBlank() || key == currentKey) {
+            if (secondaryKey != null || secondaryEndpoint.isNotEmpty()) {
+                secondaryKey = null
+                secondaryEndpoint = emptyList()
+                secondaryEndpointReady = false
+                secondaryReadyAtProgress = 0f
+            }
+            return
+        }
+        if (secondaryKey == key) return
+        secondaryKey = key
+        secondaryEndpoint = preparedEndpoint?.takeIf { it.isNotEmpty() }
+            ?: currentEndpoint.ifEmpty { fallback }
+        secondaryEndpointReady = !preparedEndpoint.isNullOrEmpty()
+        secondaryReadyAtProgress = 0f
+    }
+
+    fun updateCurrentIfIdle(key: String?, endpoint: List<Color>) {
+        if (key != currentKey ||
+            secondaryKey != null ||
+            currentEndpointLocked ||
+            endpoint.isEmpty() ||
+            endpoint == currentEndpoint
+        ) return
+        // A cold/current slot may resolve from fallback to a real palette while it is not the result
+        // of an artwork commit. The promoted-slot lock above is deliberately narrower: it prevents the
+        // post-commit repaint without blocking legitimate cold-start/configuration resolution.
+        currentEndpoint = endpoint
+        revision += 1
+    }
+
+    /**
+     * Reference keeps feeding the live artwork ratio while the secondary static-artwork artwork state is being resolved.
+     * A target that becomes available after motion started must therefore join the same transition,
+     * not be deferred until commit.  Remember the ratio at which it became real so the visible
+     * palette is continuous on that frame, then consume the remaining ratio budget to reach the
+     * exact secondary endpoint at ratio=1.
+     */
+    fun updateSecondaryDuringMotion(key: String?, endpoint: List<Color>, progress: Float) {
+        if (key != secondaryKey || endpoint.isEmpty()) return
+        val clampedProgress = progress.coerceIn(0f, 1f)
+        if (!secondaryEndpointReady) {
+            secondaryEndpoint = endpoint
+            secondaryEndpointReady = true
+            secondaryReadyAtProgress = clampedProgress.coerceAtMost(0.999f)
+            revision += 1
+            return
+        }
+        if (endpoint != secondaryEndpoint && clampedProgress <= 0.001f) {
+            // Before motion begins the slot may still be refreshed from an exact cached result. Once
+            // the slot is visibly participating, however, keep that real endpoint stable. Reference
+            // changes the native artwork ratio against prepared slot identities; it does not restart the
+            // endpoint every time the same artwork wrapper upgrades. A later same-key palette result
+            // is cached for future use instead of restarting the visible color handoff mid-flight.
+            secondaryEndpoint = endpoint
+            secondaryReadyAtProgress = 0f
+            revision += 1
+        }
+    }
+
+    fun visibleMixProgress(rawProgress: Float): Float {
+        if (secondaryKey == null || !secondaryEndpointReady) return 0f
+        return ReferenceFlowAaMixProgress(rawProgress, secondaryReadyAtProgress)
+    }
+}
+
+/**
+ * Ratio remapping used only when a real secondary palette arrives after artwork motion has already begun.
+ * If the slot was prepared before motion, readyAt=0 and this is exactly the native artwork ratio.  A late
+ * slot starts at zero contribution on its admission frame and still reaches the exact target at 1.
+ */
+internal fun ReferenceFlowAaMixProgress(rawProgress: Float, readyAtProgress: Float): Float {
+    val progress = rawProgress.coerceIn(0f, 1f)
+    val readyAt = readyAtProgress.coerceIn(0f, 0.999f)
+    if (progress <= readyAt) return 0f
+    return ((progress - readyAt) / (1f - readyAt)).coerceIn(0f, 1f)
+}
+
+
+internal fun expandReferenceFlowDrawSlots(colors: List<Color>): List<Color> {
+    if (colors.isEmpty()) return emptyList()
+    val source = colors.take(FLOW_MAX_COLOR_COUNT)
+    if (source.size == FLOW_MAX_COLOR_COUNT) return source
+    val last = source.last()
+    return List(FLOW_MAX_COLOR_COUNT) { index -> source.getOrElse(index) { last } }
+}
+
+private fun lerpFlowColor(start: Color, end: Color, fraction: Float): Color {
+    val t = fraction.coerceIn(0f, 1f)
+    return Color(
+        red = start.red + (end.red - start.red) * t,
+        green = start.green + (end.green - start.green) * t,
+        blue = start.blue + (end.blue - start.blue) * t,
+        alpha = start.alpha + (end.alpha - start.alpha) * t,
     )
-    if (extracted.isEmpty()) return null
-    return finalizeExtractedBackgroundColors(extracted, fallbackColors, backgroundStyle).also {
-        flowPaletteCache.put(cacheKey, it)
+}
+
+/**
+ * Single-renderer playback handoff for FLOW backgrounds.
+ *
+ * Before Phase 9A14 a track switch kept two full-screen RawFlowBackground canvases alive and
+ * alpha-blended them. Each canvas drew up to five large radial gradients, so the exact moment the
+ * artwork cards moved could require ten full-screen gradient passes. Reference's player transition keeps
+ * one existing property scene; mirror that budget here by keeping one blob geometry/time owner and
+ * interpolating only its palette from the outgoing artwork to the incoming artwork.
+ *
+ * [progressProvider] is intentionally read from Canvas draw phase. artwork ratio updates therefore
+ * invalidate only this draw node and the card RenderNodes, not composition/layout.
+ */
+@Composable
+fun RawFlowTransitionBackground(
+    mode: RawFlowMode,
+    currentCoverKey: String?,
+    targetCoverKey: String?,
+    currentArtwork: AndroidBitmap?,
+    targetArtwork: AndroidBitmap?,
+    progressProvider: () -> Float,
+    modifier: Modifier = Modifier,
+    active: Boolean = true,
+    motionEnabled: Boolean = true,
+    frameIntervalMs: Long = FLOW_FRAME_INTERVAL_MS,
+    prefetchPreviousCoverKey: String? = null,
+    prefetchPreviousArtwork: AndroidBitmap? = null,
+    prefetchNextCoverKey: String? = null,
+    prefetchNextArtwork: AndroidBitmap? = null,
+    deferHeavyEndpointWork: Boolean = false,
+) {
+    val frameAnimationActive = com.rawsmusic.core.ui.scene.LocalUiFrameAnimationActive.current
+    val context = LocalContext.current.applicationContext
+    RawFlowTuningState.ensureInitialized(context)
+    val backgroundStyle = RawFlowTuningState.style
+    val runtimeRevision = RawFlowRuntimeState.revision
+    val flowMode = RawFlowRuntimeState.mode ?: mode
+    val isSystemDark = rememberRawFlowIsDarkTheme()
+    val scheme = MiuixTheme.colorScheme
+
+    if (!active || flowMode == RawFlowMode.OFF || backgroundStyle == RawBackgroundStyle.SIMPLE) {
+        Box(modifier = modifier.fillMaxSize().background(scheme.background))
+        return
+    }
+    if (backgroundStyle == RawBackgroundStyle.STATIC) {
+        RawStaticArtworkTransitionBackground(
+            currentCoverKey = currentCoverKey,
+            targetCoverKey = targetCoverKey,
+            currentArtwork = currentArtwork,
+            targetArtwork = targetArtwork,
+            progressProvider = progressProvider,
+            modifier = modifier,
+        )
+        return
+    }
+    if (backgroundStyle != RawBackgroundStyle.FLOW) {
+        RawFlowBackground(
+            mode = flowMode,
+            sourceCoverKey = targetCoverKey ?: currentCoverKey,
+            fallbackSourceCoverKey = currentCoverKey,
+            sourceArtwork = targetArtwork ?: currentArtwork,
+            modifier = modifier,
+            active = active,
+            motionEnabled = motionEnabled,
+            frameIntervalMs = frameIntervalMs,
+            surface = RawBackgroundSurface.PLAYER,
+        )
+        return
+    }
+
+    val tuningRevision = RawFlowTuningState.revision
+    val motionSpeed = RawFlowTuningState.speed
+    val saturationScale = RawFlowTuningState.saturation
+    val brightnessScale = RawFlowTuningState.brightness
+    val fallbackColors = remember(flowMode, isSystemDark) { defaultFlowColors(flowMode, isSystemDark) }
+
+    /*
+     * Reference's player background is a native static-artwork scene with two prepared artwork states. Java changes
+     * native_set_aa_ratio() while moving and native_commit_aa() swaps the slots. The endpoint itself
+     * is never a second animation clock. Mirror that ownership here: current/secondary are exact artwork
+     * slots and the visible colors are mixed by the same live artwork ratio. If the secondary palette is
+     * resolved after motion begins, admit it into that live ratio timeline rather than deferring it
+     * until commit; commit remains only an ownership swap.
+     */
+    val scene = remember(flowMode, isSystemDark) { RawFlowAaLiveSlots() }
+    val currentMemoryEndpoint = remember(flowMode, isSystemDark, currentCoverKey, runtimeRevision) {
+        resolveFlowColorsFromMemory(
+            context = context,
+            sourceCoverKey = currentCoverKey,
+            mode = flowMode,
+            isSystemDark = isSystemDark,
+            fallbackColors = fallbackColors,
+            backgroundStyle = RawBackgroundStyle.FLOW,
+        ) ?: fallbackColors
+    }
+    scene.syncCurrent(currentCoverKey, currentMemoryEndpoint)
+
+    val hasSecondaryIdentity = !targetCoverKey.isNullOrBlank() && targetCoverKey != currentCoverKey
+    val secondaryMemoryEndpoint = remember(
+        flowMode,
+        isSystemDark,
+        targetCoverKey,
+        currentCoverKey,
+        runtimeRevision,
+        scene.revision,
+    ) {
+        if (!hasSecondaryIdentity) {
+            null
+        } else {
+            resolveFlowColorsFromMemory(
+                context = context,
+                sourceCoverKey = targetCoverKey,
+                mode = flowMode,
+                isSystemDark = isSystemDark,
+                fallbackColors = scene.currentEndpoint.ifEmpty { fallbackColors },
+                backgroundStyle = RawBackgroundStyle.FLOW,
+            )
+        }
+    }
+    scene.prepareSecondary(
+        key = targetCoverKey.takeIf { hasSecondaryIdentity },
+        preparedEndpoint = secondaryMemoryEndpoint,
+        fallback = fallbackColors,
+    )
+    @Suppress("UNUSED_VARIABLE") val sceneRevision = scene.revision
+
+    // Keep Reference-like neighbour artwork states warm while idle. Normal Next/Previous therefore admits a
+    // fully prepared secondary palette synchronously instead of letting Palette/Coil completion alter
+    // a visible transition halfway through.
+    LaunchedEffect(
+        prefetchPreviousCoverKey,
+        prefetchPreviousArtwork,
+        flowMode,
+        isSystemDark,
+        runtimeRevision,
+        deferHeavyEndpointWork,
+    ) {
+        if (deferHeavyEndpointWork) return@LaunchedEffect
+        val key = prefetchPreviousCoverKey?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        loadRawFlowEndpointColors(
+            context = context,
+            sourceCoverKey = key,
+            sourceArtwork = prefetchPreviousArtwork,
+            mode = flowMode,
+            isSystemDark = isSystemDark,
+            fallbackColors = scene.currentEndpoint.ifEmpty { fallbackColors },
+            backgroundStyle = RawBackgroundStyle.FLOW,
+            traceLane = "prefetch_previous",
+        )
+    }
+    LaunchedEffect(
+        prefetchNextCoverKey,
+        prefetchNextArtwork,
+        flowMode,
+        isSystemDark,
+        runtimeRevision,
+        deferHeavyEndpointWork,
+    ) {
+        if (deferHeavyEndpointWork) return@LaunchedEffect
+        val key = prefetchNextCoverKey?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        loadRawFlowEndpointColors(
+            context = context,
+            sourceCoverKey = key,
+            sourceArtwork = prefetchNextArtwork,
+            mode = flowMode,
+            isSystemDark = isSystemDark,
+            fallbackColors = scene.currentEndpoint.ifEmpty { fallbackColors },
+            backgroundStyle = RawBackgroundStyle.FLOW,
+            traceLane = "prefetch_next",
+        )
+    }
+
+    LaunchedEffect(
+        currentCoverKey,
+        currentArtwork,
+        flowMode,
+        isSystemDark,
+        runtimeRevision,
+        deferHeavyEndpointWork,
+    ) {
+        if (deferHeavyEndpointWork) return@LaunchedEffect
+        val requestedKey = currentCoverKey
+        val loaded = loadRawFlowEndpointColors(
+            context = context,
+            sourceCoverKey = requestedKey,
+            sourceArtwork = currentArtwork,
+            mode = flowMode,
+            isSystemDark = isSystemDark,
+            fallbackColors = scene.currentEndpoint.ifEmpty { currentMemoryEndpoint },
+            backgroundStyle = RawBackgroundStyle.FLOW,
+            traceLane = "current",
+        )
+        scene.updateCurrentIfIdle(requestedKey, loaded)
+    }
+    LaunchedEffect(
+        targetCoverKey,
+        targetArtwork,
+        flowMode,
+        isSystemDark,
+        runtimeRevision,
+        deferHeavyEndpointWork,
+    ) {
+        val requestedKey = targetCoverKey?.takeIf { hasSecondaryIdentity } ?: return@LaunchedEffect
+        // Motion-time work is split by ownership rather than blocked wholesale. Starting another
+        // source decode purely for palette extraction while the pager is moving can steal CPU/
+        // allocation bandwidth from the artwork transition, so keep that path deferred. But when
+        // the target holder has already accepted a low/high wrapper, palette extraction from those
+        // owned pixels is cheap (~single-digit ms in the switch trace) and must join the live
+        // artwork ratio immediately; otherwise the FLOW background visibly stays on the outgoing
+        // colors until motion ends.
+        val suppliedTargetArtwork = targetArtwork?.takeUnless { it.isRecycled }
+        if (deferHeavyEndpointWork && suppliedTargetArtwork == null) return@LaunchedEffect
+        val loaded = loadRawFlowEndpointColors(
+            context = context,
+            sourceCoverKey = requestedKey,
+            sourceArtwork = suppliedTargetArtwork,
+            mode = flowMode,
+            isSystemDark = isSystemDark,
+            fallbackColors = scene.secondaryEndpoint.ifEmpty { scene.currentEndpoint.ifEmpty { fallbackColors } },
+            backgroundStyle = RawBackgroundStyle.FLOW,
+            traceLane = "target",
+        )
+        // Reference does not freeze the secondary artwork identity merely because ratio has left zero:
+        // a resolved secondary state joins the still-running native_set_aa_ratio timeline.  Only
+        // accept a real extracted/cache endpoint here (loadRawFlowEndpointColors intentionally does
+        // not cache synthetic fallback), then preserve continuity from the current visible ratio.
+        val resolved = resolveFlowColorsFromMemory(
+            context = context,
+            sourceCoverKey = requestedKey,
+            mode = flowMode,
+            isSystemDark = isSystemDark,
+            fallbackColors = scene.currentEndpoint.ifEmpty { fallbackColors },
+            backgroundStyle = RawBackgroundStyle.FLOW,
+        )
+        if (resolved != null) {
+            val progress = progressProvider().coerceIn(0f, 1f)
+            PlaybackArtworkPerfTrace.backgroundSecondaryAdmit(
+                lane = "flow",
+                key = requestedKey,
+                progress = progress,
+                detail = "colors=${resolved.size}",
+            )
+            scene.updateSecondaryDuringMotion(
+                requestedKey,
+                resolved.ifEmpty { loaded },
+                progress,
+            )
+        }
+    }
+
+    val currentResolved = remember(
+        scene.revision, currentCoverKey, targetCoverKey, saturationScale, brightnessScale, tuningRevision
+    ) {
+        expandReferenceFlowDrawSlots(
+            scene.currentEndpoint.ifEmpty { fallbackColors }
+                .take(FLOW_MAX_COLOR_COUNT)
+                .map { tuneFlowColor(it, saturationScale, brightnessScale) }
+        )
+    }
+    val secondaryResolved = remember(
+        scene.revision, currentCoverKey, targetCoverKey, saturationScale, brightnessScale, tuningRevision
+    ) {
+        expandReferenceFlowDrawSlots(
+            scene.secondaryEndpoint.ifEmpty { scene.currentEndpoint.ifEmpty { fallbackColors } }
+                .take(FLOW_MAX_COLOR_COUNT)
+                .map { tuneFlowColor(it, saturationScale, brightnessScale) }
+        )
+    }
+    val currentBase = remember(currentResolved, flowMode, isSystemDark) {
+        baseFlowColor(flowMode, isSystemDark, currentResolved.firstOrNull())
+    }
+    val secondaryBase = remember(secondaryResolved, flowMode, isSystemDark) {
+        baseFlowColor(flowMode, isSystemDark, secondaryResolved.firstOrNull())
+    }
+    val timeSecondsState = rememberRawFlowTimeState(
+        enabled = motionEnabled && frameAnimationActive,
+        modeName = flowMode.prefValue,
+        frameIntervalMs = frameIntervalMs.coerceAtLeast(FLOW_FRAME_INTERVAL_MS),
+    )
+    val seeds = remember { flowBlobSeeds() }
+    val blobRenderers = remember {
+        List(FLOW_MAX_COLOR_COUNT) {
+            RetainedFlowRadialBlob(
+                stops = floatArrayOf(0f, 0.58f, 1f),
+                alphaMultipliers = floatArrayOf(1f, 0.42f, 0f),
+            )
+        }
+    }
+
+    Canvas(modifier = modifier.fillMaxSize().clipToBounds()) {
+        val rawProgress = if (scene.secondaryKey == null) 0f else progressProvider().coerceIn(0f, 1f)
+        val progress = scene.visibleMixProgress(rawProgress)
+        val base = lerpFlowColor(currentBase, secondaryBase, progress)
+        drawRect(base)
+
+        // Keep the FLOW renderer topology stable across artwork ownership changes. Palette extraction is
+        // adaptive (one artwork may yield 5 useful colors while the next yields only 1 or 2), but
+        // Reference's static-artwork renderer does not rebuild its property scene when native_commit_aa swaps
+        // artwork slots. Repeating the last endpoint color into the fixed five draw slots makes ratio=1
+        // and the first post-commit frame pixel-continuous: no blobs disappear and countScale never
+        // changes merely because the incoming artwork exposed fewer distinct palette colors.
+        val colorCount = FLOW_MAX_COLOR_COUNT
+        val countScale = 0.92f
+        val maxDimension = max(size.width, size.height)
+        val animatedTime = timeSecondsState.value * motionSpeed
+        val nativeCanvas = drawContext.canvas.nativeCanvas
+        repeat(colorCount) { index ->
+            val currentColor = currentResolved.getOrElse(index) { currentResolved.last() }
+            val secondaryColor = secondaryResolved.getOrElse(index) { secondaryResolved.last() }
+            val color = lerpFlowColor(currentColor, secondaryColor, progress)
+            val seed = seeds[index % seeds.size]
+            val phase = seed.phase + index * 0.83f
+            val x = size.width * seed.baseX +
+                size.width * seed.amplitudeX * sin(animatedTime * seed.speedX + phase)
+            val y = size.height * seed.baseY +
+                size.height * seed.amplitudeY * cos(animatedTime * seed.speedY + phase * 1.21f)
+            val radiusPulse = 1f + 0.11f * sin(animatedTime * seed.radiusSpeed + phase)
+            val radius = maxDimension * seed.radius * countScale * radiusPulse
+            val coreAlpha = if (isSystemDark) 0.88f else 0.82f
+            blobRenderers[index].draw(
+                canvas = nativeCanvas,
+                color = color,
+                coreAlpha = coreAlpha,
+                centerX = x,
+                centerY = y,
+                radius = radius,
+            )
+        }
     }
 }
 
@@ -449,41 +1167,59 @@ fun RawFlowBackground(
     modifier: Modifier = Modifier,
     active: Boolean = true,
     motionEnabled: Boolean = true,
+    paletteAnimationEnabled: Boolean = true,
     frameIntervalMs: Long = FLOW_FRAME_INTERVAL_MS,
     surface: RawBackgroundSurface = RawBackgroundSurface.SCENE
 ) {
+    val frameAnimationActive = com.rawsmusic.core.ui.scene.LocalUiFrameAnimationActive.current
     val context = LocalContext.current.applicationContext
-    val coilArtwork by produceState<AndroidBitmap?>(
+    RawFlowTuningState.ensureInitialized(context)
+    val backgroundStyle = RawFlowTuningState.style
+    val runtimeRevision = RawFlowRuntimeState.revision
+    val flowMode = RawFlowRuntimeState.mode ?: mode
+    val providerArtwork by produceState<AndroidBitmap?>(
         initialValue = sourceArtwork?.takeUnless { it.isRecycled },
-        key1 = sourceCoverKey,
-        key2 = sourceArtwork,
+        sourceCoverKey,
+        sourceArtwork,
+        active,
+        flowMode,
+        backgroundStyle,
     ) {
-        value = sourceArtwork?.takeUnless { it.isRecycled }
-            ?: sourceCoverKey?.takeIf { it.isNotBlank() }?.let { key ->
-                CoilArtworkRuntime.executeBitmap(
+        val providedArtwork = sourceArtwork?.takeUnless { it.isRecycled }
+        value = providedArtwork
+        if (
+            providedArtwork != null ||
+            !active ||
+            flowMode == RawFlowMode.OFF ||
+            backgroundStyle == RawBackgroundStyle.SIMPLE
+        ) {
+            // The playback artwork holder already owns the exact bitmap. Do not launch a second 96px
+            // provider request for the same source while a track-switch frame is being composed.
+            return@produceState
+        }
+        // FLOW needs only CPU palette pixels and resolves those through executePixelAnalysisBitmap
+        // below. Decode a foreground-quality provider bitmap here only when STATIC player mode
+        // actually renders that bitmap as the full-screen background.
+        value = if (backgroundStyle == RawBackgroundStyle.STATIC && surface == RawBackgroundSurface.PLAYER) {
+            sourceCoverKey?.takeIf { it.isNotBlank() }?.let { key ->
+                ArtworkBitmapRuntime.executeBitmap(
                     context = context,
                     key = key,
                     width = FLOW_EXTRACT_SIZE,
                     height = FLOW_EXTRACT_SIZE,
-                    surface = ArtworkSurface.Playback
+                    surface = ArtworkSurface.Playback,
                 )
             }
+        } else {
+            null
+        }
     }
-    RawFlowTuningState.ensureInitialized(context)
     val tuningRevision = RawFlowTuningState.revision
-    val backgroundStyle = RawFlowTuningState.style
     val motionSpeed = RawFlowTuningState.speed
     val saturationScale = RawFlowTuningState.saturation
     val brightnessScale = RawFlowTuningState.brightness
-    val staticGradient = RawFlowTuningState.staticGradient
-    val staticBlur = RawFlowTuningState.staticBlur
-    val staticDetail = RawFlowTuningState.staticDetail
-    val staticBrightness = RawFlowTuningState.staticBrightness
-    val staticSaturation = RawFlowTuningState.staticSaturation
     val isSystemDark = rememberRawFlowIsDarkTheme()
     val scheme = MiuixTheme.colorScheme
-    val runtimeRevision = RawFlowRuntimeState.revision
-    val flowMode = RawFlowRuntimeState.mode ?: mode
 
     LaunchedEffect(flowMode, runtimeRevision, sourceCoverKey, isSystemDark, active, motionEnabled) {
         PowerTraceLogger.flowMode(
@@ -506,6 +1242,15 @@ fun RawFlowBackground(
     }
     if (backgroundStyle == RawBackgroundStyle.SIMPLE) {
         Box(modifier = modifier.fillMaxSize().background(scheme.background))
+        return
+    }
+
+    if (backgroundStyle == RawBackgroundStyle.STATIC && surface == RawBackgroundSurface.PLAYER) {
+        RawStaticArtworkSingleBackground(
+            sourceCoverKey = sourceCoverKey ?: fallbackSourceCoverKey,
+            sourceArtwork = providerArtwork,
+            modifier = modifier.fillMaxSize(),
+        )
         return
     }
 
@@ -539,7 +1284,6 @@ fun RawFlowBackground(
         flowMode,
         isSystemDark,
         sourceCoverKey,
-        coilArtwork,
         inheritedColors,
         fallbackColors,
         backgroundStyle,
@@ -550,27 +1294,17 @@ fun RawFlowBackground(
         ) {
             fallbackColors
         } else {
-            coilArtwork
-                ?.takeUnless { it.isRecycled }
-                ?.let {
-                    extractRawBackgroundColors(
-                        bitmap = it,
-                        backgroundStyle = backgroundStyle,
-                        mode = flowMode,
-                        isSystemDark = isSystemDark,
-                    )
-                }
-                ?.takeIf { it.isNotEmpty() }
-                ?.let { finalizeExtractedBackgroundColors(it, fallbackColors, backgroundStyle) }
-                ?: resolveFlowColorsFromMemory(
-                    context = context,
-                    sourceCoverKey = sourceCoverKey,
-                    mode = flowMode,
-                    isSystemDark = isSystemDark,
-                    fallbackColors = fallbackColors,
-                    backgroundStyle = backgroundStyle,
-                )
-                ?: inheritedColors
+            // Never run Palette extraction synchronously from composition. Reuse an already cached
+            // target palette when available; otherwise start from the outgoing/inherited palette
+            // while the LaunchedEffect below resolves the exact target off the main thread.
+            resolveFlowColorsFromMemory(
+                context = context,
+                sourceCoverKey = sourceCoverKey,
+                mode = flowMode,
+                isSystemDark = isSystemDark,
+                fallbackColors = fallbackColors,
+                backgroundStyle = backgroundStyle,
+            ) ?: inheritedColors
         }
     }
     var targetColors by remember(flowMode, isSystemDark, sourceCoverKey, backgroundStyle) {
@@ -581,7 +1315,7 @@ fun RawFlowBackground(
         flowMode,
         runtimeRevision,
         sourceCoverKey,
-        coilArtwork,
+        providerArtwork,
         fallbackColors,
         isSystemDark,
         backgroundStyle,
@@ -603,36 +1337,6 @@ fun RawFlowBackground(
             return@LaunchedEffect
         }
 
-        coilArtwork
-            ?.takeUnless { it.isRecycled }
-            ?.let {
-                extractRawBackgroundColors(
-                    bitmap = it,
-                    backgroundStyle = backgroundStyle,
-                    mode = flowMode,
-                    isSystemDark = isSystemDark,
-                )
-            }
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { extracted ->
-                val completed = finalizeExtractedBackgroundColors(
-                    extracted,
-                    fallbackColors,
-                    backgroundStyle,
-                )
-                flowPaletteCache.put(paletteCacheKey, completed)
-                targetColors = completed
-                PowerTraceLogger.flowPalette(
-                    stage = "transition_artwork",
-                    mode = flowMode.prefValue,
-                    source = "Coil",
-                    colorCount = completed.size,
-                    elapsedMs = SystemClock.elapsedRealtime() - paletteStartMs,
-                    coverKey = sourceCoverKey
-                )
-                return@LaunchedEffect
-            }
-
         flowPaletteCache.get(paletteCacheKey)?.let { cached ->
             targetColors = cached
             PowerTraceLogger.flowPalette(
@@ -647,28 +1351,29 @@ fun RawFlowBackground(
         }
 
         var appliedAlbumPalette = false
-        val bitmap = coilArtwork?.takeUnless { it.isRecycled }
-            ?: CoilArtworkRuntime.executeBitmap(
-                context = context,
-                key = sourceCoverKey,
-                width = FLOW_EXTRACT_SIZE,
-                height = FLOW_EXTRACT_SIZE,
-                surface = ArtworkSurface.Playback
-            )
+        val bitmap = resolveRawFlowPixelAnalysisBitmap(
+            context = context,
+            sourceCoverKey = sourceCoverKey,
+            supplied = providerArtwork,
+        )
         if (bitmap != null && !bitmap.isRecycled) {
-            val extracted = extractRawBackgroundColors(
-                bitmap = bitmap,
-                backgroundStyle = backgroundStyle,
-                mode = flowMode,
-                isSystemDark = isSystemDark,
-            )
-            if (extracted.isNotEmpty()) {
-                val completed = finalizeExtractedBackgroundColors(
-                    extracted,
-                    fallbackColors,
-                    backgroundStyle,
-                )
+            val completed = withContext(Dispatchers.Default) {
+                extractRawBackgroundColors(
+                    bitmap = bitmap,
+                    backgroundStyle = backgroundStyle,
+                    mode = flowMode,
+                    isSystemDark = isSystemDark,
+                ).takeIf { it.isNotEmpty() }?.let { extracted ->
+                    finalizeExtractedBackgroundColors(
+                        extracted,
+                        fallbackColors,
+                        backgroundStyle,
+                    )
+                }
+            }
+            if (completed != null) {
                 flowPaletteCache.put(paletteCacheKey, completed)
+                RawFlowPaletteRuntimeState.bump()
                 targetColors = completed
                 appliedAlbumPalette = true
                 PowerTraceLogger.flowPalette(
@@ -712,104 +1417,115 @@ fun RawFlowBackground(
             raw.map { tuneFlowColor(it, saturationScale, brightnessScale) }
         }
     }
+    // Keep animated color State objects without reading .value in composition. During a transition
+    // two full-screen backgrounds may be alive; reading six animated values per layer here used to
+    // recompose both trees every frame. FLOW reads them from Canvas draw phase below instead.
     val animatedColorSlots = List(FLOW_MAX_COLOR_COUNT) { index ->
         val slotTarget = resolvedColors.getOrElse(index) { resolvedColors.last() }
         animateColorAsState(
             targetValue = slotTarget,
-            animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
+            animationSpec = if (paletteAnimationEnabled) {
+                tween(durationMillis = 360, easing = FastOutSlowInEasing)
+            } else {
+                snap()
+            },
             label = "raw-flow-palette-$index"
-        ).value
+        )
     }
-    val colors = animatedColorSlots.take(resolvedColors.size)
 
     val targetBaseColor = remember(flowMode, isSystemDark, resolvedColors) {
         baseFlowColor(flowMode, isSystemDark, resolvedColors.firstOrNull())
     }
-    val baseColor by animateColorAsState(
+    val baseColorState = animateColorAsState(
         targetValue = targetBaseColor,
-        animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
+        animationSpec = if (paletteAnimationEnabled) {
+            tween(durationMillis = 360, easing = FastOutSlowInEasing)
+        } else {
+            snap()
+        },
         label = "raw-flow-base"
     )
+    // STATIC does not have the 60/90/120 Hz blob clock, so reading its small color transition here
+    // is acceptable and keeps the existing native/static fallback path unchanged.
+    val staticColors = if (backgroundStyle == RawBackgroundStyle.STATIC) {
+        animatedColorSlots.take(resolvedColors.size).map { it.value }
+    } else {
+        emptyList()
+    }
+    val staticBaseColor = if (backgroundStyle == RawBackgroundStyle.STATIC) {
+        baseColorState.value
+    } else {
+        Color.Transparent
+    }
     if (backgroundStyle == RawBackgroundStyle.STATIC) {
-        val staticArtwork = remember(
-            sourceCoverKey,
-            fallbackSourceCoverKey,
-            coilArtwork,
-            surface
-        ) {
-            if (surface != RawBackgroundSurface.PLAYER) {
-                null
-            } else {
-                coilArtwork?.takeUnless { it.isRecycled }
-                    ?: listOfNotNull(sourceCoverKey, fallbackSourceCoverKey)
-                        .firstNotNullOfOrNull { key ->
-                            CoilArtworkRuntime.peekBitmap(
-                                context = context,
-                                key = key,
-                                width = FLOW_EXTRACT_SIZE,
-                                height = FLOW_EXTRACT_SIZE,
-                                surface = ArtworkSurface.Playback
-                            )
-                        }
-                        ?.takeUnless { it.isRecycled }
-            }
-        }
         val nativeColors = remember(targetColors, fallbackColors) {
             targetColors.ifEmpty { fallbackColors }
                 .take(FLOW_MAX_COLOR_COUNT)
                 .map { it.toAndroidArgb(alphaOverride = 1f) }
                 .toIntArray()
         }
-        val staticBitmap = remember(
-            nativeColors.contentHashCode(),
-            staticArtwork,
-            surface,
-            staticGradient,
-            staticBlur,
-            staticDetail,
-            staticBrightness,
-            staticSaturation,
-            tuningRevision
-        ) {
-            if (surface == RawBackgroundSurface.PLAYER && staticArtwork != null) {
-                NativeStaticBackground.createPlayer(
-                    artwork = staticArtwork,
-                    colors = nativeColors,
-                    // Static endpoints already contain the brightness/saturation policy. The native
-                    // player renderer contributes only texture/blur/detail; do not recolor twice.
-                    saturation = 1f,
-                    brightness = 1f,
-                    gradient = staticGradient,
-                    blur = staticBlur,
-                    detail = staticDetail
-                )
-            } else {
-                NativeStaticBackground.create(
-                    colors = nativeColors,
-                    saturation = if (backgroundStyle == RawBackgroundStyle.STATIC) 1f else saturationScale,
-                    brightness = if (backgroundStyle == RawBackgroundStyle.STATIC) 1f else brightnessScale,
-                )
+        val staticBitmapKey = remember(nativeColors.contentHashCode(), tuningRevision) {
+            NativeStaticBackground.sceneCacheKey(
+                colors = nativeColors,
+                saturation = 1f,
+                brightness = 1f,
+            )
+        }
+        var staticBitmap by remember {
+            mutableStateOf<AndroidBitmap?>(NativeStaticBackground.peekScene(staticBitmapKey))
+        }
+        LaunchedEffect(staticBitmapKey, nativeColors.contentHashCode()) {
+            NativeStaticBackground.peekScene(staticBitmapKey)?.let { cached ->
+                staticBitmap = cached
+                return@LaunchedEffect
+            }
+            NativeStaticBackground.prepareScene(
+                cacheKey = staticBitmapKey,
+                colors = nativeColors,
+                saturation = 1f,
+                brightness = 1f,
+            )?.takeUnless { it.isRecycled }?.let { prepared ->
+                staticBitmap = prepared
             }
         }
         if (staticBitmap != null) {
             Image(
-                bitmap = staticBitmap.asImageBitmap(),
+                bitmap = staticBitmap!!.asImageBitmap(),
                 contentDescription = null,
                 contentScale = ContentScale.FillBounds,
-                modifier = modifier.fillMaxSize().background(baseColor)
+                modifier = modifier.fillMaxSize().background(staticBaseColor)
             )
             return
         }
     }
     val canMove = true
-    val timeSeconds = rememberRawFlowTimeSeconds(
-        enabled = motionEnabled && canMove && backgroundStyle == RawBackgroundStyle.FLOW,
+    // Keep the flow clock as a State object and read it from Canvas draw phase. Returning the
+    // Float value from a composable made every flow tick recompose the complete RawFlowBackground;
+    // during a song switch two prepared backgrounds doubled that work.
+    val timeSecondsState = rememberRawFlowTimeState(
+        enabled = frameAnimationActive && motionEnabled && canMove &&
+            backgroundStyle == RawBackgroundStyle.FLOW,
         modeName = flowMode.prefValue,
         frameIntervalMs = frameIntervalMs.coerceAtLeast(FLOW_FRAME_INTERVAL_MS)
     )
-    Canvas(modifier = modifier.fillMaxSize().clipToBounds().background(baseColor)) {
+    val blobSeeds = remember { flowBlobSeeds() }
+    val blobRenderers = remember {
+        List(FLOW_MAX_COLOR_COUNT) {
+            RetainedFlowRadialBlob(
+                stops = floatArrayOf(0f, 0.38f, 0.72f, 1f),
+                alphaMultipliers = floatArrayOf(1f, 0.72f, 0.28f, 0f),
+            )
+        }
+    }
+    Canvas(modifier = modifier.fillMaxSize().clipToBounds()) {
+        val drawBaseColor = if (backgroundStyle == RawBackgroundStyle.STATIC) {
+            staticBaseColor
+        } else {
+            baseColorState.value
+        }
+        drawRect(drawBaseColor)
         if (backgroundStyle == RawBackgroundStyle.STATIC) {
-            val matrixColors = colors.ifEmpty { listOf(baseColor) }
+            val matrixColors = staticColors.ifEmpty { listOf(drawBaseColor) }
             drawRect(
                 brush = Brush.linearGradient(
                     colors = listOf(
@@ -835,16 +1551,19 @@ fun RawFlowBackground(
             return@Canvas
         }
         val maxDimension = max(size.width, size.height)
-        val countScale = when (colors.size) {
+        val colorCount = resolvedColors.size.coerceIn(1, FLOW_MAX_COLOR_COUNT)
+        val countScale = when (colorCount) {
             1 -> 1.18f
             2 -> 1.05f
             else -> 0.92f
         }
-        colors.forEachIndexed { index, color ->
-            val seed = flowBlobSeeds()[index % flowBlobSeeds().size]
+        val nativeCanvas = drawContext.canvas.nativeCanvas
+        repeat(colorCount) { index ->
+            val color = animatedColorSlots[index].value
+            val seed = blobSeeds[index % blobSeeds.size]
             val phase = seed.phase + index * 0.83f
             val motion = if (canMove) 1f else 0f
-            val animatedTime = timeSeconds * motionSpeed
+            val animatedTime = timeSecondsState.value * motionSpeed
             val x = size.width * seed.baseX +
                 size.width * seed.amplitudeX * sin(animatedTime * seed.speedX + phase) * motion
             val y = size.height * seed.baseY +
@@ -852,34 +1571,30 @@ fun RawFlowBackground(
             val radiusPulse = 1f + 0.11f * sin(animatedTime * seed.radiusSpeed + phase)
             val radius = maxDimension * seed.radius * countScale * radiusPulse
             val coreAlpha = if (isSystemDark) 0.88f else 0.82f
-            drawCircle(
-                brush = Brush.radialGradient(
-                    0f to color.copy(alpha = coreAlpha),
-                    0.38f to color.copy(alpha = coreAlpha * 0.72f),
-                    0.72f to color.copy(alpha = coreAlpha * 0.28f),
-                    1f to Color.Transparent,
-                    center = Offset(x, y),
-                    radius = radius
-                ),
+            blobRenderers[index].draw(
+                canvas = nativeCanvas,
+                color = color,
+                coreAlpha = coreAlpha,
+                centerX = x,
+                centerY = y,
                 radius = radius,
-                center = Offset(x, y)
             )
         }
     }
 }
 
 @Composable
-private fun rememberRawFlowTimeSeconds(
+private fun rememberRawFlowTimeState(
     enabled: Boolean,
     modeName: String,
     frameIntervalMs: Long
-): Float {
-    var timeSeconds by remember { mutableFloatStateOf(0f) }
+): androidx.compose.runtime.State<Float> {
+    fun globalPhaseSeconds(nowNs: Long = System.nanoTime()): Float =
+        ((nowNs - FLOW_GLOBAL_EPOCH_NS).coerceAtLeast(0L) / 1_000_000_000f)
+
+    val timeSeconds = remember { mutableFloatStateOf(globalPhaseSeconds()) }
     LaunchedEffect(enabled, modeName, frameIntervalMs) {
         if (!enabled) {
-            // Pause on the current visual phase instead of snapping back to the canonical texture.
-            // Non-flow pages can therefore stop the animation, and flow pages resume without a
-            // one-frame non-flow/static-background flash.
             PowerTraceLogger.flowFrame(
                 mode = modeName,
                 enabled = false,
@@ -887,29 +1602,36 @@ private fun rememberRawFlowTimeSeconds(
             )
             return@LaunchedEffect
         }
+        // FLOW phase is global time, not ownership-local elapsed time.  If rendering was disabled
+        // while fully hidden/backgrounded, resume at the phase it would have reached rather than
+        // continuing from the old frozen value.  This also makes transition-layer admission
+        // independent from visual phase continuity.
+        timeSeconds.floatValue = globalPhaseSeconds()
+        var firstFrameNs = 0L
         var lastUpdateNs = 0L
+        var lastTraceNs = 0L
+        val startVisualSeconds = timeSeconds.floatValue
         val requestedIntervalNs = frameIntervalMs.coerceAtLeast(1L) * 1_000_000L
-        while (true) {
+        while (isActive) {
             val frameNs = withFrameNanos { it }
-            // A 16 ms preference means "every display frame", not a fixed 60 Hz timer. This lets
-            // 90/120 Hz devices animate on their own vsync while retaining throttling for slower
-            // background modes that explicitly request a larger interval.
+            if (firstFrameNs == 0L) firstFrameNs = frameNs
             if (
                 frameIntervalMs <= FLOW_FRAME_INTERVAL_MS ||
                 lastUpdateNs == 0L ||
                 frameNs - lastUpdateNs >= requestedIntervalNs
             ) {
-                // Every scene/player instance samples one process-wide clock. Opening the player
-                // therefore reveals the same flow phase instead of restarting its blobs at t=0.
-                timeSeconds =
-                    ((frameNs - FLOW_GLOBAL_EPOCH_NS).coerceAtLeast(0L) / 1_000_000_000f)
+                timeSeconds.floatValue = startVisualSeconds +
+                    ((frameNs - firstFrameNs).coerceAtLeast(0L) / 1_000_000_000f)
                 lastUpdateNs = frameNs
             }
-            PowerTraceLogger.flowFrame(
-                mode = modeName,
-                enabled = true,
-                frameIntervalMs = frameIntervalMs
-            )
+            if (lastTraceNs == 0L || frameNs - lastTraceNs >= 1_000_000_000L) {
+                PowerTraceLogger.flowFrame(
+                    mode = modeName,
+                    enabled = true,
+                    frameIntervalMs = frameIntervalMs
+                )
+                lastTraceNs = frameNs
+            }
         }
     }
     return timeSeconds
@@ -1083,6 +1805,9 @@ private fun RawFlowParameterControls(
     context: Context,
     backgroundStyle: RawBackgroundStyle
 ) {
+    var editingStaticGradientColor by remember(RawFlowTuningState.staticGradientColor) {
+        mutableStateOf(Color(RawFlowTuningState.staticGradientColor))
+    }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (backgroundStyle == RawBackgroundStyle.STATIC) {
             RawFlowParameterSlider(
@@ -1094,6 +1819,40 @@ private fun RawFlowParameterControls(
                     RawFlowTuningState.setStaticGradient(context, it.roundToInt().toFloat())
                 }
             )
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = stringResource(R.string.static_background_gradient_color_parameter),
+                    color = MiuixTheme.colorScheme.onSurface,
+                    fontSize = 14.sp,
+                )
+                ColorPicker(
+                    color = editingStaticGradientColor,
+                    onColorChanged = { editingStaticGradientColor = it },
+                    colorSpace = ColorSpace.HSV,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.45f))
+                        .clickable {
+                            RawFlowTuningState.setStaticGradientColor(
+                                context,
+                                editingStaticGradientColor.toArgb(),
+                            )
+                        }
+                        .padding(vertical = 10.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(R.string.static_background_apply_gradient_color),
+                        color = MiuixTheme.colorScheme.primary,
+                        fontSize = 14.sp,
+                    )
+                }
+            }
             RawFlowParameterSlider(
                 title = stringResource(R.string.static_background_blur_parameter),
                 value = RawFlowTuningState.staticBlur,
@@ -1360,47 +2119,59 @@ private object RawFlowPaletteExtractor {
     fun extract(bitmap: android.graphics.Bitmap, mode: RawFlowMode, isSystemDark: Boolean): List<Color> {
         if (bitmap.isRecycled) return emptyList()
 
-        // Use the classic palette pipeline: filtered median-cut
-        // quantization capped at 16 colors, followed by the six standard saturation/lightness
-        // targets. Keep that selection behavior while retaining up to five distinct colors for
-        // RawS Music's multi-blob renderer.
-        val palette = Palette.from(bitmap)
-            .maximumColorCount(16)
-            .generate()
-        val targetSwatches = if (mode == RawFlowMode.DARK || isSystemDark) {
-            listOf(
-                palette.darkVibrantSwatch,
-                palette.vibrantSwatch,
-                palette.darkMutedSwatch,
-                palette.mutedSwatch,
-                palette.lightVibrantSwatch,
-                palette.lightMutedSwatch
-            )
-        } else {
-            listOf(
-                palette.lightVibrantSwatch,
-                palette.vibrantSwatch,
-                palette.lightMutedSwatch,
-                palette.mutedSwatch,
-                palette.darkVibrantSwatch,
-                palette.darkMutedSwatch
-            )
-        }
-        val orderedSwatches = (targetSwatches + palette.swatches)
-            .filterNotNull()
-            .distinctBy { it.rgb }
-        val paletteCandidates = orderedSwatches
-            .mapIndexedNotNull { index, swatch ->
-                normalizeColor(swatch.rgb, mode, isSystemDark)?.let { color ->
-                    ScoredFlowColor(
-                        color = color,
-                        score = swatch.population *
-                            colorVisualWeight(color) *
-                            (1.35f - index.coerceAtMost(6) * 0.05f)
-                    )
-                }
+        // A HARDWARE bitmap here is a pipeline bug: Palette needs CPU pixels and must receive the
+        // dedicated 96px software analysis raster from BitmapProvider. Never repair the mistake by
+        // copying the foreground GPU wrapper back to CPU memory during a transition.
+        if (
+            android.os.Build.VERSION.SDK_INT >= 26 &&
+            bitmap.config == android.graphics.Bitmap.Config.HARDWARE
+        ) return emptyList()
+
+        return try {
+            // Use the classic palette pipeline: filtered median-cut
+            // quantization capped at 16 colors, followed by the six standard saturation/lightness
+            // targets. Keep that selection behavior while retaining up to five distinct colors for
+            // RawS Music's multi-blob renderer.
+            val palette = Palette.from(bitmap)
+                .maximumColorCount(16)
+                .generate()
+            val targetSwatches = if (mode == RawFlowMode.DARK || isSystemDark) {
+                listOf(
+                    palette.darkVibrantSwatch,
+                    palette.vibrantSwatch,
+                    palette.darkMutedSwatch,
+                    palette.mutedSwatch,
+                    palette.lightVibrantSwatch,
+                    palette.lightMutedSwatch
+                )
+            } else {
+                listOf(
+                    palette.lightVibrantSwatch,
+                    palette.vibrantSwatch,
+                    palette.lightMutedSwatch,
+                    palette.mutedSwatch,
+                    palette.darkVibrantSwatch,
+                    palette.darkMutedSwatch
+                )
             }
-        return selectAdaptiveColors(paletteCandidates.sortedByDescending { it.score })
+            val orderedSwatches = (targetSwatches + palette.swatches)
+                .filterNotNull()
+                .distinctBy { it.rgb }
+            val paletteCandidates = orderedSwatches
+                .mapIndexedNotNull { index, swatch ->
+                    normalizeColor(swatch.rgb, mode, isSystemDark)?.let { color ->
+                        ScoredFlowColor(
+                            color = color,
+                            score = swatch.population *
+                                colorVisualWeight(color) *
+                                (1.35f - index.coerceAtMost(6) * 0.05f)
+                        )
+                    }
+                }
+            selectAdaptiveColors(paletteCandidates.sortedByDescending { it.score })
+        } catch (_: Throwable) {
+            emptyList()
+        }
     }
 
     private fun normalizeColor(rgb: Int, mode: RawFlowMode, isSystemDark: Boolean): Color? {

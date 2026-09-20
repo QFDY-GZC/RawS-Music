@@ -108,6 +108,7 @@ object ScanDispatcher {
         val startTime = System.currentTimeMillis()
         val customPaths = AppPreferences.UI.scanPaths.map { it.trim() }.filter { it.isNotBlank() }.distinct()
         val coordinator = LibraryScanCoordinator(repository)
+        var finalSync: LibraryScanCoordinator.Event.DatabaseSyncCompleted? = null
 
         AppLogger.d(TAG, "dispatchUnifiedLibraryScan: fast=$fastScan, paths=${customPaths.size}")
         ScanStateBus.notifyDirScanStarted()
@@ -135,6 +136,9 @@ object ScanDispatcher {
                     ScanStateBus.notifyScanning(0, event.newCount, message)
                 }
                 is LibraryScanCoordinator.Event.DatabaseSyncCompleted -> {
+                    if (event.phase == LibraryScanCoordinator.SyncPhase.FINAL) {
+                        finalSync = event
+                    }
                     val message = when (event.phase) {
                         LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> "快速结果已显示：新增/变更 ${event.upserted} 首"
                         LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> "后台补全已写入：${event.upserted} 首"
@@ -152,6 +156,17 @@ object ScanDispatcher {
                 }
                 is LibraryScanCoordinator.Event.Completed -> {
                     ScanStateBus.notifyCompleted(event.songs.size, System.currentTimeMillis() - startTime)
+                    val stats = finalSync
+                    LibraryScanToast.show(
+                        context,
+                        LibraryScanSummary(
+                            scanned = event.songs.size,
+                            added = stats?.added ?: 0,
+                            updated = stats?.updated ?: 0,
+                            removed = stats?.deleted ?: 0,
+                            elapsedMs = event.timeMs
+                        )
+                    )
                     AppLogger.d(TAG, "unified scan done: found=${event.songs.size}, elapsed=${event.timeMs}ms")
                 }
                 is LibraryScanCoordinator.Event.Error -> {
@@ -190,20 +205,41 @@ object ScanDispatcher {
         ScanStateBus.notifyDirScanStarted()
 
         if (fastScan) {
-            runScanPhase(context, customPaths, quickScan = true, "快速扫描", notifyFinal = true, startTime)
+            val result = runScanPhase(context, customPaths, quickScan = true, "快速扫描", notifyFinal = true, startTime)
+            showLegacyScanToast(context, result, System.currentTimeMillis() - startTime)
         } else {
-            val qf = runScanPhase(context, customPaths, quickScan = true, "快速扫描", notifyFinal = false, startTime)
+            val quickResult = runScanPhase(context, customPaths, quickScan = true, "快速扫描", notifyFinal = false, startTime)
             coroutineContext.ensureActive()
-            ScanStateBus.notifyScanning(qf, qf, "快速扫描完成，正在读取详细标签")
-            runScanPhase(context, customPaths, quickScan = false, "详细扫描", notifyFinal = true, startTime)
+            ScanStateBus.notifyScanning(
+                quickResult.scanned,
+                quickResult.scanned,
+                "快速扫描完成，正在读取详细标签"
+            )
+            val finalResult = runScanPhase(context, customPaths, quickScan = false, "详细扫描", notifyFinal = true, startTime)
+            showLegacyScanToast(context, finalResult, System.currentTimeMillis() - startTime)
         }
+    }
+
+    private data class LegacyScanResult(val scanned: Int, val added: Int)
+
+    private fun showLegacyScanToast(context: Context, result: LegacyScanResult, elapsedMs: Long) {
+        LibraryScanToast.show(
+            context,
+            LibraryScanSummary(
+                scanned = result.scanned,
+                added = result.added,
+                updated = 0,
+                removed = 0,
+                elapsedMs = elapsedMs
+            )
+        )
     }
 
     private suspend fun runScanPhase(
         context: Context, paths: List<String>, quickScan: Boolean,
         phaseName: String, notifyFinal: Boolean, globalStart: Long
-    ): Int {
-        var found = 0
+    ): LegacyScanResult {
+        var result = LegacyScanResult(scanned = 0, added = 0)
         AppLogger.d(TAG, "runScanPhase: $phaseName, quick=$quickScan")
 
         ScanManager.startScan(context, paths, useMediaStore = !AppPreferences.Scanner.legacyFileAccessEnabled, quickScan = quickScan).collect { p ->
@@ -212,15 +248,15 @@ object ScanDispatcher {
                 is ScanProgress.Started -> ScanStateBus.notifyScanning(0, p.totalEstimated, "$phaseName：准备")
                 is ScanProgress.Progress -> ScanStateBus.notifyScanning(p.scanned, p.total, "$phaseName：${p.scanned}/${p.total}")
                 is ScanProgress.Completed -> {
-                    found = p.found
+                    result = LegacyScanResult(scanned = p.songs.size, added = p.found)
                     val elapsed = System.currentTimeMillis() - globalStart
-                    if (notifyFinal) ScanStateBus.notifyCompleted(p.found, elapsed)
-                    else ScanStateBus.notifyScanning(p.found, p.found, "$phaseName 完成：${p.found} 首")
-                    AppLogger.d(TAG, "$phaseName done: found=${p.found}, elapsed=${elapsed}ms, final=$notifyFinal")
+                    if (notifyFinal) ScanStateBus.notifyCompleted(result.scanned, elapsed)
+                    else ScanStateBus.notifyScanning(result.scanned, result.scanned, "$phaseName 完成：${result.scanned} 首")
+                    AppLogger.d(TAG, "$phaseName done: found=${result.scanned}, added=${result.added}, elapsed=${elapsed}ms, final=$notifyFinal")
                 }
                 is ScanProgress.Error -> { ScanStateBus.notifyError(p.message); throw IllegalStateException(p.message) }
             }
         }
-        return found
+        return result
     }
 }

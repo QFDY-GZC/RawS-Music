@@ -2,7 +2,10 @@ package com.rawsmusic.module.player
 
 import android.content.Context
 import android.os.ParcelFileDescriptor
+import com.rawsmusic.core.common.net.RemoteHttpStreamRegistry
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.module.scanner.webdav.WebDavPlaybackCredentialResolver
+import java.io.File
 
 /**
  * Owns SAF ParcelFileDescriptors used to feed content:// URIs into FFmpeg.
@@ -17,10 +20,39 @@ internal class DecoderPathResolver(
     private val tag: String
 ) {
     private val activePfds = ArrayList<ParcelFileDescriptor>()
+    private val flacCompatibilityCache = FlacPlaybackCompatibilityCache(
+        cacheDirectory = File(context.cacheDir, "flac_playback_compat"),
+        tag = tag,
+    )
 
     @Synchronized
     fun resolve(path: String): String {
-        if (!path.startsWith("content://")) return path
+        val sanitizedPath = WebDavPlaybackCredentialResolver.sanitizeUrlIfConfigured(path) ?: path
+        val registeredTransport = RemoteHttpStreamRegistry.lookup(sanitizedPath)?.resolveUrl(sanitizedPath)
+        val transportPath = registeredTransport ?: sanitizedPath
+        val resolvedPath = if (transportPath.startsWith("content://")) {
+            resolveContentUri(transportPath)
+        } else {
+            transportPath
+        }
+        return flacCompatibilityCache.resolve(
+            sourcePath = resolvedPath,
+            sourceIdentity = sanitizedPath,
+        )
+    }
+
+    /**
+     * Slow safety fallback for WebDAV origins that FFmpeg cannot consume directly.
+     * Normal WebDAV playback must stay on direct HTTP; this is called only after a real
+     * decoder-open failure so large non-Range objects are not downloaded before every play.
+     */
+    @Synchronized
+    fun resolveWebDavCacheFallback(path: String): String? {
+        val sanitizedPath = WebDavPlaybackCredentialResolver.sanitizeUrlIfConfigured(path) ?: return null
+        return WebDavPlaybackCredentialResolver.cachePath(context, sanitizedPath)
+    }
+
+    private fun resolveContentUri(path: String): String {
         return try {
             val uri = android.net.Uri.parse(path)
             val pfd = context.contentResolver.openFileDescriptor(uri, "r") ?: return path

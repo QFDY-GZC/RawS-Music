@@ -16,9 +16,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.SortOrder
+import com.rawsmusic.core.ui.scene.LocalBottomChromeInsets
 import com.rawsmusic.core.ui.scene.LocalSharedCoverRegistry
 import com.rawsmusic.core.ui.scene.LocalSharedTransitionSpec
 import com.rawsmusic.core.ui.scene.NavScene
@@ -48,12 +49,14 @@ import com.rawsmusic.core.ui.scene.SharedCoverSnapshot
 import com.rawsmusic.core.ui.widget.bitmaps.CrossfadeAlbumArt
 import com.rawsmusic.core.ui.widget.index.RawAlphabetIndex
 import com.rawsmusic.core.ui.widget.index.rememberAdaptiveAlphabetIndexData
-import com.rawsmusic.core.ui.widget.powerlist.ComposeGenericPowerList
-import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
-import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListState
-import com.rawsmusic.core.ui.widget.powerlist.FolderPowerListItem
-import com.rawsmusic.core.ui.widget.powerlist.rememberComposePowerListState
-import com.rawsmusic.core.ui.widget.powerlist.stablePowerListHash64
+import com.rawsmusic.core.ui.widget.virtuallist.ComposeGenericVirtualList
+import com.rawsmusic.core.ui.widget.virtuallist.LocalReferenceLibraryProviderPublicationOnly
+import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListFull
+import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListState
+import com.rawsmusic.core.ui.widget.virtuallist.FolderVirtualListItem
+import com.rawsmusic.core.ui.widget.virtuallist.rememberComposeVirtualListState
+import com.rawsmusic.core.ui.widget.virtuallist.stableVirtualListHash64
+import com.rawsmusic.core.ui.widget.virtuallist.retainedMappedList
 import com.rawsmusic.module.data.prefs.CollectionSortPreferences
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -72,29 +75,38 @@ fun FoldersPage(
     onBack: () -> Unit,
     onFolderClick: (String) -> Unit = {},
     onPlayQueue: (List<AudioFile>, Int) -> Unit = { _, _ -> },
+    onSongLongClick: (AudioFile, Int) -> Unit = { _, _ -> },
+    selectionActions: LibrarySongSelectionActions = LibrarySongSelectionActions(),
     onShuffle: (List<AudioFile>) -> Unit = {},
     onOpenFolder: () -> Unit = {},
     onSearch: () -> Unit = {},
-    powerListState: ComposePowerListState = rememberComposePowerListState("folders"),
+    virtualListState: ComposeVirtualListState = rememberComposeVirtualListState("folders"),
+    detailListState: ComposeVirtualListState = rememberComposeVirtualListState("folder_detail_songs"),
     modifier: Modifier = Modifier
 ) {
-    val folderDetailSongsState = rememberComposePowerListState("folder_detail_songs")
-    val folders by remember(songs) {
-        derivedStateOf { LibrarySceneGroupingWarmup.folders(songs) }
+    val folders by produceState(
+        initialValue = LibrarySceneGroupingWarmup.folders(songs),
+        key1 = songs,
+    ) {
+        value = LibrarySceneGroupingWarmup.loadFolders(songs)
     }
     var sortOrder by remember {
         mutableStateOf(
             CollectionSortPreferences.read("library_root", "folders", SortOrder.TITLE_ASC)
         )
     }
-    val sortedFolders = remember(folders, sortOrder) { folders.sortedFor(sortOrder) }
+    val sortedFolders = remember(folders, sortOrder) {
+        if (sortOrder == SortOrder.TITLE_ASC) folders else folders.sortedFor(sortOrder)
+    }
 
     if (selectedFolderPath.isNullOrBlank()) {
         FolderListPage(
             folders = sortedFolders,
-            state = powerListState,
+            librarySongCount = songs.size,
+            state = virtualListState,
             onBack = onBack,
             onFolderClick = onFolderClick,
+            selectionActions = selectionActions,
             onShuffle = { onShuffle(sortedFolders.flatMap { it.songs }) },
             sortOrder = sortOrder,
             onSortOrderChange = {
@@ -110,9 +122,11 @@ fun FoldersPage(
         }
         FolderDetailPage(
             folder = folder,
-            songListState = folderDetailSongsState,
+            songListState = detailListState,
             onBack = onBack,
             onPlayQueue = onPlayQueue,
+            onSongLongClick = onSongLongClick,
+            selectionActions = selectionActions,
             onOpenFolder = onOpenFolder,
             onShuffle = onShuffle,
             onSearch = onSearch,
@@ -124,9 +138,11 @@ fun FoldersPage(
 @Composable
 private fun FolderListPage(
     folders: List<FolderGroupUi>,
-    state: ComposePowerListState,
+    librarySongCount: Int,
+    state: ComposeVirtualListState,
     onBack: () -> Unit,
     onFolderClick: (String) -> Unit,
+    selectionActions: LibrarySongSelectionActions,
     onShuffle: () -> Unit,
     sortOrder: SortOrder,
     onSortOrderChange: (SortOrder) -> Unit,
@@ -135,8 +151,8 @@ private fun FolderListPage(
     val coverRegistry = LocalSharedCoverRegistry.current
 
     val items = remember(folders) {
-        folders.map { folder ->
-            FolderPowerListItem(
+        retainedMappedList(folders) { folder ->
+            FolderVirtualListItem(
                 path = folder.path,
                 name = folder.name,
                 parentName = folder.parentName,
@@ -146,48 +162,62 @@ private fun FolderListPage(
             )
         }
     }
-    val alphabetIndexData = rememberAdaptiveAlphabetIndexData(items) { it.title }
+    val warmedAlphabetIndex = remember(folders, sortOrder) {
+        if (sortOrder == SortOrder.TITLE_ASC) LibrarySceneGroupingWarmup.foldersIndex(folders) else null
+    }
+    val alphabetIndexData = warmedAlphabetIndex
+        ?: rememberAdaptiveAlphabetIndexData(folders) { it.name }
 
     LibraryListScaffold(
         title = stringResource(com.rawsmusic.core.ui.R.string.library_title_folders),
         sceneId = NavScene.FOLDERS.name,
+        statisticsText = stringResource(com.rawsmusic.core.ui.R.string.library_statistics_folders, folders.size, librarySongCount),
         onBack = onBack,
-        powerListState = state,
+        virtualListState = state,
         onShuffle = onShuffle,
         currentSortOrder = sortOrder,
         onSortSelected = onSortOrderChange,
         sortOptions = listOf(
             stringResource(com.rawsmusic.core.ui.R.string.sort_by_name) to SortOrder.TITLE_ASC,
             stringResource(com.rawsmusic.core.ui.R.string.sort_by_path) to SortOrder.PATH_ASC,
-            stringResource(com.rawsmusic.core.ui.R.string.sort_by_modified) to SortOrder.DATE_ADDED_ASC,
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_added) to SortOrder.DATE_ADDED_ASC,
+            stringResource(com.rawsmusic.core.ui.R.string.sort_by_modified) to SortOrder.DATE_MODIFIED_ASC,
             stringResource(com.rawsmusic.core.ui.R.string.sort_by_duration) to SortOrder.DURATION_ASC,
             stringResource(com.rawsmusic.core.ui.R.string.sort_by_song_count) to SortOrder.PLAYBACK_INFO
         ),
         modifier = modifier
     ) { topPadding, backdropSource ->
-        ComposeGenericPowerList(
+        SelectableCollectionList(
             items = items,
             state = state,
             contentTopPadding = topPadding,
             sharedCoverSceneId = NavScene.FOLDERS.name,
+            selectionActions = selectionActions,
+            songsForIndex = { index -> folders.getOrNull(index)?.songs.orEmpty() },
+            artworkSongForIndex = { index ->
+                folders.getOrNull(index)?.songs?.let { folderSongs ->
+                    folderSongs.firstOrNull { it.albumArtPath.isNotBlank() } ?: folderSongs.firstOrNull()
+                }
+            },
             modifier = Modifier.fillMaxSize().then(backdropSource),
             onItemClick = { item, _, _ ->
-                val folder = item as? FolderPowerListItem ?: return@ComposeGenericPowerList
+                val folder = item as? FolderVirtualListItem ?: return@SelectableCollectionList
 
                 coverRegistry.freeze(
                     sceneId = NavScene.FOLDERS.name,
                     elementId = folder.sharedCoverElementId
                 )
-
                 onFolderClick(folder.path)
             }
         )
+        if (LocalReferenceLibraryProviderPublicationOnly.current) return@LibraryListScaffold
 
         RawAlphabetIndex(
             data = alphabetIndexData,
+            scrollActiveProvider = { state.isListScrollInProgress },
             modifier = Modifier
                 .align(Alignment.CenterEnd)
-                .padding(top = 92.dp, bottom = 118.dp, end = 0.dp)
+                .padding(top = 92.dp, bottom = LocalBottomChromeInsets.current.contentBottom, end = 0.dp)
                 .then(backdropSource)
                 .zIndex(30f),
             onTopSelect = {
@@ -203,9 +233,11 @@ private fun FolderListPage(
 @Composable
 private fun FolderDetailPage(
     folder: FolderGroupUi,
-    songListState: ComposePowerListState,
+    songListState: ComposeVirtualListState,
     onBack: () -> Unit,
     onPlayQueue: (List<AudioFile>, Int) -> Unit,
+    onSongLongClick: (AudioFile, Int) -> Unit,
+    selectionActions: LibrarySongSelectionActions,
     onOpenFolder: () -> Unit,
     onShuffle: (List<AudioFile>) -> Unit,
     onSearch: () -> Unit,
@@ -222,10 +254,12 @@ private fun FolderDetailPage(
             songs = folder.songs
         ),
         listScene = NavScene.FOLDERS,
-        detailScene = NavScene.FOLDER_HIERARCHY,
+        detailScene = NavScene.FOLDER_DETAIL,
         songListState = songListState,
         onBack = onBack,
         onPlayQueue = onPlayQueue,
+        onSongLongClick = onSongLongClick,
+        selectionActions = selectionActions,
         onOpenFolder = onOpenFolder,
         onShuffle = onShuffle,
         onSearch = onSearch,
@@ -243,7 +277,7 @@ internal data class FolderGroupUi(
     val totalDurationMs: Long
 ) {
     val songCount: Int get() = songs.size
-    val sharedElementId: String get() = "cover:folder:${stablePowerListHash64(path)}"
+    val sharedElementId: String get() = "cover:folder:${stableVirtualListHash64(path)}"
 
     companion object {
         fun empty(path: String): FolderGroupUi {
@@ -280,16 +314,15 @@ internal fun List<AudioFile>.toFolderGroups(): List<FolderGroupUi> {
                 totalDurationMs = orderedSongs.sumOf { it.duration.coerceAtLeast(0L) }
             )
         }
-        .sortedWith(
-            compareByDescending<FolderGroupUi> { it.songCount }
-                .thenBy { it.name.lowercase() }
-        )
+        // The grouping cache is warmed on Dispatchers.Default. Keep its canonical order equal to
+        // the UI default so entering Folders does not immediately sort the whole provider again.
+        .sortedWith(compareBy<FolderGroupUi> { it.name.lowercase() }.thenBy { it.path.lowercase() })
 }
 
 private fun List<FolderGroupUi>.sortedFor(order: SortOrder): List<FolderGroupUi> {
     val ascending = when (order) {
         SortOrder.TITLE_DESC, SortOrder.FILE_NAME_DESC, SortOrder.PATH_DESC,
-        SortOrder.DATE_ADDED_DESC, SortOrder.DURATION_DESC, SortOrder.YEAR_DESC,
+        SortOrder.DATE_ADDED_DESC, SortOrder.DATE_MODIFIED_DESC, SortOrder.DURATION_DESC, SortOrder.YEAR_DESC,
         SortOrder.ARTIST_DESC, SortOrder.ALBUM_DESC, SortOrder.PLAYBACK_INFO_DESC -> false
         else -> true
     }
@@ -297,6 +330,9 @@ private fun List<FolderGroupUi>.sortedFor(order: SortOrder): List<FolderGroupUi>
         SortOrder.PATH_ASC, SortOrder.PATH_DESC -> compareBy<FolderGroupUi> { it.path.lowercase() }
         SortOrder.DURATION_ASC, SortOrder.DURATION_DESC -> compareBy { it.totalDurationMs }
         SortOrder.DATE_ADDED_ASC, SortOrder.DATE_ADDED_DESC -> compareBy { group ->
+            group.songs.maxOfOrNull { it.dateAdded } ?: 0L
+        }
+        SortOrder.DATE_MODIFIED_ASC, SortOrder.DATE_MODIFIED_DESC -> compareBy { group ->
             group.songs.maxOfOrNull { it.dateModified } ?: 0L
         }
         SortOrder.PLAYBACK_INFO, SortOrder.PLAYBACK_INFO_DESC -> compareBy { it.songCount }

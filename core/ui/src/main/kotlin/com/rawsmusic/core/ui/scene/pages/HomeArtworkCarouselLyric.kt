@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -34,8 +35,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.ui.widget.player.KaraokeLyricLine
+import com.rawsmusic.core.ui.widget.player.LyricColorSurface
+import com.rawsmusic.core.ui.widget.player.LyricTimelineIndex
 import com.rawsmusic.core.ui.widget.player.calculateLyricInterludes
 import com.rawsmusic.core.ui.widget.player.calculateLyricPlaybackState
+import com.rawsmusic.core.ui.widget.player.lyricRainbowMask
+import com.rawsmusic.core.ui.widget.player.rememberResolvedLyricColor
 import com.rawsmusic.core.ui.widget.player.visibleLyricLineIndices
 import io.github.proify.lyricon.lyric.model.Song
 import io.github.proify.lyricon.lyric.model.interfaces.IRichLyricLine
@@ -51,10 +56,12 @@ private data class HomeCarouselLyricLine(
 
 @Composable
 internal fun HomeHorizontalCarouselLyric(
+    renderClock: com.rawsmusic.core.ui.widget.player.LyricDirectRenderClock,
     song: Song?,
     positionMs: Long,
     fallbackPrimary: String,
     fallbackTranslation: String,
+    albumAccent: Color,
     modifier: Modifier = Modifier
 ) {
     val current = rememberHomeCarouselLyricLine(
@@ -63,6 +70,13 @@ internal fun HomeHorizontalCarouselLyric(
         fallbackPrimary = fallbackPrimary,
         fallbackTranslation = fallbackTranslation
     )
+    val lyricColors = rememberResolvedLyricColor(
+        surface = LyricColorSurface.HOME,
+        fallbackPrimary = Color.White,
+        albumAccent = albumAccent,
+    )
+    val fontScale = LocalDensity.current.fontScale
+    val lyricLaneHeight = 88.dp + (24.dp * (fontScale - 1f).coerceIn(0f, 0.5f))
     AnimatedContent(
         targetState = current,
         transitionSpec = {
@@ -77,7 +91,7 @@ internal fun HomeHorizontalCarouselLyric(
         },
         contentAlignment = Alignment.TopCenter,
         label = "home-horizontal-carousel-lyric",
-        modifier = modifier.height(88.dp)
+        modifier = modifier.height(lyricLaneHeight)
     ) { lyric ->
         Box(
             modifier = Modifier
@@ -91,22 +105,24 @@ internal fun HomeHorizontalCarouselLyric(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     HomePrimaryLyric(
+                        renderClock = renderClock,
                         lyric = lyric,
                         positionMs = positionMs,
+                        primaryColor = lyricColors.primary,
+                        dimColor = lyricColors.dim,
+                        rainbow = lyricColors.rainbow,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth()
                     )
                     if (lyric.translation.isNotBlank()) {
-                        Text(
+                        HomeTranslationLyric(
                             text = lyric.translation,
-                            color = Color.White.copy(alpha = 0.72f),
-                            fontSize = 13.sp,
-                            lineHeight = 17.sp,
-                            fontWeight = FontWeight.Medium,
+                            color = lyricColors.secondary,
+                            rainbow = lyricColors.rainbow,
                             textAlign = TextAlign.Center,
                             maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            style = HomeLyricShadowStyle,
+                            fontSizeSp = 13,
+                            lineHeightSp = 17,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(top = 3.dp)
@@ -120,10 +136,12 @@ internal fun HomeHorizontalCarouselLyric(
 
 @Composable
 internal fun HomeVerticalDialLyric(
+    renderClock: com.rawsmusic.core.ui.widget.player.LyricDirectRenderClock,
     song: Song?,
     positionMs: Long,
     fallbackPrimary: String,
     fallbackTranslation: String,
+    albumAccent: Color,
     modifier: Modifier = Modifier
 ) {
     val current = rememberHomeCarouselLyricLine(
@@ -131,6 +149,11 @@ internal fun HomeVerticalDialLyric(
         positionMs = positionMs,
         fallbackPrimary = fallbackPrimary,
         fallbackTranslation = fallbackTranslation
+    )
+    val lyricColors = rememberResolvedLyricColor(
+        surface = LyricColorSurface.HOME,
+        fallbackPrimary = Color.White,
+        albumAccent = albumAccent,
     )
     AnimatedContent(
         targetState = current,
@@ -162,13 +185,19 @@ internal fun HomeVerticalDialLyric(
                 when {
                     lyric == null -> Unit
                     primaryIsChinese -> HomePrimaryLyric(
+                        renderClock = renderClock,
                         lyric = lyric,
                         positionMs = positionMs,
+                        primaryColor = lyricColors.primary,
+                        dimColor = lyricColors.dim,
+                        rainbow = lyricColors.rainbow,
                         textAlign = TextAlign.End,
                         modifier = Modifier.fillMaxWidth()
                     )
                     lyric.translation.isNotBlank() -> HomeTranslationLyric(
                         text = lyric.translation,
+                        color = lyricColors.secondary,
+                        rainbow = lyricColors.rainbow,
                         textAlign = TextAlign.End,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -183,12 +212,18 @@ internal fun HomeVerticalDialLyric(
                     lyric == null -> Unit
                     primaryIsChinese && lyric.translation.isNotBlank() -> HomeTranslationLyric(
                         text = lyric.translation,
+                        color = lyricColors.secondary,
+                        rainbow = lyricColors.rainbow,
                         textAlign = TextAlign.Start,
                         modifier = Modifier.fillMaxWidth()
                     )
                     !primaryIsChinese -> HomePrimaryLyric(
+                        renderClock = renderClock,
                         lyric = lyric,
                         positionMs = positionMs,
+                        primaryColor = lyricColors.primary,
+                        dimColor = lyricColors.dim,
+                        rainbow = lyricColors.rainbow,
                         textAlign = TextAlign.Start,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -200,18 +235,23 @@ internal fun HomeVerticalDialLyric(
 
 @Composable
 private fun HomePrimaryLyric(
+    renderClock: com.rawsmusic.core.ui.widget.player.LyricDirectRenderClock,
     lyric: HomeCarouselLyricLine,
     positionMs: Long,
+    primaryColor: Color,
+    dimColor: Color,
+    rainbow: Boolean,
     textAlign: TextAlign,
     modifier: Modifier
 ) {
     val timedLine = lyric.line
     if (timedLine != null && !timedLine.words.isNullOrEmpty()) {
         KaraokeLyricLine(
+            renderClock = renderClock,
             line = timedLine,
             positionMs = positionMs,
-            highlightColor = Color.White,
-            dimColor = Color.White.copy(alpha = 0.40f),
+            highlightColor = primaryColor,
+            dimColor = dimColor,
             fontSize = 18.sp,
             lineHeight = 23.sp,
             fontWeight = FontWeight.SemiBold,
@@ -220,12 +260,12 @@ private fun HomePrimaryLyric(
             wordLiftScale = 0.015f,
             glowEnabled = true,
             liftEnabled = true,
-            modifier = modifier
+            modifier = modifier.lyricRainbowMask(rainbow)
         )
     } else {
         Text(
             text = lyric.primary,
-            color = Color.White.copy(alpha = 0.96f),
+            color = primaryColor.copy(alpha = primaryColor.alpha.coerceAtMost(0.96f)),
             fontSize = 18.sp,
             lineHeight = 23.sp,
             fontWeight = FontWeight.SemiBold,
@@ -233,7 +273,7 @@ private fun HomePrimaryLyric(
             maxLines = 4,
             overflow = TextOverflow.Ellipsis,
             style = HomeLyricShadowStyle,
-            modifier = modifier
+            modifier = modifier.lyricRainbowMask(rainbow)
         )
     }
 }
@@ -241,21 +281,43 @@ private fun HomePrimaryLyric(
 @Composable
 private fun HomeTranslationLyric(
     text: String,
+    color: Color,
+    rainbow: Boolean,
     textAlign: TextAlign,
-    modifier: Modifier
+    modifier: Modifier,
+    maxLines: Int = 6,
+    fontSizeSp: Int = 14,
+    lineHeightSp: Int = 19,
 ) {
-    Text(
-        text = text,
-        color = Color.White.copy(alpha = 0.76f),
-        fontSize = 14.sp,
-        lineHeight = 19.sp,
-        fontWeight = FontWeight.Medium,
-        textAlign = textAlign,
-        maxLines = 6,
-        overflow = TextOverflow.Ellipsis,
-        style = HomeLyricShadowStyle,
-        modifier = modifier
-    )
+    val readableColor = color.copy(alpha = color.alpha.coerceAtLeast(0.88f))
+    Box(modifier = modifier) {
+        Text(
+            text = text,
+            color = Color.Black.copy(alpha = 0.28f),
+            fontSize = fontSizeSp.sp,
+            lineHeight = lineHeightSp.sp,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = textAlign,
+            maxLines = maxLines,
+            overflow = TextOverflow.Ellipsis,
+            style = HomeTranslationUnderlayStyle,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            text = text,
+            color = readableColor,
+            fontSize = fontSizeSp.sp,
+            lineHeight = lineHeightSp.sp,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = textAlign,
+            maxLines = maxLines,
+            overflow = TextOverflow.Ellipsis,
+            style = if (rainbow) TextStyle.Default else HomeLyricShadowStyle,
+            modifier = Modifier
+                .fillMaxWidth()
+                .lyricRainbowMask(rainbow),
+        )
+    }
 }
 
 @Composable
@@ -267,8 +329,9 @@ private fun rememberHomeCarouselLyricLine(
 ): HomeCarouselLyricLine? {
     val lines = remember(song) { song?.lyrics.orEmpty() }
     val interludes = remember(lines) { calculateLyricInterludes(lines) }
-    val playbackState = remember(lines, interludes, positionMs) {
-        calculateLyricPlaybackState(lines, positionMs, interludes)
+    val lyricTimeline = remember(lines, interludes) { LyricTimelineIndex(lines, interludes) }
+    val playbackState = remember(lyricTimeline, positionMs) {
+        calculateLyricPlaybackState(lyricTimeline, positionMs)
     }
     val visibleIndices = remember(lines) { visibleLyricLineIndices(lines) }
     val resolvedIndex = when {
@@ -316,6 +379,14 @@ private val HomeLyricShadowStyle = TextStyle(
         color = Color.Black.copy(alpha = 0.74f),
         offset = Offset(0f, 2f),
         blurRadius = 9f
+    )
+)
+
+private val HomeTranslationUnderlayStyle = TextStyle(
+    shadow = Shadow(
+        color = Color.Black.copy(alpha = 0.92f),
+        offset = Offset(0f, 1.5f),
+        blurRadius = 7f,
     )
 )
 

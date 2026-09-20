@@ -10,6 +10,24 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
+ * Stable identity of the audio segment whose lyrics are being rendered.
+ *
+ * Do not include mutable database/enrichment fields such as id or duration. The controller may
+ * replace the current [AudioFile] with an enriched copy while the asynchronous lyric read is in
+ * flight. CUE coordinates are part of the identity because multiple tracks can share one physical
+ * path.
+ */
+internal fun AudioFile.lyricRequestKey(): String = buildString {
+    append(path)
+    append('|')
+    append(cueOffsetMs)
+    append('|')
+    append(cueEndMs)
+    append('|')
+    append(cueTrackIndex)
+}
+
+/**
  * 歌词读取器。
  *
  * 只负责从文件读取歌词，读取完成后回调 setComposeLyricData。
@@ -45,13 +63,14 @@ class LyricLoadHelper(
         clearCurrentLyricText()
 
         scope.launch(Dispatchers.IO) {
-            val lyricData = LyricReader.readLyrics(song)
+            // Parsing and animation-flag decoration both walk the full lyric structure. Keep that
+            // immutable preparation off Main so a freshly written Lyrico sidecar cannot contend
+            // with an immediate PLAYER <-> LYRIC shared transition.
+            val styledLyricData = LyricReader.readLyrics(song).withAnimationFlags()
             launch(Dispatchers.Main) {
                 if (loadGeneration.get() != generation) return@launch
                 val current = getCurrentSong()
                 if (current == null || current.lyricRequestKey() != requestKey) return@launch
-
-                val styledLyricData = lyricData.withAnimationFlags()
 
                 setComposeLyricData(song, styledLyricData)
                 setMiniLyricData(styledLyricData)
@@ -78,17 +97,4 @@ class LyricLoadHelper(
         updateLyricAnchor()
     }
 
-    private fun AudioFile.lyricRequestKey(): String {
-        return buildString {
-            append(path)
-            append('|')
-            append(cueOffsetMs)
-            append('|')
-            append(cueEndMs)
-            append('|')
-            append(cueTrackIndex)
-            append('|')
-            append(duration)
-        }
-    }
 }

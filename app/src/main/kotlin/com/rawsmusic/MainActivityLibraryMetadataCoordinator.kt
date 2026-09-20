@@ -5,6 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.lyrico.LyricoPluginStore
 import com.rawsmusic.metadata.LibraryMetadataMatchContract
 import com.rawsmusic.metadata.LibraryMetadataMatchMode
@@ -19,11 +21,14 @@ internal class MainActivityLibraryMetadataCoordinator(
 ) {
     fun start(songs: List<AudioFile>, mode: LibraryMetadataMatchMode) {
         if (songs.isEmpty()) {
-            Toast.makeText(activity, activity.getString(R.string.ui_no_matching_songs), Toast.LENGTH_SHORT).show()
+            AppNoticeBus.error(activity.getString(R.string.ui_no_matching_songs))
             return
         }
         if (LibraryMetadataMatchProgressBus.state.value.isRunning) {
-            Toast.makeText(activity, activity.getString(R.string.ui_matching_in_progress), Toast.LENGTH_SHORT).show()
+            AppNoticeBus.post(
+                message = activity.getString(R.string.ui_matching_in_progress),
+                icon = AppNoticeIcon.METADATA,
+            )
             return
         }
 
@@ -33,22 +38,17 @@ internal class MainActivityLibraryMetadataCoordinator(
                 LyricoPluginStore.get(activity).enabledInPreferredOrder().isNotEmpty()
             }
             if (!enabled) {
-                Toast.makeText(
-                    activity,
-                    activity.getString(R.string.ui_import_source_first),
-                    Toast.LENGTH_LONG,
-                ).show()
+                AppNoticeBus.error(activity.getString(R.string.ui_import_source_first))
                 return@launch
             }
             val intent = withContext(Dispatchers.IO) {
                 LibraryMetadataMatchContract.createIntent(activity, snapshot, mode)
             }
             ContextCompat.startForegroundService(activity, intent)
-            Toast.makeText(
-                activity,
-                activity.getString(R.string.metadata_match_started, snapshot.size),
-                Toast.LENGTH_LONG,
-            ).show()
+            AppNoticeBus.post(
+                message = activity.getString(R.string.metadata_match_started, snapshot.size),
+                icon = AppNoticeIcon.METADATA,
+            )
         }
     }
 }

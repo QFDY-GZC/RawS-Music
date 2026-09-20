@@ -83,6 +83,38 @@ data class AiRuntimeCatalogEntry(
     val downloadUrls: List<String>,
 )
 
+/** A signed, data-only CTC alignment model downloaded on demand from the model repository. */
+data class AiLyricAlignmentCatalogEntry(
+    val schemaVersion: Int,
+    val id: String,
+    val name: String,
+    val version: String,
+    val description: String,
+    val architecture: String,
+    val modelFormat: String,
+    val modelFile: String,
+    val modelSizeBytes: Long,
+    val modelSha256: String,
+    val vocabularyFile: String,
+    val vocabularySizeBytes: Long,
+    val vocabularySha256: String,
+    val sampleRate: Int,
+    val estimatedMemoryMb: Int,
+    val minimumAppVersion: String,
+    val modelDownloadUrls: List<String>,
+    val vocabularyDownloadUrls: List<String>,
+    val contract: AiLyricForcedAlignmentContract,
+)
+
+data class AiLyricAlignmentInstalledModel(
+    val catalog: AiLyricAlignmentCatalogEntry,
+    val directory: String,
+    val installedAtEpochMs: Long,
+) {
+    val modelFile: java.io.File get() = java.io.File(directory, catalog.modelFile)
+    val vocabularyFile: java.io.File get() = java.io.File(directory, catalog.vocabularyFile)
+}
+
 data class AiModelPackageManifest(
     val schemaVersion: Int,
     val id: String,
@@ -115,11 +147,16 @@ data class AiSeparationStoreState(
     val repository: AiModelRepositoryDescriptor? = null,
     val catalog: List<AiSeparationCatalogEntry> = emptyList(),
     val runtimeCatalog: List<AiRuntimeCatalogEntry> = emptyList(),
+    val lyricAlignmentCatalog: List<AiLyricAlignmentCatalogEntry> = emptyList(),
     val installed: List<AiSeparationInstalledModel> = emptyList(),
+    val installedLyricAlignmentModels: List<AiLyricAlignmentInstalledModel> = emptyList(),
+    val fastVocalAlignmentBundleInstalled: Boolean = false,
     val selectedModelId: String = "",
     val selectedModelVersion: String = "",
     val selectedRealtimeModelId: String = "",
     val selectedRealtimeModelVersion: String = "",
+    val selectedLyricAlignmentId: String = "",
+    val selectedLyricAlignmentVersion: String = "",
     val lastError: String = "",
 ) {
     fun isInstalled(entry: AiSeparationCatalogEntry): Boolean = installed.any {
@@ -140,6 +177,30 @@ data class AiSeparationStoreState(
         it.catalog.id == selectedRealtimeModelId &&
             it.catalog.version == selectedRealtimeModelVersion
     }
+
+    fun isLyricAlignmentInstalled(entry: AiLyricAlignmentCatalogEntry): Boolean =
+        installedLyricAlignmentModels.any {
+            it.catalog.id == entry.id && it.catalog.version == entry.version
+        }
+}
+
+/**
+ * The standalone Spleeter bundle is intentionally kept separate from the signed generic
+ * model catalog. Its two ONNX files use the sherpa-onnx separation contract, not the generic
+ * STFT contract accepted by [AiSeparationCatalogEntry].
+ */
+object AiFastVocalAlignmentBundle {
+    const val ID = "spleeter.2stem.fp16"
+    const val VERSION = "1.0.0"
+    const val ARCHIVE_SIZE_BYTES = 36_334_877L
+    const val ARCHIVE_SHA256 =
+        "26ce8c966b9561effa513800d04895c380aa141e001a84e2820eaa732ac48289"
+    const val DOWNLOAD_URL =
+        "https://github.com/QFDY-GZC/RawS-Music/releases/download/" +
+            "fast-vocal-alignment-spleeter-fp16-v1.0.0/" +
+            "rawsmusic-fast-vocal-alignment-spleeter-fp16-v1.0.0.zip"
+    const val VOCALS_FILE = "vocals.fp16.onnx"
+    const val ACCOMPANIMENT_FILE = "accompaniment.fp16.onnx"
 }
 
 internal object AiSeparationJson {
@@ -175,7 +236,9 @@ internal object AiSeparationJson {
         val root = JsonParser.parseString(json).asJsonObject
         require(root.int("schemaVersion") == 1) { "不支持的模型索引格式" }
         require(root.string("repositoryId") == expectedRepositoryId) { "模型索引仓库 ID 不匹配" }
-        val models = root.getAsJsonArray("models") ?: error("模型索引缺少 models")
+        // A repository may publish only runtime or lyric-alignment artifacts.
+        // Missing sections are treated as empty so each artifact family can evolve independently.
+        val models = root.getAsJsonArray("models") ?: JsonArray()
         val parsed = models.map { element -> parseCatalogEntry(element.asJsonObject) }
         require(parsed.distinctBy { it.id to it.version }.size == parsed.size) {
             "模型索引包含重复的 ID 和版本"
@@ -208,6 +271,22 @@ internal object AiSeparationJson {
         }.orEmpty()
         require(parsed.distinctBy { Triple(it.id, it.version, it.abi) }.size == parsed.size) {
             "运行库索引包含重复的 ID、版本和 ABI"
+        }
+        return parsed
+    }
+
+    fun parseLyricAlignmentCatalog(
+        json: String,
+        expectedRepositoryId: String,
+    ): List<AiLyricAlignmentCatalogEntry> {
+        val root = JsonParser.parseString(json).asJsonObject
+        require(root.int("schemaVersion") == 1) { "不支持的模型索引格式" }
+        require(root.string("repositoryId") == expectedRepositoryId) { "模型索引仓库 ID 不匹配" }
+        val parsed = root.getAsJsonArray("lyricAlignmentModels")?.map { element ->
+            parseLyricAlignmentEntry(element.asJsonObject)
+        }.orEmpty()
+        require(parsed.distinctBy { it.id to it.version }.size == parsed.size) {
+            "歌词对齐模型索引包含重复的 ID 和版本"
         }
         return parsed
     }
@@ -345,6 +424,84 @@ internal object AiSeparationJson {
         require(entry.downloadUrls.isNotEmpty()) { "模型没有 HTTPS 下载地址" }
         return entry
     }
+
+    private fun parseLyricAlignmentEntry(root: JsonObject): AiLyricAlignmentCatalogEntry {
+        val contract = root.getAsJsonObject("contract")?.let(::parseLyricContract)
+            ?: error("歌词对齐模型缺少 contract")
+        val entry = AiLyricAlignmentCatalogEntry(
+            schemaVersion = root.int("schemaVersion", 1),
+            id = root.string("id"),
+            name = root.string("name"),
+            version = root.string("version"),
+            description = root.string("description"),
+            architecture = root.string("architecture"),
+            modelFormat = root.string("modelFormat"),
+            modelFile = root.string("modelFile"),
+            modelSizeBytes = root.long("modelSizeBytes"),
+            modelSha256 = root.string("modelSha256").lowercase(),
+            vocabularyFile = root.string("vocabularyFile"),
+            vocabularySizeBytes = root.long("vocabularySizeBytes"),
+            vocabularySha256 = root.string("vocabularySha256").lowercase(),
+            sampleRate = root.int("sampleRate"),
+            estimatedMemoryMb = root.int("estimatedMemoryMb"),
+            minimumAppVersion = root.string("minimumAppVersion"),
+            modelDownloadUrls = httpsUrls(root.getAsJsonArray("modelDownloadUrls")),
+            vocabularyDownloadUrls = httpsUrls(root.getAsJsonArray("vocabularyDownloadUrls")),
+            contract = contract,
+        )
+        validateLyricAlignment(entry)
+        return entry
+    }
+
+    private fun parseLyricContract(root: JsonObject): AiLyricForcedAlignmentContract =
+        AiLyricForcedAlignmentContract(
+            id = root.string("id"),
+            version = root.string("version"),
+            modelFormat = root.string("modelFormat"),
+            inputKind = root.string("inputKind"),
+            outputKind = root.string("outputKind"),
+            sampleRate = root.int("sampleRate"),
+            language = root.string("language", ""),
+            textTokenizer = root.string(
+                "textTokenizer",
+                AiLyricForcedAlignmentContract.TEXT_TOKENIZER_GRAPHEME,
+            ),
+            inputChannels = root.int("inputChannels", 1),
+            requiresTokenIds = root.bool("requiresTokenIds", true),
+            maximumTextUnits = root.int("maximumTextUnits", 1024),
+            nativeAbi = root.int("nativeAbi", 1),
+            alignmentType = root.string("alignmentType", AiLyricForcedAlignmentContract.ALIGNMENT_WORD_TIMESTAMPS),
+            blankTokenId = root.int("blankTokenId", 0),
+            frameStrideMs = root.int("frameStrideMs", 20),
+            vocabularyFile = root.string("vocabularyFile"),
+            quantization = root.string("quantization", "fp16"),
+            inputLayout = root.string(
+                "inputLayout",
+                AiLyricForcedAlignmentContract.INPUT_LAYOUT_BATCH_FRAMES_MELS,
+            ),
+            outputLayout = root.string(
+                "outputLayout",
+                AiLyricForcedAlignmentContract.OUTPUT_LAYOUT_BATCH_FRAMES_TOKENS,
+            ),
+            inputName = root.string("inputName", "*"),
+            outputName = root.string("outputName", "*"),
+            featureType = root.string(
+                "featureType",
+                AiLyricForcedAlignmentContract.FEATURE_LOG_MEL,
+            ),
+            melBins = root.int("melBins", 80),
+            fftSize = root.int("fftSize", 512),
+            hopLength = root.int("hopLength", 160),
+            windowSize = root.int("windowSize", 400),
+            inputFrames = root.int("inputFrames", 0),
+            outputTokenCount = root.int("outputTokenCount", 0),
+        )
+
+    private fun httpsUrls(array: JsonArray?): List<String> = array?.map { element ->
+        element.asString.also { url ->
+            require(url.startsWith("https://")) { "模型下载地址必须使用 HTTPS" }
+        }
+    }.orEmpty()
 
     private fun validateCommon(
         schemaVersion: Int,
@@ -487,6 +644,78 @@ internal object AiSeparationJson {
         require(entry.downloadUrls.isNotEmpty()) { "运行库没有 HTTPS 下载地址" }
     }
 
+    private fun validateLyricAlignment(entry: AiLyricAlignmentCatalogEntry) {
+        require(entry.schemaVersion == 1) { "不支持的歌词对齐模型格式" }
+        require(entry.id.matches(SAFE_ID)) { "歌词对齐模型 ID 无效" }
+        require(entry.name.isNotBlank()) { "歌词对齐模型名称为空" }
+        require(entry.version.matches(SAFE_VERSION)) { "歌词对齐模型版本无效" }
+        require(entry.architecture.isNotBlank()) { "歌词对齐模型架构为空" }
+        require(entry.modelFormat in setOf("onnx", "ort")) { "歌词对齐模型格式无效" }
+        require(entry.modelFile.matches(SAFE_FILE_NAME)) { "歌词对齐模型文件名无效" }
+        require(entry.vocabularyFile.matches(SAFE_FILE_NAME)) { "歌词对齐词表文件名无效" }
+        require(entry.modelFile != entry.vocabularyFile) { "歌词对齐模型和词表不能使用同一文件名" }
+        require(entry.modelSizeBytes in 1..MAX_LYRIC_MODEL_BYTES) { "歌词对齐模型大小无效" }
+        require(entry.vocabularySizeBytes in 1..MAX_LYRIC_VOCABULARY_BYTES) { "歌词对齐词表大小无效" }
+        require(entry.modelSha256.matches(SHA256)) { "歌词对齐模型 SHA-256 无效" }
+        require(entry.vocabularySha256.matches(SHA256)) { "歌词对齐词表 SHA-256 无效" }
+        require(entry.sampleRate in 8_000..48_000) { "歌词对齐模型采样率无效" }
+        require(entry.estimatedMemoryMb in 1..4_096) { "歌词对齐模型内存估算无效" }
+        require(entry.modelDownloadUrls.isNotEmpty()) { "歌词对齐模型没有 HTTPS 下载地址" }
+        require(entry.vocabularyDownloadUrls.isNotEmpty()) { "歌词对齐词表没有 HTTPS 下载地址" }
+        require(entry.contract.id == entry.id && entry.contract.version == entry.version) {
+            "歌词对齐 contract 与模型版本不一致"
+        }
+        require(entry.contract.modelFormat == entry.modelFormat) { "歌词对齐 contract 格式不一致" }
+        require(entry.contract.sampleRate == entry.sampleRate) { "歌词对齐 contract 采样率不一致" }
+        require(entry.contract.alignmentType in setOf(
+            AiLyricForcedAlignmentContract.ALIGNMENT_CTC_FRAME_LOGITS,
+            AiLyricForcedAlignmentContract.ALIGNMENT_PHONE_FRAME_LOGITS,
+            AiLyricForcedAlignmentContract.ALIGNMENT_PHONE_CTC_LOGITS,
+        )) { "歌词对齐模型对齐类型不受支持" }
+        require(entry.contract.outputKind in setOf(
+            AiLyricForcedAlignmentContract.OUTPUT_CTC_FRAME_LOGITS,
+            AiLyricForcedAlignmentContract.OUTPUT_PHONE_FRAME_LOGITS,
+            AiLyricForcedAlignmentContract.OUTPUT_PHONE_CTC_LOGITS,
+        )) { "歌词对齐模型输出类型不受支持" }
+        require(!entry.contract.requiresTokenIds) {
+            "当前 CTC 运行时只支持音频输入模型，词元由应用侧 Viterbi 对齐"
+        }
+        require(entry.contract.vocabularyFile == entry.vocabularyFile) {
+            "歌词对齐 contract 词表路径不一致"
+        }
+    }
+
+    fun lyricAlignmentManifestJson(
+        entry: AiLyricAlignmentCatalogEntry,
+        installedAtEpochMs: Long,
+    ): String = JsonObject().apply {
+        addProperty("schemaVersion", entry.schemaVersion)
+        addProperty("id", entry.id)
+        addProperty("name", entry.name)
+        addProperty("version", entry.version)
+        addProperty("description", entry.description)
+        addProperty("architecture", entry.architecture)
+        addProperty("modelFormat", entry.modelFormat)
+        addProperty("modelFile", entry.modelFile)
+        addProperty("modelSizeBytes", entry.modelSizeBytes)
+        addProperty("modelSha256", entry.modelSha256)
+        addProperty("vocabularyFile", entry.vocabularyFile)
+        addProperty("vocabularySizeBytes", entry.vocabularySizeBytes)
+        addProperty("vocabularySha256", entry.vocabularySha256)
+        addProperty("sampleRate", entry.sampleRate)
+        addProperty("estimatedMemoryMb", entry.estimatedMemoryMb)
+        addProperty("minimumAppVersion", entry.minimumAppVersion)
+        add("modelDownloadUrls", JsonArray().apply { entry.modelDownloadUrls.forEach(::add) })
+        add("vocabularyDownloadUrls", JsonArray().apply { entry.vocabularyDownloadUrls.forEach(::add) })
+        add("contract", lyricContractJson(entry.contract))
+        addProperty("installedAtEpochMs", installedAtEpochMs)
+    }.toString()
+
+    fun parseLyricAlignmentInstalled(json: String): Pair<AiLyricAlignmentCatalogEntry, Long> {
+        val root = JsonParser.parseString(json).asJsonObject
+        return parseLyricAlignmentEntry(root) to root.long("installedAtEpochMs")
+    }
+
     private fun catalogEntryJson(entry: AiSeparationCatalogEntry): JsonObject = JsonObject().apply {
         addProperty("schemaVersion", entry.schemaVersion)
         addProperty("id", entry.id)
@@ -534,6 +763,37 @@ internal object AiSeparationJson {
         addProperty("supportsDenoise", contract.supportsDenoise)
     }
 
+    private fun lyricContractJson(contract: AiLyricForcedAlignmentContract): JsonObject = JsonObject().apply {
+        addProperty("id", contract.id)
+        addProperty("version", contract.version)
+        addProperty("modelFormat", contract.modelFormat)
+        addProperty("inputKind", contract.inputKind)
+        addProperty("outputKind", contract.outputKind)
+        addProperty("sampleRate", contract.sampleRate)
+        addProperty("language", contract.language)
+        addProperty("textTokenizer", contract.textTokenizer)
+        addProperty("inputChannels", contract.inputChannels)
+        addProperty("requiresTokenIds", contract.requiresTokenIds)
+        addProperty("maximumTextUnits", contract.maximumTextUnits)
+        addProperty("nativeAbi", contract.nativeAbi)
+        addProperty("alignmentType", contract.alignmentType)
+        addProperty("blankTokenId", contract.blankTokenId)
+        addProperty("frameStrideMs", contract.frameStrideMs)
+        addProperty("vocabularyFile", contract.vocabularyFile)
+        addProperty("quantization", contract.quantization)
+        addProperty("inputLayout", contract.inputLayout)
+        addProperty("outputLayout", contract.outputLayout)
+        addProperty("inputName", contract.inputName)
+        addProperty("outputName", contract.outputName)
+        addProperty("featureType", contract.featureType)
+        addProperty("melBins", contract.melBins)
+        addProperty("fftSize", contract.fftSize)
+        addProperty("hopLength", contract.hopLength)
+        addProperty("windowSize", contract.windowSize)
+        addProperty("inputFrames", contract.inputFrames)
+        addProperty("outputTokenCount", contract.outputTokenCount)
+    }
+
     private fun JsonObject.string(key: String, fallback: String = ""): String = get(key)?.let {
         runCatching { it.asString }.getOrDefault(fallback)
     } ?: fallback
@@ -570,5 +830,7 @@ internal object AiSeparationJson {
     private const val MAX_ARCHIVE_BYTES = 2L * 1024L * 1024L * 1024L
     private const val MAX_MODEL_BYTES = 2L * 1024L * 1024L * 1024L
     private const val MAX_RUNTIME_BYTES = 256L * 1024L * 1024L
+    private const val MAX_LYRIC_MODEL_BYTES = 512L * 1024L * 1024L
+    private const val MAX_LYRIC_VOCABULARY_BYTES = 8L * 1024L * 1024L
     private const val MAX_TENSOR_FLOATS = 32L * 1024L * 1024L
 }

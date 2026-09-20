@@ -1,6 +1,9 @@
 #include <jni.h>
 #include <android/log.h>
 #include <algorithm>
+#include <cstdio>
+
+#include "raw_flac_encoder.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -13,15 +16,57 @@ extern "C" {
 
 #define LOG_TAG "AiStemEncoder"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace {
+
+bool supportsSampleFormat(const AVCodec* codec, AVSampleFormat format) {
+    if (codec == nullptr || codec->sample_fmts == nullptr) return false;
+    for (const AVSampleFormat* formats = codec->sample_fmts;
+         *formats != AV_SAMPLE_FMT_NONE;
+         ++formats) {
+        if (*formats == format) return true;
+    }
+    return false;
+}
 
 int encodeStem(
     const char* inputPath,
     const char* outputPath,
     bool lossless
 ) {
+    if (lossless && avcodec_find_encoder(AV_CODEC_ID_FLAC) == nullptr) {
+        LOGW(
+            "FLAC encoder missing; using internal fixed-predictor encoder input=%s output=%s",
+            inputPath,
+            outputPath
+        );
+        const int fallback = raw_encode_wav_to_flac(inputPath, outputPath, 8);
+        if (fallback == 0) {
+            LOGI(
+                "encoded format=flac encoder=internal_fixed sampleRate=44100 bits=16 compression=8 output=%s",
+                outputPath
+            );
+            return 0;
+        }
+        LOGE(
+            "internal FLAC encoder failed code=%d input=%s output=%s",
+            fallback,
+            inputPath,
+            outputPath
+        );
+        return fallback;
+    }
+    if (!lossless && avcodec_find_encoder(AV_CODEC_ID_AAC) == nullptr) {
+        LOGW(
+            "AAC encoder missing; requesting Android MediaCodec fallback input=%s output=%s",
+            inputPath,
+            outputPath
+        );
+        return AVERROR_ENCODER_NOT_FOUND;
+    }
+
     AVFormatContext* input = nullptr;
     AVFormatContext* output = nullptr;
     AVCodecContext* decoder = nullptr;
@@ -81,11 +126,13 @@ int encodeStem(
             break;
         }
     }
-    if (audioStreamIndex < 0) return fail("audio stream missing", -1);
+    if (audioStreamIndex < 0) {
+        return fail("audio stream missing", AVERROR_STREAM_NOT_FOUND);
+    }
 
     AVCodecParameters* inputParameters = input->streams[audioStreamIndex]->codecpar;
     const AVCodec* decoderCodec = avcodec_find_decoder(inputParameters->codec_id);
-    if (!decoderCodec) return fail("decoder missing", -1);
+    if (!decoderCodec) return fail("decoder missing", AVERROR_DECODER_NOT_FOUND);
     decoder = avcodec_alloc_context3(decoderCodec);
     if (!decoder) return fail("decoder allocation failed", AVERROR(ENOMEM));
     result = avcodec_parameters_to_context(decoder, inputParameters);
@@ -95,25 +142,34 @@ int encodeStem(
 
     const AVCodecID codecId = lossless ? AV_CODEC_ID_FLAC : AV_CODEC_ID_AAC;
     const AVCodec* encoderCodec = avcodec_find_encoder(codecId);
-    if (!encoderCodec) return fail("encoder missing", -1);
+    if (!encoderCodec) return fail("encoder missing", AVERROR_ENCODER_NOT_FOUND);
     result = avformat_alloc_output_context2(
         &output,
         nullptr,
         lossless ? "flac" : "ipod",
         outputPath
     );
-    if (result < 0 || !output) return fail("output context failed", result);
+    if (result < 0 || !output) {
+        return fail(
+            "output context failed",
+            result < 0 ? result : AVERROR(ENOMEM)
+        );
+    }
 
     encoder = avcodec_alloc_context3(encoderCodec);
     if (!encoder) return fail("encoder allocation failed", AVERROR(ENOMEM));
     encoder->sample_rate = 44100;
-    encoder->channels = 2;
-    encoder->channel_layout = AV_CH_LAYOUT_STEREO;
-    encoder->sample_fmt = encoderCodec->sample_fmts
-        ? encoderCodec->sample_fmts[0]
-        : AV_SAMPLE_FMT_S16;
+    av_channel_layout_default(&encoder->ch_layout, 2);
+    const AVSampleFormat preferredSampleFormat = lossless
+        ? AV_SAMPLE_FMT_S16
+        : AV_SAMPLE_FMT_FLTP;
+    encoder->sample_fmt = supportsSampleFormat(encoderCodec, preferredSampleFormat)
+        ? preferredSampleFormat
+        : (encoderCodec->sample_fmts ? encoderCodec->sample_fmts[0] : AV_SAMPLE_FMT_S16);
     encoder->time_base = AVRational{1, encoder->sample_rate};
-    encoder->bits_per_raw_sample = 16;
+    encoder->bits_per_raw_sample = lossless && encoder->sample_fmt == AV_SAMPLE_FMT_S16
+        ? 16
+        : 0;
     if (lossless) {
         encoder->compression_level = 8;
         av_opt_set_int(encoder->priv_data, "compression_level", 8, 0);
@@ -142,24 +198,39 @@ int encodeStem(
     if (result < 0) return fail("output header failed", result);
     headerWritten = true;
 
-    int64_t inputLayout = decoder->channel_layout;
-    if (!inputLayout) inputLayout = av_get_default_channel_layout(decoder->channels);
-    if (!inputLayout) inputLayout = AV_CH_LAYOUT_STEREO;
-    resampler = swr_alloc_set_opts(
-        nullptr,
-        encoder->channel_layout,
+    if (decoder->sample_rate <= 0 || decoder->sample_fmt == AV_SAMPLE_FMT_NONE) {
+        return fail("decoder audio parameters invalid", AVERROR(EINVAL));
+    }
+    AVChannelLayout inputLayout{};
+    result = av_channel_layout_copy(&inputLayout, &decoder->ch_layout);
+    if (result < 0) return fail("decoder channel layout copy failed", result);
+    if (inputLayout.nb_channels <= 0) {
+        av_channel_layout_uninit(&inputLayout);
+        av_channel_layout_default(
+            &inputLayout,
+            decoder->ch_layout.nb_channels > 0 ? decoder->ch_layout.nb_channels : 2
+        );
+    }
+    result = swr_alloc_set_opts2(
+        &resampler,
+        &encoder->ch_layout,
         encoder->sample_fmt,
         encoder->sample_rate,
-        inputLayout,
+        &inputLayout,
         decoder->sample_fmt,
         decoder->sample_rate,
         0,
         nullptr
     );
-    if (!resampler || swr_init(resampler) < 0) {
-        return fail("resampler initialization failed", -1);
-    }
-    fifo = av_audio_fifo_alloc(encoder->sample_fmt, encoder->channels, 1);
+    av_channel_layout_uninit(&inputLayout);
+    if (result < 0) return fail("resampler allocation failed", result);
+    result = swr_init(resampler);
+    if (result < 0) return fail("resampler initialization failed", result);
+    fifo = av_audio_fifo_alloc(
+        encoder->sample_fmt,
+        encoder->ch_layout.nb_channels,
+        1
+    );
     if (!fifo) return fail("audio fifo allocation failed", AVERROR(ENOMEM));
 
     inputPacket = av_packet_alloc();
@@ -195,8 +266,12 @@ int encodeStem(
             frame->nb_samples = samples;
             frame->format = encoder->sample_fmt;
             frame->sample_rate = encoder->sample_rate;
-            frame->channel_layout = encoder->channel_layout;
-            int localResult = av_frame_get_buffer(frame, 0);
+            int localResult = av_channel_layout_copy(&frame->ch_layout, &encoder->ch_layout);
+            if (localResult < 0) {
+                av_frame_free(&frame);
+                return localResult;
+            }
+            localResult = av_frame_get_buffer(frame, 0);
             if (localResult >= 0) {
                 int readSamples = av_audio_fifo_read(
                     fifo,
@@ -208,7 +283,7 @@ int encodeStem(
                         frame->data,
                         std::max(0, readSamples),
                         samples - std::max(0, readSamples),
-                        encoder->channels,
+                        encoder->ch_layout.nb_channels,
                         encoder->sample_fmt
                     );
                 }
@@ -235,7 +310,7 @@ int encodeStem(
         int localResult = av_samples_alloc_array_and_samples(
             &converted,
             &lineSize,
-            encoder->channels,
+            encoder->ch_layout.nb_channels,
             capacity,
             encoder->sample_fmt,
             0
@@ -290,11 +365,17 @@ int encodeStem(
     }
 
     result = avcodec_send_packet(decoder, nullptr);
-    if (result >= 0) {
+    if (result < 0 && result != AVERROR_EOF) {
+        return fail("decoder flush send failed", result);
+    }
+    if (result >= 0 || result == AVERROR_EOF) {
         while ((result = avcodec_receive_frame(decoder, decodedFrame)) >= 0) {
             result = consumeDecodedFrame();
             av_frame_unref(decodedFrame);
             if (result < 0) return fail("decoder flush conversion failed", result);
+        }
+        if (result != AVERROR(EAGAIN) && result != AVERROR_EOF) {
+            return fail("decoder flush receive failed", result);
         }
     }
     result = encodeAvailable(true);

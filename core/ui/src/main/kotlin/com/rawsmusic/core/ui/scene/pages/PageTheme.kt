@@ -7,6 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import com.rawsmusic.core.ui.scene.LocalSceneBackgroundFrozen
+import com.rawsmusic.core.ui.widget.flow.usesReferenceStaticForeground
 import com.rawsmusic.core.ui.R
 import androidx.compose.ui.res.stringResource
 import top.yukonga.miuix.kmp.basic.Icon
@@ -70,7 +71,10 @@ fun SimplePageScaffold(
     actions: @Composable () -> Unit = {},
     content: @Composable () -> Unit
 ) {
-    val backgroundColor = MiuixTheme.colorScheme.background
+    val staticForeground = usesReferenceStaticForeground()
+    val backgroundColor = if (staticForeground) Color.Transparent else MiuixTheme.colorScheme.background
+    val foreground = if (staticForeground) Color.White else MiuixTheme.colorScheme.onBackground
+    val iconForeground = if (staticForeground) Color.White else MiuixTheme.colorScheme.onSurface
 
     Column(
         modifier = Modifier
@@ -80,13 +84,13 @@ fun SimplePageScaffold(
         SmallTopAppBar(
             title = title,
             color = backgroundColor,
-            titleColor = MiuixTheme.colorScheme.onBackground,
+            titleColor = foreground,
             navigationIcon = {
                 IconButton(onClick = onBack) {
                     Icon(
                         imageVector = MiuixIcons.Regular.Back,
                         contentDescription = stringResource(R.string.common_back),
-                        tint = MiuixTheme.colorScheme.onSurface
+                        tint = iconForeground
                     )
                 }
             }

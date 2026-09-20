@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -89,16 +89,27 @@ fun UpdateNotesDialog(
                     ),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(notes) { note ->
-                        Row(verticalAlignment = Alignment.Top) {
-                            Text("•", color = scheme.primary, fontSize = 16.sp)
+                    itemsIndexed(notes) { index, note ->
+                        val sectionTitle = note.removePrefix("## ").takeIf { note.startsWith("## ") }
+                        if (sectionTitle != null) {
                             Text(
-                                text = note,
-                                modifier = Modifier.padding(start = 10.dp),
-                                color = scheme.onSurface,
-                                fontSize = 14.sp,
-                                lineHeight = 21.sp
+                                text = sectionTitle,
+                                modifier = Modifier.padding(top = if (index == 0) 0.dp else 8.dp),
+                                color = scheme.primary,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
                             )
+                        } else {
+                            Row(verticalAlignment = Alignment.Top) {
+                                Text("•", color = scheme.primary, fontSize = 16.sp)
+                                Text(
+                                    text = note,
+                                    modifier = Modifier.padding(start = 10.dp),
+                                    color = scheme.onSurface,
+                                    fontSize = 14.sp,
+                                    lineHeight = 21.sp
+                                )
+                            }
                         }
                     }
                     item {

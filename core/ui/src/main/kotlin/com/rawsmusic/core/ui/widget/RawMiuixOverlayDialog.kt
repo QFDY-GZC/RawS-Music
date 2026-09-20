@@ -42,6 +42,22 @@ object MiuixOverlayBackRuntime {
     }
 }
 
+/**
+ * Registers an in-Activity Compose overlay as the current back owner.
+ *
+ * The Activity scene callback is installed before Compose. Root overlays with their own
+ * NavigationBackHandler therefore use the same arbitration token as MIUIX windows so an
+ * underlying scene cannot start a second predictive transition during the same gesture.
+ */
+@Composable
+fun ActivityOverlayBackOwner(active: Boolean) {
+    val runtimeToken = remember { Any() }
+    DisposableEffect(active, runtimeToken) {
+        if (active) MiuixOverlayBackRuntime.attach(runtimeToken)
+        onDispose { MiuixOverlayBackRuntime.detach(runtimeToken) }
+    }
+}
+
 @Composable
 fun RawMiuixOverlayDialog(
     show: Boolean,

@@ -1,24 +1,34 @@
 package com.rawsmusic.core.ui.widget.bitmaps
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.Image
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import coil.compose.AsyncImage
-import com.rawsmusic.module.data.prefs.AppPreferences
+import android.graphics.Bitmap
+import com.rawsmusic.core.ui.perf.TransitionPerfTrace
+
+private class BitmapImageTransitionDrawTrace {
+    var sessionId: Long = 0L
+    var bitmapIdentity: Int = 0
+}
 
 /**
- * Compatibility facade for existing layouts. Rendering and lifecycle are fully owned by Coil.
+ * Provider-backed artwork surface.
  *
- * The old provider-backed implementation remains available in Git history and the legacy bitmap
- * classes stay in the project, but this composable no longer acquires handles, starts worker
- * requests or retains ref-counted bitmaps.
+ * The holder owns an ArtworkHandle just like the View artwork lane: BitmapProvider owns decoding,
+ * cache residency and source ordering; Compose only draws the accepted bitmap and releases the
+ * wrapper when this surface leaves composition.
  */
 @Composable
 fun BitmapImage(
@@ -35,61 +45,123 @@ fun BitmapImage(
     fadeOnBitmapChange: Boolean = true,
     freezeBitmapUpdates: Boolean = false,
     filterQuality: FilterQuality = FilterQuality.Low,
-    showDefaultArtwork: Boolean = DefaultAlbumArtworkPolicy.enabled
+    showDefaultArtwork: Boolean = DefaultAlbumArtworkPolicy.enabled,
+    aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
+    exactTarget: Boolean = false,
+    onSuccess: (() -> Unit)? = null,
+    onBitmapReady: ((Bitmap) -> Unit)? = null,
 ) {
+    @Suppress("UNUSED_VARIABLE")
     val context = LocalContext.current
-    var displayedKey by remember { mutableStateOf(key) }
-    var previousMemoryKey by remember { mutableStateOf<String?>(null) }
+    @Suppress("UNUSED_VARIABLE")
+    val presentationCompatibility = Triple(fadeInMillis, holdPreviousOnKeyChange, fadeOnBitmapChange)
+    // `freezeBitmapUpdates` is a request-admission flag, not artwork ownership.  The accepted
+    // wrapper must stay attached while a scene/shared-element transition owns the pixels; otherwise
+    // toggling freeze disposes the current handle, exposes the placeholder for one frame, then
+    // reacquires the same bitmap at the endpoint.  reference player keeps retained artwork view's current wrapper
+    // attached during the transition and only suppresses replacement/admission work.
+    var handle by remember(key, targetWidth, targetHeight, surface, aspectPolicy, exactTarget) {
+        mutableStateOf(
+            if (key.isBlank()) null else BitmapProvider.acquire(
+                key = key,
+                targetWidth = targetWidth,
+                targetHeight = targetHeight,
+                surface = surface,
+                aspectPolicy = aspectPolicy,
+                exactTarget = exactTarget,
+            )
+        )
+    }
+    val freezeUpdates by rememberUpdatedState(freezeBitmapUpdates)
+    val requestSlot = remember(key, targetWidth, targetHeight, priority, surface, aspectPolicy, exactTarget) {
+        arrayOfNulls<BitmapRequest>(1)
+    }
 
-    LaunchedEffect(key, freezeBitmapUpdates, targetWidth, targetHeight, surface) {
-        if (!freezeBitmapUpdates && displayedKey != key) {
-            if (holdPreviousOnKeyChange && displayedKey.isNotBlank()) {
-                previousMemoryKey = CoilArtworkModel(
-                    coverKey = displayedKey,
-                    targetWidth = targetWidth,
-                    targetHeight = targetHeight,
-                    defaultArtworkEnabled = DefaultAlbumArtworkPolicy.enabled,
-                    surface = surface
-                ).cacheKey
-            } else {
-                previousMemoryKey = null
+    // Request lifetime may restart when freeze toggles, but handle lifetime deliberately does not.
+    // Cancelling an in-flight request is enough to make the frozen transition cheap and stable.
+    DisposableEffect(key, targetWidth, targetHeight, priority, surface, freezeBitmapUpdates, aspectPolicy, exactTarget) {
+        requestSlot[0]?.let(BitmapProvider::cancel)
+        requestSlot[0] = if (!freezeBitmapUpdates && key.isNotBlank()) {
+            BitmapProvider.loadHandle(
+                key = key,
+                targetWidth = targetWidth,
+                targetHeight = targetHeight,
+                priority = priority,
+                surface = surface,
+                aspectPolicy = aspectPolicy,
+                exactTarget = exactTarget,
+            ) { delivered ->
+                // A completion already queued on the main thread may race with the freeze edge.
+                // Never let that late result replace the pixels owned by the active transition.
+                if (freezeUpdates) {
+                    if (delivered !== handle) delivered?.release()
+                    return@loadHandle
+                }
+                if (delivered !== handle) {
+                    handle?.release()
+                    handle = delivered
+                }
             }
-            displayedKey = key
+        } else {
+            null
+        }
+        onDispose {
+            requestSlot[0]?.let(BitmapProvider::cancel)
+            requestSlot[0] = null
         }
     }
 
-    val model = remember(
-        displayedKey,
-        targetWidth,
-        targetHeight,
-        surface,
-        showDefaultArtwork
-    ) {
-        CoilArtworkModel(
-            coverKey = displayedKey,
-            targetWidth = targetWidth,
-            targetHeight = targetHeight,
-            defaultArtworkEnabled = showDefaultArtwork,
-            surface = surface
-        )
-    }
-    val animationEnabled = runCatching { AppPreferences.AlbumArt.coverAnimation }.getOrDefault(true)
-    val fade = if (animationEnabled && fadeOnBitmapChange) fadeInMillis else 0
-    val request = remember(context, model, fade, previousMemoryKey) {
-        CoilArtworkRuntime.request(
-            context = context,
-            model = model,
-            crossfadeMillis = fade,
-            placeholderMemoryCacheKey = previousMemoryKey
-        )
+    // Actual wrapper ownership follows the artwork identity/surface lifetime only.  In particular,
+    // a transition freeze must never run this cleanup path.
+    DisposableEffect(key, targetWidth, targetHeight, surface, aspectPolicy, exactTarget) {
+        onDispose {
+            handle?.release()
+            handle = null
+        }
     }
 
-    AsyncImage(
-        model = request,
-        imageLoader = CoilArtworkRuntime.imageLoader(context),
+    val bitmap = handle?.bitmap
+    if (bitmap != null && !bitmap.isRecycled) {
+        val transitionDrawTrace = remember { BitmapImageTransitionDrawTrace() }
+        val tracedModifier = if (maxOf(bitmap.width, bitmap.height) >= 768) {
+            modifier.drawWithContent {
+                if (TransitionPerfTrace.isActive()) {
+                    val session = TransitionPerfTrace.currentSessionId()
+                    val identity = System.identityHashCode(bitmap)
+                    if (
+                        session != 0L &&
+                        (transitionDrawTrace.sessionId != session || transitionDrawTrace.bitmapIdentity != identity)
+                    ) {
+                        transitionDrawTrace.sessionId = session
+                        transitionDrawTrace.bitmapIdentity = identity
+                        TransitionPerfTrace.mark(
+                            "bitmap_compose_first_draw",
+                            "id=$identity size=${bitmap.width}x${bitmap.height} config=${bitmap.config?.name ?: "null"} " +
+                                "target=${targetWidth}x${targetHeight} handle=${handle?.isValid == true} " +
+                                "tier=${handle?.tier?.name ?: "-"} surface=$surface key=${key.takeLast(24)}",
+                        )
+                    }
+                }
+                drawContent()
+            }
+        } else {
+            modifier
+        }
+        Image(
+            bitmap = bitmap.asImageBitmap(),
         contentDescription = contentDescription,
-        modifier = modifier,
+        modifier = tracedModifier,
         contentScale = contentScale,
-        filterQuality = filterQuality
-    )
+        filterQuality = filterQuality,
+        )
+        LaunchedEffect(bitmap) {
+            onSuccess?.invoke()
+            onBitmapReady?.invoke(bitmap)
+        }
+    } else if (showDefaultArtwork) {
+        DefaultAlbumArtwork(
+            modifier = modifier,
+            contentDescription = contentDescription,
+        )
+    }
 }

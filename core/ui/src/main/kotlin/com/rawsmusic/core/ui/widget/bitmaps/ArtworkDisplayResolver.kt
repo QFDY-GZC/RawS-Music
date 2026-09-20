@@ -220,19 +220,39 @@ object ArtworkDisplayResolver {
         }
     }
 
+    /**
+     * Classify an already-decoded playback wrapper by its real pixel side.
+     *
+     * The playback transition uses the provider's low/high wrapper lane directly.  Do not label a
+     * small source as high merely because it came from a high-priority request: Reference's ArtworkImageNode
+     * also consumes the provider wrapper that actually exists rather than forcing a second upscale
+     * decode for the moving page.
+     */
+    fun qualityForPlaybackBitmap(
+        bitmap: android.graphics.Bitmap,
+        lowResSize: Int = AlbumArtTiers.LOW_RES_NORMAL_CAP,
+        hiResSize: Int = AlbumArtTiers.HI_RES_SIDE,
+    ): Int {
+        if (bitmap.isRecycled) return QUALITY_NONE
+        val side = maxOf(bitmap.width, bitmap.height)
+        return when {
+            // Playback admission is also an animation-readiness signal. A 720–768px list/grid
+            // wrapper must not be called "high" and moved onto a >1K physical player card; doing
+            // so lets the real 1024/1536 texture replace it during motion and creates blur + a hitch.
+            side >= AlbumArtTiers.FULL_RES_SIDE -> QUALITY_FULL
+            side >= hiResSize -> QUALITY_HIGH
+            side >= (lowResSize * 0.70f).toInt() -> QUALITY_LOW
+            else -> QUALITY_ANY
+        }
+    }
+
     private fun qualityForSide(
         handle: ArtworkHandle,
         lowResSize: Int,
         hiResSize: Int
     ): Int {
         val bitmap = handle.bitmap
-        if (!handle.isValid || bitmap.isRecycled) return QUALITY_NONE
-        val side = maxOf(bitmap.width, bitmap.height)
-        return when {
-            side >= (AlbumArtTiers.FULL_RES_SIDE * 0.70f).toInt() -> QUALITY_FULL
-            side >= (hiResSize * 0.70f).toInt() -> QUALITY_HIGH
-            side >= (lowResSize * 0.70f).toInt() -> QUALITY_LOW
-            else -> QUALITY_ANY
-        }
+        if (!handle.isValid) return QUALITY_NONE
+        return qualityForPlaybackBitmap(bitmap, lowResSize, hiResSize)
     }
 }

@@ -96,7 +96,14 @@ internal class MainActivitySceneNavigationCoordinator(
     }
 
     fun switchToContainerMode(targetScene: NavScene? = null) {
-        targetScene?.let(navigationState::switchToSilent)
+        // PLAYER keeps the Compose navigation tree mounted underneath the sheet. Re-publishing the
+        // exact same route through switchToSilent still bumps transitionRequestId and rewrites all
+        // scene endpoints, which can make the retained HOME/list owner rebuild one layout frame at
+        // the start/end of a return gesture. Only perform a silent route restore when the requested
+        // scene actually differs from the already-mounted navigation owner.
+        targetScene
+            ?.takeIf { it != navigationState.currentScene }
+            ?.let(navigationState::switchToSilent)
         updateComposeRootVisibility(true)
     }
 

@@ -208,8 +208,9 @@ private fun rememberCarouselLyricLine(
 ): CarouselLyricLine? {
     val lines = remember(song) { song?.lyrics.orEmpty() }
     val interludes = remember(lines) { calculateLyricInterludes(lines) }
-    val playback = remember(lines, interludes, positionMs) {
-        calculateLyricPlaybackState(lines, positionMs, interludes)
+    val lyricTimeline = remember(lines, interludes) { LyricTimelineIndex(lines, interludes) }
+    val playback = remember(lyricTimeline, positionMs) {
+        calculateLyricPlaybackState(lyricTimeline, positionMs)
     }
     val index = playback.currentLineIndex.takeIf { it >= 0 }
     return remember(lines, index, displayTranslation) {

@@ -45,6 +45,8 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.module.data.prefs.AppPreferences
 import top.yukonga.miuix.kmp.basic.SliderDefaults
@@ -52,6 +54,7 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SliderPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
@@ -81,6 +84,10 @@ fun ScanSettingsPage(
         mutableStateOf(AppPreferences.Scanner.legacyFileAccessEnabled)
     }
 
+    var coldStartAutoScanEnabled by remember {
+        mutableStateOf(AppPreferences.Scanner.coldStartAutoScanEnabled)
+    }
+
     var minTrackDurationSeconds by remember {
         mutableStateOf(AppPreferences.Scanner.minTrackDurationSeconds.coerceIn(0, 60))
     }
@@ -88,6 +95,12 @@ fun ScanSettingsPage(
     var ignoreVideoFormats by remember {
         mutableStateOf(AppPreferences.Scanner.ignoreVideoFormats)
     }
+
+    var artistSeparators by remember { mutableStateOf(AppPreferences.Library.artistSeparators) }
+    var artistProtectedNames by remember { mutableStateOf(AppPreferences.Library.artistProtectedNames) }
+    var genreSeparators by remember { mutableStateOf(AppPreferences.Library.genreSeparators) }
+    var genreProtectedNames by remember { mutableStateOf(AppPreferences.Library.genreProtectedNames) }
+    var tagIgnoreCase by remember { mutableStateOf(AppPreferences.Library.tagIgnoreCase) }
 
     // 生命周期监听：从系统权限页返回时同步状态
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -124,14 +137,17 @@ fun ScanSettingsPage(
         }.getOrDefault(false)
 
         if (!persisted) {
-            Toast.makeText(context, context.getString(R.string.scan_settings_folder_permission_failed), Toast.LENGTH_SHORT).show()
+            AppNoticeBus.error(context.getString(R.string.scan_settings_folder_permission_failed))
             return@rememberLauncherForActivityResult
         }
 
         AppPreferences.Scanner.addMusicFolderUri(uri.toString())
         selectedFolderUris.clear()
         selectedFolderUris.addAll(AppPreferences.Scanner.musicFolderUris)
-        Toast.makeText(context, context.getString(R.string.scan_settings_folder_added), Toast.LENGTH_SHORT).show()
+        AppNoticeBus.post(
+            message = context.getString(R.string.scan_settings_folder_added),
+            icon = AppNoticeIcon.SCAN,
+        )
         onRescan()
     }
 
@@ -182,6 +198,16 @@ fun ScanSettingsPage(
             // ── 音乐库 ──
             SmallTitle(text = stringResource(R.string.scan_settings_library_section))
             CardGroup {
+                SwitchPreference(
+                    title = stringResource(R.string.scan_settings_cold_start_auto_title),
+                    summary = stringResource(R.string.scan_settings_cold_start_auto_summary),
+                    checked = coldStartAutoScanEnabled,
+                    onCheckedChange = { checked: Boolean ->
+                        coldStartAutoScanEnabled = checked
+                        AppPreferences.Scanner.coldStartAutoScanEnabled = checked
+                    }
+                )
+                MiuixDivider()
                 ArrowPreference(
                     title = stringResource(R.string.scan_settings_rescan_title),
                     summary = stringResource(R.string.scan_settings_rescan_summary),
@@ -206,7 +232,10 @@ fun ScanSettingsPage(
                                 AppPreferences.Scanner.removeMusicFolderUri(rawUri)
                                 selectedFolderUris.clear()
                                 selectedFolderUris.addAll(AppPreferences.Scanner.musicFolderUris)
-                                Toast.makeText(context, context.getString(R.string.scan_settings_folder_removed), Toast.LENGTH_SHORT).show()
+                                AppNoticeBus.post(
+                                    message = context.getString(R.string.scan_settings_folder_removed),
+                                    icon = AppNoticeIcon.SCAN,
+                                )
                             }
                         )
                         if (index != selectedFolderUris.lastIndex) {
@@ -256,6 +285,77 @@ fun ScanSettingsPage(
                         ignoreVideoFormats = checked
                         AppPreferences.Scanner.ignoreVideoFormats = checked
                     }
+                )
+            }
+
+            // ── 分类名称拆分 ──
+            SmallTitle(text = stringResource(R.string.scan_settings_name_split_section))
+            CardGroup {
+                Text(
+                    text = stringResource(R.string.scan_settings_name_split_summary),
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    fontSize = 13.sp,
+                    lineHeight = 20.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                )
+                NameSplitField(
+                    label = stringResource(R.string.scan_settings_artist_separators),
+                    summary = stringResource(R.string.scan_settings_artist_separators_summary),
+                    value = artistSeparators,
+                    onValueChange = {
+                        artistSeparators = it
+                        AppPreferences.Library.artistSeparators = it
+                    }
+                )
+                NameSplitField(
+                    label = stringResource(R.string.scan_settings_artist_protected_names),
+                    summary = stringResource(R.string.scan_settings_artist_protected_names_summary),
+                    value = artistProtectedNames,
+                    onValueChange = {
+                        artistProtectedNames = it
+                        AppPreferences.Library.artistProtectedNames = it
+                    }
+                )
+                MiuixDivider()
+                NameSplitField(
+                    label = stringResource(R.string.scan_settings_genre_separators),
+                    summary = stringResource(R.string.scan_settings_genre_separators_summary),
+                    value = genreSeparators,
+                    onValueChange = {
+                        genreSeparators = it
+                        AppPreferences.Library.genreSeparators = it
+                    }
+                )
+                NameSplitField(
+                    label = stringResource(R.string.scan_settings_genre_protected_names),
+                    summary = stringResource(R.string.scan_settings_genre_protected_names_summary),
+                    value = genreProtectedNames,
+                    onValueChange = {
+                        genreProtectedNames = it
+                        AppPreferences.Library.genreProtectedNames = it
+                    }
+                )
+                SwitchPreference(
+                    title = stringResource(R.string.scan_settings_tag_ignore_case),
+                    summary = stringResource(R.string.scan_settings_tag_ignore_case_summary),
+                    checked = tagIgnoreCase,
+                    onCheckedChange = {
+                        tagIgnoreCase = it
+                        AppPreferences.Library.tagIgnoreCase = it
+                    }
+                )
+                TextButton(
+                    text = stringResource(R.string.scan_settings_name_split_apply),
+                    onClick = {
+                        onRescan()
+                        AppNoticeBus.post(
+                            message = context.getString(R.string.scan_settings_name_split_applied),
+                            icon = AppNoticeIcon.SCAN,
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
                 )
             }
 
@@ -335,6 +435,37 @@ private fun SliderRow(
             steps = steps,
             enabled = enabled,
             hapticEffect = SliderDefaults.SliderHapticEffect.Step
+        )
+    }
+}
+
+@Composable
+private fun NameSplitField(
+    label: String,
+    summary: String,
+    value: String,
+    onValueChange: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        TextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = label,
+            singleLine = false,
+            minLines = 1,
+            maxLines = 4,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            text = summary,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            fontSize = 12.sp,
+            lineHeight = 17.sp,
+            modifier = Modifier.padding(top = 4.dp)
         )
     }
 }

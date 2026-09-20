@@ -130,6 +130,25 @@ object UsbAudioEngine {
         subslotSize: Int
     ): Long
 
+    /**
+     * Atomic next-session transaction. The IntArray uses [UsbNativeSessionPolicy] schema v1.
+     * Native commits the whole policy snapshot under one transaction lock before descriptor/alt/clock init.
+     */
+    external fun nativeInitUsbDeviceTransactional(
+        fd: Int,
+        sampleRate: Int,
+        sourceSampleRate: Int,
+        sourceBitsPerSample: Int,
+        channels: Int,
+        bitsPerSample: Int,
+        iface: Int,
+        alt: Int,
+        outEndpoint: Int,
+        feedbackEndpoint: Int,
+        subslotSize: Int,
+        sessionPolicy: IntArray,
+    ): Long
+
     external fun nativeStart(handle: Long): Boolean
 
     external fun nativeStop(handle: Long)
@@ -184,6 +203,24 @@ object UsbAudioEngine {
 
     @Volatile
     private var cachedDeviceCapabilities: UsbDeviceAudioCapabilities? = null
+
+    @Volatile
+    private var nextSessionPolicy: UsbNativeSessionPolicy = UsbNativeSessionPolicy()
+
+    fun snapshotNextSessionPolicy(): UsbNativeSessionPolicy = nextSessionPolicy
+
+    @Synchronized
+    fun stageNextSessionPolicy(policy: UsbNativeSessionPolicy, reason: String) {
+        nextSessionPolicy = policy
+        AppLogger.i(TAG, "USB_SESSION_STAGE reason=$reason ${policy.conciseLogString()}")
+    }
+
+    private fun updateNextSessionPolicy(reason: String, transform: (UsbNativeSessionPolicy) -> UsbNativeSessionPolicy) {
+        synchronized(this) {
+            nextSessionPolicy = transform(nextSessionPolicy)
+            AppLogger.d(TAG, "USB_SESSION_STAGE_PATCH reason=$reason ${nextSessionPolicy.conciseLogString()}")
+        }
+    }
 
     private val streamController by lazy {
         UsbNativeStreamController(
@@ -292,14 +329,16 @@ object UsbAudioEngine {
         alt: Int,
         outEndpoint: Int,
         feedbackEndpoint: Int,
-        subslotSize: Int
+        subslotSize: Int,
+        sessionPolicy: UsbNativeSessionPolicy = snapshotNextSessionPolicy(),
     ): Long {
         // 先关闭旧 handle（如果有的话）
         closeNative("before_reinit")
 
-        val handle = nativeInitUsbDevice(
+        AppLogger.i(TAG, "USB_SESSION_TXN begin ${sessionPolicy.conciseLogString()}")
+        val handle = nativeInitUsbDeviceTransactional(
             fd, sampleRate, sourceSampleRate, sourceBitsPerSample, channels, bitsPerSample,
-            iface, alt, outEndpoint, feedbackEndpoint, subslotSize
+            iface, alt, outEndpoint, feedbackEndpoint, subslotSize, sessionPolicy.toNativeIntArray()
         )
 
         if (handle == 0L) {
@@ -322,8 +361,9 @@ object UsbAudioEngine {
         AppLogger.i(
             TAG,
             "initWithHandle ok: handle=0x${java.lang.Long.toUnsignedString(handle, 16)} " +
-                "deviceSr=$sampleRate sourceSr=$sourceSampleRate sourceBits=$sourceBitsPerSample " +
-                "deviceBits=$bitsPerSample ch=$channels iface=$currentInterfaceNumber alt=$currentAltSetting"
+                "requestedDeviceSr=$sampleRate actualDeviceSr=$currentSampleRate " +
+                "sourceSr=$sourceSampleRate sourceBits=$sourceBitsPerSample " +
+                "deviceBits=$currentBits ch=$currentChannels iface=$currentInterfaceNumber alt=$currentAltSetting"
         )
         return handle
     }
@@ -393,6 +433,9 @@ object UsbAudioEngine {
 
     fun getScheduledUsbBytesPerSecond(): Long = runtimeMetrics.scheduledUsbBytesPerSecond()
 
+    /** Age of the most recent libusb ISO completion callback, or -1 before the first callback. */
+    fun getIsoCallbackAgeMs(): Long = if (initialized) nativeGetIsoCallbackAgeMs() else -1L
+
     fun getFeedbackState(): FeedbackState = runtimeMetrics.feedbackState()
 
     fun getFeedbackSampleRate(): Double = runtimeMetrics.feedbackSampleRate()
@@ -406,6 +449,10 @@ object UsbAudioEngine {
     fun computeRecommendedWriteChunkBytes(deviceBytesPerSecond: Long, frameBytes: Int, targetMs: Long = 32L): Int =
         runtimeMetrics.recommendedWriteChunkBytes(deviceBytesPerSecond, frameBytes, targetMs)
 
+    /**
+     * Legacy runtime-only rate setter. This does not program the USB Clock Source and therefore
+     * must not be used for a physical DAC rate transition; use [reconfigurePcmStream] instead.
+     */
     fun setSampleRate(sampleRate: Int): Boolean {
         if (!initialized) return false
         if (nativeSessionBroken) {
@@ -413,6 +460,57 @@ object UsbAudioEngine {
             return false
         }
         return nativeSetSampleRate(sampleRate) == 0
+    }
+
+    /**
+     * Reconfigure a healthy PCM stream/profile while preserving the physical USB session.
+     *
+     * Unlike [initWithHandle], this never closes/re-wraps the Android fd. Native validates that
+     * the already-committed AS alt can prove the target rate, drains the current transfer pool,
+     * performs the minimum UAC2 clock transaction, then rebuilds only stream runtime state.
+     */
+    @Synchronized
+    fun reconfigurePcmStream(
+        targetDeviceRate: Int,
+        sourceSampleRate: Int,
+        sourceBitsPerSample: Int,
+        targetChannels: Int,
+        targetBits: Int,
+        targetSubslot: Int,
+        verifyClockReadback: Boolean,
+    ): Boolean {
+        val handle = currentHandle
+        if (!initialized || handle == 0L || nativeSessionBroken) return false
+        val ok = nativeReconfigurePcmStream(
+            handle = handle,
+            targetDeviceRate = targetDeviceRate,
+            sourceSampleRate = sourceSampleRate,
+            sourceBitsPerSample = sourceBitsPerSample,
+            targetChannels = targetChannels,
+            targetBits = targetBits,
+            targetSubslot = targetSubslot,
+            verifyClockReadback = verifyClockReadback,
+        )
+        if (ok) {
+            currentSampleRate = targetDeviceRate
+            currentChannels = targetChannels
+            currentBits = targetBits
+            currentSubslotSize = targetSubslot
+            refreshRuntimeSnapshotFromNative()
+            AppLogger.i(
+                TAG,
+                "USB_PERSISTENT_RECONFIG ok handle=0x${java.lang.Long.toUnsignedString(handle, 16)} " +
+                    "deviceSr=$currentSampleRate sourceSr=$sourceSampleRate bits=$targetBits subslot=$targetSubslot",
+            )
+        } else {
+            nativeSessionBroken = runCatching { nativeIsSessionBroken(handle) }.getOrDefault(true)
+            AppLogger.w(
+                TAG,
+                "USB_PERSISTENT_RECONFIG rejected handle=0x${java.lang.Long.toUnsignedString(handle, 16)} " +
+                    "broken=$nativeSessionBroken targetSr=$targetDeviceRate",
+            )
+        }
+        return ok
     }
 
     /** 统一的音量设置（handle-based）
@@ -445,6 +543,7 @@ object UsbAudioEngine {
     }
 
     fun setPcmOutputMode(mode: UsbPcmOutputMode) {
+        updateNextSessionPolicy("pcm_output_mode") { it.copy(pcmOutputMode = mode) }
         nativeSetPcmOutputMode(mode.id)
     }
 
@@ -479,7 +578,7 @@ object UsbAudioEngine {
     /** 重置 session 状态，新播放开始前调用（prefill 之前） */
     fun resetSessionForPlayback(reason: String) = streamController.resetSessionForPlayback(reason)
 
-    /** 释放 AS interface 保留 fd，格式变化时调用 */
+    /** Legacy recovery primitive: releases AS while preserving fd. Normal PCM changes use reconfigurePcmStream(). */
     fun closeStreamForReconfigure(reason: String) = streamController.closeStreamForReconfigure(reason)
 
     /** 进入 standby（暂停/后台/焦点丢失），释放 AS interface */
@@ -525,6 +624,202 @@ object UsbAudioEngine {
             ?: return cachedDeviceCapabilities
         cachedDeviceCapabilities = snapshot.cached
         return snapshot.effective
+    }
+
+    /**
+     * Explicit read-only probe of standard UAC hardware controls on the active playback path.
+     * This never writes the device and is intentionally not part of PCM/DoP/DSD startup.
+     */
+    fun probeStandardHardwareControlsJson(): String? {
+        val h = currentHandle
+        if (h == 0L || !initialized) return null
+        return runCatching { nativeProbeStandardHardwareControlsJson(h) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    /** Normalized Phase-2 snapshot consumed by the future DeviceControlManager/UI. */
+    fun probeStandardHardwareControls(generation: Long) =
+        com.rawsmusic.module.player.devicecontrol.usb.UsbStandardControlProbeParser.parse(
+            probeStandardHardwareControlsJson(),
+            generation,
+        )
+
+
+    /**
+     * Safe vendor-control inventory. Besides descriptor-only UAC/XU/interface data, HID interfaces
+     * are queried with the standard read-only GET_DESCRIPTOR(Report) request so known adapters can
+     * fingerprint Report IDs and payload sizes. No vendor/class SET or bulk transfer is issued.
+     */
+    fun probeVendorControlInventoryJson(): String? {
+        val h = currentHandle
+        if (h == 0L || !initialized) return null
+        return runCatching { nativeProbeVendorControlInventoryJson(h) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * Phase-3 standard UAC write. Native validates RW descriptor access, sends SET_CUR and
+     * immediately reads CUR back. This is a device-control EP0 operation, not audio transport.
+     */
+    fun writeStandardHardwareControl(
+        address: com.rawsmusic.module.player.devicecontrol.DeviceControlBackendAddress.UsbAudioClass,
+        value: Double,
+    ): com.rawsmusic.module.player.devicecontrol.usb.UsbStandardControlWriteResult {
+        val h = currentHandle
+        if (h == 0L || !initialized) {
+            return com.rawsmusic.module.player.devicecontrol.usb.UsbStandardControlWriteResult.Failed(
+                "usb_engine_not_initialized",
+            )
+        }
+        val json = runCatching {
+            nativeWriteStandardHardwareControlJson(
+                h,
+                address.interfaceNumber,
+                address.entityId,
+                address.selector,
+                address.channel,
+                address.elementIndex ?: -1,
+                value,
+            )
+        }.getOrNull()
+        return com.rawsmusic.module.player.devicecontrol.usb.UsbStandardControlWriteParser.parse(json)
+    }
+
+
+    // Phase-4B bounded USB vendor control-plane primitives. These are only wrapped by a selected
+    // UsbVendorDeviceAdapter; native validates each target against the live descriptors again.
+    internal fun vendorExtensionUnitRead(
+        target: com.rawsmusic.module.player.devicecontrol.usb.ExtensionUnitTarget,
+        length: Int,
+    ): Result<ByteArray> = vendorReadGuard(length, 4096) { h ->
+        nativeVendorExtensionUnitRead(
+            h, target.interfaceNumber, target.entityId, target.selector, target.channel,
+            length, target.timeoutMs,
+        )
+    }
+
+    internal fun vendorExtensionUnitWrite(
+        target: com.rawsmusic.module.player.devicecontrol.usb.ExtensionUnitTarget,
+        data: ByteArray,
+    ): Result<Int> = vendorWriteGuard(data, 4096) { h ->
+        nativeVendorExtensionUnitWrite(
+            h, target.interfaceNumber, target.entityId, target.selector, target.channel,
+            data, target.timeoutMs,
+        )
+    }
+
+    internal fun vendorHidGetReport(
+        target: com.rawsmusic.module.player.devicecontrol.usb.HidReportTarget,
+        length: Int,
+    ): Result<ByteArray> = vendorReadGuard(length, 4096) { h ->
+        nativeVendorHidGetReport(
+            h, target.interfaceNumber, target.reportType.wireValue, target.reportId,
+            length, target.timeoutMs,
+        )
+    }
+
+    internal fun vendorHidSetReport(
+        target: com.rawsmusic.module.player.devicecontrol.usb.HidReportTarget,
+        data: ByteArray,
+    ): Result<Int> = vendorWriteGuard(data, 4096) { h ->
+        nativeVendorHidSetReport(
+            h, target.interfaceNumber, target.reportType.wireValue, target.reportId,
+            data, target.timeoutMs,
+        )
+    }
+
+    internal fun vendorControlIn(
+        target: com.rawsmusic.module.player.devicecontrol.usb.VendorControlTarget,
+        length: Int,
+    ): Result<ByteArray> = vendorReadGuard(length, 4096) { h ->
+        nativeVendorControlIn(
+            h, target.deviceRecipient, target.interfaceNumber, target.request,
+            target.value, target.index, length, target.timeoutMs,
+        )
+    }
+
+    internal fun vendorControlOut(
+        target: com.rawsmusic.module.player.devicecontrol.usb.VendorControlTarget,
+        data: ByteArray,
+    ): Result<Int> = vendorWriteGuard(data, 4096, allowEmpty = true) { h ->
+        nativeVendorControlOut(
+            h, target.deviceRecipient, target.interfaceNumber, target.request,
+            target.value, target.index, data, target.timeoutMs,
+        )
+    }
+
+    internal fun vendorBulkIn(
+        target: com.rawsmusic.module.player.devicecontrol.usb.BulkTarget,
+        length: Int,
+    ): Result<ByteArray> = vendorReadGuard(length, 65536) { h ->
+        nativeVendorBulkIn(h, target.interfaceNumber, target.endpointAddress, length, target.timeoutMs)
+    }
+
+    internal fun vendorBulkOut(
+        target: com.rawsmusic.module.player.devicecontrol.usb.BulkTarget,
+        data: ByteArray,
+    ): Result<Int> = vendorWriteGuard(data, 65536) { h ->
+        nativeVendorBulkOut(h, target.interfaceNumber, target.endpointAddress, data, target.timeoutMs)
+    }
+
+    internal fun vendorEndpointWrite(
+        target: com.rawsmusic.module.player.devicecontrol.usb.EndpointPairTarget,
+        request: ByteArray,
+    ): Result<Int> = vendorWriteGuard(request, 65536) { h ->
+        nativeVendorEndpointWrite(
+            h, target.interfaceNumber, target.outEndpointAddress, target.inEndpointAddress,
+            request, target.timeoutMs,
+        )
+    }
+
+    internal fun vendorEndpointExchange(
+        target: com.rawsmusic.module.player.devicecontrol.usb.EndpointPairTarget,
+        request: ByteArray,
+        responseLength: Int,
+    ): Result<ByteArray> {
+        val h = currentHandle
+        if (h == 0L || !initialized) return Result.failure(IllegalStateException("usb_engine_not_initialized"))
+        if (request.isEmpty() || request.size > 65536 || responseLength !in 1..65536 ||
+            target.turnaroundDelayMs !in 0..1000) {
+            return Result.failure(IllegalArgumentException("usb_vendor_endpoint_exchange_out_of_range"))
+        }
+        return runCatching {
+            nativeVendorEndpointExchange(
+                h, target.interfaceNumber, target.outEndpointAddress, target.inEndpointAddress,
+                request, responseLength, target.turnaroundDelayMs, target.timeoutMs,
+            ) ?: throw IllegalStateException("usb_vendor_endpoint_exchange_failed")
+        }
+    }
+
+    private inline fun vendorReadGuard(
+        length: Int,
+        maxLength: Int,
+        block: (Long) -> ByteArray?,
+    ): Result<ByteArray> {
+        val h = currentHandle
+        if (h == 0L || !initialized) return Result.failure(IllegalStateException("usb_engine_not_initialized"))
+        if (length !in 1..maxLength) return Result.failure(IllegalArgumentException("usb_vendor_length_out_of_range"))
+        return runCatching { block(h) ?: throw IllegalStateException("usb_vendor_transfer_failed") }
+    }
+
+    private inline fun vendorWriteGuard(
+        data: ByteArray,
+        maxLength: Int,
+        allowEmpty: Boolean = false,
+        block: (Long) -> Int,
+    ): Result<Int> {
+        val h = currentHandle
+        if (h == 0L || !initialized) return Result.failure(IllegalStateException("usb_engine_not_initialized"))
+        if ((!allowEmpty && data.isEmpty()) || data.size > maxLength) {
+            return Result.failure(IllegalArgumentException("usb_vendor_payload_out_of_range"))
+        }
+        return runCatching {
+            val code = block(h)
+            if (code < 0) throw IllegalStateException("usb_vendor_transfer_code_$code")
+            code
+        }
     }
 
     fun isInitialized(): Boolean = initialized
@@ -664,17 +959,126 @@ object UsbAudioEngine {
         }
     }
 
-    fun setPolicy(exclusive: Boolean, bitPerfect: Boolean, useHardwareVolume: Boolean) {
-        nativeSetPolicy(exclusive, bitPerfect, useHardwareVolume)
+    fun stageOutputProfile(
+        profile: UsbOutputProfile,
+        dsdRate: Int,
+        dsdConversionType: Int,
+        dsdDitherEnabled: Boolean,
+    ) {
+        val effectiveFeedbackEndpoint = if (profile.noFeedback) 0 else profile.lastGoodFeedbackEndpoint
+        stageNextSessionPolicy(
+            snapshotNextSessionPolicy().copy(
+                exclusive = profile.exclusive,
+                // Direct DSD is an immutable raw transport even when the user-facing PCM
+                // bit-perfect policy is OFF. Commit that fixed transport property before
+                // nativeInitUsbDevice() so the volume route cannot flip native policy in the
+                // prepare -> nativeStart window and force an endless reinit loop.
+                bitPerfect = profile.exclusive &&
+                    (profile.bitPerfect || profile.fixedDigitalVolume || profile.dsdSourceDirect),
+                hardwareVolumeRequested = profile.exclusive && profile.hardwareVolumeRequested,
+                pcmOutputMode = profile.pcmOutputMode,
+                dsdConversionEnabled = profile.dsdConversionEnabled,
+                dsdRate = dsdRate,
+                dsdConversionType = dsdConversionType,
+                dsdDitherEnabled = profile.dsdConversionEnabled && dsdDitherEnabled,
+                dsdDoPEnabled = profile.dsdConversionEnabled && profile.dsdDoPEnabled,
+                force1msPacket = profile.force1msPacket,
+                noClockSet = profile.noClockSet,
+                noFeedback = profile.noFeedback,
+                noFeatureUnit = profile.noFeatureUnit,
+                preferSafeAlt = profile.preferSafeAlt,
+                safeMode = profile.safeMode,
+                lastGoodAlt = profile.lastGoodAlt,
+                lastGoodSampleRate = profile.lastGoodSampleRate,
+                lastGoodValidBits = profile.lastGoodBitDepth,
+                lastGoodSubslotBytes = profile.lastGoodSubslot,
+                lastGoodFeedbackEndpoint = effectiveFeedbackEndpoint,
+            ),
+            reason = "output_profile",
+        )
+    }
+
+    fun setPolicy(exclusive: Boolean, bitPerfect: Boolean, hwVol: Boolean) {
+        updateNextSessionPolicy("playback_policy") {
+            it.copy(
+                exclusive = exclusive,
+                bitPerfect = bitPerfect && exclusive,
+                hardwareVolumeRequested = hwVol && exclusive,
+            )
+        }
+        nativeSetPolicy(exclusive, bitPerfect, hwVol)
+    }
+
+    fun setLastGoodProfile(
+        alt: Int,
+        sampleRate: Int,
+        validBits: Int,
+        subslotBytes: Int,
+        feedbackEndpoint: Int,
+    ) {
+        updateNextSessionPolicy("last_good_profile") {
+            it.copy(
+                lastGoodAlt = alt.coerceAtLeast(0),
+                lastGoodSampleRate = sampleRate.coerceAtLeast(0),
+                lastGoodValidBits = validBits.coerceAtLeast(0),
+                lastGoodSubslotBytes = subslotBytes.coerceAtLeast(0),
+                lastGoodFeedbackEndpoint = feedbackEndpoint.coerceAtLeast(0),
+            )
+        }
+        nativeSetLastGoodProfile(alt, sampleRate, validBits, subslotBytes, feedbackEndpoint)
+    }
+
+    fun setCompatFlags(
+        noClockSet: Boolean,
+        noFeedback: Boolean,
+        noFeatureUnit: Boolean,
+        preferSafeAlt: Boolean,
+        safeMode: Boolean,
+    ) {
+        updateNextSessionPolicy("compat_flags") {
+            it.copy(
+                noClockSet = noClockSet,
+                noFeedback = noFeedback,
+                noFeatureUnit = noFeatureUnit,
+                preferSafeAlt = preferSafeAlt,
+                safeMode = safeMode,
+            )
+        }
+        nativeSetCompatFlags(noClockSet, noFeedback, noFeatureUnit, preferSafeAlt, safeMode)
+    }
+
+    fun resetUsbPolicyForNewDevice() {
+        synchronized(this) { nextSessionPolicy = UsbNativeSessionPolicy() }
+        nativeResetUsbPolicyForNewDevice()
+        AppLogger.i(TAG, "USB_SESSION_STAGE reset for new device")
     }
 
     /** 设置 USB DAC 高级选项。Safe Core 仅放行 force1ms 包调度，其余兼容怪癖保持关闭。 */
     fun setUsbDacSettings(noControlIface: Boolean, forceUac1: Boolean, linearVolume: Boolean, replaceVolume: Boolean, force1ms: Boolean) {
+        // Safe Core intentionally suppresses the legacy quirks; stage exactly what native receives.
+        updateNextSessionPolicy("dac_settings") {
+            it.copy(
+                noControlInterface = false,
+                forceUac1 = false,
+                linearVolume = false,
+                replaceVolume = false,
+                force1msPacket = force1ms,
+            )
+        }
         nativeSetUsbDacSettings(false, false, false, false, force1ms)
     }
 
     /** 设置 PCM→DSD / DoP / Native DSD 参数 */
     fun setDsdConversion(enabled: Boolean, rate: Int, type: Int, dither: Boolean, dop: Boolean) {
+        updateNextSessionPolicy("dsd_transport") {
+            it.copy(
+                dsdConversionEnabled = enabled,
+                dsdRate = rate,
+                dsdConversionType = type,
+                dsdDitherEnabled = enabled && dither,
+                dsdDoPEnabled = enabled && dop,
+            )
+        }
         // DSD mode is process-global in native. Mutating it while a USB handle is live can make
         // the old DSD altsetting consume PCM bytes (or clear the converter under its writer),
         // which has triggered OEM USB-stack failures on some devices. Settings are therefore
@@ -694,11 +1098,75 @@ object UsbAudioEngine {
         nativeSetDsdConversion(enabled, rate, type, dither, enabled && dop)
     }
 
-    /** Native session volume envelope */
-    fun setSessionVolumeScale(handle: Long, linear: Float, fadeMs: Int) {
-        if (handle == 0L) return
-        nativeSetSessionVolumeScale(handle, linear.coerceIn(0f, 1f), fadeMs.coerceAtLeast(0))
+    /** Native is the sole owner of whether the live USB session may shape PCM transition gain. */
+    fun isSessionVolumeEnvelopeAllowed(handle: Long = currentHandle): Boolean =
+        handle != 0L && nativeIsSessionVolumeEnvelopeAllowed(handle)
+
+    /**
+     * Request a session transition envelope. Native playback mode/DSD transport decides whether
+     * the request is legal; rejected routes are forced to unity and return false.
+     */
+    fun applySessionVolumeTransition(
+        handle: Long,
+        linear: Float,
+        fadeMs: Int,
+        reason: String,
+    ): Boolean {
+        if (handle == 0L) return false
+        return nativeApplySessionVolumeTransition(
+            handle,
+            linear.coerceIn(0f, 1f),
+            fadeMs.coerceIn(0, 15_000),
+            reason,
+        )
     }
+
+    data class HardwareVolumeCommandResult(
+        val status: Int,
+        val observedRaw: Int?,
+    ) {
+        val confirmed: Boolean get() = status == 0 && observedRaw != null
+    }
+
+    private fun decodeHardwareVolumeCommandResult(packed: Long): HardwareVolumeCommandResult {
+        val status = (packed shr 32).toInt()
+        val raw = packed.toInt().takeUnless { it == Int.MIN_VALUE }
+        return HardwareVolumeCommandResult(status = status, observedRaw = raw)
+    }
+
+    fun setHardwareVolumeRawVerified(
+        handle: Long,
+        raw: Int,
+        reason: String,
+    ): HardwareVolumeCommandResult = decodeHardwareVolumeCommandResult(
+        nativeSetHardwareVolumeRawVerified(handle, raw, reason),
+    )
+
+    fun setHardwareVolumeNormalizedVerified(
+        handle: Long,
+        normalized: Float,
+        reason: String,
+    ): HardwareVolumeCommandResult = decodeHardwareVolumeCommandResult(
+        nativeSetHardwareVolumeNormalizedVerified(
+            handle,
+            normalized.coerceIn(0f, 1f),
+            reason,
+        ),
+    )
+
+    fun adjustHardwareVolumeVerified(
+        handle: Long,
+        direction: Int,
+        appStepRaw: Int,
+        reason: String,
+    ): HardwareVolumeCommandResult = decodeHardwareVolumeCommandResult(
+        nativeAdjustHardwareVolumeVerified(
+            handle,
+            direction.coerceIn(-1, 1),
+            appStepRaw.coerceAtLeast(1),
+            reason,
+        ),
+    )
 
     fun getPlaybackModeName(): String {
         return try {
@@ -756,15 +1224,78 @@ object UsbAudioEngine {
         safeMode: Boolean
     )
 
+    external fun nativePlanUsbRecovery(
+        kind: Int,
+        appBytesPerSecond: Long,
+        completedUsbBytesPerSecond: Long,
+        scheduledUsbBytesPerSecond: Long,
+        expectedBytesPerSecond: Long,
+        underrun: Int,
+        submitError: Int,
+        packetError: Int,
+        transferError: Int,
+        feedbackEnabled: Boolean,
+        fixedNoFeedbackPacer: Boolean,
+        feedbackDegradedFixedPacer: Boolean,
+        profileNoFeedback: Boolean,
+        lastGoodAlt: Int,
+        runtimeLivenessStall: Boolean,
+    ): IntArray
+
+    external fun nativePlanUsbFeatureUnitRecovery(unsafe: Boolean): IntArray
+
+    external fun nativeClassifyUsbStreamHealth(
+        appBytesPerSecond: Long,
+        completedUsbBytesPerSecond: Long,
+        scheduledUsbBytesPerSecond: Long,
+        expectedBytesPerSecond: Long,
+        bufferUsedBytes: Long,
+        bufferCapacityBytes: Long,
+        underrun: Int,
+        submitError: Int,
+        packetError: Int,
+        transferError: Int,
+        clockRate: Int,
+        targetRate: Int,
+        finalVolume: Float,
+        feedbackEnabled: Boolean,
+        feedbackState: Int,
+        feedbackInvalidCount: Int,
+        feedbackEmptyCount: Int,
+        fixedNoFeedbackPacer: Boolean,
+        feedbackDegradedFixedPacer: Boolean,
+    ): IntArray
+
     external fun nativeGetStatsString(handle: Long): String
+    external fun nativeGetLastPcmInputDiagnosticsString(): String
     external fun nativeGetAudibleStateString(handle: Long): String
     external fun nativeGetStreamSessionId(handle: Long): Long
+    external fun nativeGetIsoPipelineDepthMs(handle: Long): Int
+    external fun nativeIsStreamFullyStopped(handle: Long): Boolean
+    external fun nativeIssueUsbRecoveryToken(handle: Long): Long
+    external fun nativeIsUsbRecoveryTokenCurrent(handle: Long, token: Long): Boolean
+    external fun nativeInvalidateUsbRecoveryToken(handle: Long)
     external fun isHardwareVolumeValidated(): Boolean
     external fun nativeSetHardwareVolumeDbNoCache(handle: Long, db: Int, reason: String): Int
-    /** Reattach-only write that bypasses the per-handle SET_CUR dedup cache. */
+    /** Legacy raw write retained for compatibility; new init path uses verified native transaction. */
     external fun nativeSetHardwareVolumeRawNoCache(handle: Long, raw: Int, reason: String): Int
-    external fun nativeSetHardwareVolumeRaw(handle: Long, raw: Int, reason: String): Int
-    external fun nativeAdjustHardwareVolume(handle: Long, direction: Int, reason: String): Int
+    external fun nativeSetHardwareBoundaryVolumeRaw(handle: Long, raw: Int, reason: String): Int
+    external fun nativeSetHardwareVolumeRawVerified(
+        handle: Long,
+        raw: Int,
+        reason: String,
+    ): Long
+    external fun nativeSetHardwareVolumeNormalizedVerified(
+        handle: Long,
+        normalized: Float,
+        reason: String,
+    ): Long
+    external fun nativeAdjustHardwareVolumeVerified(
+        handle: Long,
+        direction: Int,
+        appStepRaw: Int,
+        reason: String,
+    ): Long
     external fun nativeGetHardwareVolumeCurrentRaw(handle: Long): Int
     external fun nativeGetHardwareVolumeMinRaw(handle: Long): Int
     external fun nativeGetHardwareVolumeMaxRaw(handle: Long): Int
@@ -773,15 +1304,74 @@ object UsbAudioEngine {
     external fun nativeSetPcmOutputMode(mode: Int)
     external fun nativeArmStopFade(handle: Long, fadeMs: Int)
     external fun nativeArmTrackStopFade(handle: Long, fadeMs: Int)
-    external fun nativeFlushForNextTrack(handle: Long)
+    external fun nativeFlushForNextTrack(handle: Long): Boolean
     external fun nativeRestartIsoTransfersSameProfile(handle: Long): Boolean
     external fun nativeResetSessionForPlayback(handle: Long)
     external fun nativeCloseStreamForReconfigure(handle: Long)
+    external fun nativeReconfigurePcmStream(
+        handle: Long,
+        targetDeviceRate: Int,
+        sourceSampleRate: Int,
+        sourceBitsPerSample: Int,
+        targetChannels: Int,
+        targetBits: Int,
+        targetSubslot: Int,
+        verifyClockReadback: Boolean,
+    ): Boolean
     external fun nativeEnterStandby(handle: Long)
     external fun nativeResumeFromStandby(handle: Long): Boolean
     external fun nativeIsSessionBroken(handle: Long): Boolean
     external fun nativeGetStreamState(handle: Long): Int
     private external fun nativeGetDeviceCapabilitiesJson(handle: Long): String
+    private external fun nativeProbeStandardHardwareControlsJson(handle: Long): String
+    private external fun nativeProbeVendorControlInventoryJson(handle: Long): String
+
+    private external fun nativeVendorExtensionUnitRead(
+        handle: Long, interfaceNumber: Int, entityId: Int, selector: Int, channel: Int,
+        length: Int, timeoutMs: Int,
+    ): ByteArray?
+    private external fun nativeVendorExtensionUnitWrite(
+        handle: Long, interfaceNumber: Int, entityId: Int, selector: Int, channel: Int,
+        data: ByteArray, timeoutMs: Int,
+    ): Int
+    private external fun nativeVendorHidGetReport(
+        handle: Long, interfaceNumber: Int, reportType: Int, reportId: Int, length: Int, timeoutMs: Int,
+    ): ByteArray?
+    private external fun nativeVendorHidSetReport(
+        handle: Long, interfaceNumber: Int, reportType: Int, reportId: Int, data: ByteArray, timeoutMs: Int,
+    ): Int
+    private external fun nativeVendorControlIn(
+        handle: Long, deviceRecipient: Boolean, interfaceNumber: Int, request: Int,
+        value: Int, index: Int, length: Int, timeoutMs: Int,
+    ): ByteArray?
+    private external fun nativeVendorControlOut(
+        handle: Long, deviceRecipient: Boolean, interfaceNumber: Int, request: Int,
+        value: Int, index: Int, data: ByteArray, timeoutMs: Int,
+    ): Int
+    private external fun nativeVendorBulkIn(
+        handle: Long, interfaceNumber: Int, endpointAddress: Int, length: Int, timeoutMs: Int,
+    ): ByteArray?
+    private external fun nativeVendorBulkOut(
+        handle: Long, interfaceNumber: Int, endpointAddress: Int, data: ByteArray, timeoutMs: Int,
+    ): Int
+    private external fun nativeVendorEndpointWrite(
+        handle: Long, interfaceNumber: Int, outEndpointAddress: Int, inEndpointAddress: Int,
+        request: ByteArray, timeoutMs: Int,
+    ): Int
+    private external fun nativeVendorEndpointExchange(
+        handle: Long, interfaceNumber: Int, outEndpointAddress: Int, inEndpointAddress: Int,
+        request: ByteArray, responseLength: Int, turnaroundDelayMs: Int, timeoutMs: Int,
+    ): ByteArray?
+
+    private external fun nativeWriteStandardHardwareControlJson(
+        handle: Long,
+        interfaceNumber: Int,
+        entityId: Int,
+        selector: Int,
+        channel: Int,
+        elementIndex: Int,
+        value: Double,
+    ): String
     external fun nativeSetUsbDacSettings(
         noControlIface: Boolean,
         forceUac1: Boolean,
@@ -797,8 +1387,8 @@ object UsbAudioEngine {
     /** seek 前软停止：停止 ISO 传输 + 清 ring + 设淡入，不标 BROKEN，不关闭 handle。 */
     external fun nativePrepareForSeek(handle: Long, rampMs: Int, reason: String)
 
-    /** Native session volume envelope: linear + fadeMs */
-    external fun nativeSetSessionVolumeScale(handle: Long, linear: Float, fadeMs: Int)
+    external fun nativeIsSessionVolumeEnvelopeAllowed(handle: Long): Boolean
+    external fun nativeApplySessionVolumeTransition(handle: Long, linear: Float, fadeMs: Int, reason: String): Boolean
 
     external fun nativeSetDsdConversion(
         enabled: Boolean,
@@ -809,6 +1399,7 @@ object UsbAudioEngine {
     )
     external fun nativeResetUsbPolicyForNewDevice()
     external fun nativeCanControlVolume(handle: Long): Boolean
+    external fun nativeCanUseHardwareBoundaryFade(handle: Long): Boolean
     external fun nativeGetVolumeDb(handle: Long): Float
     external fun nativeValidateHardwareVolume(handle: Long): Int
     external fun nativeGetHardwareVolumePolicyString(handle: Long): String
@@ -1000,6 +1591,7 @@ object UsbAudioEngine {
     private external fun nativeGetNominalBytesPerTransfer(): Int
     private external fun nativeGetCompletedUsbBytesPerSecond(): Long
     private external fun nativeGetScheduledUsbBytesPerSecond(): Long
+    private external fun nativeGetIsoCallbackAgeMs(): Long
     private external fun nativeGetFeedbackState(): Int
     private external fun nativeGetFeedbackSampleRateMilli(): Int
     private external fun nativeGetPacingMode(): Int

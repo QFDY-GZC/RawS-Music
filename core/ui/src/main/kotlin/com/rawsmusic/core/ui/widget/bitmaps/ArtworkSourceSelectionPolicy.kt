@@ -41,6 +41,8 @@ internal object ArtworkSourceSelectionPolicy {
             key.startsWith("file://") -> key.removePrefix("file://")
             else -> key
         }.substringBefore('|')
+            .substringBefore('?')
+            .substringBefore('#')
         val extension = raw.substringAfterLast('.', "").lowercase()
         return extension in setOf(
             "mp3", "flac", "m4a", "mp4", "aac", "ogg", "opus", "wma", "wav",

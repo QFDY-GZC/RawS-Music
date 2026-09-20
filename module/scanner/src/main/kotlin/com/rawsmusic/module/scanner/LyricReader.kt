@@ -1,10 +1,13 @@
 package com.rawsmusic.module.scanner
 
 import android.util.Log
+import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.common.model.LyricLine
 import com.rawsmusic.core.common.model.LyricWord
+import com.rawsmusic.core.common.net.RemoteHttpStreamRegistry
+import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.module.scanner.parser.KrcParser
 import com.rawsmusic.module.scanner.parser.RawSLyricsParser
 import com.rawsmusic.module.scanner.parser.LyricTextNormalizer
@@ -15,6 +18,7 @@ import java.nio.charset.CharacterCodingException
 import java.nio.charset.Charset
 import java.nio.charset.CodingErrorAction
 import java.text.Normalizer
+import kotlin.math.abs
 
 object LyricReader {
 
@@ -23,7 +27,7 @@ object LyricReader {
 
     fun readLyrics(song: AudioFile): LyricData {
         val rawSOverride = readRawSOverride(song)
-        if (!rawSOverride.isEmpty) return rawSOverride
+        if (!rawSOverride.isEmpty) return enrichOverrideWithEmbeddedMetadata(song.path, rawSOverride)
         if (!song.isCueTrack()) return readLyrics(song.path)
 
         val trackSpecific = readCueTrackSpecificLyrics(song)
@@ -49,41 +53,40 @@ object LyricReader {
         val songName = File(songPath).name
         Log.d(TAG, "readLyrics: $songName")
         val rawSOverride = readRawSOverride(songPath)
-        if (!rawSOverride.isEmpty) return rawSOverride
+        if (!rawSOverride.isEmpty) return enrichOverrideWithEmbeddedMetadata(songPath, rawSOverride)
         return readAlbumLevelLyrics(songPath)
     }
 
     private fun readRawSOverride(song: AudioFile): LyricData {
         val audio = File(song.path)
         val privateFiles = LyricOverrideStore.filesFor(song)
+        val formats = listOf(".raws.ttml", ".raws.enhanced.lrc", ".raws.lrc")
         val groups = buildList<List<File>> {
             var privateIndex = 0
             if (song.isCueTrack()) {
-                add(
-                    listOfNotNull(
-                        audio.parentFile?.let { File(it, audio.nameWithoutExtension + ".track${song.cueTrackIndex}.raws.ttml") },
-                        privateFiles.getOrNull(privateIndex++)
-                    )
-                )
+                add(formats.mapNotNull { suffix ->
+                    audio.parentFile?.let {
+                        File(it, audio.nameWithoutExtension + ".track${song.cueTrackIndex}$suffix")
+                    }
+                } + privateFiles.drop(privateIndex).take(formats.size).also {
+                    privateIndex += formats.size
+                })
             }
-            add(
-                listOfNotNull(
-                    audio.parentFile?.let { File(it, audio.nameWithoutExtension + ".raws.ttml") },
-                    privateFiles.getOrNull(privateIndex)
-                )
-            )
+            add(formats.mapNotNull { suffix ->
+                audio.parentFile?.let { File(it, audio.nameWithoutExtension + suffix) }
+            } + privateFiles.drop(privateIndex).take(formats.size))
         }
         return readRawSOverrideGroups(groups)
     }
 
     private fun readRawSOverride(songPath: String): LyricData {
         val audio = File(songPath)
+        val formats = listOf(".raws.ttml", ".raws.enhanced.lrc", ".raws.lrc")
         return readRawSOverrideGroups(
             listOf(
-                listOfNotNull(
-                    audio.parentFile?.let { File(it, audio.nameWithoutExtension + ".raws.ttml") },
-                    LyricOverrideStore.filesFor(songPath).firstOrNull()
-                )
+                formats.mapNotNull { suffix ->
+                    audio.parentFile?.let { File(it, audio.nameWithoutExtension + suffix) }
+                } + LyricOverrideStore.filesFor(songPath)
             )
         )
     }
@@ -222,18 +225,27 @@ object LyricReader {
     }
 
     private fun readEmbeddedLyrics(songPath: String): LyricData {
+        val candidates = mutableListOf<EmbeddedLyricCandidate>()
+        val remoteHttp = songPath.startsWith("http://", true) || songPath.startsWith("https://", true)
+
         try {
-            val info = com.rawsmusic.core.common.ffmpeg.FFmpegBridge.getMediaInfo(songPath)
+            val remote = if (remoteHttp) RemoteHttpStreamRegistry.lookup(songPath) else null
+            val info = when {
+                remote != null -> {
+                    val resolvedUrl = remote.resolveUrl(songPath)
+                    FFmpegBridge.getMediaInfo(
+                        filePath = resolvedUrl,
+                        headers = remote.resolveHeaders(songPath),
+                        userAgent = remote.userAgent,
+                    )
+                }
+                remoteHttp -> null
+                else -> FFmpegBridge.getMediaInfo(songPath)
+            }
             if (info != null) {
-                val candidateKeys = setOf("LYRICS", "LYRICS-ENG", "UNSYNCEDLYRICS", "TXXX:LYRICS")
                 for ((key, value) in info) {
-                    val upperKey = key.uppercase()
-                    if ((candidateKeys.contains(upperKey) || upperKey.contains("LYRIC")) && value.isNotBlank()) {
-                        val parsed = detectAndParse(value.trimBomAndNul())
-                        if (!parsed.isEmpty) {
-                            Log.i(TAG, "LYRIC_TRACE embedded_ffmpeg key=$key lines=${parsed.lines.size}")
-                            return parsed
-                        }
+                    if (key.looksLikeLyricKey() && value.isNotBlank()) {
+                        candidates += EmbeddedLyricCandidate("ffmpeg", key, value)
                     }
                 }
             }
@@ -241,24 +253,159 @@ object LyricReader {
             Log.w(TAG, "LYRIC_TRACE embedded_ffmpeg_failed file=${File(songPath).name}", e)
         }
 
-        val fallback = Id3EmbeddedLyricReader.read(songPath) ?: return LyricData()
-        val parsed = detectAndParse(fallback.text)
-        if (!parsed.isEmpty) {
+        // TagLib's MP4 reader is a useful second route for M4A files. Some ROM/FFmpeg builds do
+        // not expose the freeform ©lyr atom through AVFormatContext even though the tag is valid.
+        if (!remoteHttp) {
+            try {
+                TagLibBridge.readMetadata(songPath).forEach { (key, value) ->
+                    if (key.looksLikeLyricKey() && value.isNotBlank()) {
+                        candidates += EmbeddedLyricCandidate("taglib", key, value)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "LYRIC_TRACE embedded_taglib_failed file=${File(songPath).name}: ${e.message}")
+            }
+        }
+
+        // Keep the old ID3 parser as a final fallback for malformed USLT/TXXX frames.
+        if (!remoteHttp) {
+            Id3EmbeddedLyricReader.read(songPath)?.let { fallback ->
+                candidates += EmbeddedLyricCandidate("id3", fallback.frameId, fallback.text)
+            }
+        }
+
+        val parsedCandidates = candidates.mapNotNull { candidate ->
+            val parsed = detectAndParse(candidate.value.trimBomAndNul())
+            parsed.takeUnless { it.isEmpty }?.let { candidate to it }
+        }
+        val selected = parsedCandidates.maxWithOrNull(
+            compareBy<Pair<EmbeddedLyricCandidate, LyricData>> { lyricRichness(it.second) }
+                .thenBy { it.first.sourcePriority() }
+        )
+        if (selected != null) {
+            val (candidate, parsed) = selected
             Log.i(
                 TAG,
-                "LYRIC_TRACE embedded_id3_fallback frame=${fallback.frameId} " +
-                    "encoding=${fallback.encoding} recovered=${fallback.recoveredMalformedEncoding} " +
-                    "chars=${fallback.text.length} lines=${parsed.lines.size} file=${File(songPath).name}"
+                "LYRIC_TRACE embedded_selected source=${candidate.source} key=${candidate.key} " +
+                    "lines=${parsed.lines.size} translations=${parsed.lines.count { it.translation.isNotBlank() }} " +
+                    "wordLines=${parsed.lines.count { it.words.isNotEmpty() }} file=${File(songPath).name}"
             )
-        } else {
-            Log.w(
+            return parsed
+        }
+        return LyricData()
+    }
+
+    private data class EmbeddedLyricCandidate(
+        val source: String,
+        val key: String,
+        val value: String,
+    )
+
+    private fun String.looksLikeLyricKey(): Boolean {
+        val normalized = trim().uppercase()
+        return normalized == "LYRICS" ||
+            normalized == "LYRIC" ||
+            normalized == "LYRICS-ENG" ||
+            normalized == "UNSYNCEDLYRICS" ||
+            normalized == "TXXX:LYRICS" ||
+            normalized == "©LYR" ||
+            normalized.contains("LYRIC")
+    }
+
+    private fun EmbeddedLyricCandidate.sourcePriority(): Int = when (source) {
+        "ffmpeg" -> 3
+        "taglib" -> 2
+        else -> 0
+    }
+
+    /** Prefer a candidate that actually carries translation and word timing, not just more rows. */
+    private fun lyricRichness(data: LyricData): Int {
+        val translationLines = data.lines.count { it.translation.isNotBlank() }
+        val romanizationLines = data.lines.count { it.romanization.isNotBlank() }
+        val wordTimedLines = data.lines.count { it.words.isNotEmpty() }
+        return translationLines * 10_000 + romanizationLines * 1_000 +
+            wordTimedLines * 100 + data.lines.size
+    }
+
+    /**
+     * A manually downloaded `.raws.*` file remains the main lyric source, but an older override
+     * often contains only the original lane. Fill only missing secondary lanes from the embedded
+     * MP4 lyric so enabling translation works without replacing the user's edited timing/text.
+     */
+    private fun enrichOverrideWithEmbeddedMetadata(songPath: String, override: LyricData): LyricData {
+        if (override.isEmpty) return override
+        val embedded = readEmbeddedLyrics(songPath)
+        if (embedded.isEmpty || embedded.lines.none { it.translation.isNotBlank() || it.romanization.isNotBlank() }) {
+            return override
+        }
+
+        val enriched = mergeSecondaryLyricLanes(override, embedded)
+        val addedTranslations = enriched.lines.count { it.translation.isNotBlank() } -
+            override.lines.count { it.translation.isNotBlank() }
+        val addedRomanizations = enriched.lines.count { it.romanization.isNotBlank() } -
+            override.lines.count { it.romanization.isNotBlank() }
+        if (addedTranslations > 0 || addedRomanizations > 0) {
+            Log.i(
                 TAG,
-                "LYRIC_TRACE embedded_id3_unparsed frame=${fallback.frameId} " +
-                    "encoding=${fallback.encoding} chars=${fallback.text.length} file=${File(songPath).name}"
+                "LYRIC_TRACE override_enriched translations=+$addedTranslations " +
+                    "romanizations=+$addedRomanizations file=${File(songPath).name}"
             )
         }
-        return parsed
+        return enriched
     }
+
+    /**
+     * Preserve the timing/text selected by a `.raws.*` override while restoring secondary lanes
+     * from the audio tag. Providers often quantize the same line 100-300 ms differently and may
+     * add reading annotations such as `(ハチロク)`, so exact timestamp+text matching is too strict.
+     */
+    internal fun mergeSecondaryLyricLanes(override: LyricData, embedded: LyricData): LyricData {
+        if (override.isEmpty || embedded.isEmpty) return override
+
+        val pairedCount = minOf(override.lines.size, embedded.lines.size)
+        val countDifference = abs(override.lines.size - embedded.lines.size)
+        val countCompatible = countDifference <= maxOf(2, pairedCount / 10)
+        val alignedTimestampCount = (0 until pairedCount).count { index ->
+            abs(override.lines[index].timeStamp - embedded.lines[index].timeStamp) <=
+                SECONDARY_LANE_INDEX_TOLERANCE_MS
+        }
+        val indexAligned = pairedCount >= 2 && countCompatible &&
+            alignedTimestampCount * 4 >= pairedCount * 3
+
+        val enriched = override.lines.mapIndexed { index, line ->
+            val indexedMatch = if (indexAligned) {
+                embedded.lines.getOrNull(index)?.takeIf { candidate ->
+                    abs(candidate.timeStamp - line.timeStamp) <= SECONDARY_LANE_INDEX_TOLERANCE_MS
+                }
+            } else {
+                null
+            }
+            val textMatch = embedded.lines
+                .asSequence()
+                .filter { candidate ->
+                    abs(candidate.timeStamp - line.timeStamp) <= SECONDARY_LANE_TEXT_TOLERANCE_MS &&
+                        normalizedLyricText(candidate.text) == normalizedLyricText(line.text)
+                }
+                .minByOrNull { candidate -> abs(candidate.timeStamp - line.timeStamp) }
+            val match = indexedMatch ?: textMatch
+                ?: return@mapIndexed line
+            line.copy(
+                translation = line.translation.ifBlank { match.translation },
+                romanization = line.romanization.ifBlank { match.romanization },
+                backgroundTranslation = line.backgroundTranslation
+                    ?: match.backgroundTranslation,
+            )
+        }
+        return if (enriched == override.lines) override else override.copy(lines = enriched)
+    }
+
+    private fun normalizedLyricText(value: String): String = value
+        .replace(Regex("\\s+"), "")
+        .replace(Regex("[，。！？、,.!?;；:：]"), "")
+        .lowercase()
+
+    private const val SECONDARY_LANE_INDEX_TOLERANCE_MS = 1_500L
+    private const val SECONDARY_LANE_TEXT_TOLERANCE_MS = 1_500L
 
     private fun String.trimBomAndNul(): String {
         return trimStart('\u0000', '\uFEFF', '\uFFFE')

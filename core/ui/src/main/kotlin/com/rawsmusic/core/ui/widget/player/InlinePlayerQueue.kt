@@ -51,8 +51,8 @@ import com.rawsmusic.core.ui.scene.pages.SongsSortLayoutSheet
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
-import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
-import com.rawsmusic.core.ui.widget.powerlist.rememberComposePowerListState
+import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListFull
+import com.rawsmusic.core.ui.widget.virtuallist.rememberComposeVirtualListState
 import com.rawsmusic.module.data.prefs.CollectionSortPreferences
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.icon.MiuixIcons
@@ -84,10 +84,21 @@ internal fun InlinePlayerQueue(
     onClearPriorityQueue: (() -> Unit)?,
     fullscreen: Boolean = false,
     onFullscreenChange: (Boolean) -> Unit = {},
+    showFullscreenControl: Boolean = true,
     modifier: Modifier = Modifier
 ) {
-    val listState = rememberLazyListState()
-    val powerListState = rememberComposePowerListState("inline_queue_fullscreen")
+    val resolvedIndex = currentIndex.takeIf { it in songs.indices }
+        ?: songs.indexOfFirst { candidate ->
+            candidate.path == currentSong?.path && candidate.cueTrackIndex == currentSong?.cueTrackIndex
+        }
+    // The compact queue used to create its LazyListState at index 0 and only then run
+    // animateScrollToItem(current) from LaunchedEffect. That made the top of the queue a real first
+    // frame. Seed the same target directly into the initial layout; later track changes keep the
+    // existing auto-follow behavior below.
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = resolvedIndex.coerceAtLeast(0),
+    )
+    val virtualListState = rememberComposeVirtualListState("inline_queue_fullscreen")
     val locateScope = rememberCoroutineScope()
     var sortOrder by remember {
         mutableStateOf(
@@ -95,16 +106,13 @@ internal fun InlinePlayerQueue(
         )
     }
     var showSortLayout by rememberSaveable { mutableStateOf(false) }
-    val resolvedIndex = currentIndex.takeIf { it in songs.indices }
-        ?: songs.indexOfFirst { candidate ->
-            candidate.path == currentSong?.path && candidate.cueTrackIndex == currentSong?.cueTrackIndex
-        }
     val summarySong = songs.getOrNull(resolvedIndex) ?: currentSong
     val sortedEntries = remember(songs, sortOrder) {
         sortQueueEntries(songs, sortOrder)
     }
     val fullscreenSongs = remember(sortedEntries) { sortedEntries.map { it.song } }
     val fullscreenCurrentIndex = sortedEntries.indexOfFirst { it.originalIndex == resolvedIndex }
+    virtualListState.seedInitialScrollToIndex(fullscreenCurrentIndex)
 
     LaunchedEffect(resolvedIndex, songs.size) {
         if (!fullscreen && resolvedIndex in songs.indices) {
@@ -114,7 +122,7 @@ internal fun InlinePlayerQueue(
 
     LaunchedEffect(fullscreen, fullscreenCurrentIndex, sortOrder, songs.size) {
         if (fullscreen && fullscreenCurrentIndex in fullscreenSongs.indices) {
-            powerListState.requestScrollToIndex(fullscreenCurrentIndex)
+            virtualListState.requestScrollToIndex(fullscreenCurrentIndex)
         }
     }
 
@@ -153,15 +161,17 @@ internal fun InlinePlayerQueue(
                 )
                 Spacer(Modifier.width(2.dp))
             }
-            QueueResourceButton(
-                iconRes = R.drawable.ic_queue_fullscreen,
-                contentDescription = stringResource(
-                    if (fullscreen) R.string.queue_exit_fullscreen else R.string.queue_enter_fullscreen
-                ),
-                tint = colors.icon,
-                onClick = { onFullscreenChange(!fullscreen) }
-            )
-            Spacer(Modifier.width(2.dp))
+            if (showFullscreenControl) {
+                QueueResourceButton(
+                    iconRes = R.drawable.ic_queue_fullscreen,
+                    contentDescription = stringResource(
+                        if (fullscreen) R.string.queue_exit_fullscreen else R.string.queue_enter_fullscreen
+                    ),
+                    tint = colors.icon,
+                    onClick = { onFullscreenChange(!fullscreen) }
+                )
+                Spacer(Modifier.width(2.dp))
+            }
             QueueLocateButton(
                 enabled = if (fullscreen) {
                     fullscreenCurrentIndex in fullscreenSongs.indices
@@ -171,7 +181,7 @@ internal fun InlinePlayerQueue(
                 tint = colors.icon,
                 onClick = {
                     if (fullscreen && fullscreenCurrentIndex in fullscreenSongs.indices) {
-                        powerListState.requestScrollToIndex(fullscreenCurrentIndex)
+                        virtualListState.requestScrollToIndex(fullscreenCurrentIndex)
                     } else if (resolvedIndex in songs.indices) {
                         locateScope.launch {
                             runCatching { listState.animateScrollToItem(resolvedIndex) }
@@ -218,13 +228,13 @@ internal fun InlinePlayerQueue(
                         .weight(1f)
                         .clipToBounds()
                 ) {
-                    ComposePowerListFull(
+                    ComposeVirtualListFull(
                         songs = fullscreenSongs,
                         currentPlayingIndex = fullscreenCurrentIndex,
-                        state = powerListState,
+                        state = virtualListState,
                         modifier = Modifier.fillMaxSize(),
                         onSongClick = { _, sortedIndex ->
-                            val entry = sortedEntries.getOrNull(sortedIndex) ?: return@ComposePowerListFull
+                            val entry = sortedEntries.getOrNull(sortedIndex) ?: return@ComposeVirtualListFull
                             onSongClick(entry.song, entry.originalIndex)
                         }
                     )
@@ -257,7 +267,7 @@ internal fun InlinePlayerQueue(
         SongsSortLayoutSheet(
             visible = fullscreen && showSortLayout,
             currentSortOrder = sortOrder,
-            powerListState = powerListState,
+            virtualListState = virtualListState,
             onSortSelected = {
                 sortOrder = it
                 CollectionSortPreferences.write("player_queue", "fullscreen", it)

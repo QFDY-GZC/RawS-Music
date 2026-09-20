@@ -28,6 +28,7 @@ namespace {
 
 constexpr float P2D_MAX_INPUT_LEVEL = 0.98f;
 constexpr float P2D_SILENCE_THRESHOLD = 2.0e-8f;
+constexpr uint8_t P2D_DSD_IDLE_PATTERN = 0x69u;
 
 static inline uint32_t xorshift32(uint32_t& state) {
     uint32_t x = state ? state : 0x2468ACE1u;
@@ -70,6 +71,14 @@ static inline bool nearlySilent(float v) {
 
 static inline bool isPowerOfTwoU32(uint32_t value) {
     return value != 0u && (value & (value - 1u)) == 0u;
+}
+
+// Follow the same idle pattern used by the USB transport. Alternating bits
+// (0xAA/0x55) form an audible carrier on some DACs, especially at DSD64.
+static inline int nextDsdIdleBit(uint8_t& phase) {
+    const int bit = (P2D_DSD_IDLE_PATTERN >> (7u - (phase & 7u))) & 1u;
+    phase = static_cast<uint8_t>((phase + 1u) & 7u);
+    return bit != 0 ? 1 : -1;
 }
 
 // 31-tap Kaiser-window halfband interpolator, scaled by two for interpolation.
@@ -508,11 +517,14 @@ uint32_t PcmToDsdConverter::convertRealtimeP2d(const void* pcm_data, uint32_t sa
         // Keep absolute digital silence deterministic and noise-free.  Decay the
         // active states so low-level audio after a silent span does not splash.
         for (uint32_t i = 0; i < dsd_bytes; i++) {
-            dsd_output[i] = 0xAAu;
+            // 0x69 is the DSD idle pattern; 0xAA creates a strong periodic
+            // one-bit carrier that is audible on some DACs, especially DSD64.
+            dsd_output[i] = P2D_DSD_IDLE_PATTERN;
         }
         for (float& e : ef_hist_) e *= 0.25f;
         ef_state_.error.fill(0.0f);
         ef_state_.last_output = -1.0f;
+        silence_phase_ = 0;
         previous_input_ = 0.0f;
         have_previous_input_ = true;
         samples_processed_ += sample_count;
@@ -566,8 +578,7 @@ uint32_t PcmToDsdConverter::convertRealtimeP2d(const void* pcm_data, uint32_t sa
                 // Keep exact silence deterministic.  We still decay the history
                 // a little so a later non-silent block does not inherit stale
                 // state from an earlier loud passage.
-                silence_phase_ ^= 1u;
-                out = silence_phase_ ? 1 : -1;
+                out = nextDsdIdleBit(silence_phase_);
                 for (float& e : ef_hist_) e *= 0.82f;
             } else {
                 out = quantizeP2dSample(interpolated, spec);
@@ -580,8 +591,7 @@ uint32_t PcmToDsdConverter::convertRealtimeP2d(const void* pcm_data, uint32_t sa
     }
 
     while (bits_packed < target_bits) {
-        silence_phase_ ^= 1u;
-        const int out = silence_phase_ ? 1 : -1;
+        const int out = nextDsdIdleBit(silence_phase_);
         emitBit(out > 0 ? 1 : 0);
         bits_packed++;
     }

@@ -27,14 +27,24 @@ class CoverBackgroundManager(
     private val updateImmersiveCover: (String?) -> Unit,
     private val applyLyricColors: () -> Unit
 ) {
+    private var appliedDefaultLightMode: Boolean? = null
 
     fun loadCoverBackground(albumArtPath: String) {
-        clearCoverDrivenBackground()
-        applyDefaultColors()
+        // Cover-driven backgrounds are disabled. Re-clearing five retained hosts and rewriting all
+        // layer states for every track change only invalidates the player during artwork motion.
+        // Keep the operation idempotent; a theme-mode change still reapplies the default palette.
+        val isLight = !com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(lifecycleOwner as android.content.Context)
+        if (appliedDefaultLightMode == isLight && !layerState.backgroundVisible) return
+        applyDefaultColors(isLight)
     }
 
     fun applyDefaultColors() {
-        applyDefaultBackground()
+        val isLight = !com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(lifecycleOwner as android.content.Context)
+        applyDefaultColors(isLight)
+    }
+
+    private fun applyDefaultColors(isLight: Boolean) {
+        applyDefaultBackground(isLight)
         applyLyricColors()
     }
 
@@ -44,11 +54,15 @@ class CoverBackgroundManager(
      */
     fun applyDefaultBackground() {
         val isLight = !com.rawsmusic.core.ui.theme.ThemeManager.isDarkMode(lifecycleOwner as android.content.Context)
+        applyDefaultBackground(isLight)
+    }
 
+    private fun applyDefaultBackground(isLight: Boolean) {
         updateDefaultBackgroundEnabled(true)
         clearCoverDrivenBackground()
         layerState.rootBackgroundColor = if (isLight) Color.WHITE else Color.BLACK
         com.rawsmusic.core.ui.theme.ThemeManager.isLightBackground = isLight
+        appliedDefaultLightMode = isLight
     }
 
     private fun clearCoverDrivenBackground() {

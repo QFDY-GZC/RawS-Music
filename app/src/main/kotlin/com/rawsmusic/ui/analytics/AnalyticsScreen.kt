@@ -212,7 +212,9 @@ fun AnalyticsScreen(
             }
         }
 
-        Spacer(Modifier.height(80.dp))
+        // SettingsPage already owns the common 180dp scroll tail. Do not stack
+        // another analytics-only 80dp spacer on top of it; that made this page
+        // end roughly 260dp above the screen bottom.
     }
 }
 

@@ -7,11 +7,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Owns the UI-facing requested-song identity while transport work is still serialized.
+ * Owns the pending selection identity while transport work is still serialized.
  *
- * This coordinator never treats a request as proof that audio has started. It only keeps the
- * visible media identity aligned with the latest accepted user action until PlayerController
- * commits the corresponding decoder item.
+ * This coordinator never treats a request as proof that audio has started. A pending request is
+ * only a transition/persistence hint while a real current song exists; the committed current
+ * item remains the sole playback identity exposed to the player surfaces.
  */
 class PlayerUiSelectionControlCoordinator(
     private val isReleased: () -> Boolean,
@@ -26,7 +26,7 @@ class PlayerUiSelectionControlCoordinator(
     private val requestedSongState = MutableStateFlow<AudioFile?>(null)
     val requestedSongForUi: StateFlow<AudioFile?> = requestedSongState.asStateFlow()
 
-    fun currentOrRequestedSong(): AudioFile? = requestedSongState.value ?: currentSong()
+    fun currentOrRequestedSong(): AudioFile? = currentSong() ?: requestedSongState.value
 
     fun requestedSong(): AudioFile? = requestedSongState.value
 

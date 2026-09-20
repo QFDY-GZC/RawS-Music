@@ -12,13 +12,10 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
-import com.rawsmusic.core.common.model.LyricLine
-import com.rawsmusic.core.common.model.LyricWord
 import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.lyrico.runtime.QuickJsHostApi
 import com.rawsmusic.lyrico.runtime.QuickJsRuntime
 import com.rawsmusic.module.scanner.LyricOverrideStore
-import com.rawsmusic.module.scanner.parser.RawSLyricsParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.supervisorScope
@@ -41,8 +38,44 @@ data class LyricoSongCandidate(
     val coverUrl: String,
     val supportsCoverSearch: Boolean,
     val fields: Map<String, String>,
-    val internal: Map<String, String>
+    val internal: Map<String, String>,
+    val date: String = "",
 )
+
+internal fun buildLyricoSongRequest(
+    song: AudioFile,
+    sourceId: String,
+): Map<String, Any> = linkedMapOf(
+    "id" to song.id,
+    "title" to song.title,
+    "artist" to song.artist,
+    "album" to song.album,
+    "duration" to song.duration,
+    "date" to song.year.takeIf { it > 0 }?.toString().orEmpty(),
+    "sourceId" to sourceId,
+    "pluginId" to sourceId,
+    "fields" to emptyMap<String, String>(),
+    "internal" to emptyMap<String, String>(),
+)
+
+internal fun buildLyricoSongRequest(candidate: LyricoSongCandidate): Map<String, Any> = linkedMapOf(
+    "id" to candidate.id,
+    "title" to candidate.title,
+    "artist" to candidate.artist,
+    "album" to candidate.album,
+    "duration" to candidate.durationMs,
+    "date" to candidate.date,
+    "sourceId" to candidate.pluginId,
+    "pluginId" to candidate.pluginId,
+    "fields" to candidate.fields,
+    "internal" to candidate.internal,
+)
+
+enum class LyricOverrideFormat {
+    LRC,
+    ENHANCED_LRC,
+    TTML,
+}
 
 
 data class LyricoPreferredSource(
@@ -59,6 +92,12 @@ data class LyricoCoverCandidate(
     val pluginName: String
 )
 
+data class LyricoLyricCandidate(
+    val pluginId: String,
+    val pluginName: String,
+    val lyrics: LyricData
+)
+
 enum class LyricoLyricTiming {
     WORD_BY_WORD,
     LINE_BY_LINE
@@ -73,9 +112,15 @@ class LyricoSourceEngine(context: Context) {
         LyricoPreferredSource(
             id = plugin.manifest.id,
             name = plugin.manifest.name.ifBlank { plugin.manifest.id },
-            capabilities = plugin.manifest.capabilities.orEmpty()
+            capabilities = capabilitiesOf(plugin)
         )
     }
+
+    fun sourceSupports(sourceId: String, capability: String): Boolean =
+        store.enabledInPreferredOrder()
+            .firstOrNull { it.manifest.id == sourceId }
+            ?.let { capability in capabilitiesOf(it) }
+            ?: false
 
     suspend fun searchSource(
         song: AudioFile,
@@ -84,6 +129,7 @@ class LyricoSourceEngine(context: Context) {
     ): List<LyricoSongCandidate> = withContext(Dispatchers.IO) {
         val plugin = store.enabledInPreferredOrder().firstOrNull { it.manifest.id == sourceId }
             ?: return@withContext emptyList()
+        if (!sourceSupports(sourceId, "searchSongs")) return@withContext emptyList()
         runCatching { searchPlugin(plugin, song, query) }
             .onFailure { Log.w(TAG, "Preferred source search failed for $sourceId", it) }
             .getOrDefault(emptyList())
@@ -142,6 +188,7 @@ class LyricoSourceEngine(context: Context) {
         supervisorScope {
             store.listInstalled()
                 .filter { it.enabled }
+                .filter { "searchSongs" in capabilitiesOf(it) }
                 .map { plugin ->
                     async(Dispatchers.IO) {
                         runCatching { searchPlugin(plugin, song, query) }
@@ -171,23 +218,39 @@ class LyricoSourceEngine(context: Context) {
 
         withRuntime(plugin) { runtime ->
             val request = linkedMapOf<String, Any>(
-                "song" to linkedMapOf(
-                    "id" to candidate.id,
-                    "title" to candidate.title,
-                    "artist" to candidate.artist,
-                    "album" to candidate.album,
-                    "duration" to candidate.durationMs,
-                    "sourceId" to candidate.pluginId,
-                    "pluginId" to candidate.pluginId,
-                    "fields" to candidate.fields,
-                    "internal" to candidate.internal
-                ),
-                "config" to emptyMap<String, String>()
+                "song" to buildLyricoSongRequest(candidate),
+                "page" to 1,
+                "pageSize" to 12,
+                "config" to defaultConfig(plugin)
             )
             val raw = runtime.call("getLyrics", gson.toJson(request))
-            parseLyricsPayload(raw).takeUnless { it.isEmpty }
+            parseLyricsPayloadCandidates(raw).firstOrNull { !it.isEmpty }
                 ?: error("The source returned no usable lyrics")
         }
+    }
+
+    /** Fetches lyrics directly from an API v4 lyric-only source. */
+    suspend fun getLyrics(
+        song: AudioFile,
+        sourceId: String,
+        query: String = defaultQuery(song)
+    ): LyricData? = withContext(Dispatchers.IO) {
+        val plugin = store.enabledInPreferredOrder().firstOrNull { it.manifest.id == sourceId }
+            ?: return@withContext null
+        if ("getLyrics" !in capabilitiesOf(plugin)) return@withContext null
+        runCatching {
+            withRuntime(plugin) { runtime ->
+                val request = linkedMapOf<String, Any>(
+                    "keyword" to query,
+                    "song" to buildLyricoSongRequest(song, sourceId),
+                    "page" to 1,
+                    "pageSize" to 12,
+                    "config" to defaultConfig(plugin)
+                )
+                parseLyricsPayloadCandidates(runtime.call("getLyrics", gson.toJson(request)))
+                    .firstOrNull { !it.isEmpty }
+            }
+        }.onFailure { Log.w(TAG, "Direct lyric search failed for $sourceId", it) }.getOrNull()
     }
 
     suspend fun searchCovers(candidate: LyricoSongCandidate): List<LyricoCoverCandidate> =
@@ -213,32 +276,12 @@ class LyricoSourceEngine(context: Context) {
                         "keyword" to listOf(candidate.title, candidate.artist)
                             .filter { it.isNotBlank() }
                             .joinToString(" "),
-                        "song" to linkedMapOf(
-                            "id" to candidate.id,
-                            "title" to candidate.title,
-                            "artist" to candidate.artist,
-                            "album" to candidate.album,
-                            "duration" to candidate.durationMs,
-                            "sourceId" to candidate.pluginId,
-                            "pluginId" to candidate.pluginId,
-                            "fields" to candidate.fields,
-                            "internal" to candidate.internal
-                        ),
+                        "song" to buildLyricoSongRequest(candidate),
+                        "page" to 1,
                         "pageSize" to 12,
-                        "config" to emptyMap<String, String>()
+                        "config" to defaultConfig(plugin)
                     )
-                    parseSearchResults(runtime.call("searchCovers", gson.toJson(request)), plugin)
-                        .mapNotNull { cover ->
-                            cover.coverUrl.takeIf { it.isNotBlank() }?.let { url ->
-                                LyricoCoverCandidate(
-                                    url = url,
-                                    title = cover.title,
-                                    artist = cover.artist,
-                                    album = cover.album,
-                                    pluginName = cover.pluginName
-                                )
-                            }
-                        }
+                    parseCoverResults(runtime.call("searchCovers", gson.toJson(request)), plugin)
                 }
             }.onFailure {
                 Log.w(TAG, "Cover search failed for ${candidate.pluginId}", it)
@@ -246,6 +289,32 @@ class LyricoSourceEngine(context: Context) {
 
             (listOfNotNull(direct) + remote).distinctBy { it.url }.take(12)
         }
+
+    /** Searches an API v4 cover-only source without requiring searchSongs first. */
+    suspend fun searchCovers(
+        song: AudioFile,
+        sourceId: String,
+        query: String = defaultQuery(song)
+    ): List<LyricoCoverCandidate> = withContext(Dispatchers.IO) {
+        val plugin = store.enabledInPreferredOrder().firstOrNull { it.manifest.id == sourceId }
+            ?: return@withContext emptyList()
+        if ("searchCovers" !in capabilitiesOf(plugin)) return@withContext emptyList()
+        runCatching {
+            withRuntime(plugin) { runtime ->
+                val request = linkedMapOf<String, Any>(
+                    "keyword" to query,
+                    "song" to buildLyricoSongRequest(song, sourceId),
+                    "page" to 1,
+                    "pageSize" to 12,
+                    "config" to defaultConfig(plugin)
+                )
+                parseCoverResults(runtime.call("searchCovers", gson.toJson(request)), plugin)
+            }
+        }.onFailure { Log.w(TAG, "Direct cover search failed for $sourceId", it) }
+            .getOrDefault(emptyList())
+            .distinctBy { it.url }
+            .take(12)
+    }
 
     fun prepareLyrics(
         lyrics: LyricData,
@@ -458,14 +527,30 @@ class LyricoSourceEngine(context: Context) {
         }
     }
 
-    suspend fun writeOverride(song: AudioFile, lyrics: LyricData): File = withContext(Dispatchers.IO) {
+    suspend fun writeOverride(song: AudioFile, lyrics: LyricData): File =
+        writeOverride(song, lyrics, LyricOverrideFormat.TTML)
+
+    suspend fun writeOverride(
+        song: AudioFile,
+        lyrics: LyricData,
+        format: LyricOverrideFormat,
+    ): File = withContext(Dispatchers.IO) {
         require(!lyrics.isEmpty) { "Lyrics are empty" }
-        val content = toTtml(lyrics)
+        val content = when (format) {
+            LyricOverrideFormat.LRC -> toLrc(lyrics)
+            LyricOverrideFormat.ENHANCED_LRC -> toEnhancedLrc(lyrics)
+            LyricOverrideFormat.TTML -> toTtml(lyrics)
+        }
         val audio = File(song.path)
+        val formatSuffix = when (format) {
+            LyricOverrideFormat.LRC -> ".raws.lrc"
+            LyricOverrideFormat.ENHANCED_LRC -> ".raws.enhanced.lrc"
+            LyricOverrideFormat.TTML -> ".raws.ttml"
+        }
         val suffix = if (song.cueTrackIndex > 0 || song.cueOffsetMs > 0L) {
-            ".track${song.cueTrackIndex}.raws.ttml"
+            ".track${song.cueTrackIndex}$formatSuffix"
         } else {
-            ".raws.ttml"
+            formatSuffix
         }
 
         val sidecar = runCatching {
@@ -485,7 +570,7 @@ class LyricoSourceEngine(context: Context) {
             Log.w(TAG, "Sidecar lyric write unavailable; using private override for ${song.path}", it)
         }.getOrNull()
 
-        sidecar ?: LyricOverrideStore.write(song, content)
+        sidecar ?: LyricOverrideStore.write(song, content, suffix)
     }
 
     private fun searchPlugin(
@@ -498,7 +583,7 @@ class LyricoSourceEngine(context: Context) {
             "page" to 1,
             "pageSize" to 20,
             "separator" to "/",
-            "config" to emptyMap<String, String>()
+            "config" to defaultConfig(plugin)
         )
         val raw = runtime.call("searchSongs", gson.toJson(request))
         parseSearchResults(raw, plugin).filter { candidate ->
@@ -512,12 +597,22 @@ class LyricoSourceEngine(context: Context) {
     ): T {
         val script = buildScript(plugin)
         val cacheRoot = File(appContext.cacheDir, "lyrico_plugins/${plugin.manifest.id}")
+        val locales = appContext.resources.configuration.locales
+        val requestedLocaleTags = (0 until locales.size())
+            .map { index -> locales[index].toLanguageTag() }
+            .filter { it.isNotBlank() }
+        val pluginStrings = LyricoPluginStrings.load(
+            root = plugin.directory,
+            spec = plugin.manifest.i18n,
+            requestedLocaleTags = requestedLocaleTags,
+        )
         return QuickJsRuntime(
             memoryLimitBytes = 64L * 1024L * 1024L,
             timeoutMs = 15_000L,
             hostApi = QuickJsHostApi(
                 pluginId = plugin.manifest.id,
-                cacheRootDir = cacheRoot
+                cacheRootDir = cacheRoot,
+                pluginStrings = pluginStrings,
             )
         ).use { runtime ->
             runtime.eval(script, plugin.manifest.entry)
@@ -561,7 +656,8 @@ class LyricoSourceEngine(context: Context) {
 
     private fun parseSearchResults(
         raw: String,
-        plugin: InstalledLyricoPlugin
+        plugin: InstalledLyricoPlugin,
+        requireId: Boolean = true
     ): List<LyricoSongCandidate> {
         val root = parseJson(raw) ?: return emptyList()
         val items = when {
@@ -569,9 +665,10 @@ class LyricoSourceEngine(context: Context) {
             root.isJsonObject -> root.asJsonObject.firstArray("items", "results", "songs", "data")
             else -> null
         } ?: return emptyList()
-        return items.mapNotNull { item ->
-            val obj = item.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
-            val id = obj.firstString("id", "songId", "trackId") ?: return@mapNotNull null
+        return items.mapIndexedNotNull { index, item ->
+            val obj = item.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapIndexedNotNull null
+            val id = obj.firstString("id", "songId", "trackId")
+                ?: if (!requireId) "cover-$index" else return@mapIndexedNotNull null
             LyricoSongCandidate(
                 pluginId = plugin.manifest.id,
                 pluginName = plugin.manifest.name,
@@ -580,82 +677,57 @@ class LyricoSourceEngine(context: Context) {
                 artist = obj.firstString("artist", "artists", "singer").orEmpty(),
                 album = obj.firstString("album", "albumName").orEmpty(),
                 durationMs = obj.firstLong("duration", "durationMs", "duration_ms") ?: 0L,
-                coverUrl = obj.firstString("picUrl", "coverUrl", "cover_url", "artworkUrl")
+                date = obj.firstString("year", "date", "releaseDate", "release_date").orEmpty(),
+                coverUrl = obj.firstString(
+                    "picUrl", "pic_url", "coverUrl", "cover_url", "artworkUrl", "artwork_url", "image", "url"
+                )
                     .orEmpty()
                     .ifBlank {
                         obj.firstObject("fields", "metadata")
-                            ?.firstString("picUrl", "coverUrl", "cover_url", "artworkUrl")
+                            ?.firstString("picUrl", "pic_url", "coverUrl", "cover_url", "artworkUrl", "artwork_url")
                             .orEmpty()
                     },
-                supportsCoverSearch = plugin.manifest.capabilities.orEmpty()
-                    .contains("searchCovers"),
+                supportsCoverSearch = "searchCovers" in capabilitiesOf(plugin),
                 fields = obj.firstObject("fields", "metadata").toStringMap(),
                 internal = obj.firstObject("internal").toStringMap()
             )
         }
     }
 
-    private fun parseLyricsPayload(raw: String): LyricData = sanitizeLyricEntities(
-        parseLyricsPayloadInternal(raw)
-    )
-
-    private fun parseLyricsPayloadInternal(raw: String): LyricData {
-        if (raw.isBlank() || raw == "null") return LyricData()
-        val root = parseJson(raw)
-        if (root == null) return RawSLyricsParser.parse(raw)
-        if (root.isJsonPrimitive && root.asJsonPrimitive.isString) {
-            return RawSLyricsParser.parse(root.asString)
-        }
-        val obj = root.takeIf { it.isJsonObject }?.asJsonObject ?: return LyricData()
-        if (obj.get("notFound")?.asBoolean == true) return LyricData()
-
-        val type = obj.firstString("type").orEmpty()
-        if (!type.equals("structured", ignoreCase = true)) {
-            val payload = when (type) {
-                "rawTtml", "raw_ttml", "RAW_TTML", "ttml" -> obj.firstString("rawTtml", "raw_ttml")
-                "rawEnhancedLrc", "raw_enhanced_lrc", "RAW_ENHANCED_LRC" -> obj.firstString("rawEnhancedLrc", "raw_enhanced_lrc")
-                "rawVerbatimLrc", "raw_verbatim_lrc", "RAW_VERBATIM_LRC" -> obj.firstString("rawVerbatimLrc", "raw_verbatim_lrc")
-                "rawMultiPersonEnhancedLrc", "raw_multi_person_enhanced_lrc", "RAW_MULTI_PERSON_ENHANCED_LRC" ->
-                    obj.firstString("rawMultiPersonEnhancedLrc", "raw_multi_person_enhanced_lrc")
-                else -> obj.firstString("rawPlainLrc", "raw_plain_lrc", "plainLrc", "lrc", "original")
+    private fun parseCoverResults(
+        raw: String,
+        plugin: InstalledLyricoPlugin
+    ): List<LyricoCoverCandidate> = parseSearchResults(raw, plugin, requireId = false)
+        .mapNotNull { cover ->
+            cover.coverUrl.takeIf { it.isNotBlank() }?.let { url ->
+                LyricoCoverCandidate(
+                    url = url,
+                    title = cover.title,
+                    artist = cover.artist,
+                    album = cover.album,
+                    pluginName = cover.pluginName
+                )
             }
-            return payload?.let(RawSLyricsParser::parse) ?: LyricData()
         }
 
-        val translations = obj.firstArray("translated", "translation", "translations").toTextLineMap()
-        val romanizations = obj.firstArray("romanization", "romanized", "roma").toTextLineMap()
-        val lines = obj.firstArray("original", "lines")?.mapNotNull { element ->
-            val row = element.takeIf { it.isJsonArray }?.asJsonArray ?: return@mapNotNull null
-            val start = row.longAt(0) ?: return@mapNotNull null
-            val end = row.longAt(1) ?: start
-            val wordsValue = row.getOrNull(2)
-            val words = if (wordsValue?.isJsonArray == true) {
-                wordsValue.asJsonArray.mapNotNull { wordElement ->
-                    val word = wordElement.takeIf { it.isJsonArray }?.asJsonArray ?: return@mapNotNull null
-                    val text = word.stringAt(2).orEmpty()
-                    if (text.isEmpty()) return@mapNotNull null
-                    val wordStart = word.longAt(0) ?: start
-                    val wordEnd = word.longAt(1) ?: end
-                    LyricWord(text = text, begin = wordStart, end = wordEnd)
-                }
-            } else {
-                row.stringAt(2)?.takeIf { it.isNotEmpty() }
-                    ?.let { listOf(LyricWord(it, start, end)) }
-                    .orEmpty()
-            }
-            if (words.isEmpty()) return@mapNotNull null
-            LyricLine(
-                timeStamp = start,
-                endTime = end,
-                text = words.joinToString("") { it.text },
-                words = words,
-                translation = translations[start].orEmpty(),
-                romanization = romanizations[start].orEmpty(),
-                isTtml = true
-            )
-        }.orEmpty()
-        return LyricData(lines.sortedBy { it.timeStamp })
+    private fun parseLyricsPayloadCandidates(raw: String): List<LyricData> {
+        return LyricoLyricsCodec.parsePayloadCandidates(raw)
+            .map(::sanitizeLyricEntities)
     }
+
+    private fun defaultConfig(plugin: InstalledLyricoPlugin): Map<String, String> =
+        plugin.manifest.configFields.mapNotNull { field ->
+            field.key.takeIf { it.isNotBlank() }?.let { key ->
+                key to field.defaultValue?.toString().orEmpty()
+            }
+        }.toMap()
+
+    private fun capabilitiesOf(plugin: InstalledLyricoPlugin): Set<String> =
+        plugin.manifest.capabilities.orEmpty().ifEmpty { setOf("searchSongs") }
+
+    private fun parseLyricsPayload(raw: String): LyricData = sanitizeLyricEntities(
+        LyricoLyricsCodec.parsePayload(raw)
+    )
 
     private fun sanitizeLyricEntities(lyrics: LyricData): LyricData = lyrics.copy(
         lines = lyrics.lines.map { line ->
@@ -673,38 +745,58 @@ class LyricoSourceEngine(context: Context) {
         }
     )
 
-    private fun toTtml(lyrics: LyricData): String = buildString {
-        appendLine("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
-        appendLine("<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:ttm=\"http://www.w3.org/ns/ttml#metadata\">")
-        appendLine("  <body><div>")
+    private fun toLrc(lyrics: LyricData): String = buildString {
         lyrics.lines.forEach { line ->
-            val end = line.endTime.takeIf { it > line.timeStamp }
-                ?: line.words.lastOrNull()?.end?.takeIf { it > line.timeStamp }
-                ?: (line.timeStamp + 3_000L)
-            append("    <p begin=\"").append(formatTtmlTime(line.timeStamp)).append("\" end=\"")
-                .append(formatTtmlTime(end)).appendLine("\">")
-            if (line.words.isNotEmpty()) {
-                line.words.forEach { word ->
-                    append("      <span begin=\"").append(formatTtmlTime(word.begin)).append("\" end=\"")
-                        .append(formatTtmlTime(word.end.coerceAtLeast(word.begin))).append("\">")
-                        .append(xmlEscape(word.text)).appendLine("</span>")
-                }
-            } else {
-                append("      <span>").append(xmlEscape(line.text)).appendLine("</span>")
-            }
+            append('[').append(formatLrcTime(line.timeStamp)).append(']')
+                .appendLine(line.text.trim())
             if (line.translation.isNotBlank()) {
-                append("      <span ttm:role=\"x-translation\">")
-                    .append(xmlEscape(line.translation)).appendLine("</span>")
+                append('[').append(formatLrcTime(line.timeStamp)).append(']')
+                    .appendLine(line.translation.trim())
             }
             if (line.romanization.isNotBlank()) {
-                append("      <span ttm:role=\"x-romanization\">")
-                    .append(xmlEscape(line.romanization)).appendLine("</span>")
+                append('[').append(formatLrcTime(line.timeStamp)).append(']')
+                    .appendLine(line.romanization.trim())
             }
-            appendLine("    </p>")
         }
-        appendLine("  </div></body>")
-        appendLine("</tt>")
     }
+
+    private fun toEnhancedLrc(lyrics: LyricData): String = buildString {
+        lyrics.lines.forEach { line ->
+            append('[').append(formatLrcTime(line.timeStamp)).append(']')
+            if (line.words.isNotEmpty()) {
+                line.words.forEach { word ->
+                    append('<').append(formatLrcTime(word.begin)).append('>')
+                        .append(word.text)
+                }
+                val end = line.endTime.takeIf { it > line.timeStamp }
+                    ?: line.words.last().end.takeIf { it > line.timeStamp }
+                if (end != null) {
+                    append('[').append(formatLrcTime(end)).append(']')
+                }
+            } else {
+                append(line.text.trim())
+            }
+            appendLine()
+            if (line.translation.isNotBlank()) {
+                append('[').append(formatLrcTime(line.timeStamp)).append(']')
+                    .appendLine(line.translation.trim())
+            }
+            if (line.romanization.isNotBlank()) {
+                append('[').append(formatLrcTime(line.timeStamp)).append(']')
+                    .appendLine(line.romanization.trim())
+            }
+        }
+    }
+
+    private fun formatLrcTime(value: Long): String {
+        val safe = value.coerceAtLeast(0L)
+        val minutes = safe / 60_000L
+        val seconds = (safe % 60_000L) / 1_000L
+        val millis = safe % 1_000L
+        return "%02d:%02d.%03d".format(minutes, seconds, millis)
+    }
+
+    private fun toTtml(lyrics: LyricData): String = LyricoLyricsCodec.toTtml(lyrics)
 
     private fun defaultQuery(song: AudioFile): String = listOf(song.title, song.artist)
         .filter { it.isNotBlank() }
@@ -941,14 +1033,6 @@ class LyricoSourceEngine(context: Context) {
     private fun JsonObject?.toStringMap(): Map<String, String> = this?.entrySet()?.associate { (key, value) ->
         key to if (value.isJsonPrimitive) runCatching { value.asString }.getOrDefault("") else value.toString()
     }.orEmpty()
-    private fun JsonArray?.toTextLineMap(): Map<Long, String> = this?.mapNotNull { element ->
-        val row = element.takeIf { it.isJsonArray }?.asJsonArray ?: return@mapNotNull null
-        val start = row.longAt(0) ?: return@mapNotNull null
-        start to row.stringAt(2).orEmpty()
-    }?.toMap().orEmpty()
-    private fun JsonArray.getOrNull(index: Int): JsonElement? = if (index in 0 until size()) get(index) else null
-    private fun JsonArray.longAt(index: Int): Long? = getOrNull(index)?.let { runCatching { it.asLong }.getOrNull() }
-    private fun JsonArray.stringAt(index: Int): String? = getOrNull(index)?.let { runCatching { it.asString }.getOrNull() }
 
     companion object {
         private const val TAG = "LyricoSourceEngine"

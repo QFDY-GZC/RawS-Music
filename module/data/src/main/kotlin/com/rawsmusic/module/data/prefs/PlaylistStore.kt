@@ -274,17 +274,35 @@ class PlaylistStore private constructor(private val context: Context) {
         JSONArray().also { array -> _playlists.value.forEach { array.put(playlistToJson(it)) } }
     )
 
-    suspend fun restoreJson(json: JSONObject) = withDatabase {
-        val array = json.optJSONArray("playlists") ?: return@withDatabase
+    /** Wait for the Room-backed store to finish initial hydration before taking a backup snapshot. */
+    suspend fun exportJsonForBackup(): JSONObject = withDatabase {
+        JSONObject().put(
+            "playlists",
+            JSONArray().also { array -> _playlists.value.forEach { array.put(playlistToJson(it)) } },
+        )
+    }
+
+    suspend fun restoreJson(json: JSONObject) {
+        withDatabase { restoreJsonLocked(json, verify = false) }
+    }
+
+    /** Restore and read the Room snapshot back before reporting backup-import success. */
+    suspend fun restoreJsonAndVerify(json: JSONObject): Boolean = withDatabase {
+        restoreJsonLocked(json, verify = true)
+    }
+
+    private suspend fun restoreJsonLocked(json: JSONObject, verify: Boolean): Boolean {
+        val array = json.optJSONArray("playlists") ?: return false
         val restored = buildList {
             for (index in 0 until array.length()) {
                 array.optJSONObject(index)?.let { add(jsonToPlaylist(it)) }
             }
         }.let(::ensureFavorites)
-        mutationMutex.withLock {
+        return mutationMutex.withLock {
             replaceRoom(restored)
             deleteLegacyFiles()
             _playlists.value = restored
+            !verify || loadRoomSnapshot() == restored
         }
     }
 

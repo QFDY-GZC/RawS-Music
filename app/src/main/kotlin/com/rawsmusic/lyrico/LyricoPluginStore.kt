@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.annotation.Keep
 import com.google.gson.Gson
+import com.google.gson.JsonElement
 import com.rawsmusic.lyrico.runtime.HostApiRegistry
 import com.rawsmusic.lyrico.runtime.QuickJsHostApi
 import com.rawsmusic.lyrico.runtime.QuickJsRuntime
@@ -24,7 +25,32 @@ data class LyricoPluginManifest(
     val entry: String = "source.js",
     val includeDirs: List<String>? = emptyList(),
     val icon: String? = null,
-    val capabilities: Set<String>? = emptySet()
+    val capabilities: Set<String>? = emptySet(),
+    val configFields: List<LyricoPluginConfigField> = emptyList(),
+    val i18n: LyricoPluginI18n? = null
+)
+
+@Keep
+data class LyricoPluginI18n(
+    val defaultLocale: String = "",
+    val resources: Map<String, String> = emptyMap()
+)
+
+@Keep
+data class LyricoPluginConfigField(
+    val key: String = "",
+    val title: String = "",
+    val summary: String = "",
+    val group: String = "",
+    val type: String = "text",
+    val required: Boolean = false,
+    val defaultValue: Any? = null,
+    // Lyrico manifests may use either primitive string options or structured
+    // option objects. Preserve the original JSON shape so both forms import
+    // successfully and future config UI can decode label/value metadata
+    // without having lost it at install time.
+    val options: List<JsonElement> = emptyList(),
+    val dependency: JsonElement? = null
 )
 
 data class InstalledLyricoPlugin(
@@ -143,23 +169,53 @@ class LyricoPluginStore private constructor(private val context: Context) {
                 candidateResult.fold(
                     onSuccess = { candidate ->
                         if (candidate.manifest.id in duplicateIds) {
-                            failures += "${candidate.manifest.name}: duplicate plugin id"
+                            val reason = "${candidate.manifest.name}: duplicate plugin id (${candidate.manifest.id})"
+                            failures += reason
+                            Log.w(
+                                TAG,
+                                "Lyrico import failed stage=duplicate index=${index + 1}/${candidates.size} " +
+                                    "name=${candidate.manifest.name} id=${candidate.manifest.id} reason=$reason"
+                            )
                         } else {
                             runCatching {
                                 installAtomically(candidate.sourceRoot, candidate.manifest)
                             }.onSuccess(installed::add)
                                 .onFailure { error ->
-                                    failures += "${candidate.manifest.name}: ${error.message ?: error.javaClass.simpleName}"
+                                    val message = error.message ?: error.javaClass.simpleName
+                                    val reason = "${candidate.manifest.name}: $message"
+                                    failures += reason
+                                    Log.w(
+                                        TAG,
+                                        "Lyrico import failed stage=install index=${index + 1}/${candidates.size} " +
+                                            "name=${candidate.manifest.name} id=${candidate.manifest.id} " +
+                                            "source=${candidate.sourceRoot.relativeToOrSelf(temp).path} reason=$message",
+                                        error,
+                                    )
                                 }
                         }
                     },
                     onFailure = { error ->
-                        failures += "plugin ${index + 1}: ${error.message ?: error.javaClass.simpleName}"
+                        val message = error.message ?: error.javaClass.simpleName
+                        val manifestPath = manifests.getOrNull(index)
+                            ?.relativeToOrSelf(temp)
+                            ?.path
+                            .orEmpty()
+                        val reason = "plugin ${index + 1}: $message"
+                        failures += reason
+                        Log.w(
+                            TAG,
+                            "Lyrico import failed stage=validate index=${index + 1}/${candidates.size} " +
+                                "manifest=$manifestPath reason=$message",
+                            error,
+                        )
                     }
                 )
             }
             require(installed.isNotEmpty()) { failures.joinToString("; ") }
             Log.i(TAG, "Imported ${installed.size} Lyrico source(s), failed=${failures.size}")
+            failures.forEachIndexed { index, failure ->
+                Log.w(TAG, "Lyrico import failure ${index + 1}/${failures.size}: $failure")
+            }
             LyricoPluginImportResult(plugins = installed, failures = failures)
         } finally {
             temp.deleteRecursively()
@@ -270,12 +326,13 @@ class LyricoPluginStore private constructor(private val context: Context) {
             "Unsupported plugin API ${manifest.apiVersion}; supported versions are " +
                 "${HostApiRegistry.SUPPORTED_PLUGIN_API_VERSIONS}"
         }
-        require(manifest.minHostApiVersion <= HostApiRegistry.HOST_API_VERSION) {
+        require(manifest.minHostApiVersion in 1..HostApiRegistry.HOST_API_VERSION) {
             "Plugin requires a newer host API"
         }
-        val capabilities = manifest.capabilities.orEmpty()
-        require(capabilities.isEmpty() || "searchSongs" in capabilities) {
-            "A source plugin must support searchSongs"
+        val capabilities = manifest.capabilities.orEmpty().ifEmpty { setOf("searchSongs") }
+        val supportedCapabilities = setOf("searchSongs", "getLyrics", "searchCovers")
+        require(capabilities.any { it in supportedCapabilities }) {
+            "Plugin must declare searchSongs, getLyrics, or searchCovers"
         }
         val entry = safeChild(directory, manifest.entry)
         require(entry.isFile && entry.extension.equals("js", ignoreCase = true)) {
@@ -286,6 +343,20 @@ class LyricoPluginStore private constructor(private val context: Context) {
             require(safeChild(directory, includePath).isDirectory) { "Invalid include directory: $includePath" }
         }
         manifest.icon?.let { iconPath -> require(safeChild(directory, iconPath).isFile) { "Plugin icon was not found" } }
+        manifest.i18n?.let { i18n ->
+            require(i18n.defaultLocale.isNotBlank()) { "Plugin i18n defaultLocale is required" }
+            require(i18n.resources.isNotEmpty()) { "Plugin i18n resources are required" }
+            require(i18n.defaultLocale in i18n.resources) { "Default locale resource is missing" }
+            require(i18n.resources.size <= 64) { "Plugin declares too many locales" }
+            i18n.resources.forEach { (localeTag, resourcePath) ->
+                require(localeTag.isNotBlank()) { "Plugin locale tag is empty" }
+                val resource = safeChild(directory, resourcePath)
+                require(resource.isFile && resource.extension.equals("json", ignoreCase = true)) {
+                    "Invalid locale resource: $resourcePath"
+                }
+                require(resource.length() <= MAX_I18N_BYTES) { "Locale resource is too large: $resourcePath" }
+            }
+        }
     }
 
     private fun safeChild(root: File, relativePath: String): File {
@@ -320,6 +391,7 @@ class LyricoPluginStore private constructor(private val context: Context) {
         private const val MAX_PLUGIN_BYTES = 8L * 1024L * 1024L
         private const val MAX_MANIFEST_BYTES = 128L * 1024L
         private const val MAX_ENTRY_BYTES = 2L * 1024L * 1024L
+        private const val MAX_I18N_BYTES = 512L * 1024L
         private val ID_PATTERN = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+")
 
         @Volatile private var instance: LyricoPluginStore? = null

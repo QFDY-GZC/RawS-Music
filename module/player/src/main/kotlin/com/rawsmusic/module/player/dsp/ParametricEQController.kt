@@ -28,9 +28,6 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         private const val CURVE_POINTS = 200 // 频率响应曲线采样点数
         private const val DEFAULT_SAMPLE_RATE = 48000
         private const val PERSIST_DEBOUNCE_MS = 350L
-        private const val AUTO_HEADROOM_MARGIN_DB = 1.0f
-        private const val AUTO_HEADROOM_TRIGGER_DB = 0.05f
-        private const val MIN_NATIVE_PREAMP_DB = -96f
         private val gson = Gson()
     }
 
@@ -128,10 +125,11 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
 
     /**
      * 设置前置放大器增益
-     * @param gainDB 增益值 (dB)，范围 -12 到 12
+     * @param gainDB 增益值 (dB)，native 安全范围 -96 到 +12。UI 默认仍保持紧凑范围，
+     * 但 AutoEq/导入值不得在控制器层被静默截断。
      */
     fun setPreamp(gainDB: Float) {
-        val clamped = gainDB.coerceIn(-12f, 12f)
+        val clamped = sanitizePeqPreamp(gainDB)
         _preamp.value = clamped
         updateFrequencyResponse()
         persistDebounced()
@@ -307,16 +305,15 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
             }.toFloat()
         } ?: 0f
         val filterPeak = maxOf(0f, sampledPeak, centerPeak)
-        val requestedPreamp = _preamp.value.coerceIn(-12f, 12f)
-        val reduction = if (filterPeak > AUTO_HEADROOM_TRIGGER_DB) {
-            filterPeak + AUTO_HEADROOM_MARGIN_DB
-        } else {
-            0f
-        }
-        val effective = (requestedPreamp - reduction).coerceIn(MIN_NATIVE_PREAMP_DB, 12f)
+        val decision = resolvePeqHeadroom(
+            requestedPreampDb = _preamp.value,
+            filterPeakDb = filterPeak,
+        )
+        val requestedPreamp = decision.requestedPreampDb
+        val effective = decision.effectivePreampDb
 
         _effectivePreamp.value = effective
-        _autoHeadroomReduction.value = (requestedPreamp - effective).coerceAtLeast(0f)
+        _autoHeadroomReduction.value = decision.reductionDb
         if (nativeEngine.isInitialized()) nativeEngine.setPreamp(effective)
         _frequencyResponse.value = FloatArray(filterMagnitudes.size) { index ->
             filterMagnitudes[index] + effective
@@ -325,7 +322,8 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         Log.d(
             TAG,
             "PEQ headroom: requested=${requestedPreamp}dB filterPeak=${filterPeak}dB " +
-                "effective=${effective}dB reduction=${_autoHeadroomReduction.value}dB"
+                "requestedPeak=${decision.requestedOutputPeakDb}dB effective=${effective}dB " +
+                "reduction=${_autoHeadroomReduction.value}dB"
         )
     }
 
@@ -580,7 +578,7 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
             }
 
             _isEnabled.value = AppPreferences.PEQ.isEnabled
-            _preamp.value = AppPreferences.PEQ.preamp.coerceIn(-12f, 12f)
+            _preamp.value = sanitizePeqPreamp(AppPreferences.PEQ.preamp)
 
             syncAllToNative()
 
@@ -638,47 +636,42 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
             Log.w(TAG, "AutoEq preset has no filters: ${preset.name}")
             return
         }
-
-        val target = _bandCount.value.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
-
-        val converted = convertParametricFilters(
-            source = peqFilters,
-            targetCount = target,
-            preferOriginalOrder = true
+        importPreset(
+            preampDb = preset.safePreamp,
+            filters = peqFilters,
+            presetName = preset.name,
+            preferOriginalOrder = true,
         )
-
-        _filters.value = converted
-        _preamp.value = preset.safePreamp
-
-        syncAllToNative()
-        updateFrequencyResponse()
-
-        AppPreferences.PEQ.presetName = preset.name
-        persistImmediately()
-
-        Log.d(TAG, "Imported AutoEq preset: ${preset.name}, source=${peqFilters.size}, target=$target")
+        Log.d(
+            TAG,
+            "Imported AutoEq preset: ${preset.name}, source=${peqFilters.size}, target=${_bandCount.value}, " +
+                "preamp=${preset.safePreamp}dB origin=${preset.originPath}"
+        )
     }
 
     /**
-     * 导入滤波器列表
-     * 智能转换到当前 bandCount
+     * 原子导入 preamp + filters，避免先把新 preamp 应用到旧滤波器、随后再替换 filters 的瞬态。
      */
-    fun importFilters(filters: List<PEQFilter>, presetName: String? = null) {
+    fun importPreset(
+        preampDb: Float,
+        filters: List<PEQFilter>,
+        presetName: String? = null,
+        preferOriginalOrder: Boolean = false,
+    ) {
         if (filters.isEmpty()) {
-            Log.w(TAG, "importFilters: empty filter list")
+            Log.w(TAG, "importPreset: empty filter list")
             return
         }
 
         val target = _bandCount.value.coerceIn(PEQFilter.MIN_FILTERS, PEQFilter.MAX_FILTERS)
-
         val converted = convertParametricFilters(
             source = filters,
             targetCount = target,
-            preferOriginalOrder = false
+            preferOriginalOrder = preferOriginalOrder,
         )
 
         _filters.value = converted
-
+        _preamp.value = sanitizePeqPreamp(preampDb)
         if (!presetName.isNullOrBlank()) {
             AppPreferences.PEQ.presetName = presetName
         }
@@ -687,6 +680,22 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         updateFrequencyResponse()
         persistImmediately()
 
-        Log.d(TAG, "Imported PEQ filters: source=${filters.size}, target=$target")
+        Log.d(
+            TAG,
+            "Imported PEQ preset: source=${filters.size}, target=$target, preamp=${_preamp.value}dB, " +
+                "ordered=$preferOriginalOrder"
+        )
+    }
+
+    /**
+     * 导入滤波器列表，保留当前 preamp。
+     */
+    fun importFilters(filters: List<PEQFilter>, presetName: String? = null) {
+        importPreset(
+            preampDb = _preamp.value,
+            filters = filters,
+            presetName = presetName,
+            preferOriginalOrder = false,
+        )
     }
 }

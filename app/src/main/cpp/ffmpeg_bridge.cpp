@@ -1,12 +1,15 @@
 #include <jni.h>
 #include <android/log.h>
 #include <string.h>
+#include <cstring>
+#include <cerrno>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string>
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <signal.h>
 #include <setjmp.h>
 #include <time.h>
@@ -14,6 +17,8 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unistd.h>
+#include <sys/stat.h>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -867,6 +872,121 @@ cleanup_pcm:
 }
 
 
+struct RawFdAvioIo {
+    int fd;
+    int64_t size;
+    int64_t position;
+    AVIOContext *avio;
+};
+
+static int raw_fd_read_packet(void *opaque, uint8_t *buf, int buf_size) {
+    RawFdAvioIo *io = reinterpret_cast<RawFdAvioIo *>(opaque);
+    if (!io || io->fd < 0 || !buf || buf_size <= 0) return AVERROR(EINVAL);
+    ssize_t read_count;
+    do {
+        read_count = pread(io->fd, buf, static_cast<size_t>(buf_size), io->position);
+    } while (read_count < 0 && errno == EINTR);
+    if (read_count < 0) return AVERROR(errno);
+    if (read_count == 0) return AVERROR_EOF;
+    io->position += static_cast<int64_t>(read_count);
+    return static_cast<int>(read_count);
+}
+
+static int64_t raw_fd_seek(void *opaque, int64_t offset, int whence) {
+    RawFdAvioIo *io = reinterpret_cast<RawFdAvioIo *>(opaque);
+    if (!io || io->fd < 0) return AVERROR(EINVAL);
+    if (whence == AVSEEK_SIZE) return io->size > 0 ? io->size : AVERROR(ENOSYS);
+    const int origin = whence & ~AVSEEK_FORCE;
+    int64_t target;
+    switch (origin) {
+        case SEEK_SET: target = offset; break;
+        case SEEK_CUR: target = io->position + offset; break;
+        case SEEK_END:
+            if (io->size <= 0) return AVERROR(ENOSYS);
+            target = io->size + offset;
+            break;
+        default: return AVERROR(EINVAL);
+    }
+    if (target < 0 || (io->size > 0 && target > io->size)) return AVERROR(EINVAL);
+    io->position = target;
+    return target;
+}
+
+static int64_t raw_fd_resolve_size(int fd, int64_t size_hint) {
+    if (size_hint > 0) return size_hint;
+    struct stat st{};
+    if (fd >= 0 && fstat(fd, &st) == 0 && st.st_size > 0) return static_cast<int64_t>(st.st_size);
+    return 0;
+}
+
+static int open_input_with_fd(
+    AVFormatContext **format_context,
+    int fd,
+    int64_t size_hint,
+    RawFdAvioIo **io_out
+) {
+    if (!format_context || !io_out || fd < 0) return AVERROR(EINVAL);
+    *format_context = nullptr;
+    *io_out = nullptr;
+    RawFdAvioIo *io = new (std::nothrow) RawFdAvioIo();
+    uint8_t *buffer = static_cast<uint8_t *>(av_malloc(64 * 1024));
+    AVFormatContext *format = avformat_alloc_context();
+    if (!io || !buffer || !format) {
+        if (format) avformat_free_context(format);
+        if (buffer) av_free(buffer);
+        delete io;
+        return AVERROR(ENOMEM);
+    }
+    io->fd = fd;
+    io->size = raw_fd_resolve_size(fd, size_hint);
+    io->position = 0;
+    io->avio = avio_alloc_context(
+        buffer,
+        64 * 1024,
+        0,
+        io,
+        raw_fd_read_packet,
+        nullptr,
+        raw_fd_seek);
+    if (!io->avio) {
+        avformat_free_context(format);
+        av_free(buffer);
+        delete io;
+        return AVERROR(ENOMEM);
+    }
+    io->avio->seekable = AVIO_SEEKABLE_NORMAL;
+    format->pb = io->avio;
+    format->flags |= AVFMT_FLAG_CUSTOM_IO;
+    const int result = avformat_open_input(&format, nullptr, nullptr, nullptr);
+    if (result < 0) {
+        if (format) avformat_free_context(format);
+        if (io->avio->buffer) av_freep(&io->avio->buffer);
+        avio_context_free(&io->avio);
+        delete io;
+        return result;
+    }
+    *format_context = format;
+    *io_out = io;
+    LOGI("RAW_FD OPEN_OK fd=%d size=%lld format=%s streams=%u",
+         fd,
+         static_cast<long long>(io->size),
+         format->iformat && format->iformat->name ? format->iformat->name : "-",
+         format->nb_streams);
+    return 0;
+}
+
+static void close_input_with_fd(AVFormatContext **format_context, RawFdAvioIo **io_ptr) {
+    if (format_context && *format_context) avformat_close_input(format_context);
+    if (!io_ptr || !*io_ptr) return;
+    RawFdAvioIo *io = *io_ptr;
+    if (io->avio) {
+        if (io->avio->buffer) av_freep(&io->avio->buffer);
+        avio_context_free(&io->avio);
+    }
+    delete io;
+    *io_ptr = nullptr;
+}
+
 static int open_input_with_http_options(
     AVFormatContext **format_context,
     const char *path,
@@ -1008,14 +1128,67 @@ static jint probe_channel_count(
     return channels;
 }
 
-static int extract_cover(const char *input_path, const char *output_path) {
+static jlong probe_duration_fd(int fd, int64_t size_hint) {
     AVFormatContext *fmt_ctx = nullptr;
-    if (avformat_open_input(&fmt_ctx, input_path, nullptr, nullptr) < 0) return -1;
+    RawFdAvioIo *io = nullptr;
+    if (open_input_with_fd(&fmt_ctx, fd, size_hint, &io) < 0) return 0;
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
-        avformat_close_input(&fmt_ctx);
-        return -1;
+        close_input_with_fd(&fmt_ctx, &io);
+        return 0;
     }
+    const int64_t dur = fmt_ctx->duration;
+    close_input_with_fd(&fmt_ctx, &io);
+    if (dur == AV_NOPTS_VALUE || dur < 0) return 0;
+    return dur / 1000;
+}
 
+static jint probe_sample_rate_fd(int fd, int64_t size_hint) {
+    AVFormatContext *fmt_ctx = nullptr;
+    RawFdAvioIo *io = nullptr;
+    if (open_input_with_fd(&fmt_ctx, fd, size_hint, &io) < 0) return 0;
+    if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
+        close_input_with_fd(&fmt_ctx, &io);
+        return 0;
+    }
+    jint result = 0;
+    const int index = find_audio_stream(fmt_ctx);
+    if (index >= 0) result = fmt_ctx->streams[index]->codecpar->sample_rate;
+    close_input_with_fd(&fmt_ctx, &io);
+    return result;
+}
+
+static jint probe_bits_per_sample_fd(int fd, int64_t size_hint) {
+    AVFormatContext *fmt_ctx = nullptr;
+    RawFdAvioIo *io = nullptr;
+    if (open_input_with_fd(&fmt_ctx, fd, size_hint, &io) < 0) return 0;
+    if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
+        close_input_with_fd(&fmt_ctx, &io);
+        return 0;
+    }
+    jint result = 0;
+    const int index = find_audio_stream(fmt_ctx);
+    if (index >= 0) result = detect_bits_per_sample(fmt_ctx->streams[index]->codecpar);
+    close_input_with_fd(&fmt_ctx, &io);
+    return result;
+}
+
+static jint probe_channel_count_fd(int fd, int64_t size_hint) {
+    AVFormatContext *fmt_ctx = nullptr;
+    RawFdAvioIo *io = nullptr;
+    if (open_input_with_fd(&fmt_ctx, fd, size_hint, &io) < 0) return 0;
+    if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
+        close_input_with_fd(&fmt_ctx, &io);
+        return 0;
+    }
+    jint result = 0;
+    const int index = find_audio_stream(fmt_ctx);
+    if (index >= 0) result = detect_channel_count(fmt_ctx->streams[index]->codecpar);
+    close_input_with_fd(&fmt_ctx, &io);
+    return result;
+}
+
+static int extract_cover_from_format(AVFormatContext *fmt_ctx, const char *output_path) {
+    if (!fmt_ctx || !output_path) return -1;
     for (unsigned int i = 0; i < fmt_ctx->nb_streams; i++) {
         AVStream *stream = fmt_ctx->streams[i];
         if ((stream->disposition & AV_DISPOSITION_ATTACHED_PIC) &&
@@ -1025,10 +1198,8 @@ static int extract_cover(const char *input_path, const char *output_path) {
             if (fp) {
                 fwrite(stream->attached_pic.data, 1, stream->attached_pic.size, fp);
                 fclose(fp);
-                avformat_close_input(&fmt_ctx);
                 return 0;
             }
-            avformat_close_input(&fmt_ctx);
             return -1;
         }
     }
@@ -1044,7 +1215,6 @@ static int extract_cover(const char *input_path, const char *output_path) {
                     fclose(fp);
                     av_packet_unref(pkt);
                     av_packet_free(&pkt);
-                    avformat_close_input(&fmt_ctx);
                     return 0;
                 }
             }
@@ -1071,7 +1241,6 @@ static int extract_cover(const char *input_path, const char *output_path) {
                     }
                     av_packet_unref(pkt);
                     av_packet_free(&pkt);
-                    avformat_close_input(&fmt_ctx);
                     return fp ? 0 : -1;
                 }
             }
@@ -1079,8 +1248,37 @@ static int extract_cover(const char *input_path, const char *output_path) {
         av_packet_unref(pkt);
     }
     av_packet_free(&pkt);
-    avformat_close_input(&fmt_ctx);
     return -1;
+}
+
+static int extract_cover(
+    const char *input_path,
+    const char *output_path,
+    const char *headers_block = nullptr,
+    const char *user_agent = nullptr
+) {
+    AVFormatContext *fmt_ctx = nullptr;
+    if (open_input_with_http_options(&fmt_ctx, input_path, headers_block, user_agent) < 0) return -1;
+    if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
+        avformat_close_input(&fmt_ctx);
+        return -1;
+    }
+    const int result = extract_cover_from_format(fmt_ctx, output_path);
+    avformat_close_input(&fmt_ctx);
+    return result;
+}
+
+static int extract_cover_fd(int fd, int64_t size_hint, const char *output_path) {
+    AVFormatContext *fmt_ctx = nullptr;
+    RawFdAvioIo *io = nullptr;
+    if (open_input_with_fd(&fmt_ctx, fd, size_hint, &io) < 0) return -1;
+    if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
+        close_input_with_fd(&fmt_ctx, &io);
+        return -1;
+    }
+    const int result = extract_cover_from_format(fmt_ctx, output_path);
+    close_input_with_fd(&fmt_ctx, &io);
+    return result;
 }
 
 
@@ -1204,15 +1402,61 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCountWithOp
     return value;
 }
 
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeDurationFd(
+    JNIEnv *, jobject, jint fd, jlong size) {
+    return probe_duration_fd(fd, static_cast<int64_t>(size));
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeSampleRateFd(
+    JNIEnv *, jobject, jint fd, jlong size) {
+    return probe_sample_rate_fd(fd, static_cast<int64_t>(size));
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeBitsPerSampleFd(
+    JNIEnv *, jobject, jint fd, jlong size) {
+    return probe_bits_per_sample_fd(fd, static_cast<int64_t>(size));
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCountFd(
+    JNIEnv *, jobject, jint fd, jlong size) {
+    return probe_channel_count_fd(fd, static_cast<int64_t>(size));
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeExtractCover(
-    JNIEnv *env, jobject, jstring input, jstring output) {
+    JNIEnv *env,
+    jobject,
+    jstring input,
+    jstring output,
+    jstring headersBlock,
+    jstring userAgent) {
     const char *inp = env->GetStringUTFChars(input, nullptr);
     const char *out = env->GetStringUTFChars(output, nullptr);
-    int ret = extract_cover(inp, out);
+    const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
+    const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
+    int ret = extract_cover(inp, out, headers, agent);
+    if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+    if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
     env->ReleaseStringUTFChars(input, inp);
     env->ReleaseStringUTFChars(output, out);
     return ret;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeExtractCoverFd(
+    JNIEnv *env,
+    jobject,
+    jint fd,
+    jlong size,
+    jstring output) {
+    const char *out = env->GetStringUTFChars(output, nullptr);
+    const int result = extract_cover_fd(fd, static_cast<int64_t>(size), out);
+    env->ReleaseStringUTFChars(output, out);
+    return result;
 }
 
 extern "C" JNIEXPORT jfloatArray JNICALL
@@ -1271,8 +1515,184 @@ static bool streamRawPcmPassthroughFormat(
     }
 }
 
+
+// Some FLAC files in the wild contain another metadata chain after a block that
+// already has the FLAC "last metadata block" flag. Strict demuxers then expect an
+// audio frame at that point and return zero packets. RawSMusic's old direct tag
+// writer could preserve such an orphan PICTURE/PADDING chain as if it were audio.
+// For playback, expose a virtual read-only view that omits only that orphan range;
+// the media file itself is never modified.
+struct FlacOrphanMetadataIo {
+    FILE *file;
+    int64_t physical_size;
+    int64_t skip_start;
+    int64_t skip_end;
+    int64_t virtual_position;
+};
+
+static uint32_t read_flac_be24(const uint8_t *p) {
+    return ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[2];
+}
+
+static bool read_file_at(FILE *file, int64_t offset, uint8_t *buffer, size_t size) {
+    if (!file || !buffer || size == 0 || offset < 0) return false;
+    if (fseeko(file, (off_t)offset, SEEK_SET) != 0) return false;
+    return fread(buffer, 1, size, file) == size;
+}
+
+static bool is_flac_frame_sync_at(FILE *file, int64_t offset, int64_t file_size) {
+    if (offset < 0 || offset + 2 > file_size) return false;
+    uint8_t bytes[2] = {0, 0};
+    if (!read_file_at(file, offset, bytes, sizeof(bytes))) return false;
+    // FLAC frame sync is 14 bits: 11111111111110.
+    return bytes[0] == 0xFF && (bytes[1] & 0xFE) == 0xF8;
+}
+
+static bool read_plausible_flac_metadata_header(
+    FILE *file,
+    int64_t offset,
+    int64_t file_size,
+    bool *is_last,
+    uint8_t *block_type,
+    uint32_t *block_length
+) {
+    if (offset < 0 || offset + 4 > file_size) return false;
+    uint8_t header[4] = {0, 0, 0, 0};
+    if (!read_file_at(file, offset, header, sizeof(header))) return false;
+    const uint8_t type = header[0] & 0x7F;
+    const uint32_t length = read_flac_be24(header + 1);
+    const int64_t end = offset + 4 + (int64_t)length;
+    // Types 0..6 are the currently defined FLAC metadata blocks. Treating an
+    // arbitrary audio byte as metadata is therefore deliberately conservative.
+    if (type > 6 || end < offset || end > file_size) return false;
+    if (is_last) *is_last = (header[0] & 0x80) != 0;
+    if (block_type) *block_type = type;
+    if (block_length) *block_length = length;
+    return true;
+}
+
+static bool detect_flac_orphan_metadata_range(
+    const char *path,
+    int64_t *skip_start,
+    int64_t *skip_end
+) {
+    if (!path || !skip_start || !skip_end) return false;
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+
+    bool found = false;
+    do {
+        if (fseeko(file, 0, SEEK_END) != 0) break;
+        const int64_t file_size = (int64_t)ftello(file);
+        if (file_size < 8) break;
+
+        uint8_t marker[4] = {0, 0, 0, 0};
+        if (!read_file_at(file, 0, marker, sizeof(marker)) ||
+            memcmp(marker, "fLaC", 4) != 0) {
+            break;
+        }
+
+        int64_t position = 4;
+        int64_t first_declared_end = -1;
+        for (int block_count = 0; block_count < 512; ++block_count) {
+            bool is_last = false;
+            uint32_t block_length = 0;
+            if (!read_plausible_flac_metadata_header(
+                    file, position, file_size, &is_last, nullptr, &block_length)) {
+                break;
+            }
+
+            const int64_t block_end = position + 4 + (int64_t)block_length;
+            if (is_last) {
+                if (first_declared_end < 0) first_declared_end = block_end;
+                if (is_flac_frame_sync_at(file, block_end, file_size)) {
+                    if (first_declared_end < block_end) {
+                        *skip_start = first_declared_end;
+                        *skip_end = block_end;
+                        found = true;
+                    }
+                    break;
+                }
+
+                uint8_t next_type = 0;
+                uint32_t next_length = 0;
+                if (!read_plausible_flac_metadata_header(
+                        file, block_end, file_size,
+                        nullptr, &next_type, &next_length)) {
+                    break;
+                }
+                LOGI(
+                    "FLAC_COMPAT orphan metadata after declared-last: path=%s "
+                    "declaredEnd=%lld nextType=%u nextLen=%u",
+                    path,
+                    (long long)block_end,
+                    (unsigned int)next_type,
+                    (unsigned int)next_length);
+            }
+            position = block_end;
+        }
+    } while (false);
+
+    fclose(file);
+    return found && *skip_end > *skip_start;
+}
+
+static int flac_orphan_read_packet(void *opaque, uint8_t *buffer, int buffer_size) {
+    FlacOrphanMetadataIo *io = (FlacOrphanMetadataIo *)opaque;
+    if (!io || !io->file || !buffer || buffer_size <= 0) return AVERROR(EINVAL);
+
+    const int64_t skip_length = io->skip_end - io->skip_start;
+    const int64_t virtual_size = io->physical_size - skip_length;
+    if (io->virtual_position >= virtual_size) return AVERROR_EOF;
+
+    int total = 0;
+    while (total < buffer_size && io->virtual_position < virtual_size) {
+        const bool before_skip = io->virtual_position < io->skip_start;
+        const int64_t physical_position = before_skip
+            ? io->virtual_position
+            : io->virtual_position + skip_length;
+        int64_t available = before_skip
+            ? io->skip_start - io->virtual_position
+            : virtual_size - io->virtual_position;
+        if (available <= 0) continue;
+
+        const int chunk = (int)std::min<int64_t>(buffer_size - total, available);
+        if (fseeko(io->file, (off_t)physical_position, SEEK_SET) != 0) {
+            return total > 0 ? total : AVERROR(EIO);
+        }
+        const size_t read = fread(buffer + total, 1, (size_t)chunk, io->file);
+        if (read == 0) break;
+        total += (int)read;
+        io->virtual_position += (int64_t)read;
+        if ((int)read < chunk) break;
+    }
+    return total > 0 ? total : AVERROR_EOF;
+}
+
+static int64_t flac_orphan_seek(void *opaque, int64_t offset, int whence) {
+    FlacOrphanMetadataIo *io = (FlacOrphanMetadataIo *)opaque;
+    if (!io) return AVERROR(EINVAL);
+    const int64_t virtual_size = io->physical_size - (io->skip_end - io->skip_start);
+    if (whence == AVSEEK_SIZE) return virtual_size;
+
+    const int origin = whence & ~AVSEEK_FORCE;
+    int64_t target = 0;
+    switch (origin) {
+        case SEEK_SET: target = offset; break;
+        case SEEK_CUR: target = io->virtual_position + offset; break;
+        case SEEK_END: target = virtual_size + offset; break;
+        default: return AVERROR(EINVAL);
+    }
+    if (target < 0 || target > virtual_size) return AVERROR(EINVAL);
+    io->virtual_position = target;
+    return target;
+}
+
 struct StreamDecoder {
     AVFormatContext *fmt_ctx;
+    RawFdAvioIo *raw_fd_io;
+    AVIOContext *flac_repair_avio;
+    FlacOrphanMetadataIo *flac_repair_io;
     AVCodecContext *codec_ctx;
     SwrContext *swr_ctx;
     int audio_stream_idx;
@@ -1299,6 +1719,8 @@ struct StreamDecoder {
     int64_t duration_us;
     int src_sample_rate;
     int src_channels;
+    float playback_speed;
+    int speed_trace_frames;
 
     // Raw PCM fallback for codecs that may be omitted from trimmed libavcodec builds.
     // Example: WAV pcm_f64le. avformat can demux packets, then swr converts raw doubles
@@ -1332,6 +1754,102 @@ struct StreamDecoder {
     bool flushed_decoder;
     bool flushed_swr;
 };
+
+static float sanitize_playback_speed(float speed) {
+    if (!std::isfinite(speed)) return 1.0f;
+    return std::max(0.25f, std::min(3.0f, speed));
+}
+
+static int effective_decoder_input_rate(int source_rate, float playback_speed) {
+    if (source_rate <= 0) return source_rate;
+    const long double scaled = static_cast<long double>(source_rate) *
+        static_cast<long double>(playback_speed);
+    if (scaled >= static_cast<long double>(std::numeric_limits<int>::max())) {
+        return std::numeric_limits<int>::max();
+    }
+    return std::max(1, static_cast<int>(llround(scaled)));
+}
+
+static void release_flac_repair_io(StreamDecoder *sd) {
+    if (!sd) return;
+    if (sd->flac_repair_avio) {
+        if (sd->flac_repair_avio->buffer) {
+            av_freep(&sd->flac_repair_avio->buffer);
+        }
+        avio_context_free(&sd->flac_repair_avio);
+    }
+    if (sd->flac_repair_io) {
+        if (sd->flac_repair_io->file) fclose(sd->flac_repair_io->file);
+        free(sd->flac_repair_io);
+        sd->flac_repair_io = nullptr;
+    }
+}
+
+static bool prepare_flac_repair_input(StreamDecoder *sd, const char *path) {
+    if (!sd || !path) return false;
+    int64_t skip_start = 0;
+    int64_t skip_end = 0;
+    if (!detect_flac_orphan_metadata_range(path, &skip_start, &skip_end)) return false;
+
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+    if (fseeko(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return false;
+    }
+    const int64_t physical_size = (int64_t)ftello(file);
+    if (physical_size <= skip_end || fseeko(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return false;
+    }
+
+    FlacOrphanMetadataIo *io =
+        (FlacOrphanMetadataIo *)calloc(1, sizeof(FlacOrphanMetadataIo));
+    uint8_t *buffer = (uint8_t *)av_malloc(64 * 1024);
+    AVFormatContext *format = avformat_alloc_context();
+    if (!io || !buffer || !format) {
+        if (format) avformat_free_context(format);
+        if (buffer) av_free(buffer);
+        if (io) free(io);
+        fclose(file);
+        return false;
+    }
+
+    io->file = file;
+    io->physical_size = physical_size;
+    io->skip_start = skip_start;
+    io->skip_end = skip_end;
+    io->virtual_position = 0;
+
+    AVIOContext *avio = avio_alloc_context(
+        buffer,
+        64 * 1024,
+        0,
+        io,
+        flac_orphan_read_packet,
+        nullptr,
+        flac_orphan_seek);
+    if (!avio) {
+        avformat_free_context(format);
+        av_free(buffer);
+        fclose(file);
+        free(io);
+        return false;
+    }
+
+    format->pb = avio;
+    format->flags |= AVFMT_FLAG_CUSTOM_IO;
+    sd->fmt_ctx = format;
+    sd->flac_repair_avio = avio;
+    sd->flac_repair_io = io;
+    LOGI(
+        "FLAC_COMPAT virtual input enabled path=%s skip=[%lld,%lld) bytes=%lld",
+        path,
+        (long long)skip_start,
+        (long long)skip_end,
+        (long long)(skip_end - skip_start));
+    return true;
+}
 
 
 struct StreamDecoderSession {
@@ -1443,12 +1961,18 @@ static StreamDecoder* stream_decoder_open(
     int bits_per_sample,
     int channels,
     const char *headers_block,
-    const char *user_agent
+    const char *user_agent,
+    float playback_speed,
+    int raw_fd = -1,
+    int64_t raw_size = 0
 ) {
     StreamDecoder *sd = (StreamDecoder *)calloc(1, sizeof(StreamDecoder));
     if (!sd) return nullptr;
 
     sd->fmt_ctx = nullptr;
+    sd->raw_fd_io = nullptr;
+    sd->flac_repair_avio = nullptr;
+    sd->flac_repair_io = nullptr;
     sd->codec_ctx = nullptr;
     sd->swr_ctx = nullptr;
     sd->pkt = nullptr;
@@ -1471,9 +1995,12 @@ static StreamDecoder* stream_decoder_open(
     sd->dsd_pcm_history_pos = 0;
     sd->dsd_pcm_coeffs = nullptr;
     sd->dsd_pcm_history = nullptr;
+    sd->playback_speed = sanitize_playback_speed(playback_speed);
+    sd->speed_trace_frames = 0;
 
     AVDictionary *openOptions = nullptr;
-    const bool remoteInput = path &&
+    const bool fdInput = raw_fd >= 0;
+    const bool remoteInput = !fdInput && path &&
         (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0);
     if (remoteInput) {
         if (headers_block && headers_block[0] != '\0') {
@@ -1489,13 +2016,17 @@ static StreamDecoder* stream_decoder_open(
         av_dict_set(&openOptions, "reconnect_delay_max", "5", 0);
         av_dict_set(&openOptions, "rw_timeout", "15000000", 0);
     }
-    const std::string safeUrl = online_safe_url(path);
+    const std::string safeUrl = fdInput ? std::string("rawfd") : online_safe_url(path);
     if (remoteInput) {
-        LOGI("ONLINE_PIPE NATIVE_DECODER_OPEN_START url=%s target=%dHz/%dbit/%dch headers=%d ua=%d",
+        LOGI("ONLINE_PIPE NATIVE_DECODER_OPEN_START url=%s target=%dHz/%dbit/%dch speed=%.2f headers=%d ua=%d",
              safeUrl.c_str(), target_sample_rate, bits_per_sample, channels,
+             sd->playback_speed,
              online_header_line_count(headers_block), user_agent && user_agent[0] != '\0');
     }
-    const int openResult = avformat_open_input(&sd->fmt_ctx, path, nullptr, &openOptions);
+    const bool repairedFlacInput = !fdInput && !remoteInput && prepare_flac_repair_input(sd, path);
+    const int openResult = fdInput
+        ? open_input_with_fd(&sd->fmt_ctx, raw_fd, raw_size, &sd->raw_fd_io)
+        : avformat_open_input(&sd->fmt_ctx, path, nullptr, &openOptions);
     av_dict_free(&openOptions);
     if (openResult < 0) {
         char errorText[AV_ERROR_MAX_STRING_SIZE] = {0};
@@ -1506,8 +2037,18 @@ static StreamDecoder* stream_decoder_open(
             LOGE("ONLINE_PIPE NATIVE_DECODER_OPEN_FAIL url=%s error=%d (%s)",
                  safeUrl.c_str(), openResult, errorText);
         }
+        if (sd->raw_fd_io) close_input_with_fd(&sd->fmt_ctx, &sd->raw_fd_io);
+        else if (sd->fmt_ctx) avformat_close_input(&sd->fmt_ctx);
+        release_flac_repair_io(sd);
         free(sd);
         return nullptr;
+    }
+    if (repairedFlacInput) {
+        LOGI("FLAC_COMPAT virtual input opened path=%s format=%s streams=%u",
+             path,
+             (sd->fmt_ctx && sd->fmt_ctx->iformat && sd->fmt_ctx->iformat->name)
+                 ? sd->fmt_ctx->iformat->name : "-",
+             sd->fmt_ctx ? sd->fmt_ctx->nb_streams : 0);
     }
     if (remoteInput) {
         LOGI("ONLINE_PIPE NATIVE_DECODER_INPUT_OK url=%s format=%s streams=%u",
@@ -1539,6 +2080,8 @@ static StreamDecoder* stream_decoder_open(
         AVCodecParameters *codecpar = sd->fmt_ctx->streams[sd->audio_stream_idx]->codecpar;
         const bool requestRawDsd = is_dsd_codec(codecpar->codec_id) && bits_per_sample <= 1;
         if (requestRawDsd) {
+            // Raw DSD is a transport-format path. Never alter its clock here.
+            sd->playback_speed = 1.0f;
             sd->raw_dsd_passthrough = true;
             sd->raw_dsd_lsbf =
                 codecpar->codec_id == AV_CODEC_ID_DSD_LSBF ||
@@ -1599,6 +2142,8 @@ static StreamDecoder* stream_decoder_open(
         // leaks too much shaped ultrasonic noise into low-rate PCM output.
         if (is_dsd_codec(codecpar->codec_id) &&
             avcodec_find_decoder(codecpar->codec_id) == nullptr) {
+            // The emergency DSD decimator also has a fixed source clock.
+            sd->playback_speed = 1.0f;
             const int codecRate = codecpar->sample_rate > 0 ? codecpar->sample_rate : 352800;
             const int sourceDsdRate = codecRate >= 2822400 ? codecRate : codecRate * 8;
             const int requestedPcmRate = target_sample_rate > 0 ? target_sample_rate : 176400;
@@ -1719,8 +2264,13 @@ static StreamDecoder* stream_decoder_open(
             sd->src_sample_rate = sd->codec_ctx->sample_rate;
             sd->src_channels = sd->codec_ctx->channels;
         }
-        sd->duration_us = (sd->fmt_ctx->duration == AV_NOPTS_VALUE || sd->fmt_ctx->duration < 0) 
-                          ? 0 : sd->fmt_ctx->duration;
+        const int64_t source_duration_us =
+            (sd->fmt_ctx->duration == AV_NOPTS_VALUE || sd->fmt_ctx->duration < 0)
+                ? 0 : sd->fmt_ctx->duration;
+        sd->duration_us = sd->playback_speed == 1.0f || source_duration_us <= 0
+            ? source_duration_us
+            : static_cast<int64_t>(llround(
+                static_cast<long double>(source_duration_us) / sd->playback_speed));
 
         // Output format
         sd->out_sample_rate = target_sample_rate > 0 ? target_sample_rate : sd->src_sample_rate;
@@ -1738,10 +2288,12 @@ static StreamDecoder* stream_decoder_open(
         int64_t out_ch_layout = av_get_default_channel_layout(sd->out_channels);
 
         AVSampleFormat in_fmt = sd->raw_pcm_passthrough ? sd->raw_pcm_fmt : sd->codec_ctx->sample_fmt;
+        const int effective_input_rate = effective_decoder_input_rate(
+            sd->src_sample_rate, sd->playback_speed);
 
         sd->swr_ctx = swr_alloc_set_opts(nullptr,
             out_ch_layout, sd->out_fmt, sd->out_sample_rate,
-            in_ch_layout, in_fmt, sd->src_sample_rate,
+            in_ch_layout, in_fmt, effective_input_rate,
             0, nullptr);
         if (!sd->swr_ctx) {
             LOGE("stream_decoder_open: Could not allocate SwrContext");
@@ -1777,19 +2329,21 @@ static StreamDecoder* stream_decoder_open(
         sd->flushed_decoder = false;
         sd->flushed_swr = false;
 
-        LOGI("stream_decoder_open: OK, %s -> %dHz %dch %dbit, duration=%lldus%s%s",
+        LOGI("stream_decoder_open: OK, %s -> %dHz %dch %dbit speed=%.2f inputRate=%d, duration=%lldus%s%s",
              safeUrl.c_str(), sd->out_sample_rate, sd->out_channels, sd->out_bits,
+             sd->playback_speed, effective_input_rate,
              (long long)sd->duration_us,
              sd->raw_pcm_passthrough ? ", rawFallback=" : "",
              sd->raw_pcm_passthrough ? sd->raw_pcm_name : "");
         if (remoteInput) {
             const AVCodecParameters *openedCodec =
                 sd->fmt_ctx->streams[sd->audio_stream_idx]->codecpar;
-            LOGI("ONLINE_PIPE NATIVE_DECODER_OPEN_OK url=%s codec=%s source=%dHz/%dch output=%dHz/%dbit/%dch durationUs=%lld",
+            LOGI("ONLINE_PIPE NATIVE_DECODER_OPEN_OK url=%s codec=%s source=%dHz/%dch output=%dHz/%dbit/%dch speed=%.2f durationUs=%lld",
                  safeUrl.c_str(),
                  openedCodec ? avcodec_get_name(openedCodec->codec_id) : "-",
                  sd->src_sample_rate, sd->src_channels,
                  sd->out_sample_rate, sd->out_bits, sd->out_channels,
+                 sd->playback_speed,
                  (long long)sd->duration_us);
         }
         return sd;
@@ -1803,7 +2357,9 @@ fail:
     if (sd->dsd_pcm_history) av_free(sd->dsd_pcm_history);
     if (sd->swr_ctx) swr_free(&sd->swr_ctx);
     if (sd->codec_ctx) avcodec_free_context(&sd->codec_ctx);
-    if (sd->fmt_ctx) avformat_close_input(&sd->fmt_ctx);
+    if (sd->raw_fd_io) close_input_with_fd(&sd->fmt_ctx, &sd->raw_fd_io);
+    else if (sd->fmt_ctx) avformat_close_input(&sd->fmt_ctx);
+    release_flac_repair_io(sd);
     free(sd);
     return nullptr;
 }
@@ -2041,8 +2597,29 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
         }
 
         // Got a decoded frame, resample it
+        const int input_samples = sd->frame->nb_samples;
+        const int effective_input_rate = effective_decoder_input_rate(
+            sd->src_sample_rate, sd->playback_speed);
         int out_samples = swr_convert(sd->swr_ctx, &sd->residual_buf, sd->residual_buf_capacity / sd->out_bytes_per_sample / sd->out_channels,
-            (const uint8_t **)sd->frame->extended_data, sd->frame->nb_samples);
+            (const uint8_t **)sd->frame->extended_data, input_samples);
+        if (sd->speed_trace_frames < 4 && std::abs(sd->playback_speed - 1.0f) > 0.0001f) {
+            const double actual_ratio = input_samples > 0
+                ? static_cast<double>(out_samples) / static_cast<double>(input_samples)
+                : 0.0;
+            const double expected_ratio = effective_input_rate > 0
+                ? static_cast<double>(sd->out_sample_rate) / static_cast<double>(effective_input_rate)
+                : 0.0;
+            LOGI("PLAYBACK_SPEED_NATIVE speed=%.3f sourceRate=%d effectiveInputRate=%d "
+                 "inputSamples=%d outputSamples=%d ratio=%.6f expected=%.6f",
+                 sd->playback_speed,
+                 sd->src_sample_rate,
+                 effective_input_rate,
+                 input_samples,
+                 out_samples,
+                 actual_ratio,
+                 expected_ratio);
+            sd->speed_trace_frames++;
+        }
         av_frame_unref(sd->frame);
 
         if (out_samples > 0) {
@@ -2126,13 +2703,20 @@ static bool stream_decoder_seek(StreamDecoder *sd, int64_t position_us) {
         avcodec_flush_buffers(sd->codec_ctx);
     }
 
-    int ret = avformat_seek_file(sd->fmt_ctx, -1, INT64_MIN, position_us, INT64_MAX, 0);
+    const bool speedMapped = !sd->raw_dsd_passthrough && !sd->raw_dsd_to_pcm &&
+        std::abs(sd->playback_speed - 1.0f) > 0.0001f;
+    const int64_t source_position_us = speedMapped
+        ? static_cast<int64_t>(llround(
+            static_cast<long double>(position_us) * sd->playback_speed))
+        : position_us;
+    int ret = avformat_seek_file(sd->fmt_ctx, -1, INT64_MIN, source_position_us, INT64_MAX, 0);
     if (ret < 0) {
         LOGE("stream_decoder_seek: avformat_seek_file failed: %d", ret);
         return false;
     }
 
-    LOGI("stream_decoder_seek: seeked to %lld us", (long long)position_us);
+    LOGI("stream_decoder_seek: playback=%lldus source=%lldus speed=%.2f",
+         (long long)position_us, (long long)source_position_us, sd->playback_speed);
     return true;
 }
 
@@ -2145,7 +2729,9 @@ static void stream_decoder_close(StreamDecoder *sd) {
     if (sd->dsd_pcm_history) av_free(sd->dsd_pcm_history);
     if (sd->swr_ctx) swr_free(&sd->swr_ctx);
     if (sd->codec_ctx) avcodec_free_context(&sd->codec_ctx);
-    if (sd->fmt_ctx) avformat_close_input(&sd->fmt_ctx);
+    if (sd->raw_fd_io) close_input_with_fd(&sd->fmt_ctx, &sd->raw_fd_io);
+    else if (sd->fmt_ctx) avformat_close_input(&sd->fmt_ctx);
+    release_flac_repair_io(sd);
     free(sd);
 }
 
@@ -2160,7 +2746,8 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoder(
     jint targetBits,
     jint channels,
     jstring headersBlock,
-    jstring userAgent) {
+    jstring userAgent,
+    jfloat playbackSpeed) {
     const char *p = env->GetStringUTFChars(path, nullptr);
     const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
     const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
@@ -2170,10 +2757,34 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoder(
         targetBits,
         channels,
         headers,
-        agent);
+        agent,
+        playbackSpeed);
     if (agent) env->ReleaseStringUTFChars(userAgent, agent);
     if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
     env->ReleaseStringUTFChars(path, p);
+    return registerStreamDecoder(sd);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoderFd(
+    JNIEnv *,
+    jobject,
+    jint fd,
+    jlong size,
+    jint targetRate,
+    jint targetBits,
+    jint channels,
+    jfloat playbackSpeed) {
+    StreamDecoder *sd = stream_decoder_open(
+        "rawfd",
+        targetRate,
+        targetBits,
+        channels,
+        nullptr,
+        nullptr,
+        playbackSpeed,
+        fd,
+        static_cast<int64_t>(size));
     return registerStreamDecoder(sd);
 }
 
@@ -2344,21 +2955,132 @@ static int probe_effective_stream_sample_rate(
     return effective > 0 ? effective : fallback;
 }
 
+static jobject build_media_info_map(JNIEnv *env, AVFormatContext *fmt_ctx) {
+    if (!env || !fmt_ctx) return nullptr;
+    jclass mapClass = env->FindClass("java/util/HashMap");
+    jmethodID mapInit = env->GetMethodID(mapClass, "<init>", "()V");
+    jmethodID mapPut = env->GetMethodID(mapClass, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+    jobject map = env->NewObject(mapClass, mapInit);
+    if (!map) return nullptr;
+
+    auto putStr = [&](const char *key, const char *value) {
+        if (!key || !value) return;
+        jstring jkey = newJStringFromUtf8Lenient(env, key);
+        jstring jval = newJStringFromUtf8Lenient(env, value);
+        env->CallObjectMethod(map, mapPut, jkey, jval);
+        env->DeleteLocalRef(jkey);
+        env->DeleteLocalRef(jval);
+    };
+
+    char buf[64];
+    if (fmt_ctx->duration != AV_NOPTS_VALUE) {
+        snprintf(buf, sizeof(buf), "%.6f", fmt_ctx->duration / (double)AV_TIME_BASE);
+        putStr("duration", buf);
+    }
+    if (fmt_ctx->iformat) {
+        putStr("format_name", fmt_ctx->iformat->name);
+        if (fmt_ctx->iformat->long_name) putStr("format_long_name", fmt_ctx->iformat->long_name);
+    }
+    if (fmt_ctx->bit_rate > 0) {
+        snprintf(buf, sizeof(buf), "%lld", (long long)fmt_ctx->bit_rate);
+        putStr("bit_rate", buf);
+    }
+    if (fmt_ctx->metadata) {
+        AVDictionaryEntry *tag = nullptr;
+        while ((tag = av_dict_get(fmt_ctx->metadata, "", tag, AV_DICT_IGNORE_SUFFIX))) {
+            if (tag->key && tag->value) putStr(tag->key, tag->value);
+        }
+    }
+
+    for (unsigned int i = 0; i < fmt_ctx->nb_streams; i++) {
+        AVStream *stream = fmt_ctx->streams[i];
+        if (stream->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) continue;
+        char prefix[32];
+        snprintf(prefix, sizeof(prefix), "stream_%u_", i);
+
+        snprintf(buf, sizeof(buf), "%d", stream->codecpar->sample_rate);
+        putStr((std::string(prefix) + "sample_rate").c_str(), buf);
+        const int effectiveSr = probe_effective_stream_sample_rate(fmt_ctx, (int)i, stream->codecpar);
+        if (effectiveSr > 0) {
+            snprintf(buf, sizeof(buf), "%d", effectiveSr);
+            putStr((std::string(prefix) + "effective_sample_rate").c_str(), buf);
+        }
+        snprintf(buf, sizeof(buf), "%d", stream->codecpar->channels);
+        putStr((std::string(prefix) + "channels").c_str(), buf);
+        snprintf(buf, sizeof(buf), "%d", stream->codecpar->bits_per_raw_sample);
+        putStr((std::string(prefix) + "bits_per_raw_sample").c_str(), buf);
+        snprintf(buf, sizeof(buf), "%d", stream->codecpar->bits_per_coded_sample);
+        putStr((std::string(prefix) + "bits_per_coded_sample").c_str(), buf);
+        snprintf(buf, sizeof(buf), "%d", detect_bits_per_sample(stream->codecpar));
+        putStr((std::string(prefix) + "bits_per_sample").c_str(), buf);
+
+        if (stream->codecpar->format != AV_SAMPLE_FMT_NONE) {
+            const char *sampleFmt = av_get_sample_fmt_name((AVSampleFormat)stream->codecpar->format);
+            if (sampleFmt) putStr((std::string(prefix) + "sample_fmt").c_str(), sampleFmt);
+        }
+        const AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
+        if (codec) {
+            putStr((std::string(prefix) + "codec_name").c_str(), codec->name);
+            if (codec->long_name) putStr((std::string(prefix) + "codec_long_name").c_str(), codec->long_name);
+        }
+        if (stream->codecpar->profile != FF_PROFILE_UNKNOWN) {
+            const char *profile = avcodec_profile_name(stream->codecpar->codec_id, stream->codecpar->profile);
+            if (profile) putStr((std::string(prefix) + "codec_profile").c_str(), profile);
+        }
+        putStr((std::string(prefix) + "codec_type").c_str(), "audio");
+        if (stream->codecpar->bit_rate > 0) {
+            snprintf(buf, sizeof(buf), "%lld", (long long)stream->codecpar->bit_rate);
+            putStr((std::string(prefix) + "bit_rate").c_str(), buf);
+        }
+        if (stream->duration > 0 && stream->time_base.den > 0) {
+            snprintf(buf, sizeof(buf), "%.6f", stream->duration * av_q2d(stream->time_base));
+            putStr((std::string(prefix) + "duration").c_str(), buf);
+        }
+        if (stream->metadata) {
+            AVDictionaryEntry *tag = nullptr;
+            while ((tag = av_dict_get(stream->metadata, "", tag, AV_DICT_IGNORE_SUFFIX))) {
+                if (!tag->key || !tag->value) continue;
+                putStr((std::string(prefix) + "raw_tag_" + tag->key).c_str(), tag->value);
+                bool shouldWriteTopLevel = true;
+                if (fmt_ctx->metadata) {
+                    AVDictionaryEntry *existing = av_dict_get(fmt_ctx->metadata, tag->key, nullptr, 0);
+                    if (existing && existing->value && strlen(existing->value) > 0) shouldWriteTopLevel = false;
+                }
+                if (shouldWriteTopLevel) putStr(tag->key, tag->value);
+            }
+        }
+        break;
+    }
+    return map;
+}
+
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfo(
-    JNIEnv *env, jobject, jstring path) {
+    JNIEnv *env,
+    jobject,
+    jstring path,
+    jstring headersBlock,
+    jstring userAgent) {
     const char *p = env->GetStringUTFChars(path, nullptr);
+    const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
+    const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
     AVFormatContext *fmt_ctx = nullptr;
 
-    if (avformat_open_input(&fmt_ctx, p, nullptr, nullptr) < 0) {
+    if (open_input_with_http_options(&fmt_ctx, p, headers, agent) < 0) {
+        if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+        if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
         env->ReleaseStringUTFChars(path, p);
         return nullptr;
     }
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
         avformat_close_input(&fmt_ctx);
+        if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+        if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
         env->ReleaseStringUTFChars(path, p);
         return nullptr;
     }
+    if (agent) env->ReleaseStringUTFChars(userAgent, agent);
+    if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
     env->ReleaseStringUTFChars(path, p);
 
     jclass mapClass = env->FindClass("java/util/HashMap");
@@ -2493,6 +3215,26 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfo(
     return map;
 }
 
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfoFd(
+    JNIEnv *env,
+    jobject,
+    jint fd,
+    jlong size) {
+    AVFormatContext *fmt_ctx = nullptr;
+    RawFdAvioIo *io = nullptr;
+    if (open_input_with_fd(&fmt_ctx, fd, static_cast<int64_t>(size), &io) < 0) {
+        return nullptr;
+    }
+    if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
+        close_input_with_fd(&fmt_ctx, &io);
+        return nullptr;
+    }
+    jobject map = build_media_info_map(env, fmt_ctx);
+    close_input_with_fd(&fmt_ctx, &io);
+    return map;
+}
+
 // ========================== Write Metadata directly ==========================
 
 // Helper: read little-endian 32-bit unsigned
@@ -2580,7 +3322,37 @@ static int writeFlacMetadata(const char *filePath, const char *tmpPath,
         }
 
         metadataEnd = blockDataEnd;
-        if (isLast) break;
+        if (isLast) {
+            const bool nextIsAudioFrame =
+                blockDataEnd + 2 <= (size_t)fileSize &&
+                data[blockDataEnd] == 0xFF &&
+                (data[blockDataEnd + 1] & 0xFE) == 0xF8;
+            if (nextIsAudioFrame) break;
+
+            // Recovery for files with another metadata chain after a block that
+            // was already marked as the last block. Do not treat that orphan
+            // PICTURE/PADDING chain as audio; absorb it into the metadata region,
+            // clear all intermediate last flags below, and emit one valid chain.
+            bool hasOrphanMetadata = false;
+            uint8_t nextType = 0;
+            uint32_t nextLen = 0;
+            if (blockDataEnd + 4 <= (size_t)fileSize) {
+                nextType = data[blockDataEnd] & 0x7F;
+                nextLen = read_be24(data + blockDataEnd + 1);
+                const size_t nextEnd = blockDataEnd + 4 + (size_t)nextLen;
+                hasOrphanMetadata = nextType <= 6 &&
+                    nextEnd >= blockDataEnd &&
+                    nextEnd <= (size_t)fileSize;
+            }
+            if (!hasOrphanMetadata) break;
+
+            LOGI(
+                "writeFlac: recovering orphan metadata after declared-last at %zu "
+                "nextType=%u nextLen=%u",
+                blockDataEnd,
+                (unsigned int)nextType,
+                (unsigned int)nextLen);
+        }
         pos = blockDataEnd;
     }
 

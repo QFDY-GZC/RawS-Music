@@ -597,6 +597,25 @@ bool runUvrMdxSeparation(
         applyCompensation(currentVocal, config.compensation);
         buildChunkBlendWindow(currentActual, useBlendWindow, currentWeights);
 
+        if (!havePrevious) {
+            // The prefix before the next chunk start can never be affected by overlap blending.
+            // Publish it immediately so growing-WAV consumers can start after the first model
+            // inference instead of waiting for a second full MDX chunk.
+            const int64_t firstSafeStart = std::max(writeCursor, desiredStart);
+            const int64_t firstSafeEnd = std::min({
+                currentStart + static_cast<int64_t>(stride),
+                currentStart + static_cast<int64_t>(currentActual),
+                desiredEnd,
+            });
+            if (firstSafeEnd > firstSafeStart && !writeSingleChunkRange(
+                    vocalsWriter, instrumentalWriter,
+                    firstSafeStart, firstSafeEnd, currentStart,
+                    currentMixture, currentVocal, error)) {
+                return false;
+            }
+            writeCursor = std::max(writeCursor, firstSafeEnd);
+        }
+
         if (havePrevious) {
             const int64_t previousEnd = previousStart + previousActual;
             const int64_t currentEnd = currentStart + currentActual;

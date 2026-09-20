@@ -18,11 +18,13 @@ internal class PlaybackStatsTracker(
     private var recordedItemKey = ""
     private var maxPositionMs = 0L
 
+    @Synchronized
     fun reset() {
         recordedItemKey = ""
         maxPositionMs = 0L
     }
 
+    @Synchronized
     fun onProgress(song: AudioFile?, positionMs: Long, durationMs: Long) {
         if (!AppPreferences.Player.playCountEnabled || song == null) return
         if (durationMs <= 0L || positionMs <= 0L) return

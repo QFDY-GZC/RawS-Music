@@ -20,11 +20,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.setValue
 import com.rawsmusic.core.common.artwork.EmbeddedArtworkRegion
+import com.rawsmusic.core.common.artwork.ArtworkResolutionPolicy
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
+import com.rawsmusic.core.common.net.RemoteHttpStreamRegistry
 import com.rawsmusic.core.common.taglib.TagLibBridge
+import com.rawsmusic.core.common.utils.PlayerSwitchTrace
 import com.rawsmusic.core.common.utils.PowerTraceLogger
+import com.rawsmusic.core.ui.perf.TransitionPerfEvent
+import com.rawsmusic.core.ui.perf.TransitionPerfStage
+import com.rawsmusic.core.ui.perf.TransitionPerfTrace
 import com.rawsmusic.module.data.prefs.AppPreferences
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -47,18 +55,23 @@ import kotlin.math.roundToInt
 object BitmapProvider {
 
     private const val TAG = "BitmapProvider"
-    private const val ART_LOG_TAG = "RawArt"
     // Temporary diagnostics for dense-grid fling analysis. Remove after the trace capture.
     private const val ENABLE_BITMAP_TRACE = false
 
     private const val MSG_LOAD = 1
     private const val MSG_CANCEL = 2
 
-    // Keep one provider dispatch lane. The lane serializes source probing while the
-    // holder callbacks are posted asynchronously, so a fling cannot start several native
-    // TagLib/FFmpeg/MMR probes that compete with Compose for CPU time.
+    // Keep one provider dispatch lane. The lane serializes source probing while the holder
+    // callbacks are posted asynchronously. As in reference player, the lane is created lazily when the
+    // first artwork request is admitted, not during Application.onCreate().
     private const val WORKER_COUNT = 1
+    private const val ARTWORK_WORKER_THREAD_PRIORITY = 4
     private const val FAILED_CACHE_TTL_MS = 5 * 60 * 1000L
+    // MediaStore/native extractors can briefly return no embedded art while a track is being
+    // mounted or the player page is being opened. Keep reference player's live request table alive for
+    // two cheap retries instead of completing the holder with a permanent-looking placeholder.
+    private const val MAX_TRANSIENT_SOURCE_RETRIES = 2
+    private val TRANSIENT_SOURCE_RETRY_DELAYS_MS = longArrayOf(90L, 260L)
     // Keep disk thumbnails as a small-list warm cache only. The design keeps source artwork and
     // low/high wrappers in memory instead of persisting every UI target size to disk. Writing
     // playback/fullscreen tiers here multiplied files for the same song and made bitmap_v4 grow
@@ -66,8 +79,13 @@ object BitmapProvider {
     private const val DISK_THUMB_MAX_SIZE = AlbumArtTiers.LOW_RES_NORMAL_CAP
     private const val DISK_THUMB_MAX_BYTES = 24L * 1024L * 1024L
     private const val DISK_THUMB_MAX_FILES = 256
-    private const val DISK_THUMB_DIR = "bitmap_thumbs_file_v7"
-    private const val LEGACY_DISK_THUMB_DIR = "bitmap_thumbs_file_v6"
+    // v8 starts after source-epoch ownership moved from provider aliases to the concrete file
+    // version. Do not reuse thumbnails that may have been published by a stale alias flight under
+    // the old rule; positive embedded source artifacts remain version-keyed and are restored.
+    private const val DISK_THUMB_DIR = "bitmap_thumbs_file_v8"
+    private const val LEGACY_DISK_THUMB_DIR = "bitmap_thumbs_file_v7"
+    private const val REMOTE_SOURCE_DIR = "bitmap_remote_sources_v1"
+    private const val REMOTE_SOURCE_MAX_BYTES = 32L * 1024L * 1024L
     private val INDEXER_COALESCE_SIDES = intArrayOf(
         AlbumArtTiers.LIST_SMALL_MAX_SIDE,
         AlbumArtTiers.LOW_RES_MIN_SIDE,
@@ -78,10 +96,15 @@ object BitmapProvider {
         AlbumArtTiers.LOW_RES_NORMAL_CAP,
         AlbumArtTiers.HI_RES_SIDE,
         AlbumArtTiers.FULL_RES_SIDE,
-        96, 128, 192, 256, 384, 512, 768, 1024, 1440
+        96, 128, 192, 256, 384, 512, 768, 1024, 1536
     )
 
     private val initLock = Any()
+    // baseline implementation BitmapProvider.O() protects the provider request/source table with one monitor.
+    // Keep Raw's multi-map flight registry coherent under the same single ownership boundary: a
+    // flight key must never be observable without its owner/token/priority, and a cancelled/orphaned
+    // owner must not leave same-size ArtworkImageNode-equivalent waiters joined forever.
+    private val inFlightRegistryLock = Any()
     private var legacyDiskThumbCleanupDone = false
 
     @Volatile
@@ -104,6 +127,25 @@ object BitmapProvider {
     private val failedSourceCache = ConcurrentHashMap<String, Long>()
     private val failedLogLastAt = ConcurrentHashMap<String, Long>()
     private val traceSeq = AtomicLong(0L)
+    private val activeWorkerDecodeCount = AtomicLong(0L)
+    @Volatile private var activeWorkerDecodeStartedAtMs = 0L
+    @Volatile private var activeWorkerDecodeKeyTag = "-"
+
+    /** Low-overhead scene diagnostic; called only at transition boundaries. */
+    internal fun transitionDiagnosticsSummary(): String {
+        val active = activeWorkerDecodeCount.get().coerceAtLeast(0L)
+        val owners = inFlightOwnerRequests.size
+        val queuedApprox = (owners.toLong() - active).coerceAtLeast(0L)
+        val elapsed = if (active > 0L && activeWorkerDecodeStartedAtMs > 0L) {
+            (android.os.SystemClock.uptimeMillis() - activeWorkerDecodeStartedAtMs).coerceAtLeast(0L)
+        } else {
+            0L
+        }
+        return "bitmapWorker(active=$active pending~=$queuedApprox owners=$owners waiters=${waitingRequests.size} " +
+            "key=$activeWorkerDecodeKeyTag elapsed=${elapsed}ms) " +
+            "bitmapCache(${memoryCache.transitionDiagnosticsSummary()}) hardwareGate=$useHardwareBitmap"
+    }
+
 
     /**
      * Bumped when library scan or manual artwork edit makes visible items re-check their cover.
@@ -122,6 +164,11 @@ object BitmapProvider {
             }
         }
     }
+    // CPU Palette/getPixels work uses a tiny software raster decoded from the encoded source.
+    // Keep that decision local to the synchronous decoder call so foreground provider wrappers
+    // remain HARDWARE and no GPU -> CPU copy is needed merely to inspect colors.
+    private val threadLocalPreferredConfigOverride = ThreadLocal<Bitmap.Config?>()
+    private val threadLocalBypassProviderBitmapReuse = ThreadLocal<Boolean>()
     private val threadLocalCanvas = object : ThreadLocal<Canvas>() {
         override fun initialValue(): Canvas = Canvas()
     }
@@ -148,56 +195,77 @@ object BitmapProvider {
     private val artworkRevisionCoalescePending = AtomicBoolean(false)
 
     /**
-     * Keep album art as software bitmaps.
+     * reference player build 1026 AA provider config gate:
+     * - API 28+
+     * - non-vivo manufacturer
+     * - heap >= 128 MiB
+     * - aa_8888 enabled
      *
-     * Project-style artwork pipelines reuse/crop/sample bitmaps and also read pixels for palette
-     * extraction. Android HARDWARE bitmaps render fast on some devices, but they cannot be read with
-     * getPixels(), cannot be reused by BitmapPool, and force an extra software copy before disk-cache
-     * JPEG compression. On MIUI 14 / Mi 10S this showed up as a player crash in Palette plus a long
-     * low-res placeholder window. Keep this provider software-only and let Compose upload textures.
+     * Under that gate both authoritative low/high provider wrappers are HARDWARE bitmaps. Readback,
+     * palette and disk-encode paths already create explicit software copies when they need pixels.
      */
-    val useHardwareBitmap: Boolean by lazy { false }
+    val useHardwareBitmap: Boolean
+        get() {
+            val requested8888 = runCatching { AppPreferences.AlbumArt.forceArgb8888 }.getOrDefault(false)
+            return Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                !Build.MANUFACTURER.equals("vivo", ignoreCase = true) &&
+                ArtworkResolutionPolicy.qualityFeatureSupported(Runtime.getRuntime().maxMemory()) &&
+                requested8888
+        }
 
     fun init(context: Context) {
         synchronized(initLock) {
             appContext = context.applicationContext
-
-            // v4 was an unbounded per-size store. It is no longer read, so remove it once after
-            // upgrading rather than carrying its old power/space cost forever.
-            if (!legacyDiskThumbCleanupDone) {
-                runCatching {
-                    File(appContext!!.cacheDir, LEGACY_DISK_THUMB_DIR).deleteRecursively()
-                }
-                legacyDiskThumbCleanupDone = true
-                Log.i(
-                    ART_LOG_TAG,
-                    "ART_PROVIDER_CACHE_POLICY diskDir=$DISK_THUMB_DIR maxFiles=$DISK_THUMB_MAX_FILES maxBytes=$DISK_THUMB_MAX_BYTES maxSide=$DISK_THUMB_MAX_SIZE legacyRemoved=$LEGACY_DISK_THUMB_DIR"
-                )
-            }
 
             if (workerHandlers.isNotEmpty()) {
                 if (ENABLE_BITMAP_TRACE) Log.d(TAG, "Already initialized")
                 return
             }
 
-            workerHandlers = Array(WORKER_COUNT) { index ->
+            // Match reference player's provider lifetime: construction only installs the application
+            // context. The image handler starts from ensureWorkersStarted() on the first live
+            // request, so cold boot does not pay for an idle artwork thread.
+            if (ENABLE_BITMAP_TRACE) Log.d(TAG, "Provider context installed; workers are lazy")
+        }
+    }
+
+    private fun ensureWorkersStarted(): Array<WorkerHandler> {
+        workerHandlers.takeIf { it.isNotEmpty() }?.let { return it }
+        synchronized(initLock) {
+            workerHandlers.takeIf { it.isNotEmpty() }?.let { return it }
+            if (appContext == null) return emptyArray()
+            val started = Array(WORKER_COUNT) { index ->
                 val thread = HandlerThread(
                     "BitmapWorker-$index",
-                    android.os.Process.THREAD_PRIORITY_BACKGROUND
+                    // Artwork source extraction may overlap a player-page settle. Keep it below
+                    // the UI/render lane while still ahead of ordinary background maintenance.
+                    ARTWORK_WORKER_THREAD_PRIORITY
                 )
                 thread.start()
                 WorkerHandler(thread.looper)
             }
-
-            Log.w(
-                ART_LOG_TAG,
-                "ART_PROVIDER_INIT workers=$WORKER_COUNT useHardwareBitmap=$useHardwareBitmap cacheMax=${memoryCache.maxSizeBytes}"
-            )
+            workerHandlers = started
+            scheduleLegacyDiskThumbCleanup(appContext!!)
             Log.d(
                 TAG,
                 "Initialized workers=$WORKER_COUNT, useHardwareBitmap=$useHardwareBitmap, cacheMax=${memoryCache.maxSizeBytes}"
             )
             PowerTraceLogger.bitmapProviderInit(WORKER_COUNT, memoryCache.maxSizeBytes.toLong())
+            return started
+        }
+    }
+
+    private fun scheduleLegacyDiskThumbCleanup(context: Context) {
+        synchronized(initLock) {
+            if (legacyDiskThumbCleanupDone) return
+            legacyDiskThumbCleanupDone = true
+        }
+        // The old cache is reconstructable. Defer its removal until the artwork provider is
+        // actually used so an idle cold launch does not create a disk-writer thread at all.
+        diskWriterExecutor.execute {
+            runCatching {
+                File(context.cacheDir, LEGACY_DISK_THUMB_DIR).deleteRecursively()
+            }
         }
     }
 
@@ -208,6 +276,7 @@ object BitmapProvider {
         priority: BitmapRequest.Priority = BitmapRequest.Priority.LOADING_LIST,
         surface: ArtworkSurface = ArtworkSurface.fromPriority(priority),
         providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
         callback: ((Bitmap?) -> Unit)? = null
     ): BitmapRequest {
         return loadInternal(
@@ -218,7 +287,41 @@ object BitmapProvider {
             surface = surface,
             callback = callback,
             allowHiRes = true,
-            providerAliasKey = providerAliasKey
+            providerAliasKey = providerAliasKey,
+            aspectPolicy = aspectPolicy,
+        )
+    }
+
+    /**
+     * Provider-wrapper request used by attached UI holders.
+     *
+     * This mirrors reference player retained artwork view -> bitmap provider ownership: the holder binds an artwork
+     * identity and receives the provider-owned wrapper directly, with no painter/image-loader
+     * cache inserted between the UI and the provider record.
+     */
+    fun loadHandle(
+        key: String,
+        targetWidth: Int,
+        targetHeight: Int,
+        priority: BitmapRequest.Priority = BitmapRequest.Priority.LOADING_LIST,
+        surface: ArtworkSurface = ArtworkSurface.fromPriority(priority),
+        providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
+        exactTarget: Boolean = false,
+        callback: (ArtworkHandle?) -> Unit,
+    ): BitmapRequest {
+        return loadInternal(
+            key = key,
+            targetWidth = targetWidth,
+            targetHeight = targetHeight,
+            priority = priority,
+            surface = surface,
+            callback = null,
+            wrapperCallback = callback,
+            allowHiRes = true,
+            providerAliasKey = providerAliasKey,
+            aspectPolicy = aspectPolicy,
+            exactTarget = exactTarget,
         )
     }
 
@@ -229,6 +332,7 @@ object BitmapProvider {
         priority: BitmapRequest.Priority = BitmapRequest.Priority.LOADING_LIST,
         surface: ArtworkSurface = ArtworkSurface.fromPriority(priority),
         providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
         callback: ((Bitmap?) -> Unit)? = null
     ): BitmapRequest {
         return loadInternal(
@@ -239,7 +343,8 @@ object BitmapProvider {
             surface = surface,
             callback = callback,
             allowHiRes = false,
-            providerAliasKey = providerAliasKey
+            providerAliasKey = providerAliasKey,
+            aspectPolicy = aspectPolicy,
         )
     }
 
@@ -247,7 +352,8 @@ object BitmapProvider {
         key: String,
         targetWidth: Int,
         targetHeight: Int,
-        providerAliasKey: String = ""
+        providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): String {
         val target = resolveAlbumArtTarget(
             baseWidth = targetWidth.coerceAtLeast(1),
@@ -256,14 +362,16 @@ object BitmapProvider {
             priority = BitmapRequest.Priority.LOADING_LIST
         )
         val bucket = SizeSlotCache.computeBucket(target.width, target.height)
-        return "${stableArtworkCacheSourceKey(key, providerAliasKey)}_${bucket}"
+        return "${artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key, providerAliasKey), aspectPolicy)}_${bucket}"
     }
 
     fun hasRecentThumbnailFailure(
         key: String,
         targetWidth: Int,
         targetHeight: Int,
-        providerAliasKey: String = ""
+        providerAliasKey: String = "",
+        synchronousCacheMissConfirmed: Boolean = false,
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): Boolean {
         if (key.isBlank()) return false
         val target = resolveAlbumArtTarget(
@@ -272,13 +380,15 @@ object BitmapProvider {
             allowHiRes = false,
             priority = BitmapRequest.Priority.LOADING_LIST
         )
-        val providerKey = stableArtworkCacheSourceKey(key, providerAliasKey)
-        val rawKey = stableArtworkCacheSourceKey(key)
-        val validCached = memoryCache.getAnyForSource(providerKey)
-            ?.let { reusableSourceBitmap(it, target.width, target.height) }
-            ?: memoryCache.getAnyForSource(rawKey)
-                ?.let { reusableSourceBitmap(it, target.width, target.height) }
-        if (validCached != null && !validCached.isRecycled) return false
+        if (!synchronousCacheMissConfirmed) {
+            val providerKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key, providerAliasKey), aspectPolicy)
+            val rawKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key), aspectPolicy)
+            val validCached = memoryCache.getAnyForSource(providerKey, minimumSide = target.maxSide)
+                ?.let { reusableSourceBitmap(it, target.width, target.height, aspectPolicy) }
+                ?: memoryCache.getAnyForSource(rawKey, minimumSide = target.maxSide)
+                    ?.let { reusableSourceBitmap(it, target.width, target.height, aspectPolicy) }
+            if (validCached != null && !validCached.isRecycled) return false
+        }
         // Keep no-art decisions on the file-version source. A broad album/folder alias should not
         // suppress probing another track unless the scanner later proves the whole entity is no-art.
         val sourceKey = stableArtworkCacheSourceKey(key)
@@ -293,7 +403,9 @@ object BitmapProvider {
         priority: BitmapRequest.Priority = BitmapRequest.Priority.LOADING_LIST,
         providerAliasKey: String = "",
         externalArtworkPath: String = "",
-        callback: ((Bitmap?) -> Unit)? = null
+        synchronousMissConfirmed: Boolean = false,
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
+        callback: ((ArtworkHandle?) -> Unit)? = null
     ): BitmapRequest {
         return loadInternal(
             key = key,
@@ -301,10 +413,14 @@ object BitmapProvider {
             targetHeight = targetHeight,
             priority = priority,
             surface = ArtworkSurface.List,
-            callback = callback,
+            callback = null,
+            wrapperCallback = callback,
             allowHiRes = false,
             providerAliasKey = providerAliasKey,
-            externalArtworkPath = externalArtworkPath
+            externalArtworkPath = externalArtworkPath,
+            synchronousMissConfirmed = synchronousMissConfirmed,
+            sourceDecodeAllowed = true,
+            aspectPolicy = aspectPolicy,
         )
     }
 
@@ -334,26 +450,50 @@ object BitmapProvider {
         priority: BitmapRequest.Priority,
         surface: ArtworkSurface,
         callback: ((Bitmap?) -> Unit)?,
+        wrapperCallback: ((ArtworkHandle?) -> Unit)? = null,
         allowHiRes: Boolean,
         providerAliasKey: String = "",
-        externalArtworkPath: String = ""
+        externalArtworkPath: String = "",
+        synchronousMissConfirmed: Boolean = false,
+        sourceDecodeAllowed: Boolean = surface.allowsSourceDecode,
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
+        exactTarget: Boolean = false,
     ): BitmapRequest {
+        val admissionStartedNs = if (TransitionPerfTrace.isActive()) System.nanoTime() else 0L
+        fun completeAdmission(result: BitmapRequest): BitmapRequest {
+            if (admissionStartedNs != 0L) {
+                TransitionPerfTrace.recordDuration(
+                    TransitionPerfStage.BITMAP_PROVIDER_ADMISSION,
+                    System.nanoTime() - admissionStartedNs,
+                )
+            }
+            return result
+        }
         val baseWidth = targetWidth.coerceAtLeast(1)
         val baseHeight = targetHeight.coerceAtLeast(1)
-        val target = resolveAlbumArtTarget(
-            baseWidth = baseWidth,
-            baseHeight = baseHeight,
-            allowHiRes = allowHiRes,
-            priority = priority
-        )
+        val target = if (exactTarget) {
+            AlbumArtTiers.Target(baseWidth, baseHeight)
+        } else {
+            resolveAlbumArtTarget(
+                baseWidth = baseWidth,
+                baseHeight = baseHeight,
+                allowHiRes = allowHiRes,
+                priority = priority
+            )
+        }
         val actualWidth = target.width
         val actualHeight = target.height
         val providerKey = stableArtworkCacheSourceKey(key, providerAliasKey)
+        val cacheProviderKey = artworkAspectCacheSourceKey(providerKey, aspectPolicy)
         val failureSourceKey = stableArtworkCacheSourceKey(key)
         val bucket = SizeSlotCache.computeBucket(actualWidth, actualHeight)
-        val cacheKey = "${providerKey}_${bucket}"
+        val cacheKey = "${cacheProviderKey}_${bucket}"
+        // Provider/entity aliases are storage identities, not source epochs. Tie stale-result
+        // rejection to the concrete file-version key that produced the pixels so an artwork
+        // rewrite cannot leave an alias flight valid and republish stale art into a rebound holder.
+        val tokenSourceVersionKey = artworkAspectCacheSourceKey(failureSourceKey, aspectPolicy)
         val acceptToken = ArtworkRecordRegistry.tokenFor(
-            sourceVersionKey = providerKey,
+            sourceVersionKey = tokenSourceVersionKey,
             cacheKey = cacheKey,
             bucket = bucket,
             uiRevision = artworkRevision
@@ -366,13 +506,22 @@ object BitmapProvider {
             targetHeight = actualHeight,
             priority = priority,
             callback = callback,
+            wrapperCallback = wrapperCallback,
             surface = surface,
+            sourceDecodeAllowed = sourceDecodeAllowed,
+            aspectPolicy = aspectPolicy,
             externalArtworkPath = externalArtworkPath.trim(),
-            artworkToken = acceptToken
+            artworkToken = acceptToken,
         )
         val seq = traceSeq.incrementAndGet()
         request.traceSeq = seq
-        trace("REQUEST seq=$seq surface=$surface priority=$priority allowHiRes=$allowHiRes input=${targetWidth}x${targetHeight} actual=${actualWidth}x${actualHeight} bucket=$bucket provider=${providerKey.tailForTrace()} decode=${key.tailForTrace()}")
+        trace("REQUEST seq=$seq surface=$surface priority=$priority aspect=$aspectPolicy allowHiRes=$allowHiRes input=${targetWidth}x${targetHeight} actual=${actualWidth}x${actualHeight} bucket=$bucket provider=${providerKey.tailForTrace()} decode=${key.tailForTrace()}")
+        if (PlayerSwitchTrace.isActive()) {
+            PlayerSwitchTrace.mark(
+                "provider_request",
+                "seq=$seq surface=$surface priority=$priority size=${actualWidth}x${actualHeight} key=${Integer.toHexString(key.hashCode())}",
+            )
+        }
 
         if (key.isBlank()) {
             trace("SKIP_BLANK seq=$seq size=${actualWidth}x${actualHeight} priority=$priority")
@@ -383,49 +532,72 @@ object BitmapProvider {
                 key = key
             )
             postNull(request, terminalNoArt = true)
-            return request
+            return completeAdmission(request)
         }
 
         // Resolve the source record before consulting its not-found sentinel. A prior
         // transient probe can leave a failure entry behind while another surface has already
         // decoded the same source. Checking the sentinel first would hide that valid wrapper and
         // make the cover disappear until the TTL expires.
-        val exactCached = memoryCache.get(request.cacheKey)
-            ?.takeIf { it.isValidArtworkBitmap() }
-        val cached = exactCached ?: memoryCache.getAnyForSource(providerKey)
-            ?.let { reusableSourceBitmap(it, actualWidth, actualHeight) }
-        if (cached != null && !cached.isRecycled) {
-            val tier = if (exactCached === cached) "exact" else "source"
-            trace("CACHE_HIT seq=$seq tier=$tier size=${actualWidth}x${actualHeight} priority=$priority key=${key.tailForTrace()}")
-            PowerTraceLogger.bitmapRequest(
-                state = "cache_hit",
-                priority = priority.name,
-                size = "${actualWidth}x${actualHeight}",
-                key = key
-            )
-            request.transitionTo(BitmapRequest.State.AVAILABLE)
-            mainHandler.post {
-                if (!request.isCancelled && isArtworkAcceptTokenCurrent(request)) {
-                    callback?.invoke(cached)
+        if (!synchronousMissConfirmed) {
+            val exactCached = memoryCache.get(request.cacheKey)
+                ?.takeIf { it.isValidArtworkBitmap() }
+            val cached = exactCached ?: memoryCache.getAnyForSource(
+                cacheProviderKey,
+                minimumSide = maxOf(actualWidth, actualHeight),
+                allowHighFallback = surface != ArtworkSurface.List,
+            )?.let { reusableSourceBitmap(it, actualWidth, actualHeight, aspectPolicy) }
+            if (cached != null && !cached.isRecycled &&
+                !needsPlaybackWrapperNormalization(surface, cached, actualWidth, actualHeight, aspectPolicy)) {
+                val tier = if (exactCached === cached) "exact" else "source"
+                trace("CACHE_HIT seq=$seq tier=$tier size=${actualWidth}x${actualHeight} priority=$priority key=${key.tailForTrace()}")
+                if (PlayerSwitchTrace.isActive()) {
+                    PlayerSwitchTrace.mark(
+                        "provider_cache_hit",
+                        "seq=$seq tier=$tier bitmap=${cached.width}x${cached.height} key=${Integer.toHexString(key.hashCode())}",
+                    )
                 }
+                PowerTraceLogger.bitmapRequest(
+                    state = "cache_hit",
+                    priority = priority.name,
+                    size = "${actualWidth}x${actualHeight}",
+                    key = key
+                )
+                request.transitionTo(BitmapRequest.State.AVAILABLE)
+                if (wrapperCallback != null && Looper.myLooper() == Looper.getMainLooper()) {
+                    // baseline implementation BitmapProvider.O() calls the ArtworkImageNode callback directly for an
+                    // already-available provider wrapper. Keep the same synchronous cache-hit path
+                    // so a cache rebind is not misclassified as a fresh asynchronous reveal.
+                    if (!request.isCancelled && isArtworkAcceptTokenCurrent(request)) {
+                        deliverCallback(request, cached)
+                    }
+                } else {
+                    mainHandler.post {
+                        if (!request.isCancelled && isArtworkAcceptTokenCurrent(request)) {
+                            deliverCallback(request, cached)
+                        }
+                    }
+                }
+                return completeAdmission(request)
+            } else if (cached != null && !cached.isRecycled) {
+                trace("CACHE_DEFER_PLAYBACK_RESIZE seq=$seq bitmap=${cached.width}x${cached.height} target=${actualWidth}x${actualHeight} key=${key.tailForTrace()}")
             }
-            return request
+
+            if (surface.rememberNullAsNoArt && hasRecentFailure(failureSourceKey, "${failureSourceKey}_${bucket}")) {
+                logFailCacheThrottled(failureSourceKey)
+                trace("NOT_FOUND_SENTINEL_HIT seq=$seq size=${actualWidth}x${actualHeight} priority=$priority key=${key.tailForTrace()}")
+                PowerTraceLogger.bitmapRequest(
+                    state = "not_found_sentinel",
+                    priority = priority.name,
+                    size = "${actualWidth}x${actualHeight}",
+                    key = key
+                )
+                postNull(request, terminalNoArt = true)
+                return completeAdmission(request)
+            }
         }
 
-        if (surface.rememberNullAsNoArt && hasRecentFailure(failureSourceKey, "${failureSourceKey}_${bucket}")) {
-            logFailCacheThrottled(failureSourceKey)
-            trace("NOT_FOUND_SENTINEL_HIT seq=$seq size=${actualWidth}x${actualHeight} priority=$priority key=${key.tailForTrace()}")
-            PowerTraceLogger.bitmapRequest(
-                state = "not_found_sentinel",
-                priority = priority.name,
-                size = "${actualWidth}x${actualHeight}",
-                key = key
-            )
-            postNull(request, terminalNoArt = true)
-            return request
-        }
-
-        val handlers = workerHandlers
+        val handlers = ensureWorkersStarted()
         if (handlers.isEmpty()) {
             Log.e(TAG, "BitmapProvider is not initialized")
             PowerTraceLogger.bitmapRequest(
@@ -436,21 +608,39 @@ object BitmapProvider {
             )
             // 不写 failedCache，否则 init 后同尺寸封面 5 分钟内继续失败
             postNull(request, terminalNoArt = false)
-            return request
+            return completeAdmission(request)
         }
 
         request.transitionTo(BitmapRequest.State.CHECKING_MEMORY)
-        addWaitingRequest(request)
 
         val flightKey = request.inFlightKey
-        val isOwner = inFlightKeys.add(flightKey)
+        var isOwner = registerProviderWaiterAndClaimFlight(request)
+        if (!isOwner) {
+            // The admission transaction returned a live owner, but a source invalidation can retire
+            // it immediately afterwards. Re-check under the same provider-table monitor before
+            // committing to JOIN_IN_FLIGHT; a missing/cancelled non-started owner is reclaimed here
+            // instead of leaving this same-pixel waiter parked until a pinch changes the bucket.
+            val ownerNeedsReclaim = synchronized(inFlightRegistryLock) {
+                val owner = inFlightOwnerRequests[flightKey]
+                shouldReclaimOrphanProviderFlight(
+                    flightKeyPresent = inFlightKeys.contains(flightKey),
+                    ownerPresent = owner != null,
+                    ownerCancelled = owner?.isCancelled == true,
+                    ownerSourceWorkStarted = owner?.sourceWorkStarted == true,
+                )
+            }
+            if (ownerNeedsReclaim) isOwner = claimProviderFlight(request)
+        }
         if (!isOwner) {
             val ownerToken = inFlightTokens[flightKey]
-            if (!ArtworkRecordRegistry.canShareInFlight(ownerToken, request.artworkToken)) {
-                removeWaitingRequest(request)
-                trace("REJECT_JOIN_STALE_FLIGHT seq=$seq size=${actualWidth}x${actualHeight} priority=$priority cacheKey=${request.cacheKey.tailForTrace()} key=${key.tailForTrace()}")
-                postNull(request, terminalNoArt = false)
-                return request
+            // flightKey already contains source/global record revisions. If the owner token is
+            // temporarily absent while the owner publishes its maps, or the whole record becomes
+            // stale before source work starts, keep this artwork waiter attached. The provider owner
+            // either dispatches it normally or requeues the complete stale waiter set; ArtworkImageNode
+            // is never completed with a synthetic transient-null miss.
+            if (ownerToken != null && !ArtworkRecordRegistry.canShareInFlight(ownerToken, request.artworkToken)) {
+                trace("JOIN_STALE_FLIGHT_PENDING_REQUEUE seq=$seq size=${actualWidth}x${actualHeight} priority=$priority cacheKey=${request.cacheKey.tailForTrace()} key=${key.tailForTrace()}")
+                return completeAdmission(request)
             }
             val ownerPriority = inFlightPriorities[flightKey]
             if (shouldPromoteInFlight(ownerPriority, priority) && promotedInFlightKeys.add(flightKey)) {
@@ -463,9 +653,16 @@ object BitmapProvider {
                     }
                     enqueueRequest(ownerRequest, handlers, forceFront = true)
                 }
-                return request
+                return completeAdmission(request)
             }
             trace("JOIN_IN_FLIGHT seq=$seq size=${actualWidth}x${actualHeight} priority=$priority cacheKey=${request.cacheKey.tailForTrace()} key=${key.tailForTrace()}")
+            if (PlayerSwitchTrace.isActive()) {
+                PlayerSwitchTrace.mark(
+                    "provider_join_in_flight",
+                    "seq=$seq priority=$priority key=${Integer.toHexString(key.hashCode())}",
+                )
+            }
+            TransitionPerfTrace.count(TransitionPerfEvent.ARTWORK_JOINED)
             PowerTraceLogger.bitmapRequest(
                 state = "join_in_flight",
                 priority = priority.name,
@@ -473,22 +670,70 @@ object BitmapProvider {
                 key = key
             )
             if (ENABLE_BITMAP_TRACE) Log.d(TAG, "IN_FLIGHT_JOIN key=${key.takeLast(40)} cacheKey=${request.cacheKey.takeLast(60)}")
-            return request
+            return completeAdmission(request)
         }
-        request.inFlightOwner = true
-        inFlightPriorities[flightKey] = priority
-        inFlightTokens[flightKey] = request.artworkToken
-        inFlightOwnerRequests[flightKey] = request
-
+        TransitionPerfTrace.count(TransitionPerfEvent.ARTWORK_QUEUED)
+        if (PlayerSwitchTrace.isActive()) {
+            PlayerSwitchTrace.mark(
+                "provider_queued",
+                "seq=$seq priority=$priority key=${Integer.toHexString(key.hashCode())}",
+            )
+        }
         PowerTraceLogger.bitmapRequest(
             state = "queued",
             priority = priority.name,
             size = "${actualWidth}x${actualHeight}",
             key = key
         )
-        enqueueRequest(request, handlers, forceFront = false)
+        enqueueRequest(
+            request,
+            handlers,
+            // Bound playback artwork follows reference player's active image lane. List requests remain
+            // FIFO, while the front lane can still promote a not-yet-started list owner.
+            forceFront = priority.level <= BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH.level,
+        )
 
-        return request
+        return completeAdmission(request)
+    }
+
+    /**
+     * Add the artwork observer and resolve its provider-flight ownership in one monitor transaction.
+     * This is the Raw equivalent of baseline implementation BitmapProvider.O(): no cancellation or same-size
+     * join can observe the request-table entry between waiter publication and owner publication.
+     */
+    private fun registerProviderWaiterAndClaimFlight(request: BitmapRequest): Boolean =
+        synchronized(inFlightRegistryLock) {
+            addWaitingRequestLocked(request)
+            claimProviderFlightLocked(request)
+        }
+
+    private fun claimProviderFlight(request: BitmapRequest): Boolean = synchronized(inFlightRegistryLock) {
+        claimProviderFlightLocked(request)
+    }
+
+    private fun claimProviderFlightLocked(request: BitmapRequest): Boolean {
+        val flightKey = request.inFlightKey
+        if (inFlightKeys.contains(flightKey)) {
+            val owner = inFlightOwnerRequests[flightKey]
+            if (!shouldReclaimOrphanProviderFlight(
+                    flightKeyPresent = true,
+                    ownerPresent = owner != null,
+                    ownerCancelled = owner?.isCancelled == true,
+                    ownerSourceWorkStarted = owner?.sourceWorkStarted == true,
+                )) return false
+
+            // Recover an impossible/orphaned table entry left by an older non-atomic registration
+            // or cancellation race. Reference never exposes a request-table key without an owner.
+            clearInFlightKeyLocked(flightKey, ownerRequest = null)
+            trace("FLIGHT_RECLAIM_ORPHAN seq=${request.traceSeq} key=${request.key.tailForTrace()}")
+        }
+
+        if (!inFlightKeys.add(flightKey)) return false
+        request.inFlightOwner = true
+        inFlightPriorities[flightKey] = request.priority
+        inFlightTokens[flightKey] = request.artworkToken
+        inFlightOwnerRequests[flightKey] = request
+        return true
     }
 
     private fun shouldPromoteInFlight(
@@ -503,7 +748,8 @@ object BitmapProvider {
     private fun enqueueRequest(
         request: BitmapRequest,
         handlers: Array<WorkerHandler>,
-        forceFront: Boolean
+        forceFront: Boolean,
+        delayMs: Long = 0L,
     ) {
         // There is intentionally one dispatch lane.  Priority is expressed by message position,
         // not by starting another decoder thread; this is the source-dispatch boundary for
@@ -518,15 +764,16 @@ object BitmapProvider {
                 "ENQUEUE key=${request.key.takeLast(40)} size=${request.targetWidth}x${request.targetHeight} worker=$selectedWorkerIndex"
             )
         }
-        // Ordinary requests stay FIFO on the single Handler. Only an
-        // explicit promotion (or the high-priority playback path) goes to the front. Putting every
-        // visible row at the front turns a fling into LIFO and makes the same source fight the UI.
+        // Ordinary requests stay FIFO on the single Handler. Active playback requests and
+        // explicit promotions go to the front, matching the bound-holder priority in reference player.
         val front = forceFront || request.priority == BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH
         val delayed = request.priority.level >= BitmapRequest.Priority.LOADING_PREFETCH.level
         trace("ENQUEUE seq=${request.traceSeq} worker=$selectedWorkerIndex front=$front size=${request.targetWidth}x${request.targetHeight} priority=${request.priority} key=${request.key.tailForTrace()}")
 
         if (front) {
             handler.sendMessageAtFrontOfQueue(msg)
+        } else if (delayMs > 0L) {
+            handler.sendMessageDelayed(msg, delayMs)
         } else if (delayed) {
             // Keep the handler responsive to newly visible rows without creating another decoder.
             handler.sendMessageDelayed(msg, 24L)
@@ -538,7 +785,8 @@ object BitmapProvider {
     fun execute(
         key: String,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        surface: ArtworkSurface = ArtworkSurface.Widget,
     ): Bitmap? {
         if (key.isBlank()) return null
 
@@ -565,7 +813,7 @@ object BitmapProvider {
             decodeKey = key,
             targetWidth = actualWidth,
             targetHeight = actualHeight,
-            surface = ArtworkSurface.Widget
+            surface = surface
         ).bitmap
 
         if (bitmap != null && !bitmap.isRecycled) {
@@ -576,60 +824,116 @@ object BitmapProvider {
     }
 
     /**
-     * Exact-size peek for the Coil PowerList lane.
+     * Small software raster for CPU-only color/pixel analysis.
+     *
+     * This intentionally does not reuse a resident provider bitmap: when the foreground wrapper is
+     * HARDWARE, reusing it would force RenderProxy#copyHWBitmapInto readback. The encoded/indexed
+     * source is sampled directly at 96px instead, matching the reference palette lane.
+     */
+    fun executePixelAnalysis(
+        key: String,
+        targetSide: Int = HardwareArtworkPipelinePolicy.PIXEL_ANALYSIS_SIDE,
+    ): Bitmap? {
+        if (key.isBlank()) return null
+        val side = targetSide.coerceIn(32, 256)
+        val providerKey = stableArtworkCacheSourceKey(key)
+        val previousConfig = threadLocalPreferredConfigOverride.get()
+        val previousBypass = threadLocalBypassProviderBitmapReuse.get()
+        threadLocalPreferredConfigOverride.set(Bitmap.Config.ARGB_8888)
+        threadLocalBypassProviderBitmapReuse.set(true)
+        return try {
+            decodeBitmap(
+                storageKey = providerKey,
+                decodeKey = key,
+                targetWidth = side,
+                targetHeight = side,
+                surface = ArtworkSurface.Playback,
+                aspectPolicy = ArtworkAspectPolicy.KeepAspect,
+            ).bitmap?.takeUnless { it.isRecycled }
+        } finally {
+            if (previousConfig == null) threadLocalPreferredConfigOverride.remove()
+            else threadLocalPreferredConfigOverride.set(previousConfig)
+            if (previousBypass == null) threadLocalBypassProviderBitmapReuse.remove()
+            else threadLocalBypassProviderBitmapReuse.set(previousBypass)
+        }
+    }
+
+    /** Provider-owned not-found sentinel query used by default-artwork presentation. */
+    fun isKnownNoArtwork(
+        key: String,
+        targetWidth: Int = AlbumArtTiers.LOW_RES_NORMAL_CAP,
+        targetHeight: Int = AlbumArtTiers.LOW_RES_NORMAL_CAP,
+    ): Boolean {
+        if (key.isBlank()) return true
+        val target = resolveAlbumArtTarget(
+            baseWidth = targetWidth.coerceAtLeast(1),
+            baseHeight = targetHeight.coerceAtLeast(1),
+            allowHiRes = true,
+            priority = BitmapRequest.Priority.LOADING_WIDGET,
+        )
+        val sourceKey = stableArtworkCacheSourceKey(key)
+        val bucket = SizeSlotCache.computeBucket(target.width, target.height)
+        return hasRecentFailure(sourceKey, "${sourceKey}_${bucket}")
+    }
+
+    /**
+     * Exact-size peek for the Coil VirtualList lane.
      *
      * The legacy LOADING_LIST resolver clamps normal list thumbnails to 384..512. That is correct
      * for the old callback lane, but the Coil branch now deliberately asks for mode-specific visual
      * targets (small list 192, normal list 384, zoomed list 512, grid 384/512/784). Keep this path
      * file-identity only and avoid broad album aliases.
      */
-    fun peekPowerListThumbnail(
+    fun peekVirtualListThumbnail(
         key: String,
         targetWidth: Int,
         targetHeight: Int
     ): Bitmap? {
         if (key.isBlank()) return null
-        val target = resolvePowerListThumbnailTarget(targetWidth, targetHeight)
+        val target = resolveVirtualListThumbnailTarget(targetWidth, targetHeight)
         val providerKey = stableArtworkCacheSourceKey(key)
-        val cacheKey = powerListThumbnailCacheKey(providerKey, target.width, target.height)
+        val cacheKey = virtualListThumbnailCacheKey(providerKey, target.width, target.height)
 
         memoryCache.get(cacheKey)?.let { cached ->
-            if (!cached.isRecycled && bitmapCoversPowerListTarget(cached, target.width, target.height)) {
+            if (!cached.isRecycled && bitmapCoversVirtualListTarget(cached, target.width, target.height)) {
                 return cached
             }
         }
 
-        return memoryCache.getAnyForSource(providerKey)
-            ?.takeIf { !it.isRecycled && bitmapCoversPowerListTarget(it, target.width, target.height) }
+        return memoryCache.getAnyForSource(
+            providerKey,
+            minimumSide = maxOf(target.width, target.height),
+        )?.takeIf { !it.isRecycled && bitmapCoversVirtualListTarget(it, target.width, target.height) }
     }
 
     /**
-     * Stable first-frame fallback for the Coil PowerList lane.
+     * Stable first-frame fallback for the Coil VirtualList lane.
      *
      * Coil's Compose painter can legitimately have an empty state on the first composition even
      * when the backend has a smaller/previous thumbnail already cached.  That is fine for normal
-     * image loading, but it shows up as a one-frame blink when PowerList leaves the pinch/zoom
-     * transition layer and rebinds the settled list/grid cells.  Prefer an exact PowerList thumb;
+     * image loading, but it shows up as a one-frame blink when VirtualList leaves the pinch/zoom
+     * transition layer and rebinds the settled list/grid cells.  Prefer an exact VirtualList thumb;
      * if it is not ready yet, return the best file-identity bitmap already known by the shared
      * artwork-style cache.  The real Coil request still runs on top and upgrades the image silently.
      */
-    fun peekPowerListFallbackThumbnail(
+    fun peekVirtualListFallbackThumbnail(
         key: String,
         targetWidth: Int,
         targetHeight: Int
     ): Bitmap? {
-        val exact = peekPowerListThumbnail(key, targetWidth, targetHeight)
+        val exact = peekVirtualListThumbnail(key, targetWidth, targetHeight)
         if (exact != null && !exact.isRecycled) return exact
         if (key.isBlank()) return null
         val providerKey = stableArtworkCacheSourceKey(key)
-        return memoryCache.getAnyForSource(providerKey)
-            ?.takeIf { bitmapCoversPowerListTarget(it, targetWidth, targetHeight) }
-            ?: memoryCache.getAnyForSource(key)
-                ?.takeIf { bitmapCoversPowerListTarget(it, targetWidth, targetHeight) }
+        val minimumSide = maxOf(targetWidth, targetHeight).coerceAtLeast(1)
+        return memoryCache.getAnyForSource(providerKey, minimumSide = minimumSide)
+            ?.takeIf { bitmapCoversVirtualListTarget(it, targetWidth, targetHeight) }
+            ?: memoryCache.getAnyForSource(key, minimumSide = minimumSide)
+                ?.takeIf { bitmapCoversVirtualListTarget(it, targetWidth, targetHeight) }
     }
 
     /**
-     * Synchronous exact-size decode entry used by the Coil PowerList lane.
+     * Synchronous exact-size decode entry used by the Coil VirtualList lane.
      *
      * Coil owns request cancellation and painter state. BitmapProvider still owns RawSMusic's
      * source order, disk thumbnail writes, exact memory slots and no-art sentinel. This bypasses
@@ -643,20 +947,20 @@ object BitmapProvider {
     ): Bitmap? {
         if (key.isBlank()) return null
 
-        val target = resolvePowerListThumbnailTarget(targetWidth, targetHeight)
+        val target = resolveVirtualListThumbnailTarget(targetWidth, targetHeight)
         val actualWidth = target.width
         val actualHeight = target.height
         val providerKey = stableArtworkCacheSourceKey(key)
         val bucket = maxOf(actualWidth, actualHeight)
-        val cacheKey = powerListThumbnailCacheKey(providerKey, actualWidth, actualHeight)
+        val cacheKey = virtualListThumbnailCacheKey(providerKey, actualWidth, actualHeight)
         val failureSourceKey = stableArtworkCacheSourceKey(key)
         val failureCacheKey = cacheKey
 
         memoryCache.get(cacheKey)?.let { cached ->
-            if (!cached.isRecycled && bitmapCoversPowerListTarget(cached, actualWidth, actualHeight)) return cached
+            if (!cached.isRecycled && bitmapCoversVirtualListTarget(cached, actualWidth, actualHeight)) return cached
         }
-        memoryCache.getAnyForSource(providerKey)?.let { cached ->
-            if (!cached.isRecycled && bitmapCoversPowerListTarget(cached, actualWidth, actualHeight)) return cached
+        memoryCache.getAnyForSource(providerKey, minimumSide = maxOf(actualWidth, actualHeight))?.let { cached ->
+            if (!cached.isRecycled && bitmapCoversVirtualListTarget(cached, actualWidth, actualHeight)) return cached
         }
         if (hasRecentFailure(failureSourceKey, failureCacheKey)) return null
 
@@ -678,7 +982,7 @@ object BitmapProvider {
         return null
     }
 
-    private fun resolvePowerListThumbnailTarget(
+    private fun resolveVirtualListThumbnailTarget(
         targetWidth: Int,
         targetHeight: Int
     ): Size {
@@ -687,7 +991,7 @@ object BitmapProvider {
         return Size(side, side)
     }
 
-    private fun powerListThumbnailCacheKey(
+    private fun virtualListThumbnailCacheKey(
         providerKey: String,
         targetWidth: Int,
         targetHeight: Int
@@ -696,7 +1000,7 @@ object BitmapProvider {
         return "${providerKey}_pl${side}"
     }
 
-    private fun bitmapCoversPowerListTarget(
+    private fun bitmapCoversVirtualListTarget(
         bitmap: Bitmap,
         targetWidth: Int,
         targetHeight: Int
@@ -707,16 +1011,39 @@ object BitmapProvider {
         return actual >= requested
     }
 
+    private fun needsPlaybackWrapperNormalization(
+        surface: ArtworkSurface,
+        bitmap: Bitmap,
+        targetWidth: Int,
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
+    ): Boolean {
+        if (surface != ArtworkSurface.Playback || !bitmap.isValidArtworkBitmap()) return false
+        val hardwareBitmap = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            bitmap.config == Bitmap.Config.HARDWARE
+        if (!HardwareArtworkPipelinePolicy.allowPlaybackWrapperNormalization(hardwareBitmap)) return false
+        val requested = maxOf(targetWidth.coerceAtLeast(1), targetHeight.coerceAtLeast(1))
+        val actual = maxOf(bitmap.width, bitmap.height)
+        // Player cards never need an arbitrary original-size cache entry during page motion. Keep
+        // Fullscreen separate; for Playback use the provider's requested low/high wrapper size.
+        return requested <= AlbumArtTiers.HI_RES_SIDE && actual > requested
+    }
+
     /** Reuse one source record across list buckets instead of decoding once per holder size. */
     private fun reusableSourceBitmap(
         bitmap: Bitmap?,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): Bitmap? {
         val requested = maxOf(targetWidth.coerceAtLeast(1), targetHeight.coerceAtLeast(1))
         return bitmap?.takeIf {
             it.isValidArtworkBitmap() &&
-                minOf(it.width, it.height) >= requested
+                if (aspectPolicy == ArtworkAspectPolicy.KeepAspect) {
+                    maxOf(it.width, it.height) >= requested
+                } else {
+                    minOf(it.width, it.height) >= requested
+                }
         }
     }
 
@@ -728,18 +1055,20 @@ object BitmapProvider {
         key: String,
         targetWidth: Int,
         targetHeight: Int,
-        providerAliasKey: String = ""
+        providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): Bitmap? {
-        return peekInternal(key, targetWidth, targetHeight, allowHiRes = true, providerAliasKey = providerAliasKey)
+        return peekInternal(key, targetWidth, targetHeight, allowHiRes = true, providerAliasKey = providerAliasKey, aspectPolicy = aspectPolicy)
     }
 
     fun peekThumbnail(
         key: String,
         targetWidth: Int,
         targetHeight: Int,
-        providerAliasKey: String = ""
+        providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): Bitmap? {
-        return peekInternal(key, targetWidth, targetHeight, allowHiRes = false, providerAliasKey = providerAliasKey)
+        return peekInternal(key, targetWidth, targetHeight, allowHiRes = false, providerAliasKey = providerAliasKey, aspectPolicy = aspectPolicy)
     }
 
     private fun peekInternal(
@@ -747,7 +1076,8 @@ object BitmapProvider {
         targetWidth: Int,
         targetHeight: Int,
         allowHiRes: Boolean,
-        providerAliasKey: String = ""
+        providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): Bitmap? {
         if (key.isBlank()) return null
 
@@ -762,33 +1092,39 @@ object BitmapProvider {
         val actualWidth = target.width
         val actualHeight = target.height
 
-        val providerKey = stableArtworkCacheSourceKey(key, providerAliasKey)
-        val rawKey = stableArtworkCacheSourceKey(key)
+        val providerKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key, providerAliasKey), aspectPolicy)
+        val rawKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key), aspectPolicy)
         val bucket = SizeSlotCache.computeBucket(actualWidth, actualHeight)
         val cacheKey = "${providerKey}_${bucket}"
 
-        // Do not hand a smaller bucket to a larger PowerList cell.  The old path returned the
+        // Do not hand a smaller bucket to a larger VirtualList cell.  The old path returned the
         // first source bitmap regardless of its dimensions, so a reused 192px/list bitmap could
         // be painted into a 384px/512px grid cell for one frame and then be replaced by a second
         // decode. Keep the source record separate from the drawable tier so
         // boundary by accepting only a bitmap that covers this request's minimum tier.
         return memoryCache.get(cacheKey)
-            ?.let { reusableSourceBitmap(it, actualWidth, actualHeight) }
-            ?: memoryCache.getAnyForSource(providerKey)
-                ?.let { reusableSourceBitmap(it, actualWidth, actualHeight) }
-            ?: memoryCache.getAnyForSource(rawKey)
-                ?.let { reusableSourceBitmap(it, actualWidth, actualHeight) }
-            ?: memoryCache.getAnyForSource(key)
-                ?.let { reusableSourceBitmap(it, actualWidth, actualHeight) }
+            ?.let { reusableSourceBitmap(it, actualWidth, actualHeight, aspectPolicy) }
+            ?: memoryCache.getAnyForSource(providerKey, minimumSide = maxOf(actualWidth, actualHeight))
+                ?.let { reusableSourceBitmap(it, actualWidth, actualHeight, aspectPolicy) }
+            ?: memoryCache.getAnyForSource(rawKey, minimumSide = maxOf(actualWidth, actualHeight))
+                ?.let { reusableSourceBitmap(it, actualWidth, actualHeight, aspectPolicy) }
+            ?: if (aspectPolicy == ArtworkAspectPolicy.Crop) {
+                memoryCache.getAnyForSource(key, minimumSide = maxOf(actualWidth, actualHeight))
+                    ?.let { reusableSourceBitmap(it, actualWidth, actualHeight, aspectPolicy) }
+            } else null
     }
 
-    fun peekAny(key: String, providerAliasKey: String = ""): Bitmap? {
+    fun peekAny(
+        key: String,
+        providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
+    ): Bitmap? {
         if (key.isBlank()) return null
-        val providerKey = stableArtworkCacheSourceKey(key, providerAliasKey)
-        val rawKey = stableArtworkCacheSourceKey(key)
+        val providerKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key, providerAliasKey), aspectPolicy)
+        val rawKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key), aspectPolicy)
         return memoryCache.getAnyForSource(providerKey)?.takeIf { !it.isRecycled }
             ?: memoryCache.getAnyForSource(rawKey)
-            ?: memoryCache.getAnyForSource(key)
+            ?: if (aspectPolicy == ArtworkAspectPolicy.Crop) memoryCache.getAnyForSource(key) else null
     }
 
     /** Returns the full-resolution image source already selected for this artwork key, if known. */
@@ -815,9 +1151,20 @@ object BitmapProvider {
         targetWidth: Int,
         targetHeight: Int,
         surface: ArtworkSurface = ArtworkSurface.Widget,
-        providerAliasKey: String = ""
+        providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
+        exactTarget: Boolean = false,
     ): ArtworkHandle? {
-        return acquireInternal(key, targetWidth, targetHeight, allowHiRes = true, surface = surface, providerAliasKey = providerAliasKey)
+        return acquireInternal(
+            key = key,
+            targetWidth = targetWidth,
+            targetHeight = targetHeight,
+            allowHiRes = true,
+            surface = surface,
+            providerAliasKey = providerAliasKey,
+            aspectPolicy = aspectPolicy,
+            exactTarget = exactTarget,
+        )
     }
 
     fun acquireThumbnail(
@@ -825,27 +1172,136 @@ object BitmapProvider {
         targetWidth: Int,
         targetHeight: Int,
         surface: ArtworkSurface = ArtworkSurface.List,
-        providerAliasKey: String = ""
+        providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): ArtworkHandle? {
-        return acquireInternal(key, targetWidth, targetHeight, allowHiRes = false, surface = surface, providerAliasKey = providerAliasKey)
+        return acquireInternal(key, targetWidth, targetHeight, allowHiRes = false, surface = surface, providerAliasKey = providerAliasKey, aspectPolicy = aspectPolicy)
+    }
+
+    /**
+     * VirtualList holder fast path. Resolve the exact target bucket and the best already-published
+     * fallback wrapper under a single cache lock, instead of chaining exact/any/raw peeks.
+     */
+    fun acquireBestThumbnail(
+        key: String,
+        targetWidth: Int,
+        targetHeight: Int,
+        surface: ArtworkSurface = ArtworkSurface.List,
+        providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
+    ): ArtworkHandle? {
+        if (key.isBlank()) return null
+        val target = resolveAlbumArtTarget(
+            baseWidth = targetWidth.coerceAtLeast(1),
+            baseHeight = targetHeight.coerceAtLeast(1),
+            allowHiRes = false,
+            priority = BitmapRequest.Priority.LOADING_LIST,
+        )
+        val providerKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key, providerAliasKey), aspectPolicy)
+        val bucket = SizeSlotCache.computeBucket(target.width, target.height)
+        return memoryCache.acquireBestForSource(
+            exactKey = "${providerKey}_${bucket}",
+            sourceKey = providerKey,
+            surface = surface,
+            minimumFallbackSide = 1,
+            allowHighFallback = false,
+        )
     }
 
     fun acquireAny(
         key: String,
         surface: ArtworkSurface = ArtworkSurface.Widget,
         providerAliasKey: String = "",
-        minimumSide: Int = 1
+        minimumSide: Int = 1,
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): ArtworkHandle? {
         if (key.isBlank()) return null
         val requiredSide = minimumSide.coerceAtLeast(1)
-        val providerKey = stableArtworkCacheSourceKey(key, providerAliasKey)
-        val rawKey = stableArtworkCacheSourceKey(key)
+        val providerKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key, providerAliasKey), aspectPolicy)
+        val rawKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key), aspectPolicy)
         // Phase 3d: exact-size memory slots are ref-aware too. Prefer them when present so list
         // and player surfaces protect the exact bucket they are drawing, then fall back to the
         // low/high owner for instant placeholders.
         return memoryCache.acquireAnyForSource(providerKey, surface, requiredSide)
             ?: memoryCache.acquireAnyForSource(rawKey, surface, requiredSide)
-            ?: memoryCache.acquireAnyForSource(key, surface, requiredSide)
+            ?: if (aspectPolicy == ArtworkAspectPolicy.Crop) {
+                memoryCache.acquireAnyForSource(key, surface, requiredSide)
+            } else null
+    }
+
+    /**
+     * Exact selected playback-tier fast path.
+     *
+     * A hit here means the provider has already published the authoritative wrapper for the
+     * current playback bucket. The bitmap's physical dimensions may still be smaller than the
+     * requested target when the embedded source itself is smaller; callers must not reject an
+     * exact-tier wrapper solely by comparing bitmap.width/height with preferredPlaybackTargetSide().
+     *
+     * Callers that miss this exact tier may still bind an acquireAny() same-source wrapper while
+     * the high-tier request is in flight, matching ArtworkProvider's low/high retained-wrapper
+     * behavior instead of presenting an empty holder.
+     */
+    fun acquirePreferredPlayback(
+        key: String,
+        surface: ArtworkSurface = ArtworkSurface.Playback,
+        providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.KeepAspect,
+    ): ArtworkHandle? {
+        if (key.isBlank()) return null
+        return acquireExactArtworkTier(
+            key = key,
+            targetSide = preferredPlaybackTargetSide(),
+            surface = surface,
+            providerAliasKey = providerAliasKey,
+            aspectPolicy = aspectPolicy,
+        )
+    }
+
+    /** True when the exact currently-selected playback target request has completed in memory. */
+    fun hasPreferredPlaybackWrapper(
+        key: String,
+        providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.KeepAspect,
+    ): Boolean {
+        if (key.isBlank()) return false
+        val targetSide = preferredPlaybackTargetSide()
+        val providerKey = artworkAspectCacheSourceKey(
+            stableArtworkCacheSourceKey(key, providerAliasKey),
+            aspectPolicy,
+        )
+        val rawKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key), aspectPolicy)
+        val bucket = SizeSlotCache.computeBucket(targetSide, targetSide)
+        if (memoryCache.get("${providerKey}_${bucket}") != null) return true
+        return rawKey != providerKey && memoryCache.get("${rawKey}_${bucket}") != null
+    }
+
+    private fun acquireExactArtworkTier(
+        key: String,
+        targetSide: Int,
+        surface: ArtworkSurface,
+        providerAliasKey: String,
+        aspectPolicy: ArtworkAspectPolicy,
+    ): ArtworkHandle? {
+        val providerKey = artworkAspectCacheSourceKey(
+            stableArtworkCacheSourceKey(key, providerAliasKey),
+            aspectPolicy,
+        )
+        val rawKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key), aspectPolicy)
+        val bucket = SizeSlotCache.computeBucket(targetSide, targetSide)
+        memoryCache.acquire("${providerKey}_${bucket}", surface)?.let { return it }
+        if (rawKey != providerKey) {
+            memoryCache.acquire("${rawKey}_${bucket}", surface)?.let { return it }
+        }
+        return null
+    }
+
+    fun preferredPlaybackTargetSide(): Int {
+        appContext?.let { return artworkHighTargetSide(it) }
+        return AlbumArtTiers.playbackTargetSide(
+            increaseResolution = readHighResPreference(),
+            displayShortSidePx = AlbumArtTiers.LARGE_DISPLAY_MIN_SIDE_PX,
+            maxMemoryBytes = Runtime.getRuntime().maxMemory(),
+        )
     }
 
     fun acquireLoaded(
@@ -854,11 +1310,12 @@ object BitmapProvider {
         targetWidth: Int,
         targetHeight: Int,
         surface: ArtworkSurface = ArtworkSurface.Widget,
-        providerAliasKey: String = ""
+        providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): ArtworkHandle? {
         if (key.isBlank() || bitmap == null || bitmap.isRecycled) return null
-        val providerKey = stableArtworkCacheSourceKey(key, providerAliasKey)
-        val rawKey = stableArtworkCacheSourceKey(key)
+        val providerKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key, providerAliasKey), aspectPolicy)
+        val rawKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key), aspectPolicy)
         val resolvedTarget = if (surface == ArtworkSurface.List) {
             resolveAlbumArtTarget(
                 baseWidth = targetWidth.coerceAtLeast(1),
@@ -886,19 +1343,27 @@ object BitmapProvider {
         targetHeight: Int,
         allowHiRes: Boolean,
         surface: ArtworkSurface,
-        providerAliasKey: String = ""
+        providerAliasKey: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
+        exactTarget: Boolean = false,
     ): ArtworkHandle? {
         if (key.isBlank()) return null
-        val target = resolveAlbumArtTarget(
-            baseWidth = targetWidth.coerceAtLeast(1),
-            baseHeight = targetHeight.coerceAtLeast(1),
-            allowHiRes = allowHiRes,
-            priority = if (allowHiRes) BitmapRequest.Priority.LOADING_WIDGET else BitmapRequest.Priority.LOADING_LIST
-        )
+        val baseWidth = targetWidth.coerceAtLeast(1)
+        val baseHeight = targetHeight.coerceAtLeast(1)
+        val target = if (exactTarget) {
+            AlbumArtTiers.Target(baseWidth, baseHeight)
+        } else {
+            resolveAlbumArtTarget(
+                baseWidth = baseWidth,
+                baseHeight = baseHeight,
+                allowHiRes = allowHiRes,
+                priority = if (allowHiRes) BitmapRequest.Priority.LOADING_WIDGET else BitmapRequest.Priority.LOADING_LIST
+            )
+        }
         val actualWidth = target.width
         val actualHeight = target.height
-        val providerKey = stableArtworkCacheSourceKey(key, providerAliasKey)
-        val rawKey = stableArtworkCacheSourceKey(key)
+        val providerKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key, providerAliasKey), aspectPolicy)
+        val rawKey = artworkAspectCacheSourceKey(stableArtworkCacheSourceKey(key), aspectPolicy)
         val bucket = SizeSlotCache.computeBucket(actualWidth, actualHeight)
         val cacheKey = "${providerKey}_${bucket}"
 
@@ -923,51 +1388,26 @@ object BitmapProvider {
     }
 
     /**
-     * Warm the current playback artwork in project-style tiers: bind one low-res wrapper quickly,
-     * then request one high-res wrapper for the player.  Do not enqueue 384/512/1024 together for
-     * every song change: the design keeps low/high slots per artwork record and lets high replace low when
-     * it is ready, instead of spawning several independent size flights.
+     * Warm one playback wrapper request per physical neighbour, matching ArtworkImageNode.image provider callback -> provider.
+     * Existing list/mini wrappers remain reusable through acquireAny()/source records, but the parked
+     * player holder does not launch a second explicit low-tier request before its playback request.
      */
     fun warmPlaybackArt(key: String) {
         if (key.isBlank()) return
-        val providerKey = stableArtworkCacheSourceKey(key)
-        val hasHigh = hasProviderTier(providerKey, key, minSide = AlbumArtTiers.HI_RES_SIDE)
-        if (hasHigh) return
-
-        val hasLow = hasProviderTier(providerKey, key, minSide = AlbumArtTiers.LOW_RES_MIN_SIDE)
-        if (!hasLow) {
-            loadInternal(
-                key = key,
-                targetWidth = AlbumArtTiers.LOW_RES_NORMAL_CAP,
-                targetHeight = AlbumArtTiers.LOW_RES_NORMAL_CAP,
-                priority = BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
-                surface = ArtworkSurface.Playback,
-                callback = null,
-                allowHiRes = false
-            )
-        }
-
+        val targetSide = preferredPlaybackTargetSide()
+        if (hasPreferredPlaybackWrapper(key)) return
         loadInternal(
             key = key,
-            targetWidth = AlbumArtTiers.HI_RES_SIDE,
-            targetHeight = AlbumArtTiers.HI_RES_SIDE,
-            priority = BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
+            targetWidth = targetSide,
+            targetHeight = targetSide,
+            priority = AlbumArtTiers.PLAYBACK_PROVIDER_PRIORITY,
             surface = ArtworkSurface.Playback,
             callback = null,
-            allowHiRes = true
+            allowHiRes = true,
+            aspectPolicy = ArtworkAspectPolicy.KeepAspect,
         )
     }
 
-    private fun hasProviderTier(
-        providerKey: String,
-        rawKey: String,
-        minSide: Int
-    ): Boolean {
-        fun Bitmap?.matches(): Boolean = this != null && !this.isRecycled && maxOf(this.width, this.height) >= minSide
-        if (memoryCache.getAnyForSource(providerKey).matches()) return true
-        if (rawKey != providerKey && memoryCache.getAnyForSource(rawKey).matches()) return true
-        return false
-    }
 
     /**
      * Full-cover zoom is opened by a gesture. Pre-warm the large target separately so the gesture
@@ -976,53 +1416,46 @@ object BitmapProvider {
     fun warmFullCoverArt(key: String) {
         if (key.isBlank()) return
         warmPlaybackArt(key)
+        val targetSide = preferredPlaybackTargetSide()
         loadInternal(
             key = key,
-            targetWidth = AlbumArtTiers.FULL_RES_SIDE,
-            targetHeight = AlbumArtTiers.FULL_RES_SIDE,
-            priority = BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH,
+            targetWidth = targetSide,
+            targetHeight = targetSide,
+            priority = AlbumArtTiers.PLAYBACK_PROVIDER_PRIORITY,
             surface = ArtworkSurface.Fullscreen,
             callback = null,
             allowHiRes = true
         )
     }
 
-    fun cancel(request: BitmapRequest, keepDecoding: Boolean = false) {
-        // A holder disappearing must not cancel the source flight. Detach the
-        // holder listener while the source record continues decoding, so a reused or neighboring
-        // holder can join the same flight instead of restarting it after every pixel of scroll.
-        val keepRunning = keepDecoding
-        val sourceWorkStarted = request.cancelAndGetSourceWorkStarted(keepAlive = keepRunning)
-        removeWaitingRequest(request)
-
-        if (keepRunning) {
-            val noUsefulWaiters = !hasWaitingRequests(request.inFlightKey)
-            if (!sourceWorkStarted && request.inFlightOwner && noUsefulWaiters) {
-                // The request is still queued, not decoding. Do not let a fast fling leave old
-                // source probes in the single provider lane. The request owns this flight, so it
-                // is safe to release the coalescing entry before the next holder re-requests it.
+    fun cancel(request: BitmapRequest) = synchronized(inFlightRegistryLock) {
+        // Reference O()/request removal uses the same provider-table monitor as admission. Remove the
+        // observer, inspect remaining waiters and retire/cancel the owner atomically so a returning
+        // same-pixel artwork holder can never join a key whose source job was removed one instruction ago.
+        removeWaitingRequestLocked(request)
+        val hasOtherLiveWaiters = hasWaitingRequestsLocked(request.inFlightKey)
+        when (resolveProviderCancelAction(request.inFlightOwner, hasOtherLiveWaiters)) {
+            ProviderCancelAction.DETACH_OBSERVER_ONLY -> {
+                trace("CANCEL_DETACH_OWNER_OBSERVER seq=${request.traceSeq} waiters=true key=${request.key.tailForTrace()}")
+            }
+            ProviderCancelAction.CANCEL_OBSERVER_ONLY -> {
+                request.cancel()
+                trace("CANCEL_DETACH_JOINER seq=${request.traceSeq} waiters=true key=${request.key.tailForTrace()}")
+            }
+            ProviderCancelAction.CANCEL_FLIGHT -> {
+                request.cancel()
+                val sourceOwner = inFlightOwnerRequests[request.inFlightKey]
+                if (sourceOwner != null && sourceOwner !== request) sourceOwner.cancel()
+                val target = sourceOwner ?: request
                 workerHandlers.forEach { handler ->
-                    handler.removeMessages(MSG_LOAD, request)
+                    handler.removeMessages(MSG_LOAD, target)
+                    handler.obtainMessage(MSG_CANCEL, target).sendToTarget()
                 }
-                clearInFlightForRequest(request)
-                trace("DETACH_DROP_QUEUED_SOURCE key=${request.key.tailForTrace()} state=${request.state}")
-            } else {
-                trace("DETACH_KEEP_SOURCE key=${request.key.tailForTrace()} started=$sourceWorkStarted state=${request.state}")
+                clearInFlightKeyLocked(target.inFlightKey, target)
             }
-            return
-        }
-
-        val noUsefulWaiters = !hasWaitingRequests(request.inFlightKey)
-        workerHandlers.forEach { handler ->
-            if (noUsefulWaiters) {
-                handler.removeMessages(MSG_LOAD, request)
-            }
-            handler.obtainMessage(MSG_CANCEL, request).sendToTarget()
-        }
-        if (noUsefulWaiters) {
-            clearInFlightForRequest(request)
         }
     }
+
 
 
     fun notifyLibraryArtworkChanged(reason: String = "library_changed") {
@@ -1054,11 +1487,13 @@ object BitmapProvider {
         artworkIndexerKeys.clear()
         artworkIndexerCallbacks.clear()
         artworkRevisionCoalescePending.set(false)
-        inFlightKeys.clear()
-        inFlightPriorities.clear()
-        inFlightTokens.clear()
-        inFlightOwnerRequests.clear()
-        promotedInFlightKeys.clear()
+        synchronized(inFlightRegistryLock) {
+            inFlightKeys.clear()
+            inFlightPriorities.clear()
+            inFlightTokens.clear()
+            inFlightOwnerRequests.clear()
+            promotedInFlightKeys.clear()
+        }
         ArtworkRecordRegistry.clear()
     }
 
@@ -1068,6 +1503,28 @@ object BitmapProvider {
         DecodedArtworkSourceCache.clear()
         EmbeddedArtworkRegion.clear()
         BitmapPool.clear()
+    }
+
+    /**
+     * Clear generated album-art caches without touching user-selected/custom artwork files.
+     * Pending requests are invalidated before disk removal so a late worker cannot republish the
+     * just-cleared generation. Current UI holders may keep their own lease until the next bind.
+     */
+    fun clearArtworkCaches(context: Context) {
+        val app = context.applicationContext
+        workerHandlers.forEach { handler ->
+            handler.removeMessages(MSG_LOAD)
+            handler.removeMessages(MSG_CANCEL)
+        }
+        clear()
+        listOf(
+            File(app.cacheDir, DISK_THUMB_DIR),
+            File(app.cacheDir, LEGACY_DISK_THUMB_DIR),
+            File(app.cacheDir, "albumart"),
+            File(app.cacheDir, REMOTE_SOURCE_DIR),
+        ).forEach { directory ->
+            runCatching { directory.deleteRecursively() }
+        }
     }
 
     /**
@@ -1135,10 +1592,14 @@ object BitmapProvider {
         }
         if (candidates.isEmpty()) return
 
-        ArtworkRecordRegistry.invalidateSources(candidates)
+        val cacheCandidates = linkedSetOf<String>().apply {
+            addAll(candidates)
+            candidates.forEach { add(artworkAspectCacheSourceKey(it, ArtworkAspectPolicy.KeepAspect)) }
+        }
+        ArtworkRecordRegistry.invalidateSources(cacheCandidates)
 
         var removedMemory = 0
-        for (candidate in candidates) {
+        for (candidate in cacheCandidates) {
             removedMemory += memoryCache.removeForSource(candidate)
         }
 
@@ -1148,8 +1609,8 @@ object BitmapProvider {
         // cannot survive a metadata rewrite under an unchanged provider alias.
         DecodedArtworkSourceCache.clear()
         val removedFailed = removeFailureSentinelsFor(candidates, sourceKey)
-        val removedWaiting = removeQueuedStateFor(candidates)
-        val removedDisk = deleteDiskThumbnailsFor(candidates)
+        val removedWaiting = removeQueuedStateFor(cacheCandidates)
+        val removedDisk = deleteDiskThumbnailsFor(cacheCandidates)
         val removedSourceArt = EmbeddedArtworkSourceCache.removeForSources(appContext, candidates)
         val removedSourceIndex = ArtworkSourceIndex.removeAll(candidates)
         candidates.forEach { EmbeddedArtworkRegion.invalidate(pathPartFromArtworkKey(it)) }
@@ -1172,102 +1633,220 @@ object BitmapProvider {
 
     fun getMemoryCache(): SizeSlotCache = memoryCache
 
-    private fun addWaitingRequest(request: BitmapRequest) {
+    private fun addWaitingRequest(request: BitmapRequest) = synchronized(inFlightRegistryLock) {
+        addWaitingRequestLocked(request)
+    }
+
+    private fun addWaitingRequestLocked(request: BitmapRequest) {
         waitingRequests
             .getOrPut(request.inFlightKey) { CopyOnWriteArrayList() }
-            .add(request)
+            .addIfAbsent(request)
     }
 
-    private fun removeWaitingRequest(request: BitmapRequest) {
+    private fun removeWaitingRequest(request: BitmapRequest) = synchronized(inFlightRegistryLock) {
+        removeWaitingRequestLocked(request)
+    }
+
+    private fun removeWaitingRequestLocked(request: BitmapRequest) {
         val list = waitingRequests[request.inFlightKey] ?: return
         list.remove(request)
-
-        if (list.isEmpty()) {
-            waitingRequests.remove(request.inFlightKey, list)
-        }
+        if (list.isEmpty()) waitingRequests.remove(request.inFlightKey, list)
     }
 
-    private fun hasWaitingRequests(flightKey: String): Boolean {
-        return waitingRequests[flightKey]?.any { !it.isCancelled } == true
+    private fun hasWaitingRequests(flightKey: String): Boolean = synchronized(inFlightRegistryLock) {
+        hasWaitingRequestsLocked(flightKey)
     }
+
+    private fun hasWaitingRequestsLocked(flightKey: String): Boolean =
+        waitingRequests[flightKey]?.any { !it.isCancelled } == true
 
     private fun isArtworkAcceptTokenCurrent(request: BitmapRequest): Boolean {
         return ArtworkRecordRegistry.isCurrent(request.artworkToken, artworkRevision)
     }
 
     private fun clearInFlightForRequest(request: BitmapRequest) {
-        val flightKey = request.inFlightKey
-        if (request.inFlightOwner) {
-            inFlightKeys.remove(flightKey)
-            inFlightPriorities.remove(flightKey)
-            inFlightTokens.remove(flightKey)
-            inFlightOwnerRequests.remove(flightKey, request)
+        clearInFlightKey(request.inFlightKey, request)
+    }
+
+    private fun clearInFlightKey(flightKey: String, ownerRequest: BitmapRequest? = null) = synchronized(inFlightRegistryLock) {
+        clearInFlightKeyLocked(flightKey, ownerRequest)
+    }
+
+    private fun clearInFlightKeyLocked(flightKey: String, ownerRequest: BitmapRequest? = null) {
+        if (ownerRequest != null) {
+            val liveOwner = inFlightOwnerRequests[flightKey]
+            if (liveOwner !== ownerRequest) return
         }
+        inFlightKeys.remove(flightKey)
+        inFlightPriorities.remove(flightKey)
+        inFlightTokens.remove(flightKey)
+        if (ownerRequest != null) inFlightOwnerRequests.remove(flightKey, ownerRequest)
+        else inFlightOwnerRequests.remove(flightKey)
         promotedInFlightKeys.remove(flightKey)
+    }
+
+    /**
+     * Move every live artwork waiter from a stale provider record to the current record without
+     * completing its UI callback. baseline implementation keeps the request inside BitmapProvider's request
+     * table when provider/source state changes; ArtworkImageNode is not told to invent a second retry
+     * lifecycle. The same BitmapRequest objects remain the cancellation/callback owners.
+     */
+    private fun requeueStaleProviderFlight(
+        ownerRequest: BitmapRequest,
+        staleFlightKey: String,
+        reason: String,
+    ) {
+        val staleWaiters = waitingRequests.remove(staleFlightKey).orEmpty()
+        clearInFlightKey(staleFlightKey, ownerRequest)
+
+        val live = LinkedHashSet<BitmapRequest>()
+        // The waiter table is the observer ownership boundary. An in-flight source owner may have
+        // already detached its ArtworkImageNode while another waiter kept the provider job alive; never
+        // resurrect that detached callback merely because the source owner object still exists.
+        staleWaiters.forEach { request -> if (!request.isCancelled) live += request }
+        if (live.isEmpty()) {
+            trace("STALE_FLIGHT_DROP_EMPTY reason=$reason seq=${ownerRequest.traceSeq} key=${ownerRequest.key.tailForTrace()}")
+            return
+        }
+
+        val byFlight = linkedMapOf<String, MutableList<BitmapRequest>>()
+        live.forEach { request ->
+            val nextToken = ArtworkRecordRegistry.tokenFor(
+                sourceVersionKey = request.cacheSourceKey,
+                cacheKey = request.cacheKey,
+                bucket = request.bucket,
+                uiRevision = artworkRevision,
+            )
+            if (request.moveToArtworkRecord(nextToken)) {
+                byFlight.getOrPut(request.inFlightKey) { mutableListOf() }.add(request)
+            }
+        }
+
+        val handlers = workerHandlers
+        if (handlers.isEmpty()) return
+        byFlight.forEach { (nextFlightKey, requests) ->
+            if (requests.isEmpty()) return@forEach
+            val waiters = waitingRequests.getOrPut(nextFlightKey) { CopyOnWriteArrayList() }
+            requests.forEach(waiters::addIfAbsent)
+
+            val nextOwner = requests.minByOrNull { it.priority.level } ?: return@forEach
+            requests.forEach { it.inFlightOwner = false }
+            if (claimProviderFlight(nextOwner)) {
+                trace("STALE_FLIGHT_REQUEUE reason=$reason ownerSeq=${nextOwner.traceSeq} waiters=${requests.size} key=${nextOwner.key.tailForTrace()}")
+                enqueueRequest(nextOwner, handlers, forceFront = nextOwner.priority.level <= BitmapRequest.Priority.LOADING_LIST.level)
+            } else {
+                // A request for the fresh record won the race. Keep these artwork waiters attached to its
+                // provider-owned flight; that owner will dispatch their original callbacks.
+                requests.forEach { it.inFlightOwner = false }
+                trace("STALE_FLIGHT_JOIN_CURRENT reason=$reason waiters=${requests.size} key=${requests.first().key.tailForTrace()}")
+            }
+        }
     }
 
     private fun deliverResult(
         ownerRequest: BitmapRequest,
-        bitmap: Bitmap?
+        bitmap: Bitmap?,
+        providerSourceString: String = "",
     ) {
+        val flightKey = ownerRequest.inFlightKey
         val tokenCurrent = isArtworkAcceptTokenCurrent(ownerRequest)
-        // Cache successful decodes even when the originating PowerList row has already been
-        // detached.  In a 4-column fling Compose can dispose/rebind the whole visible window before
-        // the worker posts back; dropping the bitmap here makes the next bind enqueue the same file
-        // again, so the cell sits in DISPLAY_EMPTY_NEW_ID/loading forever.  The token still guards
-        // explicit artwork changes; stale UI callbacks remain filtered below.
+        if (bitmap != null && !bitmap.isRecycled && tokenCurrent && TransitionPerfTrace.isActive()) {
+            TransitionPerfTrace.count(
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && bitmap.config == Bitmap.Config.HARDWARE) {
+                    TransitionPerfEvent.BITMAP_RESULT_HARDWARE
+                } else {
+                    TransitionPerfEvent.BITMAP_RESULT_SOFTWARE
+                }
+            )
+            TransitionPerfTrace.mark(
+                "bitmap_delivery",
+                "seq=${ownerRequest.traceSeq} id=${System.identityHashCode(bitmap)} " +
+                    "size=${bitmap.width}x${bitmap.height} config=${bitmap.config?.name ?: "null"} " +
+                    "target=${ownerRequest.targetWidth}x${ownerRequest.targetHeight} bucket=${ownerRequest.bucket} " +
+                    "priority=${ownerRequest.priority} surface=${ownerRequest.surface} key=${ownerRequest.key.tailForTrace()}",
+            )
+        }
+        if (!tokenCurrent && (ownerRequest.wrapperCallback != null || hasWaitingRequests(flightKey))) {
+            trace("DELIVER_REQUEUE_STALE ownerSeq=${ownerRequest.traceSeq} key=${ownerRequest.key.tailForTrace()}")
+            requeueStaleProviderFlight(ownerRequest, flightKey, reason = "before_delivery")
+            return
+        }
+
+        // Publish a successful current provider result before handing wrapper leases to listeners.
+        // Cancelled owner-only work is dropped in WorkerHandler before reaching this point.
         if (bitmap != null && !bitmap.isRecycled && tokenCurrent) {
             memoryCache.put(
                 key = ownerRequest.cacheKey,
                 bitmap = bitmap,
                 bucket = ownerRequest.bucket,
-                sourceKey = ownerRequest.key
+                sourceKey = ownerRequest.cacheSourceKey,
+                sourceString = artworkAspectSourceString(providerSourceString, ownerRequest.aspectPolicy),
             )
         }
 
+        // The provider must retain a published wrapper until main-thread artwork consumers have had a
+        // chance to acquire their own leases.  Without this temporary provider lease, a fast
+        // serial decode run can evict a zero-ref fresh entry before its callback is dispatched.
+        val deliveryLease = if (bitmap != null && !bitmap.isRecycled && tokenCurrent &&
+            waitingRequests[flightKey]?.any { !it.isCancelled && it.wrapperCallback != null } == true
+        ) {
+            memoryCache.acquireBestForSource(
+                exactKey = ownerRequest.cacheKey,
+                sourceKey = ownerRequest.cacheSourceKey,
+                surface = ownerRequest.surface,
+                minimumFallbackSide = 1,
+            )
+        } else {
+            null
+        }
+
         mainHandler.post {
-            val requests = waitingRequests.remove(ownerRequest.inFlightKey).orEmpty()
-            requests.forEach { it.terminalNoArt = ownerRequest.terminalNoArt }
-            trace("CALLBACK_DISPATCH ownerSeq=${ownerRequest.traceSeq} waiters=${requests.size} result=${bitmap != null} key=${ownerRequest.key.tailForTrace()}")
-
-            if (requests.isEmpty() &&
-                !ownerRequest.isCancelled &&
-                isPowerListRequestStillUseful(ownerRequest) &&
-                isArtworkAcceptTokenCurrent(ownerRequest)
-            ) {
-                // Defensive project-style owner fallback.  During fast Compose rebinding the
-                // waiting list can be removed by a detach/viewport purge after the worker has
-                // already warmed provider caches but before the main callback is dispatched.
-                // Without this fallback the row waits for a later scroll/recomposition to re-peek
-                // the cache, which looks like "decoded, disappeared, then decoded/appeared again".
-                if (bitmap != null && !bitmap.isRecycled) {
-                    ownerRequest.transitionTo(BitmapRequest.State.AVAILABLE)
+            var requeued = false
+            try {
+                val pending = waitingRequests[flightKey].orEmpty()
+                val staleAtDispatch = !isArtworkAcceptTokenCurrent(ownerRequest) ||
+                    pending.any { !it.isCancelled && !isArtworkAcceptTokenCurrent(it) }
+                if (staleAtDispatch && (ownerRequest.wrapperCallback != null || pending.isNotEmpty())) {
+                    trace("CALLBACK_REQUEUE_STALE ownerSeq=${ownerRequest.traceSeq} waiters=${pending.size} key=${ownerRequest.key.tailForTrace()}")
+                    requeueStaleProviderFlight(ownerRequest, flightKey, reason = "before_callback")
+                    requeued = true
+                    return@post
                 }
-                trace("CALLBACK_OWNER_FALLBACK seq=${ownerRequest.traceSeq} result=${bitmap != null} key=${ownerRequest.key.tailForTrace()}")
-                ownerRequest.callback?.invoke(bitmap)
+
+                val requests = waitingRequests.remove(flightKey).orEmpty()
+                requests.forEach { it.terminalNoArt = ownerRequest.terminalNoArt }
+                trace("CALLBACK_DISPATCH ownerSeq=${ownerRequest.traceSeq} waiters=${requests.size} result=${bitmap != null} key=${ownerRequest.key.tailForTrace()}")
+
+                for ((requestIndex, request) in requests.withIndex()) {
+                    if (request.isCancelled) continue
+                    // All live requests on this revisioned flight were checked above. If a source
+                    // invalidation lands between two artwork callbacks, preserve the current + remaining
+                    // callback owners and move them to the fresh record instead of dropping them.
+                    if (!isArtworkAcceptTokenCurrent(request)) {
+                        trace("CALLBACK_UNEXPECTED_STALE seq=${request.traceSeq} cacheKey=${request.cacheKey.tailForTrace()} key=${request.key.tailForTrace()}")
+                        val pendingAgain = waitingRequests.getOrPut(flightKey) { CopyOnWriteArrayList() }
+                        for (remainingIndex in requestIndex until requests.size) {
+                            val remaining = requests[remainingIndex]
+                            if (!remaining.isCancelled) pendingAgain.addIfAbsent(remaining)
+                        }
+                        requeueStaleProviderFlight(ownerRequest, flightKey, reason = "dispatch_race")
+                        requeued = true
+                        break
+                    }
+
+                    if (bitmap != null && !bitmap.isRecycled) {
+                        request.transitionTo(BitmapRequest.State.AVAILABLE)
+                    }
+                    deliverCallback(request, bitmap)
+                }
+            } finally {
+                deliveryLease?.release()
+                if (!requeued) {
+                    // Clear the exact old flight. ownerRequest.artworkToken is mutable when a stale
+                    // provider record is requeued, so never derive this key again in the finally.
+                    clearInFlightKey(flightKey, ownerRequest)
+                }
             }
-
-            for (request in requests) {
-                if (request.isCancelled) continue
-                if (!isPowerListRequestStillUseful(request)) continue
-                if (!isArtworkAcceptTokenCurrent(request)) {
-                    trace("CALLBACK_DROP_STALE_TOKEN seq=${request.traceSeq} cacheKey=${request.cacheKey.tailForTrace()} key=${request.key.tailForTrace()}")
-                    continue
-                }
-
-                if (bitmap != null && !bitmap.isRecycled) {
-                    request.transitionTo(BitmapRequest.State.AVAILABLE)
-                }
-
-                request.callback?.invoke(bitmap)
-            }
-
-            // Keep the source flight occupied until the main-thread delivery has detached all
-            // waiters. Clearing it in the worker's finally block creates a race: a recycled
-            // holder can enqueue a second decode before the first callback is dispatched, and the
-            // old callback then removes the new waiters. Release a source record only
-            // after its holder callbacks have been posted; mirror that ordering here.
-            clearInFlightForRequest(ownerRequest)
         }
     }
 
@@ -1290,26 +1869,65 @@ object BitmapProvider {
         }
     }
 
+    private fun deliverCallback(request: BitmapRequest, bitmap: Bitmap?) {
+        val wrapperCallback = request.wrapperCallback
+        if (wrapperCallback != null) {
+            if (bitmap == null || bitmap.isRecycled) {
+                wrapperCallback(null)
+                return
+            }
+            // Reference artwork consumers receive a provider wrapper, not a naked Bitmap that must be
+            // looked up again later.  Publish+retain the exact successful result atomically here.
+            // A busy main thread must not let the zero-ref cache entry be evicted between worker
+            // completion and artwork holder delivery.
+            val handle = memoryCache.acquire(request.cacheKey, request.surface)
+                ?: memoryCache.acquireBestForSource(
+                    exactKey = request.cacheKey,
+                    sourceKey = request.cacheSourceKey,
+                    surface = request.surface,
+                    minimumFallbackSide = 1,
+                )
+                ?: memoryCache.putAndAcquire(
+                    key = request.cacheKey,
+                    bitmap = bitmap,
+                    bucket = request.bucket,
+                    sourceKey = request.cacheSourceKey,
+                    surface = request.surface,
+                )
+            wrapperCallback(handle)
+            return
+        }
+        request.callback?.invoke(bitmap)
+    }
+
     private fun postNull(request: BitmapRequest, terminalNoArt: Boolean) {
         request.terminalNoArt = terminalNoArt
         mainHandler.post {
             if (!request.isCancelled && isArtworkAcceptTokenCurrent(request)) {
-                request.callback?.invoke(null)
+                deliverCallback(request, null)
             }
         }
     }
 
     private fun getPreferredConfig(): Bitmap.Config {
-        val forceArgb = try {
+        threadLocalPreferredConfigOverride.get()?.let { return it }
+        val requested24Bit = try {
             AppPreferences.AlbumArt.forceArgb8888
         } catch (_: Exception) {
             false
         }
+        val use24Bit = ArtworkResolutionPolicy.use24BitRgbEffective(
+            requested = requested24Bit,
+            maxMemoryBytes = Runtime.getRuntime().maxMemory(),
+        )
 
-        return if (forceArgb || !useHardwareBitmap) {
-            Bitmap.Config.ARGB_8888
-        } else {
-            Bitmap.Config.HARDWARE
+        // reference player build 1026 promotes both low/high provider configs to HARDWARE when its
+        // API/vendor/heap/aa_8888 gate is satisfied. Otherwise aa_8888 selects software ARGB_8888;
+        // with the preference disabled (or below the heap gate) the provider falls back to RGB_565.
+        return when {
+            use24Bit && useHardwareBitmap -> Bitmap.Config.HARDWARE
+            use24Bit -> Bitmap.Config.ARGB_8888
+            else -> Bitmap.Config.RGB_565
         }
     }
 
@@ -1328,13 +1946,23 @@ object BitmapProvider {
         allowHiRes: Boolean,
         priority: BitmapRequest.Priority
     ): AlbumArtTiers.Target {
-        val foregroundArtwork = priority.level <= BitmapRequest.Priority.LOADING_WIDGET.level
+        val lowProviderRequest = priority == BitmapRequest.Priority.LOADING_LIST ||
+            priority == BitmapRequest.Priority.LOADING_NOTIFICATION ||
+            (priority == BitmapRequest.Priority.LOADING_NOTIFICATION_HIGH && !allowHiRes)
+        if (lowProviderRequest) {
+            // reference player build 1026 owns one authoritative low wrapper side per provider: 512 on
+            // displays whose short side is >=1000px, otherwise 256. Holder/card dimensions do not
+            // create separate 192/384 wrapper tiers; the retained artwork view scales the retained wrapper.
+            val lowSide = appContext?.let(::artworkLowTargetSide)
+                ?: ArtworkResolutionPolicy.LARGE_DISPLAY_LOW_SIDE
+            return AlbumArtTiers.Target(lowSide, lowSide)
+        }
         return AlbumArtTiers.resolve(
             requestedWidth = baseWidth,
             requestedHeight = baseHeight,
             allowHiRes = allowHiRes,
             priority = priority,
-            highResEnabled = readHighResPreference() || foregroundArtwork
+            highResEnabled = readHighResPreference()
         )
     }
 
@@ -1342,7 +1970,7 @@ object BitmapProvider {
         return try {
             AppPreferences.AlbumArt.useHigherRes
         } catch (_: Exception) {
-            true
+            false
         }
     }
 
@@ -1391,7 +2019,10 @@ object BitmapProvider {
         }
         if (!artworkIndexerKeys.add(indexKey)) return
         val acceptToken = ArtworkRecordRegistry.tokenFor(
-            sourceVersionKey = storageKey,
+            sourceVersionKey = artworkAspectCacheSourceKey(
+                failureSourceKey,
+                ArtworkAspectPolicy.Crop,
+            ),
             cacheKey = indexKey,
             bucket = bucket,
             uiRevision = artworkRevision
@@ -1417,11 +2048,10 @@ object BitmapProvider {
             surface = ArtworkSurface.Indexer,
             artworkToken = acceptToken
         ).apply {
-            inFlightOwner = true
             this.traceSeq = this@BitmapProvider.traceSeq.incrementAndGet()
         }
 
-        if (!inFlightKeys.add(request.inFlightKey)) {
+        if (!claimProviderFlight(request)) {
             // A lightweight visible request is probably finishing this same cache key now. Retry
             // after it clears inFlight so the background artwork indexer still runs once.
             artworkIndexerKeys.remove(indexKey)
@@ -1438,11 +2068,8 @@ object BitmapProvider {
             }, 80L)
             return
         }
-        // Keep the indexer request as the owner of this source flight. A visible request may later
-        // promote it, but must never create a second decode owner for the same source/bucket.
-        inFlightOwnerRequests[request.inFlightKey] = request
-        inFlightPriorities[request.inFlightKey] = request.priority
-        inFlightTokens[request.inFlightKey] = request.artworkToken
+        // claimProviderFlight() atomically published this indexer request as the owner. A visible
+        // request may later promote it, but must never create a second decode owner for the bucket.
         enqueueRequest(request, handlers, forceFront = false)
     }
 
@@ -1452,7 +2079,7 @@ object BitmapProvider {
     ) {
         if (request.surface != ArtworkSurface.Indexer) return
         if (primaryBitmap == null || primaryBitmap.isRecycled) return
-        if (!isPowerListRequestStillUseful(request) || !isArtworkAcceptTokenCurrent(request)) return
+        if (!isArtworkAcceptTokenCurrent(request)) return
 
         val providerKey = request.key
         var filled = 0
@@ -1472,7 +2099,7 @@ object BitmapProvider {
             )
             if (bitmap == null || bitmap.isRecycled) continue
 
-            if (!isPowerListRequestStillUseful(request) || !isArtworkAcceptTokenCurrent(request)) {
+            if (!isArtworkAcceptTokenCurrent(request)) {
                 BitmapPool.recycle(bitmap)
                 break
             }
@@ -1497,21 +2124,27 @@ object BitmapProvider {
         targetWidth: Int,
         targetHeight: Int,
         surface: ArtworkSurface,
+        sourceDecodeAllowed: Boolean = surface.allowsSourceDecode,
         externalArtworkPath: String = "",
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
         onIndexerReady: ((Bitmap?) -> Unit)? = null
     ): ArtworkDecodeResult {
         return try {
-            decodeDiskThumbnail(storageKey, targetWidth, targetHeight)?.let {
+            val cacheStorageKey = artworkAspectCacheSourceKey(storageKey, aspectPolicy)
+            decodeDiskThumbnail(cacheStorageKey, targetWidth, targetHeight, aspectPolicy)?.let {
                 return ArtworkDecodeResult(bitmap = it, terminalNoArt = false)
             }
             if (storageKey != decodeKey) {
-                decodeDiskThumbnail(decodeKey, targetWidth, targetHeight)?.let {
+                decodeDiskThumbnail(artworkAspectCacheSourceKey(decodeKey, aspectPolicy), targetWidth, targetHeight, aspectPolicy)?.let {
                     return ArtworkDecodeResult(bitmap = it, terminalNoArt = false)
                 }
             }
 
-            if (!surface.allowsSourceDecode) {
-                if (surface.scheduleIndexerOnMiss) {
+            if (!sourceDecodeAllowed || !surface.allowsSourceDecode) {
+                // A moving visible row is deliberately different from Prefetch: it may consume an
+                // existing memory/disk wrapper immediately, but a cache miss must stay a placeholder
+                // until the row is stable. Do not spawn an Indexer flight while motion owns the CPU.
+                if (sourceDecodeAllowed && surface.scheduleIndexerOnMiss) {
                     scheduleArtworkIndex(
                         storageKey = storageKey,
                         decodeKey = decodeKey,
@@ -1538,26 +2171,51 @@ object BitmapProvider {
                 storageKey = storageKey,
                 targetWidth = targetWidth,
                 targetHeight = targetHeight,
-                acceptedKinds = indexedKinds
-            )?.let(SourceDecodeResult::Found) ?: when {
+                acceptedKinds = indexedKinds,
+                aspectPolicy = aspectPolicy,
+            ) ?: when {
+                decodeKey.startsWith("https://", ignoreCase = true) ||
+                    decodeKey.startsWith("http://", ignoreCase = true) -> {
+                    if (ArtworkSourceSelectionPolicy.isAudioArtworkKey(decodeKey)) {
+                        decodeRemoteAudioArtwork(
+                            storageKey = storageKey,
+                            url = decodeKey,
+                            targetWidth = targetWidth,
+                            targetHeight = targetHeight,
+                            aspectPolicy = aspectPolicy,
+                        )
+                    } else {
+                        decodeRemoteImage(
+                            storageKey = storageKey,
+                            url = decodeKey,
+                            targetWidth = targetWidth,
+                            targetHeight = targetHeight,
+                            aspectPolicy = aspectPolicy,
+                        )
+                    }
+                }
+
                 decodeKey.startsWith("file://") -> {
                     val path = pathPartFromArtworkKey(decodeKey.removePrefix("file://"))
-                    decodeFromAnyFilePath(storageKey, path, targetWidth, targetHeight)
+                    decodeFromAnyFilePath(storageKey, path, targetWidth, targetHeight, aspectPolicy)
                 }
 
                 decodeKey.startsWith("content://") -> {
-                    decodeFromUri(Uri.parse(decodeKey), targetWidth, targetHeight)
-                        ?.let(SourceDecodeResult::Found)
+                    val sourceString = canonicalFailureSourceKey(decodeKey)
+                    providerSourceCacheHit(storageKey, sourceString, targetWidth, targetHeight, aspectPolicy)
+                        ?.let { SourceDecodeResult.Found(it, sourceString) }
+                        ?: decodeFromUri(Uri.parse(decodeKey), targetWidth, targetHeight, aspectPolicy)
+                            ?.let { SourceDecodeResult.Found(it, sourceString) }
                         ?: SourceDecodeResult.TransientFailure
                 }
 
                 decodeKey.startsWith("audio://") -> {
                     val path = decodeKey.removePrefix("audio://").substringBefore("|")
-                    decodeFromAnyFilePath(storageKey, path, targetWidth, targetHeight)
+                    decodeFromAnyFilePath(storageKey, path, targetWidth, targetHeight, aspectPolicy)
                 }
 
                 else -> {
-                    decodeFromAnyFilePath(storageKey, pathPartFromArtworkKey(decodeKey), targetWidth, targetHeight)
+                    decodeFromAnyFilePath(storageKey, pathPartFromArtworkKey(decodeKey), targetWidth, targetHeight, aspectPolicy)
                 }
             }
             val withExternalFallback = if (
@@ -1570,7 +2228,8 @@ object BitmapProvider {
                     storageKey = storageKey,
                     artworkPath = externalArtworkPath,
                     targetWidth = targetWidth,
-                    targetHeight = targetHeight
+                    targetHeight = targetHeight,
+                    aspectPolicy = aspectPolicy,
                 ) ?: decoded
             } else {
                 decoded
@@ -1580,18 +2239,23 @@ object BitmapProvider {
                     val decodedBitmap = withExternalFallback.bitmap
                     if (decodedBitmap.isRecycled) return ArtworkDecodeResult.LightweightMiss
                     if (surface.allowDiskThumbnailWrite) {
-                        saveDiskThumbnailAsync(storageKey, targetWidth, targetHeight, decodedBitmap)
+                        saveDiskThumbnailAsync(cacheStorageKey, targetWidth, targetHeight, decodedBitmap)
                     }
                     if (surface == ArtworkSurface.Indexer) {
                         // The row request callback and provider memory/disk caches are enough to make
                         // visible artwork appear.  A global revision per indexer completion makes all
-                        // PowerList rows rebind while scrolling, which is the flicker we are fixing.
+                        // VirtualList rows rebind while scrolling, which is the flicker we are fixing.
                         trace("INDEXER_READY revision=$artworkRevision provider=${storageKey.tailForTrace()} decode=${decodeKey.tailForTrace()}")
                     }
                     return ArtworkDecodeResult(
                         bitmap = decodedBitmap,
                         terminalNoArt = false,
-                        coalesceSourceTiers = surface == ArtworkSurface.Indexer || surface == ArtworkSurface.Playback || surface == ArtworkSurface.Fullscreen
+                        // Playback/fullscreen publish one authoritative wrapper. Expanding it into
+                        // three sibling decode tiers after every song switch was the largest
+                        // avoidable CPU/power spike in the Raw pipeline. reference player promotes the
+                        // same low/high record instead; only the background indexer coalesces.
+                        coalesceSourceTiers = surface == ArtworkSurface.Indexer,
+                        providerSourceString = withExternalFallback.providerSourceString,
                     )
                 }
 
@@ -1622,7 +2286,10 @@ object BitmapProvider {
     }
 
     private sealed interface SourceDecodeResult {
-        data class Found(val bitmap: Bitmap) : SourceDecodeResult
+        data class Found(
+            val bitmap: Bitmap,
+            val providerSourceString: String,
+        ) : SourceDecodeResult
         data object ConfirmedAbsent : SourceDecodeResult
         data object TransientFailure : SourceDecodeResult
     }
@@ -1631,19 +2298,27 @@ object BitmapProvider {
         storageKey: String,
         artworkPath: String,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
     ): SourceDecodeResult? {
         val cleanPath = pathPartFromArtworkKey(artworkPath.trim())
         if (cleanPath.isBlank()) return null
         if (cleanPath.startsWith("content://", ignoreCase = true)) {
-            return decodeFromUri(Uri.parse(cleanPath), targetWidth, targetHeight)
-                ?.let(SourceDecodeResult::Found)
+            val sourceString = canonicalFailureSourceKey(cleanPath)
+            return providerSourceCacheHit(storageKey, sourceString, targetWidth, targetHeight, aspectPolicy)
+                ?.let { SourceDecodeResult.Found(it, sourceString) }
+                ?: decodeFromUri(Uri.parse(cleanPath), targetWidth, targetHeight, aspectPolicy)
+                    ?.let { SourceDecodeResult.Found(it, sourceString) }
                 ?: SourceDecodeResult.TransientFailure
         }
         val file = File(cleanPath)
         if (!file.isFile || !file.canRead()) return SourceDecodeResult.TransientFailure
         if (!isImageFile(cleanPath)) return SourceDecodeResult.ConfirmedAbsent
-        val bitmap = decodeImageFile(cleanPath, targetWidth, targetHeight)
+        val sourceString = canonicalFailureSourceKey(cleanPath)
+        providerSourceCacheHit(storageKey, sourceString, targetWidth, targetHeight, aspectPolicy)?.let {
+            return SourceDecodeResult.Found(it, sourceString)
+        }
+        val bitmap = decodeImageFile(cleanPath, targetWidth, targetHeight, aspectPolicy)
         if (bitmap == null || bitmap.isRecycled) return SourceDecodeResult.ConfirmedAbsent
         // The audio probe above keeps embedded art authoritative. This record is only a fallback
         // after that probe confirms absence, preserving source-record precedence.
@@ -1653,14 +2328,137 @@ object BitmapProvider {
             kind = ArtworkSourceSelectionPolicy.IndexedSourceKind.DirectImage,
             shareAcrossEntity = false
         )
-        return SourceDecodeResult.Found(bitmap)
+        return SourceDecodeResult.Found(
+            bitmap = bitmap,
+            providerSourceString = sourceString,
+        )
+    }
+
+    /**
+     * Resolve remote artwork into the same provider/source-record lifecycle as local artwork.
+     * The encoded response is cached only as a provider backing source; decoded ownership remains
+     * in [SizeSlotCache]/[ArtworkHandle], so there is no second image-loader memory or disk cache.
+     */
+    private fun decodeRemoteImage(
+        storageKey: String,
+        url: String,
+        targetWidth: Int,
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
+    ): SourceDecodeResult {
+        val context = appContext ?: return SourceDecodeResult.TransientFailure
+        val sourceDir = File(context.cacheDir, REMOTE_SOURCE_DIR)
+        if (!sourceDir.exists() && !sourceDir.mkdirs()) return SourceDecodeResult.TransientFailure
+        val sourceFile = File(sourceDir, "${stableDigest(url)}.source")
+
+        if (!sourceFile.isFile || sourceFile.length() <= 0L) {
+            val temp = File(sourceDir, "${sourceFile.name}.tmp-${Thread.currentThread().id}")
+            val downloaded = runCatching {
+                val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 8_000
+                    readTimeout = 12_000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", "RawSMusic")
+                }
+                try {
+                    val code = connection.responseCode
+                    if (code !in 200..299) return@runCatching false
+                    val declaredLength = connection.contentLengthLong
+                    if (declaredLength > REMOTE_SOURCE_MAX_BYTES) return@runCatching false
+                    var copied = 0L
+                    connection.inputStream.use { input ->
+                        temp.outputStream().buffered().use { output ->
+                            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                            while (true) {
+                                val read = input.read(buffer)
+                                if (read <= 0) break
+                                copied += read
+                                if (copied > REMOTE_SOURCE_MAX_BYTES) return@runCatching false
+                                output.write(buffer, 0, read)
+                            }
+                        }
+                    }
+                    if (copied <= 0L) return@runCatching false
+                    if (!temp.renameTo(sourceFile) && !sourceFile.isFile) return@runCatching false
+                    true
+                } finally {
+                    connection.disconnect()
+                    if (temp.exists() && sourceFile.exists()) temp.delete()
+                }
+            }.getOrElse {
+                temp.delete()
+                false
+            }
+            if (!downloaded || !sourceFile.isFile || sourceFile.length() <= 0L) {
+                temp.delete()
+                return SourceDecodeResult.TransientFailure
+            }
+        }
+
+        providerSourceCacheHit(storageKey, url, targetWidth, targetHeight, aspectPolicy)?.let {
+            return SourceDecodeResult.Found(it, url)
+        }
+        val bitmap = decodeImageFile(sourceFile.absolutePath, targetWidth, targetHeight, aspectPolicy)
+            ?: return SourceDecodeResult.TransientFailure
+        return SourceDecodeResult.Found(bitmap, url)
+    }
+
+    /**
+     * Remote audio is not a remote image. Extract its embedded picture through the authenticated
+     * FFmpeg lane registered by the source owner instead of downloading the whole audio object or
+     * handing the URL to MediaMetadataRetriever/TagLib without credentials.
+     */
+    private fun decodeRemoteAudioArtwork(
+        storageKey: String,
+        url: String,
+        targetWidth: Int,
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
+    ): SourceDecodeResult {
+        providerSourceCacheHit(storageKey, url, targetWidth, targetHeight, aspectPolicy)?.let {
+            return SourceDecodeResult.Found(it, url)
+        }
+
+        val remote = RemoteHttpStreamRegistry.lookup(url) ?: return SourceDecodeResult.TransientFailure
+        val context = appContext ?: return SourceDecodeResult.TransientFailure
+        val sourceDir = File(context.cacheDir, REMOTE_SOURCE_DIR)
+        if (!sourceDir.exists() && !sourceDir.mkdirs()) return SourceDecodeResult.TransientFailure
+        val sourceFile = File(sourceDir, "${stableDigest(url)}.embedded")
+
+        if (!sourceFile.isFile || sourceFile.length() <= 0L) {
+            sourceFile.delete()
+            val result = runCatching {
+                val resolvedUrl = remote.resolveUrl(url)
+                FFmpegBridge.extractCover(
+                    inputPath = resolvedUrl,
+                    outputPath = sourceFile.absolutePath,
+                    headers = remote.resolveHeaders(url),
+                    userAgent = remote.userAgent,
+                )
+            }.getOrDefault(-1)
+            if (result != 0 || !sourceFile.isFile || sourceFile.length() <= 0L) {
+                sourceFile.delete()
+                return SourceDecodeResult.ConfirmedAbsent
+            }
+        }
+
+        val bitmap = decodeImageFile(sourceFile.absolutePath, targetWidth, targetHeight, aspectPolicy)
+            ?: return SourceDecodeResult.ConfirmedAbsent
+        rememberReusableArtworkSource(
+            storageKey,
+            sourceFile.absolutePath,
+            ArtworkSourceSelectionPolicy.IndexedSourceKind.Embedded,
+            shareAcrossEntity = false,
+        )
+        return SourceDecodeResult.Found(bitmap, url)
     }
 
     private fun decodeFromAnyFilePath(
         storageKey: String,
         path: String,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
     ): SourceDecodeResult {
         val cleanPath = pathPartFromArtworkKey(path)
         val file = File(cleanPath)
@@ -1670,13 +2468,17 @@ object BitmapProvider {
         }
 
         if (isImageFile(cleanPath)) {
+            val sourceString = canonicalFailureSourceKey(cleanPath)
+            providerSourceCacheHit(storageKey, sourceString, targetWidth, targetHeight, aspectPolicy)?.let {
+                return SourceDecodeResult.Found(it, sourceString)
+            }
             val bitmap = timedDecodeStage(
                 stage = RawArtworkPolicy.DecodeStage.ImageFile,
                 key = cleanPath,
                 targetWidth = targetWidth,
                 targetHeight = targetHeight
             ) {
-                decodeImageFile(cleanPath, targetWidth, targetHeight)?.also {
+                decodeImageFile(cleanPath, targetWidth, targetHeight, aspectPolicy)?.also {
                     rememberReusableArtworkSource(
                         storageKey,
                         cleanPath,
@@ -1685,14 +2487,16 @@ object BitmapProvider {
                     )
                 }
             }
-            return bitmap?.let(SourceDecodeResult::Found) ?: SourceDecodeResult.ConfirmedAbsent
+            return bitmap?.let { SourceDecodeResult.Found(it, sourceString) }
+                ?: SourceDecodeResult.ConfirmedAbsent
         }
 
         return decodeAudioFileWithPolicyOrder(
             storageKey = storageKey,
             cleanPath = cleanPath,
             targetWidth = targetWidth,
-            targetHeight = targetHeight
+            targetHeight = targetHeight,
+            aspectPolicy = aspectPolicy,
         )
     }
 
@@ -1700,8 +2504,24 @@ object BitmapProvider {
         storageKey: String,
         cleanPath: String,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
     ): SourceDecodeResult {
+        val embeddedSourceString = canonicalFailureSourceKey(cleanPath)
+        providerSourceCacheHit(storageKey, embeddedSourceString, targetWidth, targetHeight, aspectPolicy)?.let {
+            return SourceDecodeResult.Found(it, embeddedSourceString)
+        }
+
+        restorePersistedEmbeddedArtworkSource(
+            storageKey = storageKey,
+            cleanPath = cleanPath,
+            targetWidth = targetWidth,
+            targetHeight = targetHeight,
+            aspectPolicy = aspectPolicy,
+        )?.let {
+            return SourceDecodeResult.Found(it, embeddedSourceString)
+        }
+
         return when (val result = AudioArtworkDecodeCoordinator.decode(
             providerKey = storageKey,
             decodeEmbedded = { stage ->
@@ -1713,13 +2533,13 @@ object BitmapProvider {
                 ) {
                     when (stage) {
                         RawArtworkPolicy.DecodeStage.RegionHandle ->
-                            decodeEmbeddedWithRegionHandle(cleanPath, targetWidth, targetHeight)
+                            decodeEmbeddedWithRegionHandle(cleanPath, targetWidth, targetHeight, aspectPolicy)
                         RawArtworkPolicy.DecodeStage.NativeSource ->
-                            decodeEmbeddedWithNativeTagLib(storageKey, cleanPath, targetWidth, targetHeight)
+                            decodeEmbeddedWithNativeTagLib(storageKey, cleanPath, targetWidth, targetHeight, aspectPolicy)
                         RawArtworkPolicy.DecodeStage.Ffmpeg ->
-                            decodeCoverWithFfmpeg(cleanPath, targetWidth, targetHeight)
+                            decodeCoverWithFfmpeg(cleanPath, targetWidth, targetHeight, aspectPolicy)
                         RawArtworkPolicy.DecodeStage.MediaMetadataRetriever ->
-                            decodeEmbeddedWithMediaMetadataRetriever(cleanPath, targetWidth, targetHeight)
+                            decodeEmbeddedWithMediaMetadataRetriever(cleanPath, targetWidth, targetHeight, aspectPolicy)
                         RawArtworkPolicy.DecodeStage.FolderCover,
                         RawArtworkPolicy.DecodeStage.ImageFile,
                         RawArtworkPolicy.DecodeStage.ContentImage,
@@ -1737,7 +2557,8 @@ object BitmapProvider {
                         storageKey = storageKey,
                         audioPath = cleanPath,
                         targetWidth = targetWidth,
-                        targetHeight = targetHeight
+                        targetHeight = targetHeight,
+                        aspectPolicy = aspectPolicy,
                     )
                 }
             },
@@ -1746,8 +2567,22 @@ object BitmapProvider {
                 if (!bitmap.isRecycled) BitmapPool.recycle(bitmap)
             }
         )) {
-            is AudioArtworkDecodeCoordinator.DecodeResult.Found ->
-                SourceDecodeResult.Found(result.value)
+            is AudioArtworkDecodeCoordinator.DecodeResult.Found -> {
+                val folderSource = if (
+                    ArtworkSourceIndex.embeddedStateFor(storageKey) == ArtworkSourceAuthority.EmbeddedState.Absent
+                ) {
+                    ArtworkSourceIndex.sourcePathFor(
+                        storageKey,
+                        ArtworkSourceSelectionPolicy.folderIndexedKinds,
+                    )
+                } else {
+                    null
+                }
+                val sourceString = folderSource
+                    ?.let(::canonicalFailureSourceKey)
+                    ?: embeddedSourceString
+                SourceDecodeResult.Found(result.value, sourceString)
+            }
             AudioArtworkDecodeCoordinator.DecodeResult.ConfirmedAbsent ->
                 SourceDecodeResult.ConfirmedAbsent
             AudioArtworkDecodeCoordinator.DecodeResult.TransientFailure ->
@@ -1777,15 +2612,21 @@ object BitmapProvider {
         targetWidth: Int,
         targetHeight: Int,
         acceptedKinds: Set<ArtworkSourceSelectionPolicy.IndexedSourceKind> =
-            ArtworkSourceSelectionPolicy.allIndexedKinds
-    ): Bitmap? {
+            ArtworkSourceSelectionPolicy.allIndexedKinds,
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
+    ): SourceDecodeResult.Found? {
         val sourcePath = ArtworkSourceIndex.sourcePathFor(storageKey, acceptedKinds) ?: return null
-        return timedDecodeStage(
+        val sourceString = canonicalFailureSourceKey(sourcePath)
+        providerSourceCacheHit(storageKey, sourceString, targetWidth, targetHeight, aspectPolicy)?.let {
+            return SourceDecodeResult.Found(it, sourceString)
+        }
+        val bitmap = timedDecodeStage(
             stage = RawArtworkPolicy.DecodeStage.ImageFile,
             key = sourcePath,
             targetWidth = targetWidth,
             targetHeight = targetHeight
-        ) { decodeImageFile(sourcePath, targetWidth, targetHeight) }
+        ) { decodeImageFile(sourcePath, targetWidth, targetHeight, aspectPolicy) } ?: return null
+        return SourceDecodeResult.Found(bitmap, sourceString)
     }
 
     private inline fun timedFolderDecodeStage(
@@ -1794,20 +2635,7 @@ object BitmapProvider {
         targetHeight: Int,
         block: () -> AudioArtworkDecodeCoordinator.FolderCandidate<Bitmap>?
     ): AudioArtworkDecodeCoordinator.FolderCandidate<Bitmap>? {
-        val t0 = android.os.SystemClock.uptimeMillis()
-        val candidate = block()
-        val elapsed = android.os.SystemClock.uptimeMillis() - t0
-        val bitmap = candidate?.value
-        trace(
-            "ARTWORK_STAGE stage=${RawArtworkPolicy.DecodeStage.FolderCover} result=${bitmap != null && !bitmap.isRecycled} elapsed=${elapsed}ms size=${targetWidth}x${targetHeight} key=${key.tailForTrace()}"
-        )
-        if (ENABLE_BITMAP_TRACE) {
-            Log.w(
-                ART_LOG_TAG,
-                "ARTWORK_STAGE stage=${RawArtworkPolicy.DecodeStage.FolderCover} result=${bitmap != null && !bitmap.isRecycled} elapsed=${elapsed}ms target=${targetWidth}x${targetHeight} key=${key.takeLast(60)}"
-            )
-        }
-        return candidate
+        return block()
     }
 
     private inline fun timedDecodeStage(
@@ -1817,21 +2645,9 @@ object BitmapProvider {
         targetHeight: Int,
         block: () -> Bitmap?
     ): Bitmap? {
-        val t0 = android.os.SystemClock.uptimeMillis()
-        val bitmap = withSourceExtractionPermit(stage, key, targetWidth, targetHeight) {
+        return withSourceExtractionPermit(stage, key, targetWidth, targetHeight) {
             block()
         }
-        val elapsed = android.os.SystemClock.uptimeMillis() - t0
-        trace(
-            "ARTWORK_STAGE stage=$stage result=${bitmap != null && !bitmap.isRecycled} elapsed=${elapsed}ms size=${targetWidth}x${targetHeight} key=${key.tailForTrace()}"
-        )
-        if (ENABLE_BITMAP_TRACE) {
-            Log.w(
-                ART_LOG_TAG,
-                "ARTWORK_STAGE stage=$stage result=${bitmap != null && !bitmap.isRecycled} elapsed=${elapsed}ms target=${targetWidth}x${targetHeight} key=${key.takeLast(60)}"
-            )
-        }
-        return bitmap
     }
 
     private inline fun withSourceExtractionPermit(
@@ -1850,7 +2666,8 @@ object BitmapProvider {
     private fun decodeImageFile(
         filePath: String,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): Bitmap? {
         return try {
             val opts = threadLocalDecodeOptions.get()!!
@@ -1894,21 +2711,38 @@ object BitmapProvider {
                 requestedSide,
                 sourceTierSide
             )
-            if (sourceCacheKey != null && sourceSide >= maxOf(targetWidth, targetHeight)) {
-                DecodedArtworkSourceCache.get(
+            val config = getPreferredConfig()
+            val useDecodedSourceRescaleCache =
+                threadLocalBypassProviderBitmapReuse.get() != true &&
+                    HardwareArtworkPipelinePolicy.allowDecodedSourceRescaleCache(
+                        isHardwarePreferred = config == Bitmap.Config.HARDWARE,
+                    )
+            if (
+                useDecodedSourceRescaleCache &&
+                sourceCacheKey != null &&
+                sourceSide >= maxOf(targetWidth, targetHeight)
+            ) {
+                val cachedScaled = DecodedArtworkSourceCache.withBitmap(
                     key = sourceCacheKey,
                     minimumSide = maxOf(targetWidth, targetHeight)
-                )?.let { source ->
+                ) { source ->
                     // A low-res source record may still be present when a higher tier arrives.
                     // Never turn that into an upscaled cover; let the source record upgrade.
                     if (maxOf(source.width, source.height) >= maxOf(targetWidth, targetHeight)) {
-                        return scaleBitmapCenterCrop(source, targetWidth, targetHeight)
+                        scaleBitmapDetachedFromSource(
+                            source = source,
+                            targetWidth = targetWidth,
+                            targetHeight = targetHeight,
+                            aspectPolicy = aspectPolicy,
+                        )
+                    } else {
+                        null
                     }
                 }
+                if (cachedScaled != null && !cachedScaled.isRecycled) return cachedScaled
             }
 
             // real decode pass
-            val config = getPreferredConfig()
             opts.inJustDecodeBounds = false
             opts.inSampleSize = if (sourceCacheKey != null) {
                 calculateSourceInSampleSize(origWidth, origHeight, sourceSide)
@@ -1925,46 +2759,57 @@ object BitmapProvider {
 
             val decoded = BitmapFactory.decodeFile(filePath, opts) ?: return null
 
-            if (sourceCacheKey != null && sourceSide >= maxOf(targetWidth, targetHeight)) {
+            if (
+                useDecodedSourceRescaleCache &&
+                sourceCacheKey != null &&
+                sourceSide >= maxOf(targetWidth, targetHeight)
+            ) {
                 val retained = DecodedArtworkSourceCache.put(sourceCacheKey, decoded)
                 if (retained) {
-                    return scaleBitmapCenterCrop(decoded, targetWidth, targetHeight)
+                    val scaled = DecodedArtworkSourceCache.withBitmap(
+                        key = sourceCacheKey,
+                        minimumSide = maxOf(targetWidth, targetHeight),
+                    ) { source ->
+                        scaleBitmapDetachedFromSource(
+                            source = source,
+                            targetWidth = targetWidth,
+                            targetHeight = targetHeight,
+                            aspectPolicy = aspectPolicy,
+                        )
+                    }
+                    if (scaled != null && !scaled.isRecycled) return scaled
+                    return null
                 }
             }
 
-            normalizeDecodedBitmap(decoded, targetWidth, targetHeight)
+            normalizeDecodedBitmap(decoded, targetWidth, targetHeight, aspectPolicy)
+        } catch (e: OutOfMemoryError) {
+            // Artwork is optional.  Do not let one oversized/corrupt cover terminate playback or
+            // the whole process; the caller will use its placeholder/fallback path.
+            Log.e(TAG, "decodeImageFile out of memory: ${filePath.takeLast(120)}", e)
+            return null
         } catch (e: Exception) {
             Log.e(TAG, "decodeImageFile failed: $filePath", e)
-            throw e
+            return null
         }
     }
 
     private fun decodeEmbeddedWithRegionHandle(
         filePath: String,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
     ): Bitmap? {
-        return try {
-            val cleanPath = pathPartFromArtworkKey(filePath)
-            val region = EmbeddedArtworkRegion.find(cleanPath) ?: return null
-            val t0 = android.os.SystemClock.uptimeMillis()
-            val decoded = decodeImageRegion(region, targetWidth, targetHeight)
-            val elapsed = android.os.SystemClock.uptimeMillis() - t0
-            Log.d(
-                TAG,
-                "REGION_TAG_ART key=${cleanPath.takeLast(40)} result=${decoded != null} format=${region.format} mime=${region.mime ?: "?"} offset=${region.offset} bytes=${region.length} ${elapsed}ms"
-            )
-            decoded
-        } catch (e: Exception) {
-            Log.d(TAG, "Region artwork failed: ${filePath.takeLast(80)}, ${e.message}")
-            throw e
-        }
+        val cleanPath = pathPartFromArtworkKey(filePath)
+        val region = EmbeddedArtworkRegion.find(cleanPath) ?: return null
+        return decodeImageRegion(region, targetWidth, targetHeight, aspectPolicy)
     }
 
     private fun decodeImageRegion(
         region: EmbeddedArtworkRegion.Handle,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
     ): Bitmap? {
         val opts = threadLocalDecodeOptions.get()!!
         opts.inJustDecodeBounds = true
@@ -1995,7 +2840,7 @@ object BitmapProvider {
             BitmapFactory.decodeStream(stream, null, opts)
         } ?: return null
 
-        return normalizeDecodedBitmap(decoded, targetWidth, targetHeight)
+        return normalizeDecodedBitmap(decoded, targetWidth, targetHeight, aspectPolicy)
     }
 
     private fun prepareNativeEmbeddedArtworkSource(filePath: String): EmbeddedArtworkSourceCache.Handle? {
@@ -2015,11 +2860,58 @@ object BitmapProvider {
         }
     }
 
+    /**
+     * Restore the positive embedded-source record from the previous process before probing the
+     * audio container again. The backing artifact is keyed by the concrete file version, so this
+     * path cannot resurrect artwork after the source file has changed.
+     */
+    private fun restorePersistedEmbeddedArtworkSource(
+        storageKey: String,
+        cleanPath: String,
+        targetWidth: Int,
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
+    ): Bitmap? {
+        val context = appContext ?: return null
+        if (cleanPath.isBlank()) return null
+        val sourceVersionKey = canonicalFailureSourceKey(cleanPath)
+        val handle = EmbeddedArtworkSourceCache.findExisting(
+            context = context,
+            audioPath = cleanPath,
+            sourceKey = sourceVersionKey,
+        ) ?: return null
+
+        val bitmap = decodeImageFile(
+            filePath = handle.filePath,
+            targetWidth = targetWidth,
+            targetHeight = targetHeight,
+            aspectPolicy = aspectPolicy,
+        )
+        if (bitmap == null || bitmap.isRecycled) {
+            // A truncated cache file is not positive artwork evidence. Remove only this exact
+            // source-version artifact and allow the normal extraction pipeline to rebuild it.
+            EmbeddedArtworkSourceCache.removeForSources(context, listOf(sourceVersionKey))
+            return null
+        }
+
+        rememberReusableArtworkSource(
+            storageKey = storageKey,
+            sourcePath = handle.filePath,
+            kind = ArtworkSourceSelectionPolicy.IndexedSourceKind.Embedded,
+            shareAcrossEntity = false,
+        )
+        trace(
+            "SOURCE_RESTORE_COLD provider=${storageKey.tailForTrace()} source=${sourceVersionKey.tailForTrace()} bytes=${handle.bytes}"
+        )
+        return bitmap
+    }
+
     private fun decodeFromReusableArtworkSource(
         storageKey: String,
         decodeKey: String,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): Bitmap? {
         val audioKey = ArtworkSourceSelectionPolicy.isAudioArtworkKey(decodeKey)
         val indexedKinds = if (audioKey) {
@@ -2031,14 +2923,15 @@ object BitmapProvider {
             storageKey = storageKey,
             targetWidth = targetWidth,
             targetHeight = targetHeight,
-            acceptedKinds = indexedKinds
-        )?.let { return it }
+            acceptedKinds = indexedKinds,
+            aspectPolicy = aspectPolicy,
+        )?.let { return it.bitmap }
 
         val cleanPath = pathPartFromArtworkKey(decodeKey)
         if (cleanPath.isBlank()) return null
         val file = File(cleanPath)
         if (file.exists() && file.canRead() && isImageFile(cleanPath)) {
-            return decodeImageFile(cleanPath, targetWidth, targetHeight)?.also {
+            return decodeImageFile(cleanPath, targetWidth, targetHeight, aspectPolicy)?.also {
                 rememberReusableArtworkSource(
                     storageKey,
                     cleanPath,
@@ -2056,7 +2949,8 @@ object BitmapProvider {
                 storageKey = storageKey,
                 cleanPath = cleanPath,
                 targetWidth = targetWidth,
-                targetHeight = targetHeight
+                targetHeight = targetHeight,
+                aspectPolicy = aspectPolicy,
             )) {
                 is SourceDecodeResult.Found -> result.bitmap
                 SourceDecodeResult.ConfirmedAbsent,
@@ -2076,13 +2970,14 @@ object BitmapProvider {
         storageKey: String,
         filePath: String,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
     ): Bitmap? {
         return try {
             val sourceHandle = prepareNativeEmbeddedArtworkSource(filePath) ?: return null
 
             val t0 = android.os.SystemClock.uptimeMillis()
-            val decoded = decodeImageFile(sourceHandle.filePath, targetWidth, targetHeight)
+            val decoded = decodeImageFile(sourceHandle.filePath, targetWidth, targetHeight, aspectPolicy)
             val elapsed = android.os.SystemClock.uptimeMillis() - t0
             Log.d(
                 TAG,
@@ -2106,7 +3001,8 @@ object BitmapProvider {
     private fun decodeEmbeddedWithMediaMetadataRetriever(
         filePath: String,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
     ): Bitmap? {
         return try {
             val t0 = android.os.SystemClock.uptimeMillis()
@@ -2120,7 +3016,7 @@ object BitmapProvider {
                 // cutoff is not a source-record rule and can reject tiny legal covers.
                 if (data.isEmpty()) return null
 
-                val bitmap = decodeImageBytes(data, targetWidth, targetHeight)
+                val bitmap = decodeImageBytes(data, targetWidth, targetHeight, aspectPolicy)
                 val elapsed = android.os.SystemClock.uptimeMillis() - t0
 
                 Log.d(
@@ -2144,7 +3040,8 @@ object BitmapProvider {
     private fun decodeImageBytes(
         data: ByteArray,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
     ): Bitmap? {
         return try {
             val opts = threadLocalDecodeOptions.get()!!
@@ -2176,7 +3073,7 @@ object BitmapProvider {
 
             val decoded = BitmapFactory.decodeByteArray(data, 0, data.size, opts) ?: return null
 
-            normalizeDecodedBitmap(decoded, targetWidth, targetHeight)
+            normalizeDecodedBitmap(decoded, targetWidth, targetHeight, aspectPolicy)
         } catch (e: Exception) {
             Log.e(TAG, "decodeImageBytes failed", e)
             throw e
@@ -2186,7 +3083,8 @@ object BitmapProvider {
     private fun decodeFromUri(
         uri: Uri,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): Bitmap? {
         val isAlbumArtUri = uri.toString().contains("albumart", ignoreCase = true)
 
@@ -2197,7 +3095,7 @@ object BitmapProvider {
             return null
         }
 
-        decodeImageContentUri(uri, targetWidth, targetHeight)?.let { return it }
+        decodeImageContentUri(uri, targetWidth, targetHeight, aspectPolicy)?.let { return it }
 
         return null
     }
@@ -2205,7 +3103,8 @@ object BitmapProvider {
     private fun decodeImageContentUri(
         uri: Uri,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
     ): Bitmap? {
         val context = appContext ?: return null
 
@@ -2242,7 +3141,7 @@ object BitmapProvider {
                 BitmapFactory.decodeStream(stream, null, opts)
             } ?: return null
 
-            normalizeDecodedBitmap(decoded, targetWidth, targetHeight)
+            normalizeDecodedBitmap(decoded, targetWidth, targetHeight, aspectPolicy)
         } catch (e: Exception) {
             Log.d(TAG, "decodeImageContentUri failed: $uri, ${e.message}")
             null
@@ -2264,7 +3163,8 @@ object BitmapProvider {
     private fun decodeCoverWithFfmpeg(
         audioPath: String,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
     ): Bitmap? {
         val context = appContext ?: return null
 
@@ -2290,7 +3190,7 @@ object BitmapProvider {
                 }
             }
 
-            decodeImageFile(coverFile.absolutePath, targetWidth, targetHeight)
+            decodeImageFile(coverFile.absolutePath, targetWidth, targetHeight, aspectPolicy)
         } catch (e: Exception) {
             Log.e(TAG, "decodeCoverWithFfmpeg failed: ${audioPath.takeLast(80)}", e)
             throw e
@@ -2301,14 +3201,18 @@ object BitmapProvider {
         storageKey: String,
         audioPath: String?,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
     ): AudioArtworkDecodeCoordinator.FolderCandidate<Bitmap>? {
         val indexedPath = ArtworkSourceIndex.sourcePathFor(
             storageKey,
             ArtworkSourceSelectionPolicy.folderIndexedKinds
         )
         val file = indexedPath?.let(::File) ?: FolderArtworkLocator.find(audioPath) ?: return null
-        val bitmap = decodeImageFile(file.absolutePath, targetWidth, targetHeight) ?: return null
+        val sourceString = canonicalFailureSourceKey(file.absolutePath)
+        val bitmap = providerSourceCacheHit(storageKey, sourceString, targetWidth, targetHeight, aspectPolicy)
+            ?: decodeImageFile(file.absolutePath, targetWidth, targetHeight, aspectPolicy)
+            ?: return null
         return AudioArtworkDecodeCoordinator.FolderCandidate(
             value = bitmap,
             sourcePath = file.absolutePath
@@ -2318,14 +3222,15 @@ object BitmapProvider {
     private fun decodeDiskThumbnail(
         key: String,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): Bitmap? {
         val file = diskThumbnailFile(key, targetWidth, targetHeight) ?: return null
         if (!file.isFile || file.length() <= 0) return null
 
         return try {
             val t0 = android.os.SystemClock.uptimeMillis()
-            val bitmap = decodeImageFile(file.absolutePath, targetWidth, targetHeight)
+            val bitmap = decodeImageFile(file.absolutePath, targetWidth, targetHeight, aspectPolicy)
             val elapsed = android.os.SystemClock.uptimeMillis() - t0
             if (bitmap != null && !bitmap.isRecycled) {
                 trace("DISK_THUMB_HIT elapsed=${elapsed}ms size=${targetWidth}x${targetHeight} key=${key.tailForTrace()}")
@@ -2348,6 +3253,14 @@ object BitmapProvider {
         bitmap: Bitmap
     ) {
         if (bitmap.isRecycled) return
+        val hardwareBitmap = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            bitmap.config == Bitmap.Config.HARDWARE
+        if (!HardwareArtworkPipelinePolicy.allowDiskThumbnailWrite(hardwareBitmap)) {
+            // Never turn the reconstructable disk thumbnail cache into a GPU readback path.
+            // HARDWARE wrappers stay resident and are regenerated from their encoded source on a
+            // later cold miss; software results keep the existing low-priority JPEG writer.
+            return
+        }
         val dedupKey = "${key}_${targetWidth}x${targetHeight}"
         if (!diskWriterPendingKeys.add(dedupKey)) return // already queued
         diskWriterExecutor.execute {
@@ -2366,17 +3279,15 @@ object BitmapProvider {
         bitmap: Bitmap
     ) {
         if (bitmap.isRecycled) return
+        val hardwareBitmap = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            bitmap.config == Bitmap.Config.HARDWARE
+        if (!HardwareArtworkPipelinePolicy.allowDiskThumbnailWrite(hardwareBitmap)) return
         val file = diskThumbnailFile(key, targetWidth, targetHeight) ?: return
         if (file.isFile && file.length() > 0) return
 
         try {
-            val source = if (Build.VERSION.SDK_INT >= 26 && bitmap.config == Bitmap.Config.HARDWARE) {
-                bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return
-            } else {
-                bitmap
-            }
             file.outputStream().use { output ->
-                source.compress(Bitmap.CompressFormat.JPEG, 88, output)
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 88, output)
             }
             if (file.length() <= 0) {
                 file.delete()
@@ -2423,7 +3334,6 @@ object BitmapProvider {
                 remaining--
             }
         }
-        Log.i(ART_LOG_TAG, "DISK_THUMB_PRUNE files=$remaining bytes=$totalBytes")
         trace("DISK_THUMB_PRUNE files=$remaining bytes=$totalBytes")
     }
 
@@ -2431,18 +3341,106 @@ object BitmapProvider {
     private fun normalizeDecodedBitmap(
         decoded: Bitmap,
         targetWidth: Int,
-        targetHeight: Int
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
     ): Bitmap? {
         if (decoded.isRecycled) return null
-        if (decoded.width == targetWidth && decoded.height == targetHeight) {
+        val hardwareBitmap = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            decoded.config == Bitmap.Config.HARDWARE
+        if (HardwareArtworkPipelinePolicy.keepDecoderGeometry(hardwareBitmap)) {
+            // Keep the decoder-owned low/high wrapper and let the artwork view transform it.
+            // Raw's View lane uses BitmapShader center-crop and Compose surfaces use ContentScale,
+            // so forcing an exact provider size here only causes a GPU->CPU readback followed by
+            // a software rescale. Keep the sampled decoder geometry for both Crop and KeepAspect.
             return decoded
         }
+        val target = resolveArtworkScaledSize(
+            sourceWidth = decoded.width,
+            sourceHeight = decoded.height,
+            targetWidth = targetWidth,
+            targetHeight = targetHeight,
+            policy = aspectPolicy,
+        )
+        if (decoded.width == target.width && decoded.height == target.height) return decoded
 
-        val scaled = scaleBitmapCenterCrop(decoded, targetWidth, targetHeight)
-        if (scaled !== decoded && !decoded.isRecycled) {
-            decoded.recycle()
-        }
+        val scaled = scaleBitmapForPolicy(decoded, targetWidth, targetHeight, aspectPolicy)
+        if (scaled !== decoded && !decoded.isRecycled) decoded.recycle()
         return scaled
+    }
+
+    private fun scaleBitmapForPolicy(
+        source: Bitmap,
+        targetWidth: Int,
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
+    ): Bitmap? {
+        return if (aspectPolicy == ArtworkAspectPolicy.KeepAspect) {
+            scaleBitmapFitCenter(source, targetWidth, targetHeight)
+        } else {
+            scaleBitmapCenterCrop(source, targetWidth, targetHeight)
+        }
+    }
+
+    /** Scale a cache-owned source without ever returning the cache-owned instance to a caller. */
+    private fun scaleBitmapDetachedFromSource(
+        source: Bitmap,
+        targetWidth: Int,
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy,
+    ): Bitmap? {
+        val scaled = scaleBitmapForPolicy(source, targetWidth, targetHeight, aspectPolicy)
+        if (scaled !== source) return scaled
+        return try {
+            source.copy(softwareScaleTargetConfig(source), false)
+        } catch (e: OutOfMemoryError) {
+            Log.e(TAG, "copy artwork source out of memory", e)
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "copy artwork source failed", e)
+            null
+        }
+    }
+
+    private fun softwareScaleTargetConfig(source: Bitmap): Bitmap.Config =
+        if (source.config == Bitmap.Config.RGB_565) Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888
+
+    private fun scaleBitmapFitCenter(
+        source: Bitmap,
+        targetWidth: Int,
+        targetHeight: Int,
+    ): Bitmap? {
+        if (source.isRecycled || targetWidth <= 0 || targetHeight <= 0) return null
+        val target = resolveArtworkScaledSize(
+            sourceWidth = source.width,
+            sourceHeight = source.height,
+            targetWidth = targetWidth,
+            targetHeight = targetHeight,
+            policy = ArtworkAspectPolicy.KeepAspect,
+        )
+        if (source.width == target.width && source.height == target.height) return source
+
+        val src = if (Build.VERSION.SDK_INT >= 26 && source.config == Bitmap.Config.HARDWARE) {
+            source.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+        } else source
+        val temporarySoftwareCopy = src !== source
+        return try {
+            val targetConfig = softwareScaleTargetConfig(src)
+            val result = BitmapPool.obtain(target.width, target.height, targetConfig)
+                ?: Bitmap.createBitmap(target.width, target.height, targetConfig)
+            val canvas = threadLocalCanvas.get()!!
+            canvas.setBitmap(result)
+            val matrix = threadLocalMatrix.get()!!
+            matrix.reset()
+            matrix.setScale(target.width / src.width.toFloat(), target.height / src.height.toFloat())
+            canvas.drawBitmap(src, matrix, threadLocalPaint.get()!!)
+            result.setHasAlpha(src.hasAlpha())
+            result
+        } catch (e: Exception) {
+            Log.e(TAG, "scaleBitmapFitCenter failed", e)
+            null
+        } finally {
+            if (temporarySoftwareCopy && !src.isRecycled) src.recycle()
+        }
     }
 
     private fun scaleBitmapCenterCrop(
@@ -2458,6 +3456,8 @@ object BitmapProvider {
         } else {
             source
         }
+        val temporarySoftwareCopy = src !== source
+        var result: Bitmap? = null
 
         return try {
             val srcWidth = src.width.toFloat()
@@ -2476,14 +3476,15 @@ object BitmapProvider {
             val dx = ((targetWidth - scaledWidth) / 2f)
             val dy = ((targetHeight - scaledHeight) / 2f)
 
-            val result = BitmapPool.obtain(
+            val targetConfig = softwareScaleTargetConfig(src)
+            result = BitmapPool.obtain(
                 width = targetWidth,
                 height = targetHeight,
-                config = Bitmap.Config.ARGB_8888
+                config = targetConfig
             ) ?: Bitmap.createBitmap(
                 targetWidth,
                 targetHeight,
-                Bitmap.Config.ARGB_8888
+                targetConfig
             )
 
             val canvas = threadLocalCanvas.get()!!
@@ -2500,9 +3501,18 @@ object BitmapProvider {
             result.setHasAlpha(src.hasAlpha())
 
             result
+        } catch (e: OutOfMemoryError) {
+            result?.let { if (!it.isRecycled) it.recycle() }
+            Log.e(TAG, "scaleBitmapCenterCrop out of memory", e)
+            null
         } catch (e: Exception) {
+            result?.let { if (!it.isRecycled) it.recycle() }
             Log.e(TAG, "scaleBitmapCenterCrop failed", e)
             null
+        } finally {
+            if (temporarySoftwareCopy && !src.isRecycled) {
+                src.recycle()
+            }
         }
     }
 
@@ -2546,7 +3556,7 @@ object BitmapProvider {
 
     private const val ARTWORK_SOURCE_LOW_RES_MAX_SIDE = 512
     private const val ARTWORK_SOURCE_SMALL_MAX_SIDE = 192
-    private const val ARTWORK_SOURCE_HI_RES_MAX_SIDE = 1024
+    private const val ARTWORK_SOURCE_HI_RES_MAX_SIDE = AlbumArtTiers.FULL_RES_SIDE
 
     private fun isImageFile(path: String): Boolean {
         val ext = path.substringAfterLast('.', "").lowercase()
@@ -2561,15 +3571,23 @@ object BitmapProvider {
         )
     }
 
-    private fun trace(message: String) {
-        if (ENABLE_BITMAP_TRACE) {
-            Log.w(ART_LOG_TAG, "ART_TRACE $message")
-        }
-    }
+    private fun trace(@Suppress("UNUSED_PARAMETER") message: String) = Unit
 
     private fun stableArtworkCacheSourceKey(key: String): String {
-        val stable = canonicalFailureSourceKey(key)
-        return stable.ifBlank { key }
+        if (key.isBlank()) return key
+        val normalized = key
+            .removePrefix("audio://")
+            .removePrefix("file://")
+            .trim()
+        if (normalized.isBlank()) return key
+        if (normalized.startsWith("content://", ignoreCase = true)) return normalized
+
+        // AudioFile.coverKey is already path|length|lastModified. Holder/cache lookup must remain
+        // a pure string operation: do not split/parse the key and never call
+        // File.exists/canonicalPath/length/lastModified from a holder bind. The source worker keeps
+        // the slower canonical/invalidation path for the rare cases that actually need filesystem
+        // metadata.
+        return normalized
     }
 
     private fun stableArtworkCacheSourceKey(key: String, providerAliasKey: String): String {
@@ -2607,6 +3625,31 @@ object BitmapProvider {
         if (ArtworkSourceIndex.remove(providerKey)) removed++
         trace("NO_ART_CLEAR_PROVIDER_ALIAS provider=${providerKey.tailForTrace()} source=${failureSourceKey.tailForTrace()} removed=$removed")
         return removed
+    }
+
+    /**
+     * baseline implementation decoder-source lookup: before opening a concrete source path, ask the provider
+     * source-string map whether another identity already owns a usable P.lowRes/P.hiRes wrapper.
+     * A hit binds this request identity to that same record; no second cache owner is created.
+     */
+    private fun providerSourceCacheHit(
+        storageKey: String,
+        sourceString: String,
+        targetWidth: Int,
+        targetHeight: Int,
+        aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
+    ): Bitmap? {
+        if (storageKey.isBlank() || sourceString.isBlank()) return null
+        if (threadLocalBypassProviderBitmapReuse.get() == true) return null
+        val bitmap = memoryCache.getForSourceStringAndBind(
+            sourceKey = artworkAspectCacheSourceKey(storageKey, aspectPolicy),
+            sourceString = artworkAspectSourceString(sourceString, aspectPolicy),
+            minimumSide = maxOf(targetWidth, targetHeight).coerceAtLeast(1),
+        ) ?: return null
+        trace(
+            "SOURCE_STRING_HIT size=${targetWidth}x${targetHeight} provider=${storageKey.tailForTrace()} source=${sourceString.tailForTrace()}"
+        )
+        return bitmap
     }
 
     /**
@@ -2692,16 +3735,26 @@ object BitmapProvider {
         val prefixes = candidates.filter { it.isNotBlank() }.map { "${it}_" }
         waitingRequests.keys.toList().forEach { cacheKey ->
             if (prefixes.any { cacheKey.startsWith(it) }) {
-                removed += waitingRequests.remove(cacheKey)?.size ?: 0
+                val waiters = waitingRequests[cacheKey] ?: return@forEach
+                // Attached ArtworkImageNode-equivalent requests remain provider-owned across a source
+                // record invalidation. The queued/running owner will observe its stale token and
+                // move these same callback owners to the fresh record. Non-artwork background/legacy
+                // observers may be discarded and resubmitted by their own surface lifecycle.
+                val discard = waiters.filter { it.wrapperCallback == null }
+                discard.forEach { waiters.remove(it) }
+                removed += discard.size
+                if (waiters.isEmpty()) waitingRequests.remove(cacheKey, waiters)
             }
         }
-        inFlightKeys.toList().forEach { cacheKey ->
-            if (prefixes.any { cacheKey.startsWith(it) }) {
-                if (inFlightKeys.remove(cacheKey)) removed++
-                inFlightPriorities.remove(cacheKey)
-                inFlightTokens.remove(cacheKey)
-                inFlightOwnerRequests.remove(cacheKey)
-                promotedInFlightKeys.remove(cacheKey)
+        synchronized(inFlightRegistryLock) {
+            inFlightKeys.toList().forEach { cacheKey ->
+                if (prefixes.any { cacheKey.startsWith(it) }) {
+                    if (inFlightKeys.remove(cacheKey)) removed++
+                    inFlightPriorities.remove(cacheKey)
+                    inFlightTokens.remove(cacheKey)
+                    inFlightOwnerRequests.remove(cacheKey)
+                    promotedInFlightKeys.remove(cacheKey)
+                }
             }
         }
         return removed
@@ -2730,13 +3783,6 @@ object BitmapProvider {
         }
     }
 
-    /**
-     * A bound source request remains useful after its physical holder moves. There is no second
-     * viewport admission state anymore; the holder owns only the callback, while the provider owns
-     * the source record and decoded cache.
-     */
-    private fun isPowerListRequestStillUseful(request: BitmapRequest): Boolean = true
-
     private fun String.tailForTrace(): String {
         return takeLast(72)
     }
@@ -2752,15 +3798,21 @@ object BitmapProvider {
                     val cacheKey = request.cacheKey
                     val flightKey = request.inFlightKey
 
-                    // Claim before any expensive probe. A request detached while still queued is
-                    // discarded here; only an already-claimed source probe is allowed to finish.
+                    // Claim before any expensive probe. A stale/removed UI request no longer owns
+                    // source work; later visible holders may submit or join a current provider flight.
                     if (!request.tryStartSourceWork()) {
                         trace("DECODE_SKIP_UNCLAIMED seq=${request.traceSeq} cancelled=${request.isCancelled} key=${request.key.tailForTrace()}")
                         return
                     }
                     trace("DECODE_START seq=${request.traceSeq} size=${request.targetWidth}x${request.targetHeight} priority=${request.priority} thread=${Thread.currentThread().name} key=${request.key.tailForTrace()}")
+                    if (PlayerSwitchTrace.isActive()) {
+                        PlayerSwitchTrace.mark(
+                            "provider_decode_start",
+                            "seq=${request.traceSeq} surface=${request.surface} priority=${request.priority} size=${request.targetWidth}x${request.targetHeight} key=${Integer.toHexString(request.decodeKey.hashCode())}",
+                        )
+                    }
 
-                    if (request.isCancelled && !request.keepAliveOnCancel && !hasWaitingRequests(flightKey)) {
+                    if (request.isCancelled && !hasWaitingRequests(flightKey)) {
                         trace("DECODE_ABORT_CANCELLED seq=${request.traceSeq} cacheKey=${cacheKey.tailForTrace()}")
                         waitingRequests.remove(flightKey)
                         clearInFlightFor(request, flightKey)
@@ -2770,12 +3822,16 @@ object BitmapProvider {
                         return
                     }
 
-                    if (!isPowerListRequestStillUseful(request) || !isArtworkAcceptTokenCurrent(request)) {
+                    if (!isArtworkAcceptTokenCurrent(request)) {
                         trace("DECODE_ABORT_STALE seq=${request.traceSeq} cacheKey=${cacheKey.tailForTrace()}")
-                        waitingRequests.remove(flightKey)
-                        clearInFlightFor(request, flightKey)
-                        if (request.surface == ArtworkSurface.Indexer) {
-                            dispatchArtworkIndexerCallbacks(cacheKey, null)
+                        if (request.wrapperCallback != null || hasWaitingRequests(flightKey)) {
+                            requeueStaleProviderFlight(request, flightKey, reason = "before_decode")
+                        } else {
+                            waitingRequests.remove(flightKey)
+                            clearInFlightFor(request, flightKey)
+                            if (request.surface == ArtworkSurface.Indexer) {
+                                dispatchArtworkIndexerCallbacks(cacheKey, null)
+                            }
                         }
                         return
                     }
@@ -2785,19 +3841,56 @@ object BitmapProvider {
                     // waiting in the serial lane.
                     val exactCached = memoryCache.get(cacheKey)
                         ?.takeIf { it.isValidArtworkBitmap() }
-                    val cached = exactCached ?: memoryCache.getAnyForSource(request.key)
-                        ?.let {
-                            reusableSourceBitmap(
-                                it,
-                                request.targetWidth,
-                                request.targetHeight
-                            )
-                        }
+                    val cached = exactCached ?: memoryCache.getAnyForSource(
+                        request.cacheSourceKey,
+                        minimumSide = maxOf(request.targetWidth, request.targetHeight),
+                        allowHighFallback = request.surface != ArtworkSurface.List,
+                    )?.let {
+                        reusableSourceBitmap(
+                            it,
+                            request.targetWidth,
+                            request.targetHeight,
+                            request.aspectPolicy,
+                        )
+                    }
                     if (cached != null && !cached.isRecycled) {
                         val tier = if (exactCached === cached) "exact" else "source"
-                        trace("DECODE_SKIP_CACHE_READY seq=${request.traceSeq} tier=$tier bitmap=${cached.width}x${cached.height} key=${request.key.tailForTrace()}")
-                        deliverResult(request, cached)
-                        return
+                        if (needsPlaybackWrapperNormalization(
+                                request.surface,
+                                cached,
+                                request.targetWidth,
+                                request.targetHeight,
+                                request.aspectPolicy,
+                            )) {
+                            val resizeStartedNs = System.nanoTime()
+                            val resized = scaleBitmapForPolicy(
+                                cached,
+                                request.targetWidth,
+                                request.targetHeight,
+                                request.aspectPolicy,
+                            )
+                            trace("PLAYBACK_CACHE_RESIZE seq=${request.traceSeq} tier=$tier from=${cached.width}x${cached.height} to=${resized?.width}x${resized?.height} key=${request.key.tailForTrace()}")
+                            if (resized != null && !resized.isRecycled) {
+                                if (TransitionPerfTrace.isActive()) {
+                                    TransitionPerfTrace.recordDuration(
+                                        TransitionPerfStage.BITMAP_WORKER_DECODE,
+                                        System.nanoTime() - resizeStartedNs,
+                                    )
+                                }
+                                deliverResult(request, resized)
+                                return
+                            }
+                        } else {
+                            trace("DECODE_SKIP_CACHE_READY seq=${request.traceSeq} tier=$tier bitmap=${cached.width}x${cached.height} key=${request.key.tailForTrace()}")
+                            if (PlayerSwitchTrace.isActive()) {
+                                PlayerSwitchTrace.mark(
+                                    "provider_worker_cache_hit",
+                                    "seq=${request.traceSeq} tier=$tier bitmap=${cached.width}x${cached.height}",
+                                )
+                            }
+                            deliverResult(request, cached)
+                            return
+                        }
                     }
 
                     val failureSourceKey = stableArtworkCacheSourceKey(request.decodeKey)
@@ -2809,14 +3902,21 @@ object BitmapProvider {
                     if (request.surface.rememberNullAsNoArt &&
                         hasRecentFailure(failureSourceKey, "${failureSourceKey}_${request.bucket}")) {
                         trace("DECODE_SKIP_NO_ART_SENTINEL seq=${request.traceSeq} provider=${request.key.tailForTrace()} decode=${request.decodeKey.tailForTrace()}")
-                        waitingRequests.remove(flightKey)
+                        // deliverResult owns draining all observers, including list waiters that
+                        // joined this source flight. Dropping them here strands their requests.
                         request.terminalNoArt = true
                         deliverResult(request, null)
                         return
                     }
 
                     val t0 = android.os.SystemClock.uptimeMillis()
+                    val decodeStartedNs = System.nanoTime()
+                    val transitionTraceActiveAtDecodeStart = TransitionPerfTrace.isActive()
+                    activeWorkerDecodeCount.incrementAndGet()
+                    activeWorkerDecodeStartedAtMs = t0
+                    activeWorkerDecodeKeyTag = Integer.toHexString(request.key.hashCode())
                     var bitmap: Bitmap? = null
+                    var providerSourceString = ""
 
                     try {
                         request.transitionTo(BitmapRequest.State.DECODING_FILES)
@@ -2827,10 +3927,13 @@ object BitmapProvider {
                             targetWidth = request.targetWidth,
                             targetHeight = request.targetHeight,
                             surface = request.surface,
+                            sourceDecodeAllowed = request.sourceDecodeAllowed,
                             externalArtworkPath = request.externalArtworkPath,
+                            aspectPolicy = request.aspectPolicy,
                             onIndexerReady = null
                         )
                         bitmap = decodeResult.bitmap
+                        providerSourceString = decodeResult.providerSourceString
                         request.terminalNoArt = decodeResult.terminalNoArt
 
                         if ((bitmap == null || bitmap.isRecycled) && request.surface.rememberNullAsNoArt && decodeResult.terminalNoArt) {
@@ -2843,30 +3946,25 @@ object BitmapProvider {
                         if (!isArtworkAcceptTokenCurrent(request)) {
                             trace("DECODE_DROP_STALE_TOKEN seq=${request.traceSeq} elapsed=${elapsed}ms bitmap=${bitmap?.width}x${bitmap?.height} cacheKey=${cacheKey.tailForTrace()}")
                             bitmap?.let { BitmapPool.recycle(it) }
+                            if (request.wrapperCallback != null || hasWaitingRequests(flightKey)) {
+                                requeueStaleProviderFlight(request, flightKey, reason = "after_decode")
+                            } else {
+                                waitingRequests.remove(flightKey)
+                                clearInFlightFor(request, flightKey)
+                            }
+                            return
+                        }
+                        if (request.isCancelled && !hasWaitingRequests(flightKey)) {
+                            trace("DECODE_DROP_CANCELLED seq=${request.traceSeq} elapsed=${elapsed}ms bitmap=${bitmap?.width}x${bitmap?.height} cacheKey=${cacheKey.tailForTrace()}")
+                            bitmap?.let { BitmapPool.recycle(it) }
                             waitingRequests.remove(flightKey)
                             clearInFlightFor(request, flightKey)
                             return
                         }
-                        if (!isPowerListRequestStillUseful(request) && (bitmap == null || bitmap.isRecycled)) {
-                            trace("DECODE_DROP_STALE_EMPTY seq=${request.traceSeq} elapsed=${elapsed}ms cacheKey=${cacheKey.tailForTrace()}")
-                            waitingRequests.remove(flightKey)
-                            clearInFlightFor(request, flightKey)
-                            return
-                        }
-                        if (!isPowerListRequestStillUseful(request)) {
-                            trace("DECODE_KEEP_STALE_CACHE seq=${request.traceSeq} elapsed=${elapsed}ms bitmap=${bitmap?.width}x${bitmap?.height} cacheKey=${cacheKey.tailForTrace()}")
-                        }
-
                         if (decodeResult.coalesceSourceTiers) {
                             coalesceIndexerSiblingTiers(request, bitmap)
                         }
 
-                        if (ENABLE_BITMAP_TRACE) {
-                            Log.w(
-                                ART_LOG_TAG,
-                                "DECODE_DONE seq=${request.traceSeq} surface=${request.surface} priority=${request.priority} result=${bitmap != null} elapsed=${elapsed}ms size=${request.targetWidth}x${request.targetHeight} thread=${Thread.currentThread().name} key=${request.key.takeLast(60)}"
-                            )
-                        }
                         PowerTraceLogger.bitmapDecodeDone(
                             priority = request.priority.name,
                             size = "${request.targetWidth}x${request.targetHeight}",
@@ -2875,6 +3973,12 @@ object BitmapProvider {
                             key = request.key
                         )
                         trace("DECODE_DONE seq=${request.traceSeq} result=${bitmap != null} elapsed=${elapsed}ms bitmap=${bitmap?.width}x${bitmap?.height} thread=${Thread.currentThread().name} key=${request.key.tailForTrace()}")
+                        if (PlayerSwitchTrace.isActive()) {
+                            PlayerSwitchTrace.mark(
+                                "provider_decode_done",
+                                "seq=${request.traceSeq} result=${bitmap != null} elapsed=${elapsed}ms bitmap=${bitmap?.width}x${bitmap?.height} source=$providerSourceString",
+                            )
+                        }
                     } catch (e: Exception) {
                         // An exception is a transient provider failure, not proof that the file
                         // has no artwork. Install the not-found sentinel only after
@@ -2882,11 +3986,63 @@ object BitmapProvider {
                         // permission, or file race hide the cover for the whole TTL.
                         request.terminalNoArt = false
                         trace("DECODE_ERROR seq=${request.traceSeq} error=${e.javaClass.simpleName}:${e.message} provider=${request.key.tailForTrace()} decode=${request.decodeKey.tailForTrace()}")
+                        if (PlayerSwitchTrace.isActive()) {
+                            PlayerSwitchTrace.mark(
+                                "provider_decode_error",
+                                "seq=${request.traceSeq} type=${e.javaClass.simpleName} message=${e.message.orEmpty()}",
+                            )
+                        }
                         Log.e(TAG, "worker decode failed: ${request.decodeKey.takeLast(80)}", e)
+                    } finally {
+                        activeWorkerDecodeCount.decrementAndGet()
+                        activeWorkerDecodeStartedAtMs = 0L
+                        activeWorkerDecodeKeyTag = "-"
+                        if (transitionTraceActiveAtDecodeStart) {
+                            TransitionPerfTrace.recordDuration(
+                                TransitionPerfStage.BITMAP_WORKER_DECODE,
+                                System.nanoTime() - decodeStartedNs,
+                            )
+                        }
                     }
 
+                    val bitmapMissing = bitmap == null || bitmap.isRecycled
+                    if (bitmapMissing &&
+                        !request.terminalNoArt &&
+                        request.sourceDecodeAllowed &&
+                        hasWaitingRequests(flightKey)
+                    ) {
+                        val retryNumber = request.tryPrepareSourceRetry(MAX_TRANSIENT_SOURCE_RETRIES)
+                        if (retryNumber != null) {
+                            val delayIndex = (retryNumber - 1)
+                                .coerceIn(0, TRANSIENT_SOURCE_RETRY_DELAYS_MS.lastIndex)
+                            val delayMs = TRANSIENT_SOURCE_RETRY_DELAYS_MS[delayIndex]
+                            trace(
+                                "DECODE_RETRY_TRANSIENT seq=${request.traceSeq} retry=$retryNumber " +
+                                    "delay=${delayMs}ms priority=${request.priority} key=${request.key.tailForTrace()}"
+                            )
+                            enqueueRequest(
+                                request,
+                                workerHandlers,
+                                forceFront = request.priority.level <= BitmapRequest.Priority.LOADING_LIST.level,
+                                delayMs = delayMs,
+                            )
+                            return
+                        }
+                    }
+
+                    bitmap?.takeIf { !it.isRecycled }?.let { preparedBitmap ->
+                        // Prepare fresh artwork before handing it to the UI. Large playback bitmaps
+                        // must not pay their first texture/draw preparation on a transition frame.
+                        runCatching { preparedBitmap.prepareToDraw() }
+                    }
                     trace("DELIVER seq=${request.traceSeq} result=${bitmap != null} waiters=${waitingRequests[flightKey]?.size ?: 0} key=${request.key.tailForTrace()}")
-                    deliverResult(request, bitmap)
+                    if (PlayerSwitchTrace.isActive()) {
+                        PlayerSwitchTrace.mark(
+                            "provider_deliver",
+                            "seq=${request.traceSeq} result=${bitmap != null} waiters=${waitingRequests[flightKey]?.size ?: 0}",
+                        )
+                    }
+                    deliverResult(request, bitmap, providerSourceString)
                 }
 
                 MSG_CANCEL -> {
@@ -2901,13 +4057,8 @@ object BitmapProvider {
         }
 
         private fun clearInFlightFor(request: BitmapRequest, flightKey: String) {
-            if (request.inFlightOwner) {
-                inFlightKeys.remove(flightKey)
-                inFlightPriorities.remove(flightKey)
-                inFlightTokens.remove(flightKey)
-                inFlightOwnerRequests.remove(flightKey, request)
-            }
-            promotedInFlightKeys.remove(flightKey)
+            if (request.inFlightOwner) clearInFlightKey(flightKey, request)
+            else promotedInFlightKeys.remove(flightKey)
         }
     }
 }

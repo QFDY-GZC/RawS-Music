@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -52,16 +53,34 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioOutputMode
+import com.rawsmusic.core.common.ui.AppNoticeBus
 import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.PcmDitherMode
+import com.rawsmusic.module.player.PlayerController
+import com.rawsmusic.module.player.PlayerService
 
 @Composable
 fun LiquidGlassAudioSettingsScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    var runtimeController by remember {
+        mutableStateOf(PlayerService.currentRuntimeController() ?: PlayerController.getInstanceOrNull())
+    }
+    fun requireRuntimeController(reason: String): PlayerController {
+        val current = runtimeController
+        if (current != null) return current
+        return PlayerService.obtainRuntimeController(
+            context,
+            "audio_settings:$reason",
+            ensureService = true
+        ).also { runtimeController = it }
+    }
+    val usbExclusiveActive by (runtimeController?.usbExclusiveActive
+        ?: kotlinx.coroutines.flow.MutableStateFlow(false)).collectAsState()
+    var usbExclusiveRequested by remember { mutableStateOf(AppPreferences.Player.usbExclusiveRequested) }
 
     var outputMode by remember { mutableStateOf(AppPreferences.Player.audioOutputMode) }
     // v6f: 采样率/位深选项根据当前输出引擎过滤
@@ -76,6 +95,10 @@ fun LiquidGlassAudioSettingsScreen(
     }
     var normalization by remember { mutableStateOf(AppPreferences.Player.volumeNormalizationEnabled) }
     var gapless by remember { mutableStateOf(AppPreferences.Player.gaplessPlaybackEnabled) }
+    var playbackSpeed by remember { mutableStateOf(AppPreferences.Player.playbackSpeed) }
+    var playbackSpeedChangesPitch by remember {
+        mutableStateOf(AppPreferences.Player.playbackSpeedChangesPitch)
+    }
     var trackProgressMemoryEnabled by remember { mutableStateOf(AppPreferences.Player.trackProgressMemoryEnabled) }
     var playCountEnabled by remember { mutableStateOf(AppPreferences.Player.playCountEnabled) }
     var playCountThresholdPercent by remember {
@@ -106,7 +129,12 @@ fun LiquidGlassAudioSettingsScreen(
     fun selectEngine(mode: AudioOutputMode) {
         val isAvailable = AudioOutputManager.isOutputModeAvailable(mode, context)
         if (!isAvailable) {
-            Toast.makeText(context, context.getString(R.string.settings_audio_output_unavailable, AudioOutputManager.getOutputModeLabel(mode)), Toast.LENGTH_SHORT).show()
+            AppNoticeBus.error(
+                context.getString(
+                    R.string.settings_audio_output_unavailable,
+                    AudioOutputManager.getOutputModeLabel(mode)
+                )
+            )
             return
         }
         outputMode = mode
@@ -125,6 +153,22 @@ fun LiquidGlassAudioSettingsScreen(
         applyAudioOutputSettings()
     }
 
+    fun applyPlaybackSpeed(value: Float) {
+        val normalized = value.coerceIn(0.25f, 3f)
+        playbackSpeed = normalized
+        AppPreferences.Player.playbackSpeed = normalized
+        com.rawsmusic.ui.songs.PlayerHolder.controller?.setPlaybackSpeed(normalized)
+    }
+
+    fun applyPlaybackPitchMode(changePitch: Boolean) {
+        playbackSpeedChangesPitch = changePitch
+        AppPreferences.Player.playbackSpeedChangesPitch = changePitch
+        // At 1.00x both processors are identity, so persisting the preference is enough.
+        if (kotlin.math.abs(playbackSpeed - 1f) > 0.0001f) {
+            com.rawsmusic.ui.songs.PlayerHolder.controller?.setPlaybackSpeed(playbackSpeed)
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
     SettingsPage(title = stringResource(R.string.settings_audio_quality_title), onBack = onBack) {
         // ==========================
@@ -135,6 +179,22 @@ fun LiquidGlassAudioSettingsScreen(
             Triple(AudioOutputMode.AAUDIO, R.drawable.ic_audio_aaudio_png, stringResource(R.string.settings_audio_engine_aaudio_hint)),
             Triple(AudioOutputMode.AUDIO_TRACK, R.drawable.ic_audio_track_png, stringResource(R.string.settings_audio_engine_audiotrack_hint)),
             Triple(AudioOutputMode.DIRECT, R.drawable.ic_audio_hires_png, stringResource(R.string.settings_audio_engine_direct_hint))
+        )
+
+        UsbExclusiveTransportCard(
+            androidOutputLabel = AudioOutputManager.getOutputModeLabel(outputMode),
+            active = usbExclusiveActive,
+            requested = usbExclusiveRequested,
+            onClick = {
+                val controller = requireRuntimeController("toggle_usb_exclusive")
+                if (usbExclusiveActive || usbExclusiveRequested || AppPreferences.Player.usbExclusiveRequested) {
+                    usbExclusiveRequested = false
+                    controller.disableUsbExclusive()
+                } else {
+                    usbExclusiveRequested = true
+                    controller.enableUsbExclusive()
+                }
+            }
         )
 
         for ((mode, iconRes, rangeHint) in engines) {
@@ -250,6 +310,7 @@ fun LiquidGlassAudioSettingsScreen(
             SettingsActionRow(
                 title = stringResource(R.string.settings_audio_focus_title),
                 description = stringResource(R.string.settings_audio_focus_summary),
+                iconRes = R.drawable.ic_settings_audio_output,
                 onClick = {
                     (context as? BaseSettingsActivity)
                         ?.navigateToSettings(AudioFocusSettingsActivity::class.java)
@@ -270,6 +331,7 @@ fun LiquidGlassAudioSettingsScreen(
             SettingsActionRow(
                 title = stringResource(R.string.settings_audio_dvc),
                 description = stringResource(R.string.settings_audio_dvc_desc),
+                iconRes = R.drawable.ic_settings_effects,
                 onClick = {
                     (context as? BaseSettingsActivity)
                         ?.navigateToSettings(DvcSettingsActivity::class.java)
@@ -280,6 +342,63 @@ fun LiquidGlassAudioSettingsScreen(
                 gapless = checked
                 AppPreferences.Player.gaplessPlaybackEnabled = checked
             }
+            SliderPreference(
+                title = stringResource(R.string.settings_audio_speed_title),
+                summary = stringResource(R.string.settings_audio_speed_summary),
+                valueText = stringResource(R.string.settings_audio_speed_value, playbackSpeed),
+                value = playbackSpeed,
+                onValueChange = { value ->
+                    playbackSpeed = (kotlin.math.round(value / 0.05f) * 0.05f)
+                        .coerceIn(0.25f, 3f)
+                },
+                onValueChangeFinished = {
+                    applyPlaybackSpeed(playbackSpeed)
+                },
+                valueRange = 0.25f..3f,
+                steps = 54,
+                hapticEffect = SliderDefaults.SliderHapticEffect.Step,
+            )
+            SwitchPreference(
+                title = stringResource(R.string.settings_audio_speed_change_pitch_title),
+                summary = stringResource(R.string.settings_audio_speed_change_pitch_summary),
+                checked = playbackSpeedChangesPitch,
+                onCheckedChange = ::applyPlaybackPitchMode,
+            )
+            Text(
+                text = stringResource(R.string.settings_audio_speed_presets_title),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                fontSize = 14.sp,
+            )
+            val speedPresets = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp),
+            ) {
+                speedPresets.chunked(3).forEach { rowPresets ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        rowPresets.forEach { preset ->
+                            TextButton(
+                                onClick = { applyPlaybackSpeed(preset) },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(stringResource(R.string.settings_audio_speed_value, preset))
+                            }
+                        }
+                    }
+                }
+            }
+            SettingsActionRow(
+                title = stringResource(R.string.settings_audio_speed_reset),
+                description = stringResource(R.string.settings_audio_speed_reset_summary),
+                onClick = {
+                    applyPlaybackSpeed(1f)
+                },
+            )
         }
 
         Spacer(Modifier.height(12.dp))
@@ -441,6 +560,91 @@ private fun DitherSettingsPreference(
 // ==========================
 // v6f: 引擎卡片 — 图标在左，可展开
 // ==========================
+
+@Composable
+private fun UsbExclusiveTransportCard(
+    androidOutputLabel: String,
+    active: Boolean,
+    requested: Boolean,
+    onClick: () -> Unit
+) {
+    val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
+    val cardColor = if (isDark) Color(0xFF1E1E1E) else Color.White
+    val statusText = when {
+        active -> stringResource(R.string.usb_dac_exclusive_active_short)
+        requested -> stringResource(R.string.usb_dac_exclusive_pending_short)
+        else -> stringResource(R.string.usb_dac_exclusive_off_short)
+    }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(cardColor)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier.width(64.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_audio_output_usb_png),
+                    contentDescription = stringResource(R.string.usb_dac_title),
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.size(52.dp)
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    stringResource(R.string.usb_dac_independent_transport_title),
+                    fontSize = 15.sp,
+                    fontWeight = if (active || requested) FontWeight.Bold else FontWeight.Medium,
+                    color = MiuixTheme.colorScheme.onBackground,
+                    fontFamily = appFontFamily()
+                )
+                Text(
+                    stringResource(R.string.usb_dac_android_output_unchanged, androidOutputLabel),
+                    fontSize = 11.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    fontFamily = appFontFamily(),
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+            Text(
+                statusText,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (active || requested) MiuixTheme.colorScheme.primary
+                    else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                fontFamily = appFontFamily()
+            )
+        }
+        AnimatedVisibility(
+            visible = active || requested,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            Text(
+                text = if (active) {
+                    stringResource(R.string.usb_dac_exclusive_independent_active_desc)
+                } else {
+                    stringResource(R.string.usb_dac_exclusive_independent_pending_desc)
+                },
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 10.dp),
+                fontFamily = appFontFamily()
+            )
+        }
+    }
+    Spacer(Modifier.height(12.dp))
+}
 
 @Composable
 private fun EngineCard(

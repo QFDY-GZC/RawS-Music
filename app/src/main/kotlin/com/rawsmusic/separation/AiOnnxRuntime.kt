@@ -21,7 +21,11 @@ internal fun isCompatibleOnnxGraphShape(
     return actualShape.indices.all { index ->
         val actual = actualShape[index]
         val expected = runtimeShape[index]
-        actual == expected || (index == 0 && expected == 1L && actual <= 0L)
+        // ONNX uses -1 (and, on some ORT builds, 0) for symbolic dimensions. The
+        // runtime shape is intentionally concrete, so a symbolic dimension is
+        // compatible on any axis, not only the batch axis. This is required by
+        // the Spleeter graph whose split count is dynamic.
+        actual == expected || actual <= 0L || expected <= 0L
     }
 }
 

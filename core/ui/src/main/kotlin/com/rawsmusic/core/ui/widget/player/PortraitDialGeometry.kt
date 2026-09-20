@@ -178,7 +178,7 @@ private fun lerpPortraitDial(start: Float, end: Float, amount: Float): Float =
 
 /**
  * Reveals one portrait-dial side lane from the shared centre lane along the same distance-driven
- * geometry used at rest. This mirrors the landscape full-cover PowerList scene reveal: translation,
+ * geometry used at rest. This mirrors the landscape full-cover VirtualList scene reveal: translation,
  * depth, rotation and alpha all grow from the centre instead of appearing through a flat fade.
  */
 internal fun resolvePortraitDialSceneLaneTransform(

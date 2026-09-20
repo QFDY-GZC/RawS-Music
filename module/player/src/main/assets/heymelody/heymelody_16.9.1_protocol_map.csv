@@ -1,0 +1,75 @@
+﻿direction,command_hex,response_hex,semantic,payload_or_state,RawSMusic_status
+GET,0x0100,0x8100,Remote capability,capability bitmap,INTEGRATED
+GET,0x0101,0x8101,Remote MTU,MTU,CATALOGUED
+GET,0x0102,0x8102,Remote VID,vendor ID,CATALOGUED
+GET,0x0103,0x8103,Remote PID / productId,status + 24-bit productId LE,INTEGRATED
+GET,0x0105,0x8105,Remote version,status + type + UTF-8/ASCII version tuples,INTEGRATED
+GET,0x0106,0x8106,Battery,device battery structure,INTEGRATED_READ
+GET,0x0109,0x8109,Earbuds status,earbud status,CATALOGUED
+GET,0x010B,0x810B,Earbuds color ID,color id,CATALOGUED
+GET,0x010C,0x810C,Noise reduction,action/type dependent NoiseReductionInfo,INTEGRATED
+GET,0x010D,0x810D,Feature switch status,"count + featureIds; resp status+count+(id,status)*N",INTEGRATED
+GET,0x010F,0x810F,Current EQ,status + eqId,INTEGRATED
+GET,0x0112,0x8112,Multi-connect info,multi-device state,CATALOGUED
+GET,0x0114,0x8114,Codec type,codec state,CATALOGUED
+GET,0x0115,0x8115,Hearing enhancement data,personalized hearing data,WORKFLOW_NOT_EXPOSED
+GET,0x0116,0x8116,Hearing enhancement filter,hearing filter,WORKFLOW_NOT_EXPOSED
+GET,0x0118,0x8118,Ear restore data,ear restore data,WORKFLOW_NOT_EXPOSED
+GET,0x0119,0x8119,Zen mode,zen state,CATALOGUED
+GET,0x011A,0x811A,Personalized ANC result,personal ANC result,WORKFLOW_NOT_EXPOSED
+GET,0x011C,0x811C,Triangle info,triangle data,WORKFLOW_NOT_EXPOSED
+GET,0x011D,0x811D,Free-dialog recovery,dialog recovery state,WORKFLOW_NOT_EXPOSED
+GET,0x011E,0x811E,Ear scan,ear scan state/data,WORKFLOW_NOT_EXPOSED
+GET,0x011F,0x811F,Ear scan filter,ear scan filter,WORKFLOW_NOT_EXPOSED
+GET,0x0121,0x8121,Ear tone,tone data,WORKFLOW_NOT_EXPOSED
+GET,0x0122,0x8122,All EqInfo,"status,count,dynamic EqInfo entries",INTEGRATED
+GET,0x0123,0x8123,High-audio codec list,codec capability list,CATALOGUED
+GET,0x0124,0x8124,Bass engine,bass-engine state,CATALOGUED
+GET,0x0125,0x8125,Account key,account binding data,DO_NOT_EXPOSE
+GET,0x0126,0x8126,Spine history,health history,DO_NOT_EXPOSE
+GET,0x0127,0x8127,Screen-off broadcast delay,delay state,CATALOGUED
+GET,0x0129,0x8129,Spine calibrated state,health calibration,DO_NOT_EXPOSE
+GET,0x012A,0x812A,Headset spatial type,status + one-byte type,INTEGRATED
+GET,0x012B,0x812B,Game sound info,game sound state,CATALOGUED
+GET,0x012E,0x812E,AI summary,AI state,CATALOGUED
+GET,0x012F,0x812F,Multi-SPP info,SPP topology,CATALOGUED
+GET,0x0130,0x8130,Prompt volume,status + one-byte value,INTEGRATED
+GET,0x0131,0x8131,Translation app status,translation state,CATALOGUED
+GET,0x0132,0x8132,Multi-connect priority,priority state,CATALOGUED
+GET,0x0133,0x8133,Tap level,tap-level state,CATALOGUED
+GET,0x0134,0x8134,Head motion type,head-motion state,CATALOGUED
+GET,0x0205,0x8205,Register multi notification,registration workflow,NOT_USED_BY_RAW_PROBE
+SET,0x0400,0x8400,Find mode,find-device payload,CATALOGUED_SAFETY_GATED
+SET,0x0403,0x8403,Switch feature,"[featureId,status]",INTEGRATED
+SET,0x0404,0x8404,Noise reduction,CurrentNoiseModeInfo,INTEGRATED
+SET,0x0405,0x8405,Fit/compactness detection switch,one byte; workflow semantics required,WORKFLOW_NOT_EXPOSED
+SET,0x0406,0x8406,EQ preset,[equalizerModeType/eqId],INTEGRATED
+SET,0x0408,0x8408,Related device info,related-device payload,CATALOGUED
+SET,0x040D,0x840D,Hearing detection,workflow payload,WORKFLOW_NOT_EXPOSED
+SET,0x040E,0x840E,Hearing parameters,workflow payload,WORKFLOW_NOT_EXPOSED
+SET,0x040F,0x840F,System camera status,camera status,DO_NOT_EXPOSE
+SET,0x0410,0x8410,Zen check,workflow payload,CATALOGUED
+SET,0x0411,0x8411,Ear restore,workflow payload,WORKFLOW_NOT_EXPOSED
+SET,0x0412,0x8412,Personalized ANC,workflow payload,WORKFLOW_NOT_EXPOSED
+SET,0x0413,0x8413,Triangle info,workflow payload,WORKFLOW_NOT_EXPOSED
+SET,0x0414,0x8414,Free-dialog time,workflow payload,WORKFLOW_NOT_EXPOSED
+SET,0x0415,0x8415,Ear scan,workflow payload,WORKFLOW_NOT_EXPOSED
+SET,0x0417,0x8417,Tone,workflow payload,WORKFLOW_NOT_EXPOSED
+SET,0x0418,0x8418,EqInfo create/update/delete,"action,min,max,eqId,nameLen,name,freqCount,(freqLE16,gain)*N",INTEGRATED
+SET,0x041A,0x841A,High-audio codec,three-byte payload,CATALOGUED
+SET,0x041B,0x841B,Bass engine,bass-engine payload,CATALOGUED
+SET,0x041E,0x841E,Spatial audio type (legacy/other),spatial payload,CATALOGUED
+SET,0x041F,0x841F,Device build model,build model,DO_NOT_EXPOSE
+SET,0x0420,0x8420,Game status,two-byte payload,CATALOGUED
+SET,0x0421,0x8421,Spine range,health payload,DO_NOT_EXPOSE
+SET,0x0422,0x8422,Headset spatial type,[type],INTEGRATED
+SET,0x0423,0x8423,Game sound type,game sound type,CATALOGUED
+SET,0x0424,0x8424,LE Audio action,LE Audio workflow,CATALOGUED
+SET,0x0425,0x8425,AI summary,AI summary action,CATALOGUED
+SET,0x0426,0x8426,AI prompt sound,AI prompt action,CATALOGUED
+SET,0x0427,0x8427,Prompt volume,[value],INTEGRATED
+SET,0x0428,0x8428,Translation app,translation state,CATALOGUED
+SET,0x0429,0x8429,Multi-connect handheld,multi-connect payload,CATALOGUED
+SET,0x042D,0x842D,Tap level,tap-level payload,CATALOGUED
+SET,0x042E,0x842E,Voice multi conversation,voice-conversation payload,CATALOGUED
+SET,0x0431,0x8431,Head motion type,head-motion type,CATALOGUED

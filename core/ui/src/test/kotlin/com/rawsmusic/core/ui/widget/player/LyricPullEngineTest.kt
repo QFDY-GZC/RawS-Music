@@ -70,6 +70,20 @@ class LyricPullEngineTest {
     }
 
     @Test
+    fun rowEnteringViewportMidPullInheritsPreviousPlacementWithoutJump() {
+        val engine = LyricPullEngine()
+        val initialVisible = listOf(40, 41, 42)
+        engine.beginForwardPull(40, 360f, 900f, initialVisible, 20_000L)
+
+        val beforeJoin = engine.advance(20_180L, initialVisible)
+        val previousOffset = beforeJoin.offsetsPx.getValue(42)
+        val joined = engine.advance(20_180L, listOf(40, 41, 42, 43))
+
+        assertEquals(previousOffset, joined.offsetsPx.getValue(43), 0.001f)
+        assertTrue(joined.offsetsPx.getValue(43) >= joined.offsetsPx.getValue(42))
+    }
+
+    @Test
     fun resetClearsEveryPlacementImmediately() {
         val engine = LyricPullEngine()
         val visible = listOf(1, 2, 3)

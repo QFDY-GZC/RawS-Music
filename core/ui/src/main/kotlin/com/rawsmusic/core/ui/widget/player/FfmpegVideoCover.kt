@@ -25,7 +25,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 
 @Composable
-internal fun FfmpegVideoCover(
+fun FfmpegVideoCover(
     uri: String,
     active: Boolean,
     cornerRadiusDp: Float,

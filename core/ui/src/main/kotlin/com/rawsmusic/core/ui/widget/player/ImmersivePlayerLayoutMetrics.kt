@@ -58,4 +58,5 @@ internal fun fallbackImmersiveProgressPanelHeight(style: ImmersiveProgressStyle)
     ImmersiveProgressStyle.Classic -> 88.dp
     ImmersiveProgressStyle.Waveform -> 112.dp
     ImmersiveProgressStyle.Seconds -> 104.dp
+    ImmersiveProgressStyle.MusicSpine -> 94.dp
 }

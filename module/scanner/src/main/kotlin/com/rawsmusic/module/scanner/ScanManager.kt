@@ -104,19 +104,7 @@ object ScanManager {
     }
 
     private fun deduplicate(songs: List<AudioFile>): List<AudioFile> {
-        val seen = mutableSetOf<String>()
-        return songs.filter { song ->
-            val key = if (song.cueOffsetMs > 0 || song.cueTrackIndex > 0) {
-                "${song.path.lowercase()}@cue${song.cueOffsetMs}_${song.cueTrackIndex}"
-            } else {
-                song.path.lowercase()
-            }
-            if (key in seen) false
-            else {
-                seen.add(key)
-                true
-            }
-        }
+        return ScanSourceDeduplicator.deduplicate(songs)
     }
 
     fun incrementalScan(context: Context): Flow<ScanProgress> = flow {

@@ -10,6 +10,7 @@ internal object UsbCapabilityJsonParser {
             val formats = buildList {
                 for (i in 0 until arr.length()) {
                     val o = arr.getJSONObject(i)
+                    val protocol = o.optInt("protocol", 2)
                     add(
                         UsbPcmFormatCapability(
                             sampleRate = o.optInt("sampleRate", 0),
@@ -31,6 +32,13 @@ internal object UsbCapabilityJsonParser {
                             maxPacketBytes = o.optInt("maxPacketBytes", 0),
                             capacityRatioPermille = o.optInt("capacityRatioPermille", 0),
                             profileRiskFlags = o.optInt("profileRiskFlags", 0),
+                            protocol = protocol,
+                            uac1SamplingFrequencyControl = o.optBoolean("uac1SamplingFreqControl", false),
+                            exactRateProvable = if (o.has("exactRateProvable")) {
+                                o.optBoolean("exactRateProvable", false)
+                            } else {
+                                protocol != 1
+                            },
                         ),
                     )
                 }

@@ -5,8 +5,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.scene.NavScene
-import com.rawsmusic.core.ui.widget.powerlist.ComposePowerListFull
-import com.rawsmusic.core.ui.widget.powerlist.rememberComposePowerListState
+import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListState
+import com.rawsmusic.core.ui.widget.virtuallist.rememberComposeVirtualListState
 
 @Composable
 fun QueuePage(
@@ -14,23 +14,30 @@ fun QueuePage(
     currentIndex: Int,
     onBack: () -> Unit,
     onSongClick: (AudioFile, Int) -> Unit,
-    onShuffle: (List<AudioFile>) -> Unit
+    selectionActions: LibrarySongSelectionActions = LibrarySongSelectionActions(),
+    onShuffle: (List<AudioFile>) -> Unit,
+    virtualListState: ComposeVirtualListState = rememberComposeVirtualListState("queue"),
 ) {
-    val state = rememberComposePowerListState("queue")
+    // Queue entry is anchored before its first visible layout. Returning to the page keeps the
+    // hoisted viewport instead, because seedInitialScrollToIndex becomes a no-op after first bind.
+    virtualListState.seedInitialScrollToIndex(currentIndex)
     LibraryListScaffold(
         title = stringResource(com.rawsmusic.core.ui.R.string.library_title_queue),
         sceneId = NavScene.QUEUE.name,
+        statisticsText = stringResource(com.rawsmusic.core.ui.R.string.library_statistics_songs, songs.size),
         onBack = onBack,
-        powerListState = state,
+        virtualListState = virtualListState,
         onShuffle = { if (songs.isNotEmpty()) onShuffle(songs) }
     ) { topPadding, backdropSource ->
-        ComposePowerListFull(
+        SelectableSongList(
             songs = songs,
             currentPlayingIndex = currentIndex,
-            state = state,
+            state = virtualListState,
             contentTopPadding = topPadding,
             modifier = Modifier.then(backdropSource),
-            onSongClick = onSongClick
+            menuKind = SelectionMenuKind.QUEUE,
+            selectionActions = selectionActions,
+            onSongClick = onSongClick,
         )
     }
 }

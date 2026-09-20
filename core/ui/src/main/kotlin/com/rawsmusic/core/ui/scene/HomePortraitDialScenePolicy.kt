@@ -1,7 +1,7 @@
 package com.rawsmusic.core.ui.scene
 
 /**
- * One PowerList-like scene frame for the home dial -> portrait full-cover transition.
+ * One VirtualList-like scene frame for the home dial -> portrait full-cover transition.
  *
  * Both endpoints are real holder rectangles measured in the same host-local coordinate space.
  * Geometry must not be re-derived from viewport metrics here: the home holder lives inside a

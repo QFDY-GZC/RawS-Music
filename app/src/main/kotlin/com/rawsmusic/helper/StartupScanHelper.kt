@@ -1,14 +1,16 @@
 package com.rawsmusic.helper
 
 import android.content.Context
-import android.widget.Toast
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.repository.MusicRepository
 import com.rawsmusic.module.scanner.AudioFileListUpdater
 import com.rawsmusic.module.scanner.AudioLibraryRepository
 import com.rawsmusic.module.scanner.LibraryScanCoordinator
+import com.rawsmusic.module.scanner.LibraryScanSummary
+import com.rawsmusic.module.scanner.LibraryScanToast
 import com.rawsmusic.module.scanner.LibraryScannerDependencies
 import com.rawsmusic.module.scanner.MediaStoreChangeObserver
 import com.rawsmusic.module.scanner.MediaStoreObserver
@@ -27,7 +29,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 统一扫描调度器。
@@ -40,7 +42,7 @@ class StartupScanHelper(
     private var mediaStoreObserver: MediaStoreObserver? = null
     private var autoObserverJob: Job? = null
     private var currentScanJob: Job? = null
-    private var pendingScanReason: String? = null
+    private var pendingScanRequest: ScanRequest? = null
     private var _enrichedCount = 0  // enriched 节流计数器
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var scanCoordinator: LibraryScanCoordinator? = null
@@ -62,14 +64,31 @@ class StartupScanHelper(
                 val existingCount = runCatching {
                     resolvedRepository?.getAllSongs()?.size ?: 0
                 }.getOrDefault(0)
-                if (existingCount <= 0) {
-                    // 空库不自动扫描，显示空态提示用户选择文件夹
+                val hasSelectedFolders = AppPreferences.UI.scanPaths.isNotEmpty() ||
+                    AppPreferences.Scanner.musicFolderUris.isNotEmpty()
+                val shouldAutoScan = AppPreferences.Scanner.coldStartAutoScanEnabled &&
+                    hasSelectedFolders && coldStartScanRequested.compareAndSet(false, true)
+
+                if (shouldAutoScan) {
+                    AppLogger.d(TAG, "request cold-start incremental scan, existing songs=$existingCount")
+                    requestScan(
+                        context,
+                        context.getString(R.string.scan_reason_cold_start),
+                        restartIfRunning = false,
+                        coldStart = true
+                    )
+                } else if (existingCount <= 0) {
+                    // 没有可扫描来源时保持空态，不从冷启动流程主动拉起系统授权。
                     AppLogger.d(TAG, "library empty, waiting for user to select folders")
                     _scanUiState.value = ScanUiState.idle().copy(
                         message = context.getString(R.string.scan_library_empty)
                     )
                 } else {
-                    AppLogger.d(TAG, "skip startup auto scan, existing songs=$existingCount")
+                    AppLogger.d(
+                        TAG,
+                        "cold-start scan skipped: enabled=${AppPreferences.Scanner.coldStartAutoScanEnabled}, " +
+                            "selectedFolders=$hasSelectedFolders, existing songs=$existingCount"
+                    )
                     _scanUiState.value = ScanUiState.idle().copy(
                         message = context.getString(R.string.scan_library_ready),
                         found = existingCount
@@ -79,7 +98,7 @@ class StartupScanHelper(
         } else {
             registerMediaStoreObserver()
             AppLogger.w(TAG, "LibraryScannerDependencies not installed, fallback to legacy ScanScheduler")
-            AppLogger.d(TAG, "legacy initial auto scan skipped; wait for manual scan")
+            ScanScheduler.scheduleInitialScan(context)
         }
     }
 
@@ -128,14 +147,19 @@ class StartupScanHelper(
         AppLogger.d(TAG, "Auto MediaStore scan started")
     }
 
-    private fun requestScan(context: Context, reason: String, restartIfRunning: Boolean) {
+    private fun requestScan(
+        context: Context,
+        reason: String,
+        restartIfRunning: Boolean,
+        coldStart: Boolean = false
+    ) {
         val running = currentScanJob?.isActive == true
         if (running) {
             if (restartIfRunning) {
                 AppLogger.d(TAG, "restart scan: $reason")
                 currentScanJob?.cancel(CancellationException("Restart: $reason"))
             } else {
-                pendingScanReason = reason
+                pendingScanRequest = ScanRequest(reason, coldStart)
                 _scanUiState.value = _scanUiState.value.copy(
                     pendingScan = true,
                     message = context.getString(R.string.scan_pending, _scanUiState.value.message)
@@ -144,16 +168,16 @@ class StartupScanHelper(
                 return
             }
         }
-        currentScanJob = scope.launch { runScanLoop(context, reason) }
+        currentScanJob = scope.launch { runScanLoop(context, ScanRequest(reason, coldStart)) }
     }
 
-    private suspend fun runScanLoop(context: Context, initialReason: String) {
-        var reason = initialReason
+    private suspend fun runScanLoop(context: Context, initialRequest: ScanRequest) {
+        var request = initialRequest
         while (true) {
-            pendingScanReason = null
+            pendingScanRequest = null
             _enrichedCount = 0  // 重置 enriched 节流计数器
             try {
-                runSingleScan(context, reason)
+                runSingleScan(context, request)
             } catch (e: CancellationException) {
                 _scanUiState.value = ScanUiState.cancelled()
                 AppLogger.d(TAG, "scan cancelled: ${e.message}")
@@ -167,13 +191,13 @@ class StartupScanHelper(
                 AppLogger.e(TAG, "scan failed", e)
                 return
             }
-            val pending = pendingScanReason ?: return
-            reason = pending
-            AppLogger.d(TAG, "run pending scan: $reason")
+            request = pendingScanRequest ?: return
+            AppLogger.d(TAG, "run pending scan: ${request.reason}")
         }
     }
 
-    private suspend fun runSingleScan(context: Context, reason: String) {
+    private suspend fun runSingleScan(context: Context, request: ScanRequest) {
+        val reason = request.reason
         // 检查用户是否已选择扫描文件夹
         val scanPaths = com.rawsmusic.module.data.prefs.AppPreferences.UI.scanPaths
         val safFolders = com.rawsmusic.module.data.prefs.AppPreferences.Scanner.musicFolderUris
@@ -196,8 +220,17 @@ class StartupScanHelper(
             options = TwoStageMediaScanner.Options(
                 scannerOptions = MediaStoreScanner.ScanOptions.fromPreferences(),
                 customPaths = scanPaths,
-                sourceMode = TwoStageMediaScanner.SourceMode.fromPreferences(),
-                expandCueTracks = true, emitEachSong = false, usePersistentCache = true
+                sourceMode = if (request.coldStart) {
+                    TwoStageMediaScanner.SourceMode.SELECTED_FOLDERS
+                } else {
+                    TwoStageMediaScanner.SourceMode.fromPreferences()
+                },
+                expandCueTracks = true,
+                emitEachSong = false,
+                usePersistentCache = !request.coldStart,
+                saveCacheAtEnd = !request.coldStart,
+                incrementalMetadataOnly = request.coldStart,
+                publishQuickVisible = !request.coldStart
             )
         ).collect { event ->
             when (event) {
@@ -244,29 +277,24 @@ class StartupScanHelper(
                         message = context.getString(R.string.scan_completed, reason, event.songs.size, event.timeMs)
                     )
                     val stats = finalSync
-                    val elapsedSeconds = event.timeMs / 1000.0
-                    val toastText = if (stats == null ||
-                        (stats.added == 0 && stats.updated == 0 && stats.deleted == 0)
-                    ) {
-                        context.getString(
-                            R.string.scan_complete_no_changes,
-                            event.songs.size,
-                            elapsedSeconds
+                    LibraryScanToast.show(
+                        context,
+                        LibraryScanSummary(
+                            scanned = event.songs.size,
+                            added = stats?.added ?: 0,
+                            updated = stats?.updated ?: 0,
+                            removed = stats?.deleted ?: 0,
+                            elapsedMs = event.timeMs,
+                            mode = if (event.incremental) {
+                                LibraryScanSummary.Mode.INCREMENTAL
+                            } else {
+                                LibraryScanSummary.Mode.FULL
+                            },
+                            skippedDirectories = event.skippedDirectoryCount,
+                            reused = event.baselineHits,
+                            metadataParsed = event.metadataParsed
                         )
-                    } else {
-                        context.getString(
-                            R.string.scan_complete_summary,
-                            stats.added,
-                            stats.updated,
-                            stats.deleted,
-                            stats.unchanged,
-                            event.songs.size,
-                            elapsedSeconds
-                        )
-                    }
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(context.applicationContext, toastText, Toast.LENGTH_LONG).show()
-                    }
+                    )
                 }
                 is LibraryScanCoordinator.Event.Error -> {
                     _scanUiState.value = _scanUiState.value.copy(
@@ -301,9 +329,11 @@ class StartupScanHelper(
                 )
             }
             is TwoStageMediaScanner.Event.QuickCompleted -> {
-                _songs.value = event.songs
-                // 快速扫描完成：立即发布到 MusicRepository 让 UI 显示
-                MusicRepository.publishTransientScanSongs(event.songs)
+                if (event.publishVisible) {
+                    _songs.value = event.songs
+                    // 手动完整扫描才发布快速占位；冷启动继续显示旧数据库结果。
+                    MusicRepository.publishTransientScanSongs(event.songs)
+                }
                 _scanUiState.value = _scanUiState.value.copy(
                     isScanning = true, canCancel = true, stage = context.getString(R.string.scan_stage_quick_complete),
                     found = event.found, progress = 0.35f,
@@ -364,5 +394,8 @@ class StartupScanHelper(
 
     companion object {
         private const val TAG = "StartupScanHelper"
+        private val coldStartScanRequested = AtomicBoolean(false)
     }
+
+    private data class ScanRequest(val reason: String, val coldStart: Boolean)
 }

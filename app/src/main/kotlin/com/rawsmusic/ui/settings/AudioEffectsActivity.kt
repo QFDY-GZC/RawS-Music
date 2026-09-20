@@ -15,6 +15,8 @@ import com.rawsmusic.module.player.dsp.DynamicEqController
 import com.rawsmusic.module.player.dsp.MoogLadderController
 import com.rawsmusic.module.player.dsp.NativeDSPEngine
 import com.rawsmusic.module.player.dsp.ParametricEQController
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.module.player.dsp.SpeakerOutputElasticityController
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -250,14 +252,15 @@ class AudioEffectsActivity : BaseSettingsActivity() {
     private fun writeJsonToUri(uri: Uri, json: String) {
         try {
             contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
-            android.widget.Toast.makeText(this, getString(com.rawsmusic.R.string.ui_preset_saved), android.widget.Toast.LENGTH_SHORT).show()
+            AppNoticeBus.post(
+                message = getString(com.rawsmusic.R.string.ui_preset_saved),
+                icon = AppNoticeIcon.EQUALIZER,
+            )
         } catch (e: Exception) {
             Log.e("AudioEffectsActivity", "Failed to export PEQ", e)
-            android.widget.Toast.makeText(
-                this,
-                getString(com.rawsmusic.R.string.ui_preset_save_failed, e.message.orEmpty()),
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
+            AppNoticeBus.error(
+                getString(com.rawsmusic.R.string.ui_preset_save_failed, e.message.orEmpty())
+            )
         }
     }
 
@@ -268,11 +271,9 @@ class AudioEffectsActivity : BaseSettingsActivity() {
             }
         } catch (e: Exception) {
             Log.e("AudioEffectsActivity", "Failed to import PEQ", e)
-            android.widget.Toast.makeText(
-                this,
-                getString(com.rawsmusic.R.string.ui_preset_read_failed, e.message.orEmpty()),
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
+            AppNoticeBus.error(
+                getString(com.rawsmusic.R.string.ui_preset_read_failed, e.message.orEmpty())
+            )
             null
         }
     }

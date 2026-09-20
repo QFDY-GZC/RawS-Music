@@ -51,12 +51,12 @@ class QuickJsRuntime(
         }
     }
 
-    private companion object {
-        const val DEFAULT_MEMORY_LIMIT_BYTES = 64L * 1024L * 1024L
-        const val DEFAULT_STACK_SIZE_BYTES = 2L * 1024L * 1024L
-        const val DEFAULT_TIMEOUT_MS = 15_000L
+    companion object {
+        private const val DEFAULT_MEMORY_LIMIT_BYTES = 64L * 1024L * 1024L
+        private const val DEFAULT_STACK_SIZE_BYTES = 2L * 1024L * 1024L
+        private const val DEFAULT_TIMEOUT_MS = 15_000L
 
-        val HOST_API_BOOTSTRAP = """
+        private val HOST_API_BOOTSTRAP = """
             (function() {
               function hostCall(name, payload) {
                 return JSON.parse(__lyricoHostCall(name, JSON.stringify(payload || {}))).value;
@@ -106,6 +106,18 @@ class QuickJsRuntime(
               globalThis.Platform = {
                 app: globalThis.app,
                 runtime: globalThis.runtime,
+
+                i18n: {
+                  getLocale: function() {
+                    return hostCall("i18n.getLocale", {});
+                  },
+                  t: function(key) {
+                    return hostCall("i18n.t", {
+                      key: String(key || ""),
+                      args: Array.prototype.slice.call(arguments, 1)
+                    });
+                  }
+                },
 
                 cache: {
                   get: function(key) {
@@ -414,5 +426,7 @@ class QuickJsRuntime(
               };
             })();
         """.trimIndent()
+
+        internal fun hostApiBootstrapForTest(): String = HOST_API_BOOTSTRAP
     }
 }

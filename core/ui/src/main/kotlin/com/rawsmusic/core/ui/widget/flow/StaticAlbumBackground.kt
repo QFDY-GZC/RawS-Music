@@ -11,8 +11,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.palette.graphics.Palette
-import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
-import com.rawsmusic.core.ui.widget.bitmaps.CoilArtworkRuntime
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkBitmapRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
@@ -30,17 +29,12 @@ private val StaticAccentCache = ConcurrentHashMap<String, Color>()
  */
 internal fun staticAlbumAccent(bitmap: Bitmap): Color? {
     if (bitmap.isRecycled) return null
-    val softwareCopy = if (
+    if (
         android.os.Build.VERSION.SDK_INT >= 26 &&
         bitmap.config == Bitmap.Config.HARDWARE
-    ) {
-        bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return null
-    } else {
-        null
-    }
-    val source = softwareCopy ?: bitmap
+    ) return null
     return try {
-        val palette = Palette.from(source)
+        val palette = Palette.from(bitmap)
             .maximumColorCount(16)
             .generate()
         val swatch = palette.vibrantSwatch
@@ -52,8 +46,6 @@ internal fun staticAlbumAccent(bitmap: Bitmap): Color? {
         swatch?.rgb?.let { rgb -> Color(rgb) }
     } catch (_: Throwable) {
         null
-    } finally {
-        softwareCopy?.recycle()
     }
 }
 
@@ -111,6 +103,9 @@ internal fun rememberStaticAlbumAccent(
 
         val provided = sourceArtwork
             ?.takeUnless { it.isRecycled }
+            ?.takeIf {
+                !(android.os.Build.VERSION.SDK_INT >= 26 && it.config == Bitmap.Config.HARDWARE)
+            }
             ?.let { bitmap -> withContext(Dispatchers.Default) { staticAlbumAccent(bitmap) } }
         if (provided != null) {
             StaticAccentCache[key] = provided
@@ -119,12 +114,10 @@ internal fun rememberStaticAlbumAccent(
         }
 
         accent = STATIC_ALBUM_FALLBACK_ACCENT
-        val bitmap = CoilArtworkRuntime.executeBitmap(
+        val bitmap = ArtworkBitmapRuntime.executePixelAnalysisBitmap(
             context = context,
             key = key,
-            width = 256,
-            height = 256,
-            surface = ArtworkSurface.Playback
+            targetSide = 96,
         )
         if (bitmap != null && !bitmap.isRecycled) {
             val next = withContext(Dispatchers.Default) { staticAlbumAccent(bitmap) }

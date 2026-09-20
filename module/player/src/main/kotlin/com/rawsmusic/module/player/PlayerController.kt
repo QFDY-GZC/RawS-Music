@@ -9,6 +9,8 @@ import kotlin.math.pow
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.utils.PowerTraceLogger
+import com.rawsmusic.core.common.utils.PlayerSwitchTrace
+import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.common.model.AudioOutputMode
@@ -19,6 +21,8 @@ import com.rawsmusic.core.common.model.RepeatMode
 import com.rawsmusic.core.common.model.ShuffleMode
 import com.rawsmusic.core.common.model.isDsdSourceFile
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.prefs.PlaybackStatsStore
+import com.rawsmusic.module.data.prefs.UsbBitPerfectMode
 import com.rawsmusic.module.data.source.playback.MUSIC_SOURCE_ONLINE_ENCODING_MARKER
 import com.rawsmusic.module.data.source.playback.MusicSourcePlaybackController
 import com.rawsmusic.module.data.prefs.TransitionPreferences
@@ -38,6 +42,12 @@ import com.rawsmusic.module.player.dsp.Surround360Controller
 import com.rawsmusic.module.player.dsp.Panoramic360Controller
 import com.rawsmusic.module.player.dsp.FftConvolverController
 import com.rawsmusic.module.player.dsp.SpeakerOutputElasticityController
+import com.rawsmusic.module.player.devicecontrol.DeviceControlRouteCoordinator
+import com.rawsmusic.module.player.devicecontrol.DeviceControlSnapshot
+import com.rawsmusic.module.player.devicecontrol.DeviceControlWriteRequest
+import com.rawsmusic.module.player.devicecontrol.DeviceControlWriteResult
+import com.rawsmusic.module.player.devicecontrol.createDefaultDeviceControlRuntime
+import com.rawsmusic.module.player.devicecontrol.usb.moondrop.MoondropUsbVendorAdapters
 import com.rawsmusic.module.player.usb.UsbAudioEngine
 import com.rawsmusic.module.player.usb.UsbHardwareVolumeStore
 import com.rawsmusic.module.player.usb.UsbHardwareVolumeMath
@@ -53,6 +63,8 @@ import com.rawsmusic.module.player.usb.UsbPcmFormatRequestPolicy
 import com.rawsmusic.module.player.usb.UsbPcmOutputMode
 import com.rawsmusic.module.player.usb.UsbPcmFormatScoring
 import com.rawsmusic.module.player.usb.UsbVolumePath
+import com.rawsmusic.module.player.usb.UsbVolumeModeBitPerfectPolicy
+import com.rawsmusic.module.player.usb.UsbTransitionGainCoordinator
 import com.rawsmusic.module.player.usb.UsbLearnedPolicyStore
 import com.rawsmusic.module.player.usb.UsbSilentKind
 import com.rawsmusic.module.player.usb.UsbSelfTest
@@ -82,6 +94,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.SupervisorJob
@@ -257,6 +272,7 @@ class PlayerController private constructor(context: Context) {
     }
 
     companion object {
+        const val ACTION_SLEEP_TIMER_EXIT_APP = "com.rawsmusic.action.SLEEP_TIMER_EXIT_APP"
         private const val TAG = "PlayerController"
         private const val USB_BACKGROUND_REAL_PCM_LOW_MS = 120L
         @Volatile
@@ -324,6 +340,8 @@ class PlayerController private constructor(context: Context) {
     // FFmpeg + AudioTrack 播放器
     private var ffmpegPlayer = FfmpegAudioPlayer(context)
     val ffmpegPlayerRef: FfmpegAudioPlayer get() = ffmpegPlayer
+    val autoTransitionPresentation: StateFlow<AutoTransitionPresentation>
+        get() = ffmpegPlayer.autoTransitionPresentation
     private val audioEffectsSessionCoordinator by lazy {
         PlayerAudioEffectsSessionCoordinator(
             tag = TAG,
@@ -463,7 +481,7 @@ class PlayerController private constructor(context: Context) {
             ),
         )
     }
-    private val usbSystemAudioKeepAlive = AndroidAudioIdentityTrack(context)
+    private val usbSystemAudioKeepAlive = AndroidUsbIdentityCarrier(context)
     @Volatile
     private var currentUsbDevice: UsbDevice? = null
     private val _usbExclusiveActive = MutableStateFlow(false)
@@ -506,9 +524,39 @@ class PlayerController private constructor(context: Context) {
     private val _currentSong = MutableStateFlow<AudioFile?>(null)
     @Volatile private var autoTransitionLyrics: LyricData? = null
     val currentSong: StateFlow<AudioFile?> = _currentSong.asStateFlow()
+    private val restoreSnapshotApplied = AtomicBoolean(false)
+    private val restoreSnapshotLock = Any()
+    /** True when currentSong is only the Reference-style queue selection, not a resumable decoder. */
+    @Volatile private var queueSelectionOnly = false
+    /**
+     * A paused next/previous command changes the logical queue row without resuming the retiring
+     * renderer. The next explicit Play must therefore open the selected row instead of resuming
+     * the decoder that still belongs to the previous row.
+     */
+    @Volatile private var pausedSelectionPendingStart = false
+
+    private val _playbackSourceOverride = MutableStateFlow<PlaybackSourceOverride?>(null)
+    val playbackSourceOverride: StateFlow<PlaybackSourceOverride?> = _playbackSourceOverride.asStateFlow()
+    private val playbackSourceOverrideGeneration = AtomicLong(0L)
+
+    private fun currentRendererSongForOutputPolicy(): AudioFile? = _currentSong.value?.let { song ->
+        PlaybackSourceOverridePolicy.rendererSong(song, _playbackSourceOverride.value)
+    }
+
+    private fun clearPlaybackSourceOverrideIfOwnerChanged(song: AudioFile, reason: String) {
+        val active = _playbackSourceOverride.value ?: return
+        if (!active.matches(song)) {
+            _playbackSourceOverride.value = null
+            AppLogger.i(
+                TAG,
+                "SOURCE_OVERRIDE cleared reason=$reason owner=${active.semanticPath} next=${song.path}",
+            )
+        }
+    }
+
     private val usbFormatPolicyCoordinator by lazy {
         PlayerUsbFormatPolicyCoordinator(
-            currentSong = { _currentSong.value },
+            currentSong = ::currentRendererSongForOutputPolicy,
             currentCapabilities = { _usbCapabilities.value },
             setCapabilities = { _usbCapabilities.value = it },
             usbEngine = sharedUsbAudioEngine,
@@ -519,6 +567,32 @@ class PlayerController private constructor(context: Context) {
 
     private val _queue = MutableStateFlow(PlayQueue())
     val queue: StateFlow<PlayQueue> = _queue.asStateFlow()
+
+    /**
+     * Queue identity that must become authoritative only after the renderer confirms that the
+     * first PCM frames of an inline manual handoff entered the output timeline.
+     *
+     * A manual request can be resolved against a repository/list queue that is newer than
+     * [_queue]. Publishing that queue before TRACK_STARTED makes the UI lead the audio; not
+     * retaining it at all makes TRACK_STARTED search a stale queue and leaves the UI on the old
+     * song. Keep the exact request context here until the renderer owns the new track.
+     *
+     * Access is serialized by [transportMutex].
+     */
+    private data class PendingRendererUiCommit(
+        val song: AudioFile,
+        val queue: List<AudioFile>,
+        val index: Int,
+        /**
+         * True when the target decoder was cold-reopened rather than committed by an already-live
+         * two-slot handoff. In that case the following-track/gapless preparation must wait until
+         * this renderer becomes authoritative; doing it before commit would inspect the old public
+         * queue/current item.
+         */
+        val prepareFollowingAfterCommit: Boolean = false,
+    )
+
+    private var pendingRendererUiCommit: PendingRendererUiCommit? = null
 
     /**
      * UI-facing selection state is isolated from decoder commitment. The coordinator persists the
@@ -544,8 +618,15 @@ class PlayerController private constructor(context: Context) {
     fun hasRequestedSongForUi(): Boolean = uiSelectionControlCoordinator.hasRequestedSong()
 
     fun primeSongSelectionForUi(song: AudioFile) {
+        // A user selection owns the queue generation even if it races the deferred cold-start
+        // restore. The restore callback must not replace an explicit tap with an old snapshot.
+        restoreSnapshotApplied.set(true)
+        queueSelectionOnly = false
         uiSelectionControlCoordinator.primeSelection(song)
     }
+
+    /** Whether the visible current item came from a cold queue restore and has not started audio. */
+    fun isQueueSelectionOnly(): Boolean = queueSelectionOnly
 
     private fun clearRequestedSongIfCommitted(song: AudioFile) {
         uiSelectionControlCoordinator.clearRequestedSongIfMatching(song)
@@ -553,6 +634,10 @@ class PlayerController private constructor(context: Context) {
 
     private fun clearRequestedSongIfMatching(song: AudioFile) {
         uiSelectionControlCoordinator.clearRequestedSongIfMatching(song)
+    }
+
+    private fun clearPendingUiSelection() {
+        uiSelectionControlCoordinator.clearRequestedSong()
     }
 
     fun updateCurrentSongIfSamePath(song: AudioFile) {
@@ -609,8 +694,11 @@ class PlayerController private constructor(context: Context) {
     @Volatile
     private var explicitUsbExclusiveSoftwareMuteThisProcess = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val playbackSpeedRestartMutex = Mutex()
+    private val playbackSpeedRequestToken = AtomicLong(0L)
+    private var playbackSpeedRestartJob: Job? = null
 
-    private val statePersistence = PlayerStatePersistence()
+    private val statePersistence = PlayerStatePersistence(context)
     private val playRequestResolver = PlayerPlayRequestResolver(
         logWarning = { message -> AppLogger.w(TAG, message) },
     )
@@ -633,8 +721,12 @@ class PlayerController private constructor(context: Context) {
             }
         },
         queue = { _queue.value },
+        priorityQueue = { queueControlCoordinator.priorityQueueSnapshot() },
+        shouldPersistQueue = { restoreSnapshotApplied.get() },
     )
-    private val shuffleQueueController = ShuffleQueueController(statePersistence)
+    private val shuffleQueueController = ShuffleQueueController(statePersistence) {
+        PlaybackStatsStore.getInstance(context).stats.value.associate { it.songId to it.lastPlayedAt }
+    }
     private val playbackModeController = PlaybackModeController(
         shuffleQueueController = shuffleQueueController,
         currentQueue = { _queue.value },
@@ -645,7 +737,10 @@ class PlayerController private constructor(context: Context) {
         PlayerPlaybackQueueCommitter(
             currentQueue = { _queue.value },
             setQueue = { _queue.value = it },
-            setCurrentSong = { _currentSong.value = it },
+            setCurrentSong = { song ->
+                clearPlaybackSourceOverrideIfOwnerChanged(song, "queue_commit")
+                _currentSong.value = song
+            },
             sameItem = ::samePlaybackItem,
             sameQueue = ::samePlaybackQueue,
             clearHistory = queueControlCoordinator::clearHistoryForNewQueue,
@@ -657,14 +752,23 @@ class PlayerController private constructor(context: Context) {
     private val playPauseSeedCoordinator = PlayerPlayPauseSeedCoordinator(
         callbacks = PlayerPlayPauseSeedCoordinator.Callbacks(
             currentSong = { _currentSong.value },
-            restoreLastSong = { restoreControlCoordinator.restoreLastSong() },
+        restoreLastSong = ::restoreLastSong,
             currentQueue = { _queue.value },
-            applyCurrentSong = { song -> _currentSong.value = song },
+            applyCurrentSong = { song ->
+                clearPlaybackSourceOverrideIfOwnerChanged(song, "play_pause_seed")
+                _currentSong.value = song
+            },
             applyDurationMs = { durationMs -> _duration.value = durationMs },
             loadRepositorySongs = {
                 com.rawsmusic.module.data.repository.MusicRepository.getAllSongs()
             },
-            applyQueue = { queue -> _queue.value = queue },
+            applyQueue = { queue ->
+                _queue.value = queue.copy(
+                    repeatMode = playbackModeController.currentRepeatMode,
+                    isShuffle = playbackModeController.isShuffleEnabled,
+                    entryIds = QueueEntryIdGenerator.normalize(queue.songs.size, queue.entryIds),
+                )
+            },
             elapsedRealtimeMs = SystemClock::elapsedRealtime,
             traceStartup = { stage, detail, elapsedMs ->
                 PowerTraceLogger.playerStartup(stage, detail, elapsedMs)
@@ -677,12 +781,19 @@ class PlayerController private constructor(context: Context) {
         callbacks = PlayerGaplessControlCoordinator.Callbacks(
             gaplessEnabled = { AppPreferences.Player.gaplessPlaybackEnabled },
             automaticCrossfadeEnabled = { AppPreferences.Player.automaticCrossfadeEnabled },
-            currentQueue = { _queue.value },
+            // Read the authoritative queue and priority projection here.  visibleQueue is a
+            // stateIn(combine(...)) stream and may still expose the previous generation during a
+            // mode/queue command; Reference computes its next cursor from the committed snapshot.
+            currentQueue = {
+                _queue.value.withPriorityQueue(queueControlCoordinator.priorityQueueSnapshot())
+            },
             currentPlayMode = { playbackModeController.currentPlayMode },
             peekShuffleIndex = shuffleQueueController::peekNextIndex,
             applyPlan = { plan ->
                 val current = _currentSong.value
-                val queueSnapshot = _queue.value
+                val queueSnapshot = _queue.value.withPriorityQueue(
+                    queueControlCoordinator.priorityQueueSnapshot(),
+                )
                 val nextIndex = resolveGaplessNextIndex(
                     queue = queueSnapshot,
                     playMode = playbackModeController.currentPlayMode,
@@ -727,7 +838,10 @@ class PlayerController private constructor(context: Context) {
         callbacks = PlayerRestoreControlCoordinator.Callbacks(
             elapsedRealtimeMs = SystemClock::elapsedRealtime,
             restoreSnapshot = playbackStatePersistenceController::restore,
-            applyCurrentSong = { song -> _currentSong.value = song },
+            applyCurrentSong = { song ->
+                clearPlaybackSourceOverrideIfOwnerChanged(song, "restore_commit")
+                _currentSong.value = song
+            },
             clearRequestedSong = uiSelectionControlCoordinator::clearRequestedSong,
             applyDurationMs = { durationMs -> _duration.value = durationMs },
             applyPositionMs = { positionMs -> _position.value = positionMs },
@@ -735,7 +849,15 @@ class PlayerController private constructor(context: Context) {
                 pendingSeekPosition = positionMs
                 pendingSeekPath = path
             },
-            applyQueue = { restoredQueue -> _queue.value = restoredQueue },
+            applyQueue = { restoredQueue ->
+                _queue.value = restoredQueue.copy(
+                    repeatMode = playbackModeController.currentRepeatMode,
+                    isShuffle = playbackModeController.isShuffleEnabled,
+                )
+            },
+            applyPriorityQueue = ::restorePriorityQueue,
+            onQueueSelectionOnly = { queueSelectionOnly = true },
+            onPersistedNowPlaying = { queueSelectionOnly = false },
             logInfo = { message -> AppLogger.i(TAG, message) },
             traceStartup = { stage, detail, elapsedMs ->
                 PowerTraceLogger.playerStartup(stage, detail, elapsedMs)
@@ -750,6 +872,7 @@ class PlayerController private constructor(context: Context) {
             previousShuffleIndex = shuffleQueueController::previousIndex,
             peekNextShuffleIndex = shuffleQueueController::peekNextIndex,
             peekPreviousShuffleIndex = shuffleQueueController::peekPreviousIndex,
+            peekRelativeShuffleIndex = shuffleQueueController::peekRelativeIndex,
             toggleRepeatMode = playbackModeController::toggleRepeatMode,
             setRepeatMode = playbackModeController::setRepeatMode,
             toggleShuffle = playbackModeController::toggleShuffle,
@@ -763,7 +886,7 @@ class PlayerController private constructor(context: Context) {
             updateQueue = { _queue.value = it },
             currentSong = { _currentSong.value },
             clearCurrentSong = { _currentSong.value = null },
-            clearRequestedSong = { uiSelectionControlCoordinator.clearRequestedSong() },
+            clearRequestedSong = ::clearPendingUiSelection,
             resetTimeline = {
                 _position.value = 0L
                 _duration.value = 0L
@@ -774,12 +897,40 @@ class PlayerController private constructor(context: Context) {
             saveState = { saveState() },
             play = { song, songs, index -> play(song, songs, index) },
             manualSwitchFromStart = { song, songs, index, reason ->
-                playManualSwitchFromStart(song, songs, index, reason)
+                playManualSwitchFromStart(
+                    song = song,
+                    queue = songs,
+                    index = index,
+                    reason = reason,
+                    primeUiSelection = false,
+                    persistOutgoingPositionInWorker = true,
+                )
+            },
+            manualArtworkGestureSwitchFromStart = { song, songs, index, reason ->
+                playManualSwitchFromStart(
+                    song = song,
+                    queue = songs,
+                    index = index,
+                    reason = reason,
+                    primeUiSelection = false,
+                    persistOutgoingPositionInWorker = true,
+                )
+            },
+            automaticSwitchFromStart = { song, songs, index ->
+                transportControlCoordinator.automaticAdvance(song, songs, index)
             },
             stop = { stop() },
         ),
     )
-    private val sleepTimerController = SleepTimerController(scope) { pause() }
+
+    private fun restorePriorityQueue(songs: List<AudioFile>) {
+        queueControlCoordinator.restorePriorityQueue(songs)
+    }
+    private val sleepTimerController = SleepTimerController(
+        scope = scope,
+        pausePlayback = { pause() },
+        requestPlayerExit = ::requestSleepTimerPlayerExit,
+    )
     private val playbackStatsTracker = PlaybackStatsTracker(context, scope)
     private val playbackProgressController = PlaybackProgressController(
         scope = scope,
@@ -813,12 +964,45 @@ class PlayerController private constructor(context: Context) {
         logTag = TAG,
     )
     val sleepTimerRemaining: StateFlow<Long> = sleepTimerController.remainingMs
+    val priorityQueue: StateFlow<List<AudioFile>> = queueControlCoordinator.priorityQueueState
+    /**
+     * One renderer-confirmed queue projection shared by the home carousel, mini player and queue
+     * sheet. An in-flight selection is intentionally kept out of this stream: publishing it here
+     * invalidates every queue consumer once for the request and again for renderer confirmation.
+     * [requestedSongForUi] is a narrow hint for retained transition holders only.
+     */
+    private fun alignVisibleQueueToRendererSong(queue: PlayQueue, song: AudioFile?): PlayQueue {
+        if (song == null || queue.songs.isEmpty()) return queue
+        val exactIndex = queue.songs.indexOfFirst { samePlaybackItem(it, song) }
+        return if (exactIndex >= 0 && exactIndex != queue.currentIndex) {
+            queue.copy(currentIndex = exactIndex)
+        } else {
+            queue
+        }
+    }
 
-    /** Serialized playback event queue (PlayOpEventHandlerThread). */
+    val visibleQueue: StateFlow<PlayQueue> by lazy {
+        combine(queue, priorityQueue, currentSong) { base, priority, rendererSong ->
+            alignVisibleQueueToRendererSong(
+                base.withPriorityQueue(priority),
+                rendererSong,
+            )
+        }.stateIn(
+            scope,
+            SharingStarted.Eagerly,
+            alignVisibleQueueToRendererSong(
+                queue.value.withPriorityQueue(priorityQueue.value),
+                currentSong.value,
+            ),
+        )
+    }
+
+    /** Serialized playback event queue. */
     private val eventQueue = PlaybackEventQueue()
 
     init {
         eventQueue.start(scope)
+        sleepTimerController.restorePersistedTimer()
     }
 
     @Volatile
@@ -848,6 +1032,15 @@ class PlayerController private constructor(context: Context) {
             isHardwareRouteActive = ::isUsbHardwareVolumeRouteActive,
         )
     }
+    private data class PendingUsbHardwareReleaseAfterStop(
+        val snapshot: UsbHardwareVolumeCoordinator.LiveVolumeSnapshot,
+    )
+
+    @Volatile
+    private var usbHardwareToSoftwareHandoffActive = false
+
+    @Volatile
+    private var pendingUsbHardwareReleaseAfterStop: PendingUsbHardwareReleaseAfterStop? = null
     private val musicSourcePlaybackBackend = PlayerControllerMusicSourcePlaybackBackend(this)
 
     private fun installMusicSourcePlaybackBackend() {
@@ -894,17 +1087,27 @@ class PlayerController private constructor(context: Context) {
             lastPlayerError = { lastPlayerError },
             isUsbExclusiveActive = { _usbExclusiveActive.value },
             backendUsbExclusiveMode = { ffmpegPlayer.usbExclusiveMode },
-            currentQueue = { _queue.value },
+            currentQueue = { visibleQueue.value },
             currentSong = { _currentSong.value },
             currentRepeatMode = { playbackModeController.currentRepeatMode },
+            hasAutomaticContinuation = { queueControlCoordinator.hasAutomaticContinuation() },
             consumePlaybackCompletion = {
                 musicSourcePlaybackBackend.consumePlaybackCompletion() ||
                     sleepTimerController.consumePlaybackCompletion()
             },
+            onConsumedPlaybackCompletionStopped = {
+                sleepTimerController.onPlaybackStoppedAfterTimerCompletion()
+            },
             playTransport = { song, songs, index -> play(song, songs, index) },
-            replayCurrentSong = { song -> play(song) },
             pauseTransport = { pause() },
-            nextTransport = { next() },
+            automaticReplayTransport = {
+                val queue = visibleQueue.value
+                val index = queue.currentIndex
+                val song = _currentSong.value ?: queue.songs.getOrNull(index)
+                song != null && index in queue.songs.indices &&
+                    transportControlCoordinator.automaticAdvance(song, queue.songs, index)
+            },
+            automaticAdvanceTransport = { queueControlCoordinator.automaticAdvance() != null },
             stopTransport = { stop() },
             clearUnavailableSong = ::clearRequestedSongIfMatching,
             logDebug = { message -> Log.d("VirtualizerDebug", message) },
@@ -959,6 +1162,9 @@ class PlayerController private constructor(context: Context) {
                     AppPreferences.Player.volume
                 }
             },
+            usbSoftwarePcmGain = { linear ->
+                volumeRouteCoordinator.usbSoftwarePcmGainForLocalUi(linear)
+            },
             duckFactor = { duckVolumeFactor },
             setAndroidSoftwareGain = ffmpegPlayer::setVolume,
             setUsbPcmGain = { gain -> sharedUsbAudioEngine.setPcmSoftwareGain(gain) },
@@ -998,6 +1204,45 @@ class PlayerController private constructor(context: Context) {
         ),
     ).also { it.start() }
 
+    private val deviceControlRuntime = createDefaultDeviceControlRuntime(
+        context = context,
+        scope = scope,
+        usbEngine = sharedUsbAudioEngine,
+        usbVendorAdapters = MoondropUsbVendorAdapters.production(),
+    )
+    private val deviceControlRouteCoordinator = DeviceControlRouteCoordinator(
+        scope = scope,
+        manager = deviceControlRuntime.manager,
+        resolver = deviceControlRuntime.resolver,
+        usbExclusiveActive = _usbExclusiveActive,
+        bluetoothRoute = androidBluetoothOutputController.currentBluetoothRoute,
+    ).also { it.start() }
+
+    /** One dynamic current-device capability surface for settings/UI. */
+    val hardwareDeviceControlSnapshot: StateFlow<DeviceControlSnapshot>
+        get() = deviceControlRuntime.manager.snapshot
+
+    /**
+     * Settings/UI entry point. Reuses the service-owned live DeviceControlSession and snapshot
+     * when the same physical route is still bound; unlike refreshHardwareDeviceControls(), this
+     * must not re-read the device merely because a screen was reopened.
+     */
+    suspend fun ensureHardwareDeviceControlsBound() {
+        deviceControlRouteCoordinator.ensureBound()
+    }
+
+    /** Explicit refresh path for the user, permission changes, or diagnostics. */
+    suspend fun refreshHardwareDeviceControls() {
+        deviceControlRouteCoordinator.refresh()
+    }
+
+    suspend fun writeHardwareDeviceControl(request: DeviceControlWriteRequest): DeviceControlWriteResult =
+        deviceControlRuntime.manager.write(request)
+
+    private val remoteCachedMediaEnricher = RemoteCachedMediaEnricher(
+        cacheDir = context.cacheDir,
+        tag = TAG,
+    )
     private val metadataEnrichmentCoordinator = PlayerMetadataEnrichmentCoordinator(
         scope = scope,
         callbacks = PlayerMetadataEnrichmentCoordinator.Callbacks(
@@ -1006,6 +1251,7 @@ class PlayerController private constructor(context: Context) {
             setCurrentSong = { _currentSong.value = it },
             currentQueue = { _queue.value },
             setQueue = { _queue.value = it },
+            enrichRemoteCachedSong = remoteCachedMediaEnricher::enrich,
             logInfo = { message -> AppLogger.i(TAG, message) },
         ),
     )
@@ -1019,6 +1265,7 @@ class PlayerController private constructor(context: Context) {
             isReleased = { isReleased },
             clearAutomaticFocusResume = ::clearAutomaticFocusResume,
             resolveExplicitPlayQueue = ::resolveExplicitPlayQueue,
+            onExplicitQueueSelection = ::applyExplicitShuffleSelectionPolicy,
             primeSongSelectionForUi = ::primeSongSelectionForUi,
             shouldRouteExplicitPlayThroughManualSwitch = ::shouldRouteExplicitPlayThroughManualSwitch,
             playManualSwitchFromStartLocked = ::playManualSwitchFromStartLocked,
@@ -1040,6 +1287,7 @@ class PlayerController private constructor(context: Context) {
                     "nativeState=${sharedUsbAudioEngine.getNativeStreamState()}"
             },
             resolvePlayPauseSeedSong = ::resolvePlayPauseSeedSong,
+            hasPausedSelectionPendingStart = { pausedSelectionPendingStart },
             transitionPlayState = { target, reason ->
                 smTransition(target, reason)
                 Unit
@@ -1219,18 +1467,29 @@ class PlayerController private constructor(context: Context) {
 
     private fun queueRendererRestartSeek(song: AudioFile, displayPositionMs: Long, reason: String) {
         cancelPendingRestoreSeek(reason)
+        val safeDisplayPositionMs = displayPositionMs.coerceAtLeast(0L)
         val realPositionMs = if (song.cueOffsetMs > 0L) {
-            song.cueOffsetMs + displayPositionMs.coerceAtLeast(0L)
+            song.cueOffsetMs + safeDisplayPositionMs
         } else {
-            displayPositionMs.coerceAtLeast(0L)
+            safeDisplayPositionMs
         }
+
+        // A renderer restart has two owners which must carry the same timeline:
+        // 1) FfmpegAudioPlayer needs the real decoder seek before the new renderer starts.
+        // 2) PlayerController/Compose must keep displaying the pre-cutover position until
+        //    renderer progress resumes.  The old implementation only armed (1), then
+        //    playInternal() reset _position to 0 because this controller latch had already
+        //    been cleared.  That produced audio at e.g. 2:00 with UI counting from 0:00.
+        pendingSeekPosition = if (safeDisplayPositionMs > 0L) safeDisplayPositionMs else -1L
+        pendingSeekPath = if (safeDisplayPositionMs > 0L) song.path else null
         ffmpegPlayer.queueStartSeekPosition(
             positionMs = if (realPositionMs > 0L) realPositionMs else -1L,
             reason = reason
         )
         AppLogger.i(
             TAG,
-            "queueRendererRestartSeek: reason=$reason song=${song.title} display=$displayPositionMs real=$realPositionMs cue=${song.cueOffsetMs}"
+            "queueRendererRestartSeek: reason=$reason song=${song.title} display=$safeDisplayPositionMs " +
+                "real=$realPositionMs cue=${song.cueOffsetMs} controllerLatch=${pendingSeekPosition}"
         )
     }
 
@@ -1287,16 +1546,19 @@ class PlayerController private constructor(context: Context) {
         val cur = _currentSong.value ?: return false
         if (!_usbExclusiveActive.value || _playState.value != PlayState.PLAYING) return false
         if (!sharedUsbAudioEngine.isRunning()) return false
-        val sameRate = cur.sampleRate > 0 && nextSong.sampleRate > 0 && cur.sampleRate == nextSong.sampleRate
-        val sameBits = cur.bitsPerSample > 0 && nextSong.bitsPerSample > 0 && cur.bitsPerSample == nextSong.bitsPerSample
-        val sameChannels = cur.channelCount > 0 && nextSong.channelCount > 0 && cur.channelCount == nextSong.channelCount
         val profile = resolveCurrentUsbOutputProfile()
         val sameDeviceRoute = profile?.volumePath != null
-        val ok = sameRate && sameBits && sameChannels && sameDeviceRoute
+        // The library/source metadata is not the live renderer geometry.
+        // A different source rate/bit depth can still be prepared into the exact active USB
+        // PCM format. UsbSameProfileTrackSwitchCoordinator is the authoritative gate because
+        // it compares the already-opened decoder's *actual* output format with the feeder.
+        // Software-vs-hardware volume is deliberately not a stop/reopen condition.
+        val ok = sameDeviceRoute
         AppLogger.i(
             TAG,
-            "canUseUsbSoftNextFor: ok=$ok cur=${cur.sampleRate}/${cur.bitsPerSample}/${cur.channelCount} " +
-                "next=${nextSong.sampleRate}/${nextSong.bitsPerSample}/${nextSong.channelCount} route=${profile?.volumePath}"
+            "canUseUsbSoftNextFor: attempt=$ok sourceCur=${cur.sampleRate}/${cur.bitsPerSample}/${cur.channelCount} " +
+                "sourceNext=${nextSong.sampleRate}/${nextSong.bitsPerSample}/${nextSong.channelCount} " +
+                "route=${profile?.volumePath}; actual prepared-decoder format is authoritative"
         )
         return ok
     }
@@ -1311,6 +1573,7 @@ class PlayerController private constructor(context: Context) {
         val initialized: Boolean,
         val running: Boolean,
         val bitPerfect: Boolean,
+        val bitPerfectPolicy: String,
         val playbackMode: String,
         val sourceFormat: String,
         val targetFormat: String,
@@ -1327,6 +1590,7 @@ class PlayerController private constructor(context: Context) {
         val audibleDiagnostics: String = "",
         val feedbackDiagnostics: String = "",
         val clockDiagnostics: String = "",
+        val pcmInputDiagnostics: String = "",
         val featureUnitDiagnostics: String = "",
         val profileDiagnostics: String = "",
         val recoveryDiagnostics: String = "",
@@ -1340,19 +1604,40 @@ class PlayerController private constructor(context: Context) {
             // Online portal must observe COMPLETED before the global local-queue repeat policy runs.
             musicSourcePlaybackBackend.onRendererStateChanged(state)
             scope.launch {
-                backendStateControlCoordinator.onStateChanged(state.toBackendControlState())
+                val currentBackendState = ffmpegPlayer.state
+                if (state != currentBackendState) {
+                    // Renderer callbacks can originate on retiring decoder/feeder threads. By the
+                    // time Main consumes PAUSED/STOPPED, a replacement track may already be
+                    // PLAYING. Never let that stale terminal callback overwrite the live transport
+                    // state shown by the playback bars or stop their progress clock.
+                    AppLogger.w(
+                        TAG,
+                        "Ignoring stale backend state callback=$state current=$currentBackendState",
+                    )
+                    return@launch
+                }
+                backendStateControlCoordinator.onStateChanged(currentBackendState.toBackendControlState())
             }
         }
 
-        override fun onPositionChanged(positionMs: Long, durationMs: Long) {
+        override fun onPositionChanged(positionMs: Long, durationMs: Long, trackPath: String?) {
             if (cachedCueEndMs > 0) return
-            val prev = _position.value
-            _position.value = positionMs
-            _duration.value = durationMs
-            musicSourcePlaybackBackend.onPositionChanged(positionMs, durationMs)
-            if (kotlin.math.abs(positionMs - prev) > 2000) {
-                Log.w(TAG, ">>> onPositionChanged: JUMP! prev=$prev -> newPos=$positionMs")
+            val committedPath = _currentSong.value?.path
+            if (trackPath != null && committedPath != null && trackPath != committedPath) {
+                // A retiring decoder can publish one last clock tick after the handoff. Reference
+                // never lets that old timeline overwrite the committed queue cursor.
+                AppLogger.d(
+                    TAG,
+                    "Ignoring stale position callback path=$trackPath committed=$committedPath " +
+                        "position=$positionMs duration=$durationMs",
+                )
+                return
             }
+            // Renderer callbacks run at the PCM/block cadence. Feeding that cadence straight into
+            // the public StateFlows wakes MainActivity/Compose independently of the UI clock and
+            // makes playback compete with every scene transition. Keep renderer time private here;
+            // PlaybackProgressController is the single fixed-rate publisher for _position/_duration.
+            musicSourcePlaybackBackend.onPositionChanged(positionMs, durationMs)
         }
 
         override fun onError(message: String) {
@@ -1363,26 +1648,181 @@ class PlayerController private constructor(context: Context) {
             }
         }
 
-        override fun onGaplessSongChanged(newPath: String) {
+        override fun onTrackStarted(newPath: String, positionMs: Long, durationMs: Long) {
             if (isReleased) return
-            scope.launch {
+            PlayerSwitchTrace.mark(
+                "renderer_track_started_callback",
+                "pathHash=${newPath.hashCode().toString(16)} pos=$positionMs duration=$durationMs thread=${Thread.currentThread().name}",
+            )
+            // TRACK_STARTED can arrive on the decoder/feeder boundary. Queue persistence, debug
+            // trace reset, artwork identity and the follow-up gapless preparation are all safe
+            // off-main; running them on the Main.immediate controller scope made the first visual
+            // frame compete with file/native work.
+            scope.launch(Dispatchers.Default) {
+                PlayerSwitchTrace.mark(
+                    "renderer_commit_worker_enter",
+                    "thread=${Thread.currentThread().name}",
+                )
+                transportMutex.withLock {
+                    val deferred = pendingRendererUiCommit
+                    val latestRequested = uiSelectionControlCoordinator.requestedSong()
+
+                    // TRACK_STARTED is the renderer-owned commit boundary. Never discard that
+                    // boundary merely because a URI/path has a different textual representation.
+                    // If a newer tap exists and this callback belongs to the retiring request, keep
+                    // waiting for the newer renderer item without destroying its commit context.
+                    if (latestRequested != null && !rendererSourceMatches(latestRequested.path, newPath)) {
+                        PlayerSwitchTrace.mark(
+                            "renderer_commit_ignored_retiring",
+                            "new=${newPath.hashCode().toString(16)} latest=${latestRequested.path.hashCode().toString(16)}",
+                        )
+                        AppLogger.w(
+                            TAG,
+                            "TRACK_STARTED ignored retiring target path=$newPath " +
+                                "pending=${deferred?.song?.path} latest=${latestRequested.path}",
+                        )
+                        return@withLock
+                    }
+
+                    val oldIndex = _queue.value.currentIndex
+                    val oldSong = _currentSong.value
+                    val songs: List<AudioFile>
+                    val newIndex: Int
+                    val song: AudioFile
+                    val rendererDeferred = deferred?.takeIf {
+                        rendererSourceMatches(it.song.path, newPath)
+                    }
+                    if (rendererDeferred != null) {
+                        songs = rendererDeferred.queue
+                        newIndex = rendererDeferred.index
+                            .takeIf { it in songs.indices && samePlaybackItem(songs[it], rendererDeferred.song) }
+                            ?: songs.indexOfFirst { samePlaybackItem(it, rendererDeferred.song) }
+                        if (newIndex < 0) {
+                            AppLogger.e(
+                                TAG,
+                                "TRACK_STARTED deferred queue lost renderer item path=$newPath " +
+                                    "queueSize=${songs.size} requestedIndex=${rendererDeferred.index}",
+                            )
+                            return@withLock
+                        }
+                        song = songs[newIndex]
+                    } else {
+                        if (deferred != null) {
+                            AppLogger.w(
+                                TAG,
+                                "TRACK_STARTED ignored while waiting for deferred target " +
+                                    "path=$newPath expected=${deferred.song.path}",
+                            )
+                            return@withLock
+                        }
+
+                        songs = _queue.value.songs
+                        val requestedIndex = latestRequested?.let { requested ->
+                            songs.indexOfFirst { samePlaybackItem(it, requested) }
+                        } ?: -1
+                        newIndex = requestedIndex.takeIf { it >= 0 }
+                            ?: songs.indexOfFirst { rendererSourceMatches(it.path, newPath) }
+                        if (newIndex < 0) {
+                            AppLogger.w(TAG, "TRACK_STARTED renderer item missing from queue path=$newPath")
+                            return@withLock
+                        }
+                        song = songs[newIndex]
+                    }
+
+                    // One renderer-confirmed snapshot. StateFlow equality suppresses unchanged
+                    // fields, while all consumers observe the same queue/song identity.
+                    _queue.value = _queue.value.copy(songs = songs, currentIndex = newIndex)
+                    pendingRendererUiCommit = null
+                    clearPlaybackSourceOverrideIfOwnerChanged(song, "track_started")
+                    _currentSong.value = song
+                    _position.value = positionMs.coerceAtLeast(0L)
+                    _duration.value = durationMs.takeIf { it > 0L } ?: song.duration
+                    cachedCueOffsetMs = song.cueOffsetMs
+                    cachedCueEndMs = song.cueEndMs
+                    cachedSongDuration = song.duration
+                    queueControlCoordinator.onManualTargetCommitted(song)
+                    persistSelectedSongForColdStart(song)
+                    clearRequestedSongIfCommitted(song)
+                    AppPreferences.Player.lastPosition = _position.value
+                    smForceTransition(PlayState.PLAYING, "native_track_started")
+                    PlayerSwitchTrace.mark(
+                        "renderer_ui_commit",
+                        "oldIndex=$oldIndex newIndex=$newIndex songId=${song.id} title=${song.title} pos=${_position.value}",
+                    )
+                    if (oldSong == null || !samePlaybackItem(oldSong, song)) {
+                        AppLogger.markPlaybackReportStart(
+                            title = song.title,
+                            artist = song.artist,
+                            album = song.album,
+                            path = song.path,
+                            cueOffsetMs = song.cueOffsetMs,
+                        )
+                        FFmpegBridge.resetDebugLog("native_track_started:${song.path}")
+                        playbackStatsTracker.reset()
+                        autoTransitionLyrics = null
+                        ffmpegPlayer.updateAutoTransitionRecipe(null)
+                    }
+
+                    if (rendererDeferred != null) {
+                        // Manual renderer-confirmed commits deliberately skipped presentation and
+                        // queue-dependent startup work while the target decoder was opening. Run
+                        // it only after the target owns the public current/queue snapshot.
+                        metadataEnrichmentCoordinator.start(
+                            song = song,
+                            remoteUrl = song.path.startsWith("http://") || song.path.startsWith("https://"),
+                        )
+                        if (rendererDeferred.prepareFollowingAfterCommit) {
+                            gaplessControlCoordinator.prepareNextSong()
+                            precacheNextSong()
+                        }
+                        saveState()
+                    }
+                    AppLogger.i(
+                        TAG,
+                        "TRACK_STARTED committed UI index=$oldIndex->$newIndex " +
+                            "position=$positionMs duration=${_duration.value} path=$newPath",
+                    )
+                    // Two native slots are still occupied until the old track retires.
+                    // Preparing next-next here would replace the in-flight pending decoder.
+                    // onGaplessSongChanged(HANDOFF_COMMITTED) owns the next prewarm.
+                }
+            }
+        }
+
+        override fun onGaplessSongChanged(
+            newPath: String,
+            positionMs: Long?,
+            durationMs: Long?,
+        ) {
+            if (isReleased) return
+            // The gapless handoff also performs queue/state persistence and prepares the next
+            // decoder. Keep it on the transport worker so the acknowledged holder swap cannot
+            // block Compose's next frame.
+            scope.launch(Dispatchers.Default) {
                 transportMutex.withLock {
                     val songs = _queue.value.songs
                     val curIdx = _queue.value.currentIndex
-                    val newIndex = songs.indexOfFirst { it.path == newPath }
+                    val requested = uiSelectionControlCoordinator.requestedSong()
+                    val requestedIndex = requested
+                        ?.takeIf { rendererSourceMatches(it.path, newPath) }
+                        ?.let { target -> songs.indexOfFirst { samePlaybackItem(it, target) } }
+                        ?: -1
+                    val newIndex = requestedIndex.takeIf { it >= 0 }
+                        ?: songs.indexOfFirst { rendererSourceMatches(it.path, newPath) }
                     if (newIndex >= 0) {
+                        val nextSong = songs[newIndex]
                         if (newIndex != curIdx) {
                             Log.d(TAG, "Gapless: song changed, index $curIdx -> $newIndex")
                             _queue.value = _queue.value.copy(currentIndex = newIndex)
-                            _currentSong.value = songs[newIndex]
+                            clearPlaybackSourceOverrideIfOwnerChanged(nextSong, "gapless_song_changed")
                             AppLogger.markPlaybackReportStart(
-                                title = songs[newIndex].title,
-                                artist = songs[newIndex].artist,
-                                album = songs[newIndex].album,
-                                path = songs[newIndex].path,
-                                cueOffsetMs = songs[newIndex].cueOffsetMs
+                                title = nextSong.title,
+                                artist = nextSong.artist,
+                                album = nextSong.album,
+                                path = nextSong.path,
+                                cueOffsetMs = nextSong.cueOffsetMs
                             )
-                            FFmpegBridge.resetDebugLog("gapless_playback_report_start:${songs[newIndex].path}")
+                            FFmpegBridge.resetDebugLog("gapless_playback_report_start:${nextSong.path}")
                             playbackStatsTracker.reset()
                             autoTransitionLyrics = null
                             ffmpegPlayer.updateAutoTransitionRecipe(null)
@@ -1391,6 +1831,35 @@ class PlayerController private constructor(context: Context) {
                             // the feeder swaps decoders. The callback still has to prepare the
                             // following track after the consumed next request was cleared.
                             AppLogger.d(TAG, "Gapless: feeder confirmed already-selected index=$newIndex path=$newPath")
+                        }
+                        // Keep identity and timeline together even when TRACK_STARTED was
+                        // already delivered earlier in the overlap. The explicit values are the
+                        // renderer's target-track clock at the handoff boundary; the fallback is
+                        // only for legacy callers that do not provide a boundary snapshot.
+                        val alreadyPublishedCurrent = _currentSong.value
+                            ?.let { samePlaybackItem(it, nextSong) } == true
+                        if (!alreadyPublishedCurrent) {
+                            _currentSong.value = nextSong
+                        } else {
+                            PlayerSwitchTrace.mark(
+                                "gapless_current_song_duplicate_suppressed",
+                                "songId=${nextSong.id} index=$newIndex",
+                            )
+                        }
+                        queueControlCoordinator.onManualTargetCommitted(nextSong)
+                        pendingRendererUiCommit
+                            ?.takeIf { samePlaybackItem(it.song, nextSong) }
+                            ?.let { pendingRendererUiCommit = null }
+                        clearRequestedSongIfCommitted(nextSong)
+                        persistSelectedSongForColdStart(nextSong)
+                        if (positionMs != null) {
+                            _position.value = positionMs.coerceAtLeast(0L)
+                        }
+                        val committedDuration = durationMs?.takeIf { it > 0L }
+                            ?: ffmpegPlayer.durationMs.takeIf { it > 0L }
+                            ?: nextSong.duration
+                        if (committedDuration > 0L) {
+                            _duration.value = committedDuration
                         }
                         gaplessControlCoordinator.prepareNextSong()
                     }
@@ -1510,7 +1979,7 @@ class PlayerController private constructor(context: Context) {
         val sameDevice = currentUsbDevice?.deviceId == device.deviceId
 
         if (!sameDevice) {
-            sharedUsbAudioEngine.nativeResetUsbPolicyForNewDevice()
+            sharedUsbAudioEngine.resetUsbPolicyForNewDevice()
             usbFeedbackRejectedTransportKey = null
             usbFeedbackRejectedReason = ""
         }
@@ -1728,13 +2197,10 @@ class PlayerController private constructor(context: Context) {
                     ffmpegPlayer.usbExclusiveMode = false
                     sharedUsbAudioEngine.nativeSetUsbExclusiveActive(false)
                     smTransition(PlayState.PAUSED, "usb_exclusive_fatal_failure")
-                    runCatching {
-                        android.widget.Toast.makeText(
-                            context,
-                            "USB 独占输出启动失败，已停止播放，请导出诊断日志",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
-                    }
+                    postUsbStatusNotice(
+                        "USB 独占输出启动失败，已停止播放，请导出诊断日志",
+                        AppNoticeIcon.ERROR,
+                    )
                 }
             } finally {
                 usbFatalStopInProgress.set(false)
@@ -1775,11 +2241,15 @@ class PlayerController private constructor(context: Context) {
                 setExplicitSoftwareMute = { explicitUsbExclusiveSoftwareMuteThisProcess = it },
                 applyComposedVolume = ::applyComposedVolume,
                 applyUsbVolume = ::applyUsbVolume,
+                configureTransitionGainOwner = { _, reason ->
+                    usbTransitionGainCoordinator.clearToUnity("volume_route:$reason")
+                },
                 syncUsbRemoteVolumeRoute = ::syncUsbRemoteVolumeRoute,
                 setNativeDvc = { enabled, gain, headroomDb ->
                     ffmpegPlayer.setAndroidDvc(enabled, gain, headroomDb)
                 },
                 setHardwareVolumeStep = ::setUsbHardwareVolumeStep,
+                setHardwareVolumeUi = ::setUsbHardwareVolumeUi,
                 shouldUseUsbRemoteVolume = ::shouldUseUsbRemoteVolume,
             ),
         )
@@ -1842,12 +2312,15 @@ class PlayerController private constructor(context: Context) {
             stopStreaming = { usbExclusiveManager.stopStreaming("policy_change") },
             setNativeExclusive = { enabled -> sharedUsbAudioEngine.nativeSetUsbExclusiveActive(enabled) },
             setNativePolicy = { exclusive, bitPerfect, hardwareVolume ->
-                sharedUsbAudioEngine.nativeSetPolicy(exclusive, bitPerfect, hwVol = hardwareVolume)
+                sharedUsbAudioEngine.setPolicy(exclusive, bitPerfect, hwVol = hardwareVolume)
             },
             setFfmpegBitPerfect = { enabled -> ffmpegPlayer.usbBitPerfectMode = enabled },
             releaseUsb = { usbExclusiveManager.release("policy_change") },
             prepareForPlayback = { sampleRate, bits, channels, sourcePath ->
-                usbExclusiveManager.prepareForPlayback(sampleRate, bits, channels, sourcePath)
+                usbExclusiveManager.prepareForPlayback(
+                    sampleRate, bits, channels, sourcePath,
+                    effectiveBitPerfect = ffmpegPlayer.usbBitPerfectMode,
+                )
             },
             initializeHardwareVolume = ::initializeUsbHardwareVolumeForHandle,
             applyVolumeRoute = { applyVolumeRoute("restart_usb_with_policy") },
@@ -1893,6 +2366,10 @@ class PlayerController private constructor(context: Context) {
         volumeRouteCoordinator.applyUsbExclusiveSoftwareUserVolume(linear, reason)
     }
 
+    fun refreshUsbSoftwareVolumeCurve(reason: String = "settings") {
+        volumeRouteCoordinator.refreshUsbSoftwareVolumeCurve(reason)
+    }
+
     private fun forceUsbFixedVolume0Db(reason: String) {
         volumeRouteCoordinator.forceUsbFixedVolume0Db(reason)
     }
@@ -1909,8 +2386,8 @@ class PlayerController private constructor(context: Context) {
         return value.coerceAtLeast(0)
     }
 
-    private fun usbExclusiveStartupFadeInMs(profile: UsbOutputProfile): Int {
-        if (profile.bitPerfect || profile.volumePath == UsbVolumePath.HardwareUserVolume) {
+    private fun usbExclusiveStartupFadeInMs(): Int {
+        if (!usbTransitionGainCoordinator.canUseSessionEnvelope()) {
             pendingManualTrackStartFadeMs = 0
             return 0
         }
@@ -1920,40 +2397,72 @@ class PlayerController private constructor(context: Context) {
     }
 
     private fun usbExclusiveManualTrackFadeMs(): Int {
-        return when (TransitionPreferences.manualTrackTransitionMode) {
-            TransitionPreferences.ManualTrackTransitionMode.NONE -> 0
-            // USB exclusive keeps transport ownership in one native session.  A true
-            // decoded crossfade would mix two decoded streams and breaks bit-perfect;
-            // use the configured manual fade envelope instead.
-            TransitionPreferences.ManualTrackTransitionMode.SHORT_FADE,
-            TransitionPreferences.ManualTrackTransitionMode.CROSSFADE -> TransitionPreferences.manualTrackFadeMs
-        }
+        val configured = ManualTrackTransitionPolicy.durations(
+            mode = TransitionPreferences.manualTrackTransitionMode,
+            shortFadeMs = TransitionPreferences.shortManualFadeMs,
+            fullCrossfadeMs = TransitionPreferences.fullManualCrossfadeMs,
+        ).usbSequentialMs
+        return UsbTrackBoundaryPolicy.resolveFadeMs(configured)
     }
 
-    private fun canUseUsbSessionPcmEnvelope(profile: UsbOutputProfile = buildUsbOutputProfile(exclusive = true)): Boolean =
-        !profile.bitPerfect && profile.volumePath != UsbVolumePath.HardwareUserVolume
+    private val usbTransitionGainCoordinator by lazy {
+        UsbTransitionGainCoordinator(
+            tag = TAG,
+            currentHandle = { sharedUsbAudioEngine.currentHandle },
+            isSessionEnvelopeAllowed = { handle ->
+                sharedUsbAudioEngine.isSessionVolumeEnvelopeAllowed(handle)
+            },
+            applySessionTransition = { handle, target, durationMs, reason ->
+                sharedUsbAudioEngine.applySessionVolumeTransition(handle, target, durationMs, reason)
+            },
+        )
+    }
 
     private suspend fun fadeUsbExclusiveSessionTo(
         target: Float,
         fadeMs: Int,
         reason: String,
         waitForEnvelope: Boolean = true
-    ) {
+    ): Boolean {
         val bounded = fadeMs.coerceIn(0, 1000)
-        if (bounded <= 0) return
-        val profile = buildUsbOutputProfile(exclusive = true)
-        if (!canUseUsbSessionPcmEnvelope(profile)) {
-            AppLogger.i(TAG, "USB_SESSION_FADE_SKIP reason=$reason bitPerfect=${profile.bitPerfect} volumePath=${profile.volumePath}")
-            return
+        if (bounded <= 0) return false
+        return usbTransitionGainCoordinator.fadeTo(
+            target = target,
+            fadeMs = bounded,
+            reason = reason,
+            waitForEnvelope = waitForEnvelope,
+        )
+    }
+
+    /**
+     * Manual USB track-boundary attenuation with one owner per volume route.
+     *
+     * Hardware-volume sessions keep PCM at unity and may use a conservative UAC2 master-FU ramp.
+     * Software-volume sessions retain the existing native SessionPcm envelope unchanged.
+     */
+    private suspend fun fadeUsbExclusiveTrackBoundary(
+        fadeMs: Int,
+        reason: String,
+    ): Boolean {
+        val bounded = fadeMs.coerceIn(0, 1000)
+        if (bounded <= 0) return false
+        if (isUsbHardwareVolumeRouteActive()) {
+            val applied = runCatching {
+                usbHardwareVolumeCoordinator.fadeOutForTrackBoundary(bounded, reason)
+            }.onFailure {
+                AppLogger.w(TAG, "USB hardware boundary fade failed reason=$reason", it)
+            }.getOrDefault(false)
+            AppLogger.i(
+                TAG,
+                "USB hardware boundary fade applied=$applied fadeMs=$bounded reason=$reason",
+            )
+            return applied
         }
-        val handle = sharedUsbAudioEngine.currentHandle
-        if (handle == 0L) {
-            AppLogger.w(TAG, "USB_SESSION_FADE_SKIP reason=$reason handle=0")
-            return
-        }
-        AppLogger.i(TAG, "USB_SESSION_FADE target=$target fadeMs=$bounded reason=$reason")
-        sharedUsbAudioEngine.setSessionVolumeScale(handle, target.coerceIn(0f, 1f), bounded)
-        if (waitForEnvelope) delay(bounded.toLong())
+        return fadeUsbExclusiveSessionTo(
+            target = 0.0f,
+            fadeMs = bounded,
+            reason = reason,
+        )
     }
 
     private fun currentUsbHwStep(): Int =
@@ -1978,7 +2487,18 @@ class PlayerController private constructor(context: Context) {
         return usbHardwareVolumeCoordinator.setStep(step, reason)
     }
 
+    private fun setUsbHardwareVolumeUi(volume: Float, reason: String): Int {
+        return usbHardwareVolumeCoordinator.setUiVolume(volume, reason)
+    }
+
     private fun applyVolumeRoute(reason: String) {
+        if (usbHardwareToSoftwareHandoffActive &&
+            !reason.startsWith("hw_to_sw_commit") &&
+            !reason.startsWith("hw_to_sw_rollback")
+        ) {
+            AppLogger.i(TAG, "applyVolumeRoute deferred during HW->SW handoff reason=$reason")
+            return
+        }
         volumeRouteCoordinator.applyVolumeRoute(reason)
     }
 
@@ -2006,16 +2526,25 @@ class PlayerController private constructor(context: Context) {
         prepareUsbDevice(device)
 
         val exclusive = true
-        val bitPerfect = AppPreferences.Player.bitPerfectEnabled
+        val bitPerfectPolicy = AppPreferences.Player.usbBitPerfectMode
+        // Before the per-track resolver runs, only STRICT may pre-arm native strict mode.
+        // WHEN_POSSIBLE starts permissive and is promoted only after an exact track/device
+        // geometry has been proven.
+        val bitPerfect = UsbVolumeModeBitPerfectPolicy.shouldPreArmStrict(
+            bitPerfectPolicy,
+            AppPreferences.Player.usbVolumeMode,
+        )
         val hwVol = AppPreferences.Player.usbVolumeMode == 1 && AppPreferences.Player.hardwareFeatureUnitEnabled
 
+        ffmpegPlayer.usbBitPerfectPolicyMode = bitPerfectPolicy
+        ffmpegPlayer.usbBitPerfectMode = bitPerfect
         sharedUsbAudioEngine.nativeSetUsbExclusiveActive(true)
-        sharedUsbAudioEngine.nativeSetPolicy(exclusive, bitPerfect, hwVol)
+        sharedUsbAudioEngine.setPolicy(exclusive, bitPerfect, hwVol)
 
         val profile = buildUsbOutputProfile(exclusive = true)
         applyUsbOutputProfile(profile)
 
-        AppLogger.i(TAG, "activateUsbEngineForPlayback: exclusive=true bitPerfect=$bitPerfect hwVol=$hwVol")
+        AppLogger.i(TAG, "activateUsbEngineForPlayback: exclusive=true bitPerfectPolicy=$bitPerfectPolicy initialStrict=$bitPerfect hwVol=$hwVol")
 
         // Keep AUDIOFOCUS_GAIN while the native USB path owns the DAC.
         // Rebuild the request after switching the output policy so the USB path
@@ -2028,15 +2557,15 @@ class PlayerController private constructor(context: Context) {
             ffmpegPlayer.releaseAudioTrackForUsb()
         } catch (_: Exception) {}
 
-        ffmpegPlayer.usbPrepareForPlayback = { sr, bits, ch, srcFilePath ->
-            AppLogger.i(TAG, "usbPrepareForPlayback callback: sr=$sr bits=$bits ch=$ch file=$srcFilePath")
+        ffmpegPlayer.usbPrepareForPlayback = { sr, bits, ch, srcFilePath, effectiveBitPerfect ->
+            AppLogger.i(TAG, "usbPrepareForPlayback callback: sr=$sr bits=$bits ch=$ch file=$srcFilePath effectiveBitPerfect=$effectiveBitPerfect policy=${AppPreferences.Player.usbBitPerfectMode}")
             val recoveryProfile = buildUsbOutputProfile(exclusive = true)
             applyUsbOutputProfile(recoveryProfile)
             AppLogger.i(TAG, "usbPrepareForPlayback applied recovery profile: $recoveryProfile")
             currentUsbDevice?.let { device ->
                 usbExclusiveManager.rememberDeviceOnly(device, reason = "usb_prepare_callback")
             }
-            val ok = usbExclusiveManager.prepareForPlayback(sr, bits, ch, srcFilePath)
+            val ok = usbExclusiveManager.prepareForPlayback(sr, bits, ch, srcFilePath, effectiveBitPerfect = effectiveBitPerfect)
             // prepareForPlayback performs the native Feature Unit probe. The profile built above
             // can therefore be stale on the first authorization and still say Software even when
             // native validation has just enabled the hardware path. Re-read the profile after the
@@ -2096,7 +2625,7 @@ class PlayerController private constructor(context: Context) {
             refreshUsbCapabilities("usb_playback_started")
             _usbOutputSampleRate.value = ffmpegPlayer.usbActualOutputSampleRate
             onUsbExclusiveStreamingStarted()
-            // HiBy lifecycle: create the system AudioTrack only after native USB start succeeds.
+            // Carrier lifecycle: create the system AudioTrack only after native USB start succeeds.
             usbSystemAudioKeepAlive.start("native_usb_stream_started")
             syncUsbRemoteVolumeRoute("usb_playback_started", force = true)
         }
@@ -2107,45 +2636,43 @@ class PlayerController private constructor(context: Context) {
             AppLogger.i(TAG, "onUsbPlaybackDataFlowing: steady-state USB data accepted")
             usbExclusiveManager.setStreamingState(true)
             val profile = buildUsbOutputProfile(exclusive = true)
-            // Track/decoder boundaries never touch the Feature Unit.
-            // PlayerVolumeControlCoordinator now applies only PCM-side modifiers here.
+            // PlayerVolumeControlCoordinator applies only PCM-side modifiers here. A temporary
+            // hardware boundary attenuation, when supported, is restored by its dedicated FU
+            // owner and never enters the software/session gain chain.
             applyUsbVolume(profile, "usb_first_audio_flowing")
-            // No timer/watchdog here. The native renderer has already confirmed real USB data
-            // flow, so close the activation transaction synchronously without scheduling a
-            // delayed health/recovery job that can race the permission cutover.
-            recordUsbLastGoodProfile("usb_first_audio_flowing")
-            pendingUsbPolicyRestart = false
-            pendingUsbRecoveryPlan = null
-            val handle = sharedUsbAudioEngine.currentHandle
-            if (handle != 0L) {
-                val fadeMs = usbExclusiveStartupFadeInMs(profile)
-                sharedUsbAudioEngine.setSessionVolumeScale(handle, 1.0f, fadeMs)
-            } else {
-                AppLogger.w(TAG, "onUsbPlaybackDataFlowing: currentHandle=0, skip session fade")
+            if (isUsbHardwareVolumeRouteActive()) {
+                usbHardwareVolumeCoordinator.restoreAfterTrackBoundary("usb_first_audio_flowing")
             }
+            // Producer acceptance is not proof that the DAC consumed the stream. Persist the
+            // profile only after completed ISO throughput and playback motion stay healthy.
+            scheduleUsbSelfTest("usb_first_audio_flowing")
+            val fadeMs = usbExclusiveStartupFadeInMs()
+            usbTransitionGainCoordinator.onFirstData(
+                fadeMs = fadeMs,
+                reason = "usb_first_audio_flowing",
+            )
         }
         ffmpegPlayer.onUsbPlaybackStopped = {
             usbSystemAudioKeepAlive.stop("native_usb_stream_stopped")
             usbExclusiveManager.setStreamingState(false)
         }
         ffmpegPlayer.usbExclusiveMode = true
-        ffmpegPlayer.usbBitPerfectMode = AppPreferences.Player.bitPerfectEnabled
+        ffmpegPlayer.usbCapabilitiesProvider = { _usbCapabilities.value ?: sharedUsbAudioEngine.getDeviceCapabilities() }
+        ffmpegPlayer.usbBitPerfectPolicyMode = AppPreferences.Player.usbBitPerfectMode
+        ffmpegPlayer.usbBitPerfectMode = UsbVolumeModeBitPerfectPolicy.shouldPreArmStrict(
+            AppPreferences.Player.usbBitPerfectMode,
+            AppPreferences.Player.usbVolumeMode,
+        )
         ffmpegPlayer.onBeforeUsbNativeStart = {
             val profile = buildUsbOutputProfile(exclusive = true)
-            AppLogger.i(TAG, "onBeforeUsbNativeStart: arming native session envelope bitPerfect=${profile.bitPerfect}")
+            AppLogger.i(TAG, "onBeforeUsbNativeStart: selecting USB transition gain owner bitPerfect=${profile.bitPerfect} dsd=${profile.dsdSourceDirect || profile.dsdConversionEnabled || profile.dsdDoPEnabled}")
             applyVolumeRoute("before_native_start")
-            val handle = sharedUsbAudioEngine.currentHandle
-            if (handle != 0L) {
-                if (profile.bitPerfect || profile.volumePath == UsbVolumePath.HardwareUserVolume) {
-                    // Strict bit-perfect and hardware-volume routes keep PCM at unity.
-                    // Hardware volume was initialized once after native prepare; nativeStart and
-                    // first-data callbacks must not issue Feature Unit writes.
-                    sharedUsbAudioEngine.setSessionVolumeScale(handle, 1.0f, 0)
-                } else {
-                    // Software-volume path: start silent and fade in on first audio data.
-                    sharedUsbAudioEngine.setSessionVolumeScale(handle, 0.0f, 0)
-                }
-            }
+            // Configure exactly one transition-gain owner before ISO starts. Mutable PCM uses
+            // the native session envelope; bit-perfect/hardware/fixed PCM stays at unity; raw
+            // DSD/DoP/PCM-to-DSD uses transport-correct silence rather than sample multiplication.
+            usbTransitionGainCoordinator.armBeforeNativeStart(
+                reason = "before_native_start",
+            )
         }
         _usbExclusiveActive.value = true
         androidSpatialPlaybackController.refreshRoutingState()
@@ -2186,13 +2713,16 @@ class PlayerController private constructor(context: Context) {
     private var usbRenderSwitchReleaseJob: Job? = null
     private val usbDetachToastShownForCurrentDetach = AtomicBoolean(false)
 
-    private fun showUsbStatusToast(message: String) {
-        // Do not create this Toast from the service/application Context. The Android USB
-        // permission sheet can temporarily stop MainActivity and OEM frameworks may silently
-        // suppress a background-context Toast. The sticky bus keeps the message until a resumed
-        // Activity displays and acknowledges it.
+    private fun postUsbStatusNotice(
+        message: String,
+        icon: AppNoticeIcon = AppNoticeIcon.USB,
+    ) {
+        // Do not publish directly from the service/application Context. The Android USB
+        // permission sheet can temporarily stop the foreground Activity. The sticky bus keeps
+        // the latest message until a resumed RawSMusic Activity forwards it into AppNoticeHost
+        // and acknowledges it.
         AppLogger.i(TAG, "USB status notice queued: message=$message")
-        UsbStatusNoticeBus.post(message)
+        UsbStatusNoticeBus.post(message, icon)
     }
 
     private fun scheduleUsbExclusiveActivation(
@@ -2234,6 +2764,24 @@ class PlayerController private constructor(context: Context) {
                     AppLogger.e(
                         TAG,
                         "USB_PERMISSION_ACTIVATION lost permission before activation: " +
+                            "reason=$reason device=${device.deviceName}",
+                    )
+                    return@withLock false
+                }
+
+                // Open the authorized Android USB connection before transport initialization. Do
+                // the same before stopping AudioTrack: if the framework cannot open this grant yet,
+                // bounded retries happen off Main and normal Android playback remains intact.
+                val authorizationReady = withContext(Dispatchers.IO) {
+                    usbExclusiveManager.primeAuthorizedDevice(
+                        device = device,
+                        reason = "activation:$reason",
+                    )
+                }
+                if (!authorizationReady) {
+                    AppLogger.e(
+                        TAG,
+                        "USB_PERMISSION_ACTIVATION authorization lease failed before renderer cutover " +
                             "reason=$reason device=${device.deviceName}",
                     )
                     return@withLock false
@@ -2293,7 +2841,7 @@ class PlayerController private constructor(context: Context) {
                         TAG,
                         "USB DAC activation completed; queue success notice: reason=$reason",
                     )
-                    showUsbStatusToast("USB DAC 初始化成功！")
+                    postUsbStatusNotice("USB 独占已启用")
                 }
             } else if (!isReleased) {
                 ffmpegPlayer.setSuppressAndroidExternalRouteForUsbCutover(
@@ -2306,7 +2854,10 @@ class PlayerController private constructor(context: Context) {
                         "active=${_usbExclusiveActive.value} playerUsb=${ffmpegPlayer.usbExclusiveMode} " +
                         "switching=${_isRenderSwitching.value}",
                 )
-                showUsbStatusToast("USB 独占启动失败，请查看 USB DAC 日志")
+                postUsbStatusNotice(
+                    "USB 独占启动失败，请查看 USB DAC 日志",
+                    AppNoticeIcon.ERROR,
+                )
             }
         }
     }
@@ -2404,6 +2955,21 @@ class PlayerController private constructor(context: Context) {
                 return@launch
             }
 
+            val exclusiveRequested =
+                AppPreferences.Player.usbExclusiveRequested || pendingEnableUsbExclusiveAfterPermission
+            if (!exclusiveRequested) {
+                // Merely plugging in a DAC must not open Android's USB permission sheet. The
+                // permission boundary belongs to the explicit USB-exclusive route selection.
+                // Remember the device so Settings can show it, then stay on Android output.
+                usbExclusiveManager.rememberDeviceOnly(target, reason = "shared_route_attach:$reason")
+                usbAttachPermissionPrefetchDeviceId = -1
+                AppLogger.i(
+                    TAG,
+                    "USB attach permission skipped: shared Android route selected device=${target.deviceName}"
+                )
+                return@launch
+            }
+
             val hasPermission = usbExclusiveManager.hasPermission(target)
             if (hasPermission) {
                 // A remembered Android grant is already authorization. Re-arm the serialized
@@ -2434,12 +3000,8 @@ class PlayerController private constructor(context: Context) {
             // explicit authorization boundary; only a foreground Activity may show it.
             if (!shouldPrompt) return@launch
 
-            if (_playState.value == PlayState.PLAYING) {
-                usbAttachPermissionPrefetchDeviceId = -1
-            } else if (!AppPreferences.Player.usbExclusiveRequested && !pendingEnableUsbExclusiveAfterPermission) {
-                usbAttachPermissionPrefetchDeviceId = target.deviceId
-            }
-            AppLogger.i(TAG, "USB attach permission prefetch: request dialog for ${target.deviceName}")
+            usbAttachPermissionPrefetchDeviceId = -1
+            AppLogger.i(TAG, "USB exclusive permission request: dialog for ${target.deviceName}")
             setUsbAttachAliasEnabled(true, "before_usb_permission:$reason")
             usbExclusiveManager.requestPermissionSafely(target)
         }
@@ -2520,7 +3082,10 @@ class PlayerController private constructor(context: Context) {
         val device = usbExclusiveManager.findUsbAudioDevice()
         if (device == null) {
             AppLogger.w(TAG, "enableUsbExclusive: no USB audio device found")
-            showUsbStatusToast("未检测到支持 USB 独占的 DAC，请先连接设备")
+            postUsbStatusNotice(
+                "未检测到支持 USB 独占的 DAC，请先连接设备",
+                AppNoticeIcon.ERROR,
+            )
             return
         }
 
@@ -2553,19 +3118,25 @@ class PlayerController private constructor(context: Context) {
             clearDeferredUsbExclusiveActivation("usb_permission_denied")
             ffmpegPlayer.setSuppressAndroidExternalRouteForUsbCutover(false, "usb_permission_denied")
             AppLogger.w(TAG, "USB permission denied")
-            showUsbStatusToast("USB DAC 权限未授予，无法进入独占输出")
+            postUsbStatusNotice(
+                "USB DAC 权限未授予，无法进入独占输出",
+                AppNoticeIcon.ERROR,
+            )
             return
         }
 
-        // This callback is only invoked from UsbManager's permission-result PendingIntent, so
-        // every granted callback is a fresh Android authorization boundary. Do not depend on
-        // pendingEnableUsbExclusiveAfterPermission: the suspend permission continuation may
-        // consume/reset that flag before the controller callback runs.
-        // A fresh USB grant is the explicit user authorization for this output route. Persist
-        // the intent and enter the same serialized native activation lane as an explicit toggle.
-        AppPreferences.Player.usbExclusiveRequested = true
-        val shouldActivateExclusive = true
+        // A permission result can arrive after the user has already switched back to an Android
+        // output route. Do not let that stale callback silently re-enable USB exclusive.
+        val shouldActivateExclusive =
+            pendingEnableUsbExclusiveAfterPermission || AppPreferences.Player.usbExclusiveRequested
         pendingEnableUsbExclusiveAfterPermission = false
+        if (!shouldActivateExclusive) {
+            usbExclusiveManager.rememberDeviceOnly(device, reason = "permission_granted_shared_route")
+            ffmpegPlayer.setSuppressAndroidExternalRouteForUsbCutover(false, "usb_permission_shared_route")
+            AppLogger.i(TAG, "USB permission granted but exclusive is no longer requested; keep Android output")
+            return
+        }
+        AppPreferences.Player.usbExclusiveRequested = true
         // Authorization is only a route boundary. Do not overwrite a value already saved for
         // this DAC here: initializeUsbHardwareVolumeForHandle() will restore the exact raw value,
         // and will choose the conservative -30dB value only when no compatible record exists.
@@ -2579,9 +3150,9 @@ class PlayerController private constructor(context: Context) {
             scheduleUsbExclusiveActivation(
                 device = device,
                 reason = "permission_granted_requested",
-                // UsbExclusiveManager posts the fresh-grant notice at the permission event itself.
-                // Keeping this false prevents a second toast after the slower renderer cutover.
-                showSuccessToast = false,
+                // A fresh grant no longer emits a premature "initialized" toast. Report success
+                // only after the serialized renderer cutover has actually been armed.
+                showSuccessToast = true,
                 waitForPermissionDialogToClose = true,
             )
         } else {
@@ -2612,7 +3183,11 @@ class PlayerController private constructor(context: Context) {
             "USB exclusive cold activation: reason=$reason handle=0x${sharedUsbAudioEngine.currentHandle.toString(16)} " +
                 "connOpen=${usbExclusiveManager.hasOpenConnection()} state=${usbExclusiveManager.getCurrentState()}"
         )
-        usbExclusiveManager.resetPlaybackPipeline("cold_activation:$reason")
+        // Permission/open ownership keeps the Android-authorized
+        // UsbDeviceConnection across the cutover and reset only native stream state. Closing the
+        // Java connection here would throw away the fresh permission-result FD immediately before
+        // the first renderer prepare and recreate the OEM openDevice race.
+        usbExclusiveManager.resetPlaybackPipelinePreservingAuthorization("cold_activation:$reason")
         sharedUsbAudioEngine.clearState()
     }
 
@@ -2793,7 +3368,7 @@ class PlayerController private constructor(context: Context) {
         unregisterSystemVolumeObserver()
 
         // 音量路由切回系统音量
-        sharedUsbAudioEngine.nativeSetPolicy(exclusive = false, bitPerfect = false, hwVol = false)
+        sharedUsbAudioEngine.setPolicy(exclusive = false, bitPerfect = false, hwVol = false)
         sharedUsbAudioEngine.nativeSetUsbSoftwareGain(1.0f)
         applyVolumeRoute("usb_exclusive_disabled")
 
@@ -2936,11 +3511,7 @@ class PlayerController private constructor(context: Context) {
                     saveState()
                 }
 
-                android.widget.Toast.makeText(
-                    context,
-                    "USB DAC 已恢复",
-                    android.widget.Toast.LENGTH_SHORT
-                ).show()
+                postUsbStatusNotice("USB DAC 已恢复")
             }.onFailure { error ->
                 AppLogger.w(TAG, "USB detached recovery failed while rearming", error)
                 notifyUsbDetachConfirmed("usb_detach_rearm_failed")
@@ -2954,7 +3525,7 @@ class PlayerController private constructor(context: Context) {
             return
         }
         AppLogger.w(TAG, "USB detach confirmed: reason=$reason")
-        showUsbStatusToast("DAC已拔出！")
+        postUsbStatusNotice("DAC已拔出！")
     }
 
     private fun clearUsbExclusiveState(
@@ -3050,36 +3621,173 @@ class PlayerController private constructor(context: Context) {
         return currentUsbDevice?.productName
     }
 
-    /** 设置完美比特模式。需要独占模式已激活，否则返回 -1。
-     *  开启时会自动暂停当前播放，等待用户再次播放后重新初始化生效。 */
-    fun setUsbBitPerfectEnabled(enabled: Boolean): Int {
-        if (enabled && !_usbExclusiveActive.value) return -1
+    /**
+     * USB PCM bit-perfect policy.
+     * OFF always uses the processed path; WHEN_POSSIBLE promotes only tracks with
+     * an exact device geometry; STRICT refuses any track that would need format mutation.
+     */
+    fun setUsbBitPerfectMode(mode: UsbBitPerfectMode): Int {
+        if (mode.requestsBitPerfect && !_usbExclusiveActive.value) return -1
+
+        val oldMode = AppPreferences.Player.usbBitPerfectMode
+        if (oldMode == mode) return 0
+
+        AppPreferences.Player.usbBitPerfectMode = mode
+        ffmpegPlayer.usbBitPerfectPolicyMode = mode
+        // Provisional state only. The per-track resolver will promote WHEN_POSSIBLE
+        // after proving an exact source/device geometry.
+        ffmpegPlayer.usbBitPerfectMode = UsbVolumeModeBitPerfectPolicy.shouldPreArmStrict(
+            mode,
+            AppPreferences.Player.usbVolumeMode,
+        )
 
         val exclusive = _usbExclusiveActive.value
+        val hwVol = AppPreferences.Player.usbVolumeMode == 1 &&
+            AppPreferences.Player.hardwareFeatureUnitEnabled && exclusive
 
-        // 硬件音量不是 bit-perfect 专属：非完美比特也可以用 USB Feature Unit。
-        // 切换 bit-perfect 时只改变 PCM/DSP/重采样策略，不隐式关闭用户选择的硬件音量。
-        val hwVol = AppPreferences.Player.hardwareFeatureUnitEnabled && exclusive
+        AppLogger.i(TAG, "USB bit-perfect policy changed: old=$oldMode new=$mode exclusive=$exclusive hwVol=$hwVol")
+        if (!exclusive) return 0
 
-        AppPreferences.Player.bitPerfectEnabled = enabled
-        ffmpegPlayer.usbBitPerfectMode = enabled
+        // Re-resolve the current track from source geometry. Do not ask the old native
+        // session to reinterpret WHEN_POSSIBLE as strict merely because the user intent
+        // is enabled. The normal settings transaction closes the old session first, then
+        // playbackTargetResolver computes the new effective state for this track.
+        return applyUsbOutputSettingsChanged(
+            userInitiated = true,
+            forceBitPerfectPolicyRestart = true,
+        )
+    }
 
-        sharedUsbAudioEngine.nativeSetPolicy(exclusive, enabled, hwVol)
+    /** Legacy API: `true` now means WHEN_POSSIBLE, not STRICT. */
+    fun setUsbBitPerfectEnabled(enabled: Boolean): Int =
+        setUsbBitPerfectMode(if (enabled) UsbBitPerfectMode.WHEN_POSSIBLE else UsbBitPerfectMode.OFF)
 
-        if (sharedUsbAudioEngine.isInitialized() && currentUsbDevice != null) {
-            AppLogger.i(TAG, "Bit-perfect change requires full USB restart: enabled=$enabled hwVol=$hwVol")
-            val wasPlaying = _playState.value == PlayState.PLAYING
-            if (wasPlaying) pause()
+    private fun preArmSoftwareVolumeFromHardware(
+        snapshot: UsbHardwareVolumeCoordinator.LiveVolumeSnapshot,
+        strictLiveHandle: Boolean,
+        reason: String,
+    ): UsbOutputProfile {
+        volumeRouteCoordinator.prepareHardwareToSoftwareEntry(snapshot.db, reason)
+        val softwareProfile = buildUsbOutputProfile(exclusive = true)
+        if (!strictLiveHandle && snapshot.handle == sharedUsbAudioEngine.currentHandle) {
+            // ExclusiveProcessedHwVol explicitly allows processed PCM gain. Apply the complete
+            // software plan (user curve + ReplayGain/duck) while the Feature Unit still owns the
+            // physical attenuation. This is make-before-break: any overlap can only be quieter.
+            applyUsbVolume(softwareProfile, "hw_to_sw_prearm:$reason")
+        }
+        return softwareProfile
+    }
 
-            val ok = restartUsbWithPolicy(exclusive, enabled, hwVol)
-            if (ok && enabled) {
-                android.widget.Toast.makeText(context, context.getString(R.string.usb_bitperfect_enabled), android.widget.Toast.LENGTH_SHORT).show()
-            }
-            return if (ok) 0 else -2
+    private fun rollbackHardwareToSoftwareHandoff(
+        wasEffectiveBitPerfect: Boolean,
+        reason: String,
+    ) {
+        pendingUsbHardwareReleaseAfterStop = null
+        AppPreferences.Player.hardwareFeatureUnitEnabled = true
+        AppPreferences.Player.usbVolumeMode = 1
+        ffmpegPlayer.usbBitPerfectMode = wasEffectiveBitPerfect
+        sharedUsbAudioEngine.setPolicy(
+            exclusive = _usbExclusiveActive.value,
+            bitPerfect = wasEffectiveBitPerfect && _usbExclusiveActive.value,
+            hwVol = _usbExclusiveActive.value,
+        )
+        usbHardwareToSoftwareHandoffActive = false
+        applyVolumeRoute("hw_to_sw_rollback:$reason")
+        syncUsbRemoteVolumeRoute("hw_to_sw_rollback:$reason", force = true)
+        AppLogger.w(TAG, "USB HW->SW handoff rolled back safely reason=$reason")
+    }
+
+    private fun completeLiveHardwareToSoftwareHandoff(
+        snapshot: UsbHardwareVolumeCoordinator.LiveVolumeSnapshot,
+        reason: String,
+    ): Boolean {
+        val liveHandle = sharedUsbAudioEngine.currentHandle
+        if (liveHandle == 0L || liveHandle != snapshot.handle) {
+            AppLogger.w(
+                TAG,
+                "USB HW->SW live handoff lost handle before fence: old=0x${snapshot.handle.toString(16)} " +
+                    "live=0x${liveHandle.toString(16)} reason=$reason",
+            )
+            return false
         }
 
-        AppLogger.i(TAG, "Bit-perfect set to $enabled, will take effect on next playback")
-        return 0
+        val pipelineFenceMs = if (sharedUsbAudioEngine.isRunning()) {
+            runCatching { sharedUsbAudioEngine.nativeGetIsoPipelineDepthMs(snapshot.handle) }
+                .getOrDefault(0)
+                .coerceIn(0, 120)
+        } else {
+            0
+        }
+        if (pipelineFenceMs > 0) {
+            AppLogger.i(
+                TAG,
+                "USB HW->SW waiting for old unity ISO packets to retire: fenceMs=$pipelineFenceMs " +
+                    "handle=0x${snapshot.handle.toString(16)} reason=$reason",
+            )
+            // This setting transaction is rare and bounded. The wait is derived from the live USB
+            // transfer geometry, not a guessed fade duration, and prevents an already-submitted
+            // unity packet from becoming audible after the Feature Unit is released.
+            SystemClock.sleep(pipelineFenceMs.toLong())
+        }
+
+        if (sharedUsbAudioEngine.currentHandle != snapshot.handle) return false
+        if (!usbHardwareVolumeCoordinator.releaseToUnityVerified(snapshot, reason)) return false
+
+        sharedUsbAudioEngine.setPolicy(
+            exclusive = true,
+            bitPerfect = false,
+            hwVol = false,
+        )
+        usbHardwareVolumeCoordinator.resetInitialization()
+        stickyUsbHardwareVolumeValidated = false
+        usbHardwareToSoftwareHandoffActive = false
+        applyVolumeRoute("hw_to_sw_commit_live:$reason")
+        UsbHardwareVolumeStore.markSessionClean("hw_to_sw_commit_live")
+        syncUsbRemoteVolumeRoute("hw_to_sw_commit_live:$reason", force = true)
+        AppLogger.i(
+            TAG,
+            "USB HW->SW make-before-break committed without stream restart: " +
+                "oldHwDb=${snapshot.db} fenceMs=$pipelineFenceMs reason=$reason",
+        )
+        return true
+    }
+
+    private fun releasePendingHardwareVolumeAfterTransportStop(reason: String): Boolean {
+        val pending = pendingUsbHardwareReleaseAfterStop ?: return true
+        val snapshot = pending.snapshot
+        val stoppedHandle = sharedUsbAudioEngine.currentHandle
+        if (stoppedHandle == 0L || !sharedUsbAudioEngine.nativeIsStreamFullyStopped(stoppedHandle)) {
+            AppLogger.e(
+                TAG,
+                "USB HW->SW safety gate refused FU release: native stream not fully stopped " +
+                    "handle=0x${stoppedHandle.toString(16)} reason=$reason; keep hardware attenuation",
+            )
+            return false
+        }
+        if (stoppedHandle != snapshot.handle) {
+            AppLogger.e(
+                TAG,
+                "USB HW->SW safety gate refused FU release: handle changed " +
+                    "old=0x${snapshot.handle.toString(16)} live=0x${stoppedHandle.toString(16)} " +
+                    "reason=$reason; keep hardware attenuation",
+            )
+            return false
+        }
+        val released = stoppedHandle == snapshot.handle &&
+            usbHardwareVolumeCoordinator.releaseToUnityVerified(snapshot, "after_stop:$reason")
+        if (released) {
+            pendingUsbHardwareReleaseAfterStop = null
+            usbHardwareVolumeCoordinator.resetInitialization()
+            stickyUsbHardwareVolumeValidated = false
+        } else {
+            AppLogger.w(
+                TAG,
+                "USB HW->SW stopped-transport FU release failed old=0x${snapshot.handle.toString(16)} " +
+                    "live=0x${stoppedHandle.toString(16)} reason=$reason; keep hardware attenuation",
+            )
+        }
+        if (released) usbHardwareToSoftwareHandoffActive = false
+        return released
     }
 
     /** 设置 USB DAC 音量模式：0=软件音量, 1=硬件音量, 2=数字固定 0dB。 */
@@ -3095,29 +3803,36 @@ class PlayerController private constructor(context: Context) {
         }
 
         val exclusive = _usbExclusiveActive.value
+        val wasEffectiveBitPerfect = exclusive && ffmpegPlayer.isUsbBitPerfectEffectiveForCurrentTrack()
         AppPreferences.Player.usbVolumeMode = normalized
         AppPreferences.Player.hardwareFeatureUnitEnabled = false
+        if (normalized == 0 && wasEffectiveBitPerfect) {
+            // Software user volume owns the PCM data plane, so an already-running strict/fixed
+            // decoder contract must be dropped before the settings transaction is evaluated.
+            ffmpegPlayer.usbBitPerfectMode = false
+        }
         if (normalized == 2) {
             AppPreferences.Player.volume = 1.0f
-            AppPreferences.Player.bitPerfectEnabled = true
-            ffmpegPlayer.usbBitPerfectMode = true
             forceUsbFixedVolume0Db("setUsbVolumeMode")
         }
         AppLogger.i(TAG, "setUsbVolumeMode: mode=$normalized exclusive=$exclusive")
 
         if (!exclusive) {
-            sharedUsbAudioEngine.nativeSetPolicy(false, false, false)
+            sharedUsbAudioEngine.setPolicy(false, false, false)
             return 0
         }
 
         val profile = buildUsbOutputProfile(exclusive = true)
-        sharedUsbAudioEngine.nativeSetPolicy(
+        sharedUsbAudioEngine.setPolicy(
             exclusive = true,
-            bitPerfect = profile.bitPerfect || profile.fixedDigitalVolume,
+            bitPerfect = profile.bitPerfect || profile.fixedDigitalVolume || profile.dsdSourceDirect,
             hwVol = profile.hardwareVolumeRequested
         )
         applyVolumeRoute("setUsbVolumeMode:$normalized")
-        return applyUsbOutputSettingsChanged(userInitiated = true)
+        return applyUsbOutputSettingsChanged(
+            userInitiated = true,
+            forceBitPerfectPolicyRestart = normalized == 0 && wasEffectiveBitPerfect,
+        )
     }
 
     /** 设置硬件 Feature Unit 音量控制。非完美比特和完美比特都可用。
@@ -3135,11 +3850,10 @@ class PlayerController private constructor(context: Context) {
                 "Hardware-volume route change rejected during USB transport transition: " +
                     "enabled=$enabled recovering=${recoveringUsb.get()}",
             )
-            android.widget.Toast.makeText(
-                context,
+            postUsbStatusNotice(
                 context.getString(R.string.usb_volume_transition),
-                android.widget.Toast.LENGTH_SHORT,
-            ).show()
+                AppNoticeIcon.ERROR,
+            )
             return -4
         }
 
@@ -3147,15 +3861,15 @@ class PlayerController private constructor(context: Context) {
             AppPreferences.Player.hardwareFeatureUnitEnabled = false
             stickyUsbHardwareVolumeValidated = false
             AppLogger.w(TAG, "Hardware volume can only be enabled in USB exclusive mode")
-            android.widget.Toast.makeText(context, context.getString(R.string.usb_volume_exclusive_only), android.widget.Toast.LENGTH_SHORT).show()
+            postUsbStatusNotice(
+                context.getString(R.string.usb_volume_exclusive_only),
+                AppNoticeIcon.ERROR,
+            )
             applyVolumeRoute("hardware_volume_rejected_non_exclusive")
             return -1
         }
 
-        AppPreferences.Player.hardwareFeatureUnitEnabled = enabled
-        AppPreferences.Player.usbVolumeMode = if (enabled) 1 else 0
-
-        val hwRequested = exclusive && enabled
+        val wasEffectiveBitPerfect = ffmpegPlayer.isUsbBitPerfectEffectiveForCurrentTrack()
         val liveHandle = sharedUsbAudioEngine.currentHandle
 
         // Route switch: turning hardware volume OFF should not force
@@ -3163,39 +3877,105 @@ class PlayerController private constructor(context: Context) {
         // runtime are still valid; only the volume controller path changes.
         // Keep playback running and move gain control back to the software path.
         if (!enabled) {
-            usbHardwareVolumeCoordinator.resetInitialization()
-            stickyUsbHardwareVolumeValidated = false
-
-            // Explicit route handoff only: mute the session envelope, release the selected FU path
-            // to unity once, then switch policy and restore software PCM gain. Native policy itself
-            // never emits hidden master/L/R writes.
-            if (liveHandle != 0L && sharedUsbAudioEngine.nativeCanControlVolume(liveHandle)) {
-                sharedUsbAudioEngine.setSessionVolumeScale(liveHandle, 0.0f, 0)
-                val unityResult = sharedUsbAudioEngine.nativeSetHardwareVolumeDbNoCache(
-                    liveHandle,
-                    0,
-                    "hardware_volume_disable_handoff",
+            if (!exclusive || liveHandle == 0L) {
+                AppPreferences.Player.hardwareFeatureUnitEnabled = false
+                AppPreferences.Player.usbVolumeMode = 0
+                usbHardwareVolumeCoordinator.resetInitialization()
+                stickyUsbHardwareVolumeValidated = false
+                sharedUsbAudioEngine.setPolicy(
+                    exclusive = exclusive,
+                    bitPerfect = false,
+                    hwVol = false,
                 )
-                if (unityResult != 0) {
-                    AppLogger.w(TAG, "Hardware-to-software unity handoff failed result=$unityResult")
-                }
+                applyVolumeRoute("hw_to_sw_commit_no_live_handle")
+                syncUsbRemoteVolumeRoute("hw_to_sw_commit_no_live_handle", force = true)
+                return 0
             }
-            sharedUsbAudioEngine.nativeSetPolicy(
-                exclusive = exclusive,
-                bitPerfect = AppPreferences.Player.bitPerfectEnabled && exclusive,
-                hwVol = false
+
+            val snapshot = usbHardwareVolumeCoordinator.captureLiveVolume(
+                "hardware_volume_disable_handoff",
             )
-            applyVolumeRoute("hardware_volume_disabled_live")
-            UsbHardwareVolumeStore.markSessionClean("hardware_volume_disabled_live")
-            syncUsbRemoteVolumeRoute("hardware_volume_disabled_live", force = true)
-            android.widget.Toast.makeText(context, context.getString(R.string.usb_volume_disabled), android.widget.Toast.LENGTH_SHORT).show()
-            AppLogger.i(TAG, "Hardware volume disabled without USB profile restart")
+            if (snapshot == null) {
+                AppLogger.e(
+                    TAG,
+                    "USB HW->SW refused: live Feature Unit value could not be captured; " +
+                        "keeping hardware ownership to avoid a full-scale burst",
+                )
+                return -5
+            }
+
+            usbHardwareToSoftwareHandoffActive = true
+            AppPreferences.Player.hardwareFeatureUnitEnabled = false
+            AppPreferences.Player.usbVolumeMode = 0
+
+            // Explicit software volume mutates PCM. If this track was effectively bit-perfect,
+            // the old strict decoder/native contract cannot remain active: downgrade the effective
+            // state and rebuild once so software gain is real rather than silently pinned to unity.
+            val softwareNeedsProcessedRestart = exclusive && wasEffectiveBitPerfect
+            preArmSoftwareVolumeFromHardware(
+                snapshot = snapshot,
+                strictLiveHandle = softwareNeedsProcessedRestart,
+                reason = "hardware_volume_disable",
+            )
+
+            if (softwareNeedsProcessedRestart) {
+                ffmpegPlayer.usbBitPerfectMode = false
+                pendingUsbHardwareReleaseAfterStop = PendingUsbHardwareReleaseAfterStop(snapshot)
+                AppLogger.i(
+                    TAG,
+                    "USB HW->SW strict handoff armed: keep FU at ${snapshot.db}dB until old ISO stops",
+                )
+                val result = applyUsbOutputSettingsChanged(
+                    userInitiated = true,
+                    forceBitPerfectPolicyRestart = true,
+                )
+                if (pendingUsbHardwareReleaseAfterStop != null) {
+                    // The settings transaction returned before reaching its stopped-transport
+                    // release point (for example no active song). Keep the old hardware route.
+                    rollbackHardwareToSoftwareHandoff(
+                        wasEffectiveBitPerfect = wasEffectiveBitPerfect,
+                        reason = "strict_restart_did_not_reach_release",
+                    )
+                    return -5
+                }
+                UsbHardwareVolumeStore.markSessionClean("hw_to_sw_strict_restart")
+                syncUsbRemoteVolumeRoute("hw_to_sw_strict_restart", force = true)
+                postUsbStatusNotice(context.getString(R.string.usb_volume_disabled))
+                AppLogger.i(TAG, "Hardware->software strict handoff completed through stopped transport")
+                return result
+            }
+
+            val committed = completeLiveHardwareToSoftwareHandoff(
+                snapshot = snapshot,
+                reason = "hardware_volume_disable",
+            )
+            if (!committed) {
+                rollbackHardwareToSoftwareHandoff(
+                    wasEffectiveBitPerfect = wasEffectiveBitPerfect,
+                    reason = "live_handoff_failed",
+                )
+                return -5
+            }
+            postUsbStatusNotice(context.getString(R.string.usb_volume_disabled))
             return 0
         }
 
-        sharedUsbAudioEngine.nativeSetPolicy(
+        AppPreferences.Player.hardwareFeatureUnitEnabled = true
+        AppPreferences.Player.usbVolumeMode = 1
+        pendingUsbHardwareReleaseAfterStop = null
+        usbHardwareToSoftwareHandoffActive = false
+        val hardwareRouteRequestToken = latestPlayRequestToken.get()
+        val hwRequested = exclusive
+
+        ffmpegPlayer.usbBitPerfectPolicyMode = AppPreferences.Player.usbBitPerfectMode
+        val preArmStrict = UsbVolumeModeBitPerfectPolicy.shouldPreArmStrict(
+            AppPreferences.Player.usbBitPerfectMode,
+            AppPreferences.Player.usbVolumeMode,
+        )
+
+        sharedUsbAudioEngine.setPolicy(
             exclusive = exclusive,
-            bitPerfect = AppPreferences.Player.bitPerfectEnabled && exclusive,
+            bitPerfect = preArmStrict && exclusive,
             hwVol = hwRequested
         )
 
@@ -3211,62 +3991,72 @@ class PlayerController private constructor(context: Context) {
 
         if (exclusive && liveHandle != 0L) {
             scope.launch {
-                transportMutex.withLock {
+                val applyResult = transportMutex.withLock {
                     transportTransitioning = true
                     try {
-                        val ok = restartUsbWithPolicy(
-                            exclusive,
-                            AppPreferences.Player.bitPerfectEnabled,
-                            hwRequested,
+                        // Hardware enable is an output-policy transaction, not a device-only
+                        // prepare. Reuse the same stop -> close -> stage policy -> restart-current
+                        // lane as every other USB output setting so decoder/feeder ownership and
+                        // explicit play requests stay serialized on one transport timeline.
+                        applyUsbOutputSettingsChanged(
+                            userInitiated = true,
+                            forceBitPerfectPolicyRestart = true,
+                            expectedRestartPlayToken = hardwareRouteRequestToken,
                         )
-                        delay(300)
-                        val handleAfterRestart = sharedUsbAudioEngine.currentHandle
-                        val canHw = ok &&
-                            hwRequested &&
-                            handleAfterRestart != 0L &&
-                            sharedUsbAudioEngine.nativeCanControlVolume(handleAfterRestart)
-                        val policy = sharedUsbAudioEngine.getHardwareVolumePolicyString()
-                        AppLogger.i(
-                            TAG,
-                            "Hardware volume post-restart: ok=$ok canHw=$canHw policy=$policy",
-                        )
-                        if (canHw) {
-                            // restartUsbWithPolicy completed the device-scoped raw initialization
-                            // before ISO start. No Feature Unit write is needed here.
-                            sharedUsbAudioEngine.nativeSetUsbSoftwareGain(1.0f)
-                            currentUsbDevice?.let { UsbHardwareVolumeStore.markSessionActive(context, it) }
-                            applyVolumeRoute("hardware_volume_after_restart")
-                            androidPlaybackServiceController.setUsbRemoteVolumeActive(
-                                active = true,
-                                reason = "hardware_volume_after_restart",
-                            )
-                            android.widget.Toast.makeText(
-                                context,
-                                "硬件音量已启用",
-                                android.widget.Toast.LENGTH_SHORT,
-                            ).show()
-                        } else {
-                            AppPreferences.Player.hardwareFeatureUnitEnabled = false
-                            AppPreferences.Player.usbVolumeMode = 0
-                            sharedUsbAudioEngine.nativeSetPolicy(
-                                exclusive = exclusive,
-                                bitPerfect = AppPreferences.Player.bitPerfectEnabled && exclusive,
-                                hwVol = false,
-                            )
-                            applyVolumeRoute("hardware_volume_restart_failed")
-                            androidPlaybackServiceController.setUsbRemoteVolumeActive(
-                                active = false,
-                                reason = "hardware_volume_restart_failed",
-                            )
-                            android.widget.Toast.makeText(
-                                context,
-                                "硬件音量初始化失败，已保持软件音量",
-                                android.widget.Toast.LENGTH_SHORT,
-                            ).show()
-                        }
                     } finally {
                         transportTransitioning = false
                     }
+                }
+
+                // The restart-current continuation is queued on the same PLAY lane and can only
+                // run after the mutex above is released. Wait for that renderer to prepare its new
+                // handle before deciding whether Feature Unit ownership really came up.
+                var waitedMs = 0L
+                var handleAfterRestart = sharedUsbAudioEngine.currentHandle
+                while (
+                    AppPreferences.Player.hardwareFeatureUnitEnabled &&
+                    AppPreferences.Player.usbVolumeMode == 1 &&
+                    waitedMs < 3_000L &&
+                    (handleAfterRestart == 0L || !sharedUsbAudioEngine.nativeCanControlVolume(handleAfterRestart)) &&
+                    (ffmpegPlayer.state == FfmpegAudioPlayer.State.PREPARING ||
+                        _playState.value == PlayState.PREPARING)
+                ) {
+                    delay(50L)
+                    waitedMs += 50L
+                    handleAfterRestart = sharedUsbAudioEngine.currentHandle
+                }
+
+                val canHw = AppPreferences.Player.hardwareFeatureUnitEnabled &&
+                    AppPreferences.Player.usbVolumeMode == 1 &&
+                    handleAfterRestart != 0L &&
+                    sharedUsbAudioEngine.nativeCanControlVolume(handleAfterRestart)
+                AppLogger.i(
+                    TAG,
+                    "Hardware volume settings transaction complete: result=$applyResult canHw=$canHw " +
+                        "waitedMs=$waitedMs handle=0x${handleAfterRestart.toString(16)} " +
+                        "policy=${sharedUsbAudioEngine.getHardwareVolumePolicyString()}",
+                )
+                if (canHw) {
+                    sharedUsbAudioEngine.nativeSetUsbSoftwareGain(1.0f)
+                    currentUsbDevice?.let { UsbHardwareVolumeStore.markSessionActive(context, it) }
+                    applyVolumeRoute("hardware_volume_after_settings_restart")
+                    syncUsbRemoteVolumeRoute("hardware_volume_after_settings_restart", force = true)
+                    postUsbStatusNotice("硬件音量已启用")
+                } else if (
+                    ffmpegPlayer.state != FfmpegAudioPlayer.State.PREPARING &&
+                    _playState.value != PlayState.PREPARING
+                ) {
+                    AppLogger.e(
+                        TAG,
+                        "Hardware-volume restart finished without a controllable Feature Unit; " +
+                            "falling back to software route",
+                    )
+                    AppPreferences.Player.hardwareFeatureUnitEnabled = false
+                    AppPreferences.Player.usbVolumeMode = 0
+                    ffmpegPlayer.usbBitPerfectMode = false
+                    sharedUsbAudioEngine.setPolicy(exclusive = true, bitPerfect = false, hwVol = false)
+                    applyVolumeRoute("hardware_volume_restart_failed")
+                    syncUsbRemoteVolumeRoute("hardware_volume_restart_failed", force = true)
                 }
             }
         } else {
@@ -3275,11 +4065,9 @@ class PlayerController private constructor(context: Context) {
                 active = false,
                 reason = "hardware_volume_changed_non_exclusive",
             )
-            android.widget.Toast.makeText(
-                context,
-                if (enabled) "硬件音量将在下次 USB 初始化后验证" else "硬件音量已关闭",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
+            postUsbStatusNotice(
+                if (enabled) "硬件音量将在下次 USB 初始化后验证" else "硬件音量已关闭"
+            )
         }
         return 0
     }
@@ -3347,6 +4135,7 @@ class PlayerController private constructor(context: Context) {
                 capabilities = { _usbCapabilities.value },
                 engineCapabilities = { sharedUsbAudioEngine.getDeviceCapabilities() },
                 isHardwareVolumeValidated = { sharedUsbAudioEngine.isHardwareVolumeValidated() },
+                isEffectiveBitPerfect = { ffmpegPlayer.isUsbBitPerfectEffectiveForCurrentTrack() },
                 decideFeedbackModel = ::decideUsbFeedbackModel,
                 currentSongIsDsdSource = ::currentSongIsDsdSource,
                 markHardwareVolumeValidated = { stickyUsbHardwareVolumeValidated = true },
@@ -3363,39 +4152,11 @@ class PlayerController private constructor(context: Context) {
             tag = TAG,
             callbacks = PlayerUsbOutputProfileApplier.Callbacks(
                 setFfmpegBitPerfect = { ffmpegPlayer.usbBitPerfectMode = it },
-                setPcmOutputMode = { sharedUsbAudioEngine.setPcmOutputMode(it) },
-                setDacSettings = { noControlIface, forceUac1, linearVolume, replaceVolume, force1ms ->
-                    sharedUsbAudioEngine.setUsbDacSettings(
-                        noControlIface = noControlIface,
-                        forceUac1 = forceUac1,
-                        linearVolume = linearVolume,
-                        replaceVolume = replaceVolume,
-                        force1ms = force1ms,
-                    )
-                },
                 setNativePolicy = { exclusive, bitPerfect, hardwareVolume ->
-                    sharedUsbAudioEngine.nativeSetPolicy(exclusive, bitPerfect, hwVol = hardwareVolume)
+                    sharedUsbAudioEngine.setPolicy(exclusive, bitPerfect, hwVol = hardwareVolume)
                 },
-                setDsdConversion = { enabled, rate, type, dither, dop ->
-                    sharedUsbAudioEngine.setDsdConversion(enabled, rate, type, dither, dop)
-                },
-                setLastGoodProfile = { alt, sampleRate, validBits, subslot, feedbackEndpoint ->
-                    sharedUsbAudioEngine.nativeSetLastGoodProfile(
-                        alt = alt,
-                        sampleRate = sampleRate,
-                        validBits = validBits,
-                        subslotBytes = subslot,
-                        feedbackEndpoint = feedbackEndpoint,
-                    )
-                },
-                setCompatFlags = { noClockSet, noFeedback, noFeatureUnit, preferSafeAlt, safeMode ->
-                    sharedUsbAudioEngine.nativeSetCompatFlags(
-                        noClockSet = noClockSet,
-                        noFeedback = noFeedback,
-                        noFeatureUnit = noFeatureUnit,
-                        preferSafeAlt = preferSafeAlt,
-                        safeMode = safeMode,
-                    )
+                stageNativeSessionPolicy = { profile, dsdRate, dsdType, dither ->
+                    sharedUsbAudioEngine.stageOutputProfile(profile, dsdRate, dsdType, dither)
                 },
                 currentDsdRate = ::currentEffectiveUsbDsdRate,
                 currentSongIsDsdSource = ::currentSongIsDsdSource,
@@ -3429,11 +4190,22 @@ class PlayerController private constructor(context: Context) {
             tripPcmToDsdSafetyFuse("health_${kind.name}:$detail")
             return true
         }
-        val profile = buildUsbOutputProfile(exclusive = true)
         val stats = runCatching {
             val h = sharedUsbAudioEngine.currentHandle
             if (h != 0L) UsbRuntimeStatsParser.parseStats(sharedUsbAudioEngine.nativeGetStatsString(h)) else null
         }.getOrNull()
+        val runtimeLivenessFailure =
+            kind == UsbSilentKind.TransportError && detail.startsWith("runtime_liveness_stall")
+        if (!runtimeLivenessFailure) {
+            invalidateFailedUsbLastGoodProfileIfNeeded(kind, stats)
+        } else {
+            AppLogger.w(
+                TAG,
+                "USB runtime liveness failure: preserving last-good profile; " +
+                    "transport ownership died without descriptor/profile evidence",
+            )
+        }
+        val profile = buildUsbOutputProfile(exclusive = true)
         val plan = UsbStreamRecoveryPlanner.plan(kind, stats, profile, detail)
         AppLogger.w(TAG, "USB stream health failure: kind=$kind detail=$detail plan=$plan")
         if (plan.disableFeedback || kind == UsbSilentKind.FeedbackInvalid || stats?.isFeedbackDegradedFixedPacer == true) {
@@ -3476,6 +4248,42 @@ class PlayerController private constructor(context: Context) {
             )
         }
         return false
+    }
+
+    private fun invalidateFailedUsbLastGoodProfileIfNeeded(
+        kind: UsbSilentKind,
+        stats: UsbStatsSnapshot?,
+    ) {
+        if (kind != UsbSilentKind.TransportError && kind != UsbSilentKind.UsbNotOutputting) return
+        stats ?: return
+        val expected = stats.expectedBytesPerSec
+        if (expected <= 0L || stats.usbOutBytesPerSec >= expected * 35L / 100L) return
+        val transportWasFed = stats.scheduledUsbBytesPerSec > 0L ||
+            stats.bufferUsedBytes >= expected * 100L / 1000L
+        if (!transportWasFed) return
+
+        val device = currentUsbDevice ?: return
+        val runtime = runCatching { sharedUsbAudioEngine.getRuntimeFormat() }.getOrNull() ?: return
+        if (!runtime.isValid) return
+        val deviceKey = usbLearnedPolicyKeyFor(device)
+        if (UsbLearnedPolicyStore.invalidateLastGoodIfMatches(
+                deviceKey = deviceKey,
+                alt = runtime.alt,
+                sampleRate = runtime.sampleRate,
+                bitDepth = runtime.validBits,
+                subslot = runtime.subslotBytes,
+                feedbackEndpoint = runtime.feedbackEndpoint,
+            )
+        ) {
+            AppLogger.w(
+                TAG,
+                "USB invalidated non-draining last-good profile: kind=$kind " +
+                    "iface=${runtime.iface} alt=${runtime.alt} sr=${runtime.sampleRate} " +
+                    "bits=${runtime.validBits} subslot=${runtime.subslotBytes} " +
+                    "fb=0x${runtime.feedbackEndpoint.toString(16)} " +
+                    "completed=${stats.usbOutBytesPerSec}/$expected scheduled=${stats.scheduledUsbBytesPerSec}",
+            )
+        }
     }
 
 
@@ -3527,6 +4335,10 @@ class PlayerController private constructor(context: Context) {
         // still restart explicitly.
         if (pendingUsbRecoveryPlan != null) {
             AppLogger.i(TAG, "USB runtime acceptance clears deferred recovery: oldPlan=$pendingUsbRecoveryPlan")
+            val liveHandle = sharedUsbAudioEngine.currentHandle
+            if (liveHandle != 0L) {
+                runCatching { sharedUsbAudioEngine.nativeInvalidateUsbRecoveryToken(liveHandle) }
+            }
             pendingUsbPolicyRestart = false
             pendingUsbRecoveryPlan = null
         }
@@ -3731,7 +4543,16 @@ class PlayerController private constructor(context: Context) {
                             delay(100L)
                             waitedMs += 100L
                         }
-                        if (pendingUsbRecoveryPlan?.action != UsbRecoveryAction.RetryWithoutFeedback) {
+                        val pending = pendingUsbRecoveryPlan
+                        if (pending?.action != UsbRecoveryAction.RetryWithoutFeedback ||
+                            pending.nativeRecoveryToken != plan.nativeRecoveryToken ||
+                            !UsbStreamRecoveryPlanner.isNativeRecoveryTokenCurrent(plan)
+                        ) {
+                            AppLogger.i(
+                                TAG,
+                                "USB feedback recovery skipped: stale native recovery token " +
+                                    "planned=${plan.nativeRecoveryToken} current=${pending?.nativeRecoveryToken}",
+                            )
                             return@launch
                         }
                         applyUsbOutputSettingsChanged(userInitiated = true)
@@ -3766,7 +4587,8 @@ class PlayerController private constructor(context: Context) {
             r.alt,
             r.outEndpoint,
             r.feedbackEndpoint,
-            AppPreferences.Player.bitPerfectEnabled,
+            AppPreferences.Player.usbBitPerfectMode.id,
+            ffmpegPlayer.isUsbBitPerfectEffectiveForCurrentTrack(),
             AppPreferences.Player.hardwareFeatureUnitEnabled,
             AppPreferences.Player.usbPcmOutputMode,
             currentSongIsDsdSource(),
@@ -3775,7 +4597,11 @@ class PlayerController private constructor(context: Context) {
         ).joinToString("/")
     }
 
-    fun applyUsbOutputSettingsChanged(userInitiated: Boolean = false): Int {
+    fun applyUsbOutputSettingsChanged(
+        userInitiated: Boolean = false,
+        forceBitPerfectPolicyRestart: Boolean = false,
+        expectedRestartPlayToken: Long = latestPlayRequestToken.get(),
+    ): Int {
         if (!AppPreferences.Player.dsdConversionEnabled) {
             pcmToDsdSafetyBlocked = false
         }
@@ -3837,24 +4663,24 @@ class PlayerController private constructor(context: Context) {
         lastUsbOutputApplyMs = now
         pendingUsbPolicyRestart = false
 
-        // 同步 bit-perfect 状态到 native
         val effectiveDsdMode = currentEffectiveUsbDsdMode()
         val dsdActive = effectiveDsdMode != null
-        val bitPerfect = AppPreferences.Player.bitPerfectEnabled
+        val bitPerfectPolicy = AppPreferences.Player.usbBitPerfectMode
+        ffmpegPlayer.usbBitPerfectPolicyMode = bitPerfectPolicy
+        val effectiveBitPerfect = ffmpegPlayer.isUsbBitPerfectEffectiveForCurrentTrack()
         val hwVol = AppPreferences.Player.usbVolumeMode == 1 && AppPreferences.Player.hardwareFeatureUnitEnabled
         val fixedDigital = AppPreferences.Player.usbVolumeMode == 2
-        ffmpegPlayer.usbBitPerfectMode = bitPerfect || fixedDigital
         // Do not change native policy/DSD globals yet. The old USB writer and handle still own
         // the previous altsetting. Apply the new configuration only after drain + full close.
 
         AppLogger.w(
             TAG,
             "USB_RESAMPLE_APPLY prefRate=${AppPreferences.Player.usbTargetSampleRate} " +
-                "bitPerfect=$bitPerfect dsd=$dsdActive"
+                "bitPerfectPolicy=$bitPerfectPolicy effectiveBitPerfect=$effectiveBitPerfect dsd=$dsdActive"
         )
 
-        if (bitPerfect && !dsdActive && recoveryPlan == null) {
-            AppLogger.i(TAG, "applyUsbOutputSettingsChanged: bit-perfect is ON, resample settings saved but not applied")
+        if (effectiveBitPerfect && !dsdActive && recoveryPlan == null && !forceBitPerfectPolicyRestart) {
+            AppLogger.i(TAG, "applyUsbOutputSettingsChanged: current track is effectively bit-perfect; resample settings staged for the next non-bit-perfect track")
             return 0
         }
 
@@ -3866,6 +4692,7 @@ class PlayerController private constructor(context: Context) {
         val queue = _queue.value
         val queueSongs = queue.songs
         val queueIndex = queue.currentIndex
+        val settingsRestartPlayToken = expectedRestartPlayToken
 
         Log.i(
             TAG,
@@ -3893,6 +4720,16 @@ class PlayerController private constructor(context: Context) {
                 usbExclusiveManager.stopStreaming("usb_output_settings_changed")
             } catch (_: Throwable) {
             }
+            // Strict hardware-volume -> software-volume cannot pre-arm mutable PCM on the live
+            // bit-perfect handle. Keep the physical FU attenuation until ISO is fully stopped,
+            // then release it while no audio packets can expose a full-scale window.
+            if (!releasePendingHardwareVolumeAfterTransportStop("usb_output_settings_changed")) {
+                AppLogger.e(
+                    TAG,
+                    "USB settings transaction aborted: HW->SW Feature Unit release safety gate failed",
+                )
+                return 0
+            }
             try {
                 usbExclusiveManager.resetPlaybackPipeline("usb_output_settings_changed")
             } catch (t: Throwable) {
@@ -3918,9 +4755,12 @@ class PlayerController private constructor(context: Context) {
             // The old session is now fully closed. It is finally safe to change process-global
             // PCM/DoP/Native-DSD state for the next nativeInitUsbDevice().
             sharedUsbAudioEngine.nativeSetUsbExclusiveActive(true)
-            sharedUsbAudioEngine.nativeSetPolicy(
+            sharedUsbAudioEngine.setPolicy(
                 exclusive = true,
-                bitPerfect = bitPerfect || fixedDigital,
+                bitPerfect = UsbVolumeModeBitPerfectPolicy.shouldPreArmStrict(
+                    bitPerfectPolicy,
+                    AppPreferences.Player.usbVolumeMode,
+                ) || fixedDigital,
                 hwVol = hwVol,
             )
             sharedUsbAudioEngine.setDsdConversion(
@@ -3938,10 +4778,28 @@ class PlayerController private constructor(context: Context) {
                 reason = "usb_output_settings_changed"
             )
             smForceTransition(PlayState.PREPARING, "applyUsbSettings")
-            if (queueSongs.isNotEmpty() && queueIndex in queueSongs.indices) {
-                play(song, queueSongs, queueIndex)
+            val restartQueue = if (queueSongs.isNotEmpty() && queueIndex in queueSongs.indices) {
+                queueSongs
             } else {
-                play(song)
+                listOf(song)
+            }
+            val restartIndex = if (queueSongs.isNotEmpty() && queueIndex in queueSongs.indices) {
+                queueIndex
+            } else {
+                0
+            }
+            val restartQueued = transportControlCoordinator.restartAfterSettingsIfUncontested(
+                song = song,
+                queue = restartQueue,
+                index = restartIndex,
+                expectedPlayRequestToken = settingsRestartPlayToken,
+            )
+            if (!restartQueued) {
+                AppLogger.i(
+                    TAG,
+                    "USB settings restart skipped: explicit play superseded old song=${song.title} " +
+                        "expectedToken=$settingsRestartPlayToken latest=${latestPlayRequestToken.get()}",
+                )
             }
             if (!wasPlaying) {
                 scope.launch {
@@ -3963,8 +4821,8 @@ class PlayerController private constructor(context: Context) {
         return 0
     }
 
-    fun applyAudioOutputSettingsChanged(): Int {
-        if (_usbExclusiveActive.value || ffmpegPlayer.usbExclusiveMode) {
+    fun applyAudioOutputSettingsChanged(allowUsbExclusive: Boolean = false): Int {
+        if (!allowUsbExclusive && (_usbExclusiveActive.value || ffmpegPlayer.usbExclusiveMode)) {
             AppLogger.i(TAG, "applyAudioOutputSettingsChanged: USB exclusive is active, ignore non-USB PCM output setting change")
             return 0
         }
@@ -3987,7 +4845,8 @@ class PlayerController private constructor(context: Context) {
             TAG,
             "applyAudioOutputSettingsChanged: wasPlaying=$wasPlaying pos=${position}ms " +
                 "mode=${AppPreferences.Player.audioOutputMode} targetSr=${AppPreferences.Player.targetSampleRate} " +
-                "targetBits=${AppPreferences.Player.targetBitDepth}"
+                "targetBits=${AppPreferences.Player.targetBitDepth} speed=${AppPreferences.Player.playbackSpeed} " +
+                "allowUsbExclusive=$allowUsbExclusive"
         )
 
         try {
@@ -4018,6 +4877,260 @@ class PlayerController private constructor(context: Context) {
             }
         }
         return 0
+    }
+
+    /**
+     * Replaces only the physical decoder source for the currently committed semantic song.
+     *
+     * Queue/currentSong identity never changes. The replacement is serialized with all other
+     * transport mutations, seeks the new decoder to the same playback timeline and restores the
+     * previous paused/playing state. Passing a blank/null [playbackPath] returns to the original
+     * song source. This primitive is intentionally AI-agnostic so prepared local media variants
+     * can use it without making module:player depend on the app AI layer.
+     */
+    suspend fun switchCurrentPlaybackSource(
+        expectedSong: AudioFile,
+        playbackPath: String?,
+        sourceTag: String = "media_variant",
+        sampleRate: Int = 0,
+        channels: Int = 0,
+        bitsPerSample: Int = 0,
+        format: String = "",
+    ): PlaybackSourceSwitchResult {
+        if (isReleased) return PlaybackSourceSwitchResult.PLAYER_RELEASED
+        return transportMutex.withLock {
+            if (isReleased) return@withLock PlaybackSourceSwitchResult.PLAYER_RELEASED
+            val song = _currentSong.value ?: return@withLock PlaybackSourceSwitchResult.NO_CURRENT_SONG
+            if (!samePlaybackItem(song, expectedSong)) {
+                AppLogger.w(
+                    TAG,
+                    "SOURCE_OVERRIDE rejected stale expected=${expectedSong.path} current=${song.path} tag=$sourceTag",
+                )
+                return@withLock PlaybackSourceSwitchResult.STALE_SONG
+            }
+
+            val desired = PlaybackSourceOverridePolicy.normalizeForSong(
+                song = song,
+                playbackPath = playbackPath,
+                sourceTag = sourceTag,
+                sampleRate = sampleRate,
+                channels = channels,
+                bitsPerSample = bitsPerSample,
+                format = format,
+                generation = playbackSourceOverrideGeneration.incrementAndGet(),
+            )
+            if (desired != null && !desired.sourceExists()) {
+                AppLogger.w(TAG, "SOURCE_OVERRIDE unavailable path=${desired.playbackPath} tag=$sourceTag")
+                return@withLock PlaybackSourceSwitchResult.SOURCE_UNAVAILABLE
+            }
+            val rawCurrentOverride = _playbackSourceOverride.value
+            val currentOverride = rawCurrentOverride?.takeIf { it.matches(song) && it.sourceExists() }
+            if (rawCurrentOverride != null && currentOverride == null) {
+                _playbackSourceOverride.value = null
+            }
+            if (PlaybackSourceOverridePolicy.sameTarget(currentOverride, desired)) {
+                return@withLock PlaybackSourceSwitchResult.ALREADY_ACTIVE
+            }
+
+            val backendState = ffmpegPlayer.state
+            val wasPlaying = _playState.value == PlayState.PLAYING ||
+                backendState == FfmpegAudioPlayer.State.PLAYING ||
+                backendState == FfmpegAudioPlayer.State.PREPARING
+            val wasPaused = _playState.value == PlayState.PAUSED ||
+                backendState == FfmpegAudioPlayer.State.PAUSED
+            val wasActive = wasPlaying || wasPaused
+            val timelinePositionMs = _position.value.coerceAtLeast(0L)
+            val queueSnapshot = _queue.value
+
+            AppLogger.i(
+                TAG,
+                "SOURCE_OVERRIDE switch from=${currentOverride?.playbackPath ?: song.path} " +
+                    "to=${desired?.playbackPath ?: song.path} pos=$timelinePositionMs state=$backendState " +
+                    "usbExclusive=${_usbExclusiveActive.value} tag=$sourceTag",
+            )
+
+            if (wasPlaying) {
+                val fadeMs = TransitionPreferences.transportDurationOrZero().coerceIn(0, 160)
+                if (fadeMs > 0) {
+                    val outgoingMs = ((fadeMs + 1) / 2).coerceAtLeast(1)
+                    val faded = withContext(Dispatchers.IO) {
+                        ffmpegPlayer.fadeOutForTransitionBlocking(
+                            durationMs = outgoingMs,
+                            reason = "source_override_out:$sourceTag",
+                        )
+                    }
+                    if (faded) {
+                        ffmpegPlayer.armNextStartFadeIn(
+                            (fadeMs - outgoingMs).coerceAtLeast(1),
+                            "source_override_in:$sourceTag",
+                        )
+                    }
+                }
+            }
+
+            runCatching { ffmpegPlayer.stop() }
+                .onFailure { error -> AppLogger.w(TAG, "SOURCE_OVERRIDE stop failed", error) }
+            _playbackSourceOverride.value = desired
+            duplicatePlayRequestGate.clear()
+            queueRendererRestartSeek(
+                song = song,
+                displayPositionMs = timelinePositionMs,
+                reason = "source_override:$sourceTag",
+            )
+
+            if (wasActive) {
+                smForceTransition(PlayState.PREPARING, "sourceOverride")
+                if (queueSnapshot.songs.isNotEmpty() && queueSnapshot.currentIndex in queueSnapshot.songs.indices) {
+                    playInternal(song, queueSnapshot.songs, queueSnapshot.currentIndex)
+                } else {
+                    playInternal(song)
+                }
+                if (wasPaused) {
+                    scope.launch {
+                        delay(500L)
+                        val committed = _currentSong.value
+                        if (committed != null && samePlaybackItem(committed, song) &&
+                            (_playState.value == PlayState.PLAYING ||
+                                ffmpegPlayer.state == FfmpegAudioPlayer.State.PLAYING ||
+                                ffmpegPlayer.state == FfmpegAudioPlayer.State.PREPARING)
+                        ) {
+                            pause()
+                        }
+                    }
+                }
+            }
+            PlaybackSourceSwitchResult.APPLIED
+        }
+    }
+
+    /**
+     * Changes the real PCM decoder speed and restarts the active stream at the
+     * current position. Strict bit-perfect and native DSD remain at 1.00x.
+     */
+    fun setPlaybackSpeed(speed: Float): Int {
+        val normalized = if (speed.isFinite()) speed.coerceIn(0.25f, 3f) else 1f
+        val configuredSpeedBeforeRequest = AppPreferences.Player.playbackSpeed
+        AppPreferences.Player.playbackSpeed = normalized
+        val song = _currentSong.value
+        if (song == null) {
+            AppLogger.i(TAG, "Playback speed saved without active song: speed=$normalized")
+            return 0
+        }
+        if (ffmpegPlayer.isUsbBitPerfectEffectiveForCurrentTrack()) {
+            AppLogger.i(TAG, "Playback speed saved but strict bit-perfect keeps effective speed=1.00")
+            return 0
+        }
+        val requestToken = playbackSpeedRequestToken.incrementAndGet()
+        playbackSpeedRestartJob?.cancel()
+        playbackSpeedRestartJob = scope.launch(Dispatchers.Default) {
+            playbackSpeedRestartMutex.withLock {
+                if (requestToken != playbackSpeedRequestToken.get() || isReleased) return@withLock
+                restartActivePlaybackForSpeed(
+                    requestedSpeed = normalized,
+                    configuredSpeedBeforeRequest = configuredSpeedBeforeRequest,
+                    requestToken = requestToken,
+                )
+            }
+        }
+        // The preference is committed synchronously; the decoder replacement is serialized on
+        // the transport lane so an intentional same-song restart cannot be discarded as a
+        // duplicate play request.
+        return 0
+    }
+
+    private suspend fun restartActivePlaybackForSpeed(
+        requestedSpeed: Float,
+        configuredSpeedBeforeRequest: Float,
+        requestToken: Long,
+    ) {
+        transportMutex.withLock {
+            if (requestToken != playbackSpeedRequestToken.get() || isReleased) return@withLock
+
+            val song = _currentSong.value ?: return@withLock
+            val oldTimelinePosition = _position.value
+            // FFmpegBridge exposes a speed-adjusted playback timeline: decoder duration is
+            // sourceDuration / speed and seek maps playbackMs * speed back to the source.
+            // Convert through source time when replacing the decoder so a 1x -> 2x change at
+            // 01:00 does not jump to source 02:00.
+            val previousEffectiveSpeed = ffmpegPlayer.currentDecoderPlaybackSpeedOrNull()
+                ?: configuredSpeedBeforeRequest
+            val safePreviousSpeed = if (previousEffectiveSpeed.isFinite()) {
+                previousEffectiveSpeed.coerceIn(0.25f, 3f)
+            } else {
+                1f
+            }
+            val safeRequestedSpeed = if (requestedSpeed.isFinite()) requestedSpeed.coerceIn(0.25f, 3f) else 1f
+            val sourcePositionMs = (oldTimelinePosition.toDouble() * safePreviousSpeed.toDouble())
+                .toLong()
+                .coerceAtLeast(0L)
+            val restartTimelinePosition = (sourcePositionMs.toDouble() / safeRequestedSpeed.toDouble())
+                .toLong()
+                .coerceAtLeast(0L)
+            val backendState = ffmpegPlayer.state
+            val wasPlaying = _playState.value == PlayState.PLAYING ||
+                backendState == FfmpegAudioPlayer.State.PLAYING ||
+                backendState == FfmpegAudioPlayer.State.PREPARING
+            val wasActive = wasPlaying ||
+                _playState.value == PlayState.PAUSED ||
+                backendState == FfmpegAudioPlayer.State.PAUSED
+            if (!wasActive) {
+                AppLogger.i(
+                    TAG,
+                    "PLAYBACK_SPEED_RESTART skipped inactive speed=$requestedSpeed state=$backendState",
+                )
+                return@withLock
+            }
+
+            val queue = _queue.value
+            val queueSongs = queue.songs
+            val queueIndex = queue.currentIndex
+            AppLogger.i(
+                TAG,
+                "PLAYBACK_SPEED_RESTART start requested=$requestedSpeed previous=$safePreviousSpeed " +
+                    "oldTimelineMs=$oldTimelinePosition sourceMs=$sourcePositionMs newTimelineMs=$restartTimelinePosition " +
+                    "state=$backendState playState=${_playState.value} queueIndex=$queueIndex " +
+                    "usbExclusive=${_usbExclusiveActive.value} strict=${ffmpegPlayer.isUsbBitPerfectEffectiveForCurrentTrack()}",
+            )
+
+            runCatching { ffmpegPlayer.stop() }
+                .onFailure { error ->
+                    AppLogger.w(TAG, "PLAYBACK_SPEED_RESTART stop failed", error)
+                }
+
+            // stop() retires the decoder synchronously, but the normal play request gate still
+            // remembers the previous same-song request. This is an intentional restart, not a
+            // duplicate tap, so it must always reach playInternal and open a new decoder.
+            duplicatePlayRequestGate.clear()
+            queueRendererRestartSeek(
+                song = song,
+                displayPositionMs = restartTimelinePosition,
+                reason = "playback_speed_changed",
+            )
+            smForceTransition(PlayState.PREPARING, "playbackSpeedChanged")
+
+            if (queueSongs.isNotEmpty() && queueIndex in queueSongs.indices) {
+                playInternal(song, queueSongs, queueIndex)
+            } else {
+                playInternal(song)
+            }
+            AppLogger.i(
+                TAG,
+                "PLAYBACK_SPEED_RESTART queued requested=$requestedSpeed " +
+                    "preference=${AppPreferences.Player.playbackSpeed}",
+            )
+
+            if (!wasPlaying) {
+                scope.launch {
+                    delay(500)
+                    if (_playState.value == PlayState.PLAYING ||
+                        ffmpegPlayer.state == FfmpegAudioPlayer.State.PLAYING ||
+                        ffmpegPlayer.state == FfmpegAudioPlayer.State.PREPARING
+                    ) {
+                        pause()
+                    }
+                }
+            }
+        }
     }
 
     fun setInternalDoublePrecisionProcessing(enabled: Boolean) {
@@ -4068,7 +5181,10 @@ class PlayerController private constructor(context: Context) {
         if (!_usbExclusiveActive.value) return false
         return when (resolveCurrentUsbOutputProfile()?.volumePath) {
             UsbVolumePath.HardwareUserVolume -> canControlUsbVolume()
-            UsbVolumePath.Software -> true
+            // Software gain is app-owned, but presenting it as a remote VolumeProvider makes
+            // SystemUI render a cast/remote-style slider and introduces a second async UI owner.
+            // Keep the MediaSession local and mirror STREAM_MUSIC into the native USB gain instead.
+            UsbVolumePath.Software -> false
             else -> false
         }
     }
@@ -4205,10 +5321,47 @@ class PlayerController private constructor(context: Context) {
                     }
                     return@launch
                 }
+
+                // reference USB implementation separates the physical USB-device lifetime from the playback-stream
+                // lifetime. A stalled native stream/ISO owner first rebuilds the current stream on
+                // the same device handle; only an actually poisoned/lost physical session is
+                // released and re-opened. Raw previously jumped directly to release(), which can
+                // wedge close/re-wrap-sensitive DAC/Android-host combinations even though the
+                // original device authorization and handle were still valid.
+                val streamRecoveredInPlace = runCatching {
+                    usbExclusiveManager.recoverCurrentPcmStreamInPlace(
+                        "runtime_liveness_full_recovery",
+                    )
+                }.onFailure {
+                    AppLogger.w(TAG, "USB in-place stream recovery threw; falling back to physical reopen", it)
+                }.getOrDefault(false)
+
+                if (streamRecoveredInPlace) {
+                    AppLogger.i(
+                        TAG,
+                        "USB recovery retained physical device session; restarting current track",
+                    )
+                    if (wasPlaying && currentSong != null) {
+                        try {
+                            play(currentSong)
+                        } catch (e: Exception) {
+                            AppLogger.e(TAG, "Failed to resume playback after in-place USB stream recovery", e)
+                        }
+                    }
+                    return@launch
+                }
+
+                AppLogger.w(
+                    TAG,
+                    "USB in-place stream recovery unavailable/failed; escalating to physical device reopen",
+                )
                 // UsbExclusiveManager is the only Kotlin lifecycle owner. Do not
                 // call UsbAudioEngine.release() independently and then close the
                 // same connection again through the manager.
-                try { usbExclusiveManager.release() } catch (_: Throwable) {}
+                try {
+                    usbExclusiveManager.release("runtime_recovery_physical_reopen")
+                } catch (_: Throwable) {
+                }
 
                 // ① 清除旧状态，否则 activateUsbEngine 的 sameDeviceAlreadyActive 检查会直接跳过
                 currentUsbDevice = null
@@ -4263,8 +5416,15 @@ class PlayerController private constructor(context: Context) {
 
     // ==================== Android system-audio interruption coordinator ====================
 
-    private fun requestAudioFocus(): Boolean =
-        androidAudioInterruptionController.requestAudioFocus()
+    private fun requestAudioFocus(): Boolean {
+        if (
+            !_usbExclusiveActive.value &&
+            !androidAudioInterruptionController.hasAudioFocusSession()
+        ) {
+            volumeRouteCoordinator.prepareAndroidVolumeForPlaybackTakeover("audio_focus_acquire")
+        }
+        return androidAudioInterruptionController.requestAudioFocus()
+    }
 
     private fun abandonAudioFocus() {
         androidAudioInterruptionController.abandonAudioFocus()
@@ -4382,6 +5542,21 @@ class PlayerController private constructor(context: Context) {
     private fun samePlaybackItem(a: AudioFile, b: AudioFile): Boolean =
         playRequestResolver.sameItem(a, b)
 
+    private fun rendererSourceMatches(requestedPath: String, rendererPath: String): Boolean =
+        normalizeRendererSource(requestedPath) == normalizeRendererSource(rendererPath)
+
+    private fun normalizeRendererSource(path: String): String {
+        val trimmed = path.trim()
+        val decodedFilePath = if (trimmed.startsWith("file://", ignoreCase = true)) {
+            runCatching { android.net.Uri.parse(trimmed).path }.getOrNull()
+        } else {
+            null
+        }
+        return (decodedFilePath ?: trimmed)
+            .replace('\\', '/')
+            .trimEnd('/')
+    }
+
     private fun samePlaybackQueue(left: List<AudioFile>, right: List<AudioFile>): Boolean =
         playRequestResolver.sameQueue(left, right)
 
@@ -4399,6 +5574,16 @@ class PlayerController private constructor(context: Context) {
         return resolved.queue to resolved.index
     }
 
+    private fun applyExplicitShuffleSelectionPolicy(queue: List<AudioFile>, index: Int) {
+        if (!playbackModeController.isShuffleEnabled ||
+            !samePlaybackQueue(_queue.value.songs, queue)
+        ) return
+        val forceContinuousShuffle = shuffleQueueController.onExplicitSelection(_queue.value, index)
+        if (forceContinuousShuffle && playbackModeController.currentPlayMode == PlayMode.SHUFFLE_ONCE) {
+            playbackModeController.setPlayMode(PlayMode.SHUFFLE_ALL)
+        }
+    }
+
     private fun shouldRouteExplicitPlayThroughManualSwitch(song: AudioFile): Boolean =
         playRequestResolver.shouldUseManualSwitch(
             currentSong = _currentSong.value,
@@ -4406,7 +5591,7 @@ class PlayerController private constructor(context: Context) {
             controllerPlaying = _playState.value == PlayState.PLAYING,
             enginePlaying = ffmpegPlayer.state == FfmpegAudioPlayer.State.PLAYING,
             usbExclusiveActive = _usbExclusiveActive.value,
-            configuredManualFadeMs = configuredManualShortFadeMs(),
+            configuredManualFadeMs = configuredManualTransitionMs(),
         )
 
     private fun tryAutoRearmUsbExclusiveForPlayback(song: AudioFile): Boolean {
@@ -4435,12 +5620,36 @@ class PlayerController private constructor(context: Context) {
      * request is considered consumed by the debug v2 path. If anything fails, the
      * method returns false and playInternal continues through the legacy path.
      */
-    private fun playInternal(song: AudioFile, queue: List<AudioFile> = emptyList(), index: Int = 0) {
+    private fun playInternal(
+        song: AudioFile,
+        queue: List<AudioFile> = emptyList(),
+        index: Int = 0,
+        deferPublicCommitToRenderer: Boolean = false,
+    ) {
+        pausedSelectionPendingStart = false
+        if (!deferPublicCommitToRenderer) pendingRendererUiCommit = null
         Log.d(TAG, "play() called: title=${song.title}, path=${song.path}, isReleased=$isReleased")
         if (isReleased) {
             Log.w(TAG, "play() skip: isReleased")
             return
         }
+        _playbackSourceOverride.value?.let { activeOverride ->
+            if (!activeOverride.matches(song)) {
+                AppLogger.i(
+                    TAG,
+                    "SOURCE_OVERRIDE cleared on semantic track change owner=${activeOverride.semanticPath} next=${song.path}",
+                )
+                _playbackSourceOverride.value = null
+            } else if (!activeOverride.sourceExists()) {
+                AppLogger.w(
+                    TAG,
+                    "SOURCE_OVERRIDE source disappeared; fallback to original path=${activeOverride.playbackPath}",
+                )
+                _playbackSourceOverride.value = null
+            }
+        }
+        val rendererSong = PlaybackSourceOverridePolicy.rendererSong(song, _playbackSourceOverride.value)
+        val playbackPath = rendererSong.path
         if (_usbExclusiveActive.value) {
             invalidateUsbSelfTest("play_request:${song.path}", clearSessionKey = true)
         }
@@ -4460,7 +5669,12 @@ class PlayerController private constructor(context: Context) {
                     waitMs += 100
                 }
                 if (!recoveringUsb.get() && !isReleased) {
-                    playInternal(song, queue, index)
+                    playInternal(
+                        song = song,
+                        queue = queue,
+                        index = index,
+                        deferPublicCommitToRenderer = deferPublicCommitToRenderer,
+                    )
                 }
             }
             return
@@ -4494,9 +5708,15 @@ class PlayerController private constructor(context: Context) {
 
         androidPlaybackServiceController.ensurePlaybackWakeLock("play_request")
 
-        val isRemoteUrl = song.path.startsWith("http://") || song.path.startsWith("https://")
-        if (song.path.isBlank() || (!isRemoteUrl && !java.io.File(song.path).exists())) {
-            Log.w(TAG, "play() skip: file not found: ${song.path}")
+        val playbackIsRemoteUrl = playbackPath.startsWith("http://") || playbackPath.startsWith("https://")
+        val semanticIsRemoteUrl = song.path.startsWith("http://") || song.path.startsWith("https://")
+        if (playbackPath.isBlank() || (!playbackIsRemoteUrl && !java.io.File(playbackPath).exists())) {
+            Log.w(TAG, "play() skip: renderer source not found: $playbackPath semantic=${song.path}")
+            if (deferPublicCommitToRenderer) {
+                pendingRendererUiCommit
+                    ?.takeIf { samePlaybackItem(it.song, song) }
+                    ?.let { pendingRendererUiCommit = null }
+            }
             val unavailableResult = backendStateControlCoordinator.handleUnavailableSource(
                 song = song,
                 queue = queue,
@@ -4519,36 +5739,64 @@ class PlayerController private constructor(context: Context) {
         }
 
         try {
-            playbackQueueCommitter.commit(song, queue, index)
+            if (!deferPublicCommitToRenderer) {
+                playbackQueueCommitter.commit(song, queue, index)
+            } else if (pendingRendererUiCommit?.song?.let { samePlaybackItem(it, song) } != true) {
+                pendingRendererUiCommit = PendingRendererUiCommit(
+                    song = song,
+                    queue = queue.toList(),
+                    index = index,
+                    prepareFollowingAfterCommit = true,
+                )
+            }
             autoTransitionLyrics = null
             ffmpegPlayer.updateAutoTransitionRecipe(null)
-            // Persist the new identity before decoder startup so process death during
-            // preparation cannot resurrect the previously playing song.
-            persistSelectedSongForColdStart(song)
-            clearRequestedSongIfCommitted(song)
-            AppLogger.markPlaybackReportStart(
-                title = song.title,
-                artist = song.artist,
-                album = song.album,
-                path = song.path,
-                cueOffsetMs = song.cueOffsetMs
+            if (!deferPublicCommitToRenderer) {
+                // Explicit/cold starts have no retiring renderer to remain authoritative. Manual
+                // live switches persist/report only after TRACK_STARTED owns the new timeline.
+                persistSelectedSongForColdStart(song)
+                clearRequestedSongIfCommitted(song)
+                AppLogger.markPlaybackReportStart(
+                    title = song.title,
+                    artist = song.artist,
+                    album = song.album,
+                    path = song.path,
+                    cueOffsetMs = song.cueOffsetMs
+                )
+                FFmpegBridge.resetDebugLog("playback_report_start:${song.path}")
+            }
+            // Route/cold renderer restarts preserve the visible position while the new
+            // decoder is being opened. Manual/new-song requests clear the latch before
+            // entering here and therefore still start from 0 as before.
+            val rendererRestartDisplayPosition = RendererRestartTimelinePolicy.initialDisplayPositionMs(
+                pendingPositionMs = pendingSeekPosition,
+                pendingPath = pendingSeekPath,
+                songPath = song.path,
             )
-            FFmpegBridge.resetDebugLog("playback_report_start:${song.path}")
-            _position.value = 0L
-            playbackStatsTracker.reset()
-            cachedCueOffsetMs = song.cueOffsetMs
-            cachedCueEndMs = song.cueEndMs
-            cachedSongDuration = song.duration
-            if (song.duration > 0) _duration.value = song.duration
+            if (!deferPublicCommitToRenderer) {
+                _position.value = rendererRestartDisplayPosition
+                playbackStatsTracker.reset()
+                cachedCueOffsetMs = song.cueOffsetMs
+                cachedCueEndMs = song.cueEndMs
+                cachedSongDuration = song.duration
+                if (song.duration > 0) _duration.value = song.duration
+            }
             applyReplayGain(song)
-            tryAutoRearmUsbExclusiveForPlayback(song)
+            // Shared Android USB Audio must not touch the exclusive activation path at all.
+            // Besides preserving user intent, this keeps rapid shared-route track changes away
+            // from USB permission/device probing and exclusive renderer state.
+            if (AppPreferences.Player.usbExclusiveRequested) {
+                tryAutoRearmUsbExclusiveForPlayback(rendererSong)
+            }
 
-            metadataEnrichmentCoordinator.start(
-                song = song,
-                remoteUrl = isRemoteUrl,
-            )
+            if (!deferPublicCommitToRenderer) {
+                metadataEnrichmentCoordinator.start(
+                    song = song,
+                    remoteUrl = semanticIsRemoteUrl,
+                )
+            }
 
-            Log.d(TAG, "Starting FFmpeg playback: ${song.path}")
+            Log.d(TAG, "Starting FFmpeg playback: $playbackPath semantic=${song.path}")
             if (!requestAudioFocus()) {
                 Log.w(TAG, "AudioFocus denied, playback may be interrupted")
             }
@@ -4567,7 +5815,7 @@ class PlayerController private constructor(context: Context) {
             }
 
             // Publish the USB media identity and foreground/wake-lock contract before
-            // native start. The HiBy AudioTrack carrier itself is deliberately not created
+            // native start. The AudioTrack carrier itself is deliberately not created
             // here; it starts only from ffmpegPlayer.onUsbPlaybackStarted.
             if (_usbExclusiveActive.value) {
                 enterUsbCriticalStartup("play_usb_exclusive")
@@ -4590,16 +5838,20 @@ class PlayerController private constructor(context: Context) {
             if (pendingSeekPosition > 0L && pendingSeekPath == song.path) {
                 val restoredPosition = pendingSeekPosition
                 queueRendererRestartSeek(song, restoredPosition, "cold_restore_before_play")
-                _position.value = restoredPosition
+                if (!deferPublicCommitToRenderer) _position.value = restoredPosition
                 verifyRestoreStartSeek(song, restoredPosition)
             }
-            ffmpegPlayer.play(song.path)
+            ffmpegPlayer.play(playbackPath)
 
             // No PlayState polling or delayed carrier retry here. The confirmed native
-            // stream-start callback owns creation, matching HiBy's actual lifecycle.
+            // stream-start callback owns creation, matching the carrier's actual lifecycle.
 
-            // Gapless / Crossfade: 设置下一首歌信息
-            gaplessControlCoordinator.prepareNextSong()
+            // A renderer-deferred manual switch still exposes the old queue/current item here.
+            // Preparing from that public snapshot would arm the wrong following track. The
+            // TRACK_STARTED commit performs this step for cold-reopen manual switches.
+            if (!deferPublicCommitToRenderer) {
+                gaplessControlCoordinator.prepareNextSong()
+            }
 
             scope.launch {
                 delay(1000)
@@ -4613,14 +5865,21 @@ class PlayerController private constructor(context: Context) {
                 pendingRestoreSeekJob = scope.launch {
                     delay(300)
                     val cur = _currentSong.value
-                    if (cur?.path != song.path || cur.cueOffsetMs != song.cueOffsetMs) {
+                    val committedMatches = cur?.path == song.path && cur.cueOffsetMs == song.cueOffsetMs
+                    val deferredMatches = pendingRendererUiCommit?.song?.let { pending ->
+                        pending.path == song.path && pending.cueOffsetMs == song.cueOffsetMs
+                    } == true
+                    if (!committedMatches && !deferredMatches) {
                         AppLogger.w(TAG, "cue seek ignored: song changed during delay")
                         return@launch
                     }
                     if (ffmpegPlayer.state == FfmpegAudioPlayer.State.PLAYING ||
                         ffmpegPlayer.state == FfmpegAudioPlayer.State.PREPARING) {
                         ffmpegPlayer.seekTo(cueOffset)
-                        _position.value = 0L
+                        // Keep the retiring song's public timeline intact until renderer commit.
+                        if (_currentSong.value?.let { samePlaybackItem(it, song) } == true) {
+                            _position.value = 0L
+                        }
                         playbackProgressController.markSeekPerformed()
                     }
                 }
@@ -4629,10 +5888,16 @@ class PlayerController private constructor(context: Context) {
                 pendingSeekPath = null
             }
 
-            precacheNextSong()
-
-            saveState()
+            if (!deferPublicCommitToRenderer) {
+                precacheNextSong()
+                saveState()
+            }
         } catch (e: Exception) {
+            if (deferPublicCommitToRenderer) {
+                pendingRendererUiCommit
+                    ?.takeIf { samePlaybackItem(it.song, song) }
+                    ?.let { pendingRendererUiCommit = null }
+            }
             Log.e(TAG, "play() failed", e)
             if (queue.size > 1) {
                 val nextIndex = (index + 1) % queue.size
@@ -4643,6 +5908,20 @@ class PlayerController private constructor(context: Context) {
 
     fun playQueue(songs: List<AudioFile>, startIndex: Int = 0) =
         transportControlCoordinator.playQueue(songs, startIndex)
+
+    /** Creates one Reference-style shuffle session, including category grouping semantics. */
+    fun planShuffleSession(
+        songs: List<AudioFile>,
+        categoryGroups: List<List<AudioFile>>? = null,
+    ): List<AudioFile> = shuffleQueueController.planSession(songs, categoryGroups)
+
+    /** Plays an already planned order without applying a second flat randomization pass. */
+    fun playPlannedShuffleQueue(songs: List<AudioFile>) {
+        if (songs.isEmpty()) return
+        shuffleQueueController.armPlannedTraversal(songs)
+        setPlayMode(PlayMode.SHUFFLE_ONCE)
+        playQueue(songs, 0)
+    }
 
     private var precacheJob: Job? = null
 
@@ -4732,7 +6011,7 @@ class PlayerController private constructor(context: Context) {
                 TAG,
                 "USB_PAUSE_TRACE immediate_silence=$silenced path=${pausedSong?.path} position=$pausedPosition"
             )
-            // HiBy releases its mute-data AudioTrack on pause, even while native USB remains warm.
+            // The carrier releases its mute-data AudioTrack on pause, even while native USB remains warm.
             usbSystemAudioKeepAlive.stop("manual_pause_warm")
             if (AppPreferences.Player.usbReleaseBandwidthAfterPlayback) {
                 runCatching { sharedUsbAudioEngine.enterStandby("manual_pause_release_bandwidth") }
@@ -4788,10 +6067,12 @@ class PlayerController private constructor(context: Context) {
     }
 
     private suspend fun pauseSystemBackendInternal() {
-        ffmpegPlayer.pauseWithFadeBlocking(
-            durationMs = TransitionPreferences.transportDurationOrZero(),
-            reason = "manual_pause",
-        )
+        withContext(Dispatchers.IO) {
+            ffmpegPlayer.pauseWithFadeBlocking(
+                durationMs = TransitionPreferences.transportDurationOrZero(),
+                reason = "manual_pause",
+            )
+        }
         savePosition()
         saveState()
     }
@@ -4853,16 +6134,11 @@ class PlayerController private constructor(context: Context) {
     }
 
     fun shouldSustainUsbBackgroundPlayback(): Boolean {
-        if (usbBackgroundPlaybackCoordinator.shouldSustain()) return true
-        // USB ownership must survive the short route/session gaps produced by a track switch or
-        // an OEM background transition. Keep the requested output session alive across the
-        // same gap instead of treating the temporarily unavailable native stream as an idle user
-        // pause.
-        return !isReleased &&
-            appInBackground &&
-            AppPreferences.Player.usbExclusiveRequested &&
-            AppPreferences.Player.lastPlayStateOrdinal == PlayState.PLAYING.ordinal &&
-            _currentSong.value != null
+        // Runtime playback state is authoritative. A persisted "last state was PLAYING" value is
+        // only a cold-start hint and must never keep MediaSession/FGS advertising active audio after
+        // the decoder/controller is actually paused or stopped. The coordinator already covers the
+        // short USB route/session gaps by observing both controller and backend PREPARING/PLAYING.
+        return usbBackgroundPlaybackCoordinator.shouldSustain()
     }
 
     fun reinforceUsbBackgroundPlayback(reason: String) {
@@ -4918,7 +6194,7 @@ class PlayerController private constructor(context: Context) {
     fun stop() = transportControlCoordinator.stop()
 
     private suspend fun stopInternal() {
-        uiSelectionControlCoordinator.clearRequestedSong()
+        clearPendingUiSelection()
         AppLogger.i(TAG, "stop() called usbExclusive=${_usbExclusiveActive.value}")
         savePosition()
         unregisterNoisyReceiver()
@@ -4926,8 +6202,8 @@ class PlayerController private constructor(context: Context) {
         val transportFadeMs = TransitionPreferences.transportDurationOrZero()
         if (_usbExclusiveActive.value) {
             // USB exclusive has one transport-fade owner: the native session envelope. Strict
-            // bit-perfect and hardware-volume routes are rejected by canUseUsbSessionPcmEnvelope(),
-            // so STOP never modifies those streams just to manufacture a fade.
+            // bit-perfect, hardware/fixed and DSD routes reject SessionPcm ownership, so STOP
+            // never multiplies those payloads just to manufacture a fade.
             if (_playState.value == PlayState.PLAYING && transportFadeMs > 0) {
                 fadeUsbExclusiveSessionTo(
                     target = 0.0f,
@@ -4996,9 +6272,25 @@ class PlayerController private constructor(context: Context) {
     }
 
     private fun recoverDeferredUsbOnForegroundIfNeeded() {
-        if (!pendingUsbPolicyRestart) return
         val nativeState = sharedUsbAudioEngine.getNativeStreamState()
         val playing = _playState.value == PlayState.PLAYING || ffmpegPlayer.state == FfmpegAudioPlayer.State.PLAYING
+        val nativeBroken =
+            nativeState == UsbAudioEngine.NativeStreamState.BROKEN ||
+                sharedUsbAudioEngine.isNativeSessionBroken()
+        // Native transport ownership is authoritative. If the event/transfer owner died while the
+        // Activity was backgrounded, do not require an earlier Kotlin policy flag before reopening.
+        // This mirrors the reference USB runtime wait/completion lifecycle: a dead stream owner is torn down and
+        // reopened even when its last throughput sample looked healthy.
+        if (playing && nativeBroken) {
+            AppLogger.w(
+                TAG,
+                "Foreground found broken USB transport; reopening immediately nativeState=$nativeState",
+            )
+            pendingUsbPolicyRestart = true
+            scope.launch { recoverUsbExclusiveAsync() }
+            return
+        }
+        if (!pendingUsbPolicyRestart) return
         if (playing && nativeState == UsbAudioEngine.NativeStreamState.STREAMING) {
             AppLogger.i(TAG, "Deferred USB recovery cleared on foreground: stream is healthy")
             pendingUsbPolicyRestart = false
@@ -5195,31 +6487,44 @@ class PlayerController private constructor(context: Context) {
      * 手动切歌专用入口：从 0 开始播放，不恢复旧位置。
      * 先 fade-out USB → stop decoder → 清除 pending seek → playInternal
      */
-    private fun configuredManualShortFadeMs(): Int {
-        return when (TransitionPreferences.manualTrackTransitionMode) {
-            TransitionPreferences.ManualTrackTransitionMode.NONE -> 0
-            // Both non-NONE manual modes must enter the serialized/manual-switch route.
-            // CROSSFADE used to return 0 here, so shouldRouteExplicitPlayThroughManualSwitch()
-            // bypassed the only branch that can request the prepared-next crossfade.
-            TransitionPreferences.ManualTrackTransitionMode.SHORT_FADE,
-            TransitionPreferences.ManualTrackTransitionMode.CROSSFADE -> TransitionPreferences.manualTrackFadeMs
-        }.coerceAtLeast(0)
-    }
+    private fun configuredManualTransitionMs(): Int = ManualTrackTransitionPolicy.durations(
+        mode = TransitionPreferences.manualTrackTransitionMode,
+        shortFadeMs = TransitionPreferences.shortManualFadeMs,
+        fullCrossfadeMs = TransitionPreferences.fullManualCrossfadeMs,
+    ).overlapMs
 
     private suspend fun playManualSwitchFromStartLocked(
         song: AudioFile,
         queue: List<AudioFile>,
         index: Int,
-        reason: String
+        reason: String,
+        isStillLatestRequest: () -> Boolean = { true },
     ) {
+        PlayerSwitchTrace.mark(
+            "transport_locked_enter",
+            "reason=$reason targetId=${song.id} index=$index thread=${Thread.currentThread().name}",
+        )
         val oldPos = _position.value
+        val preservePausedState =
+            _playState.value == PlayState.PAUSED ||
+                ffmpegPlayer.state == FfmpegAudioPlayer.State.PAUSED
+        val rendererOwnedCurrentAtRequest =
+            !preservePausedState &&
+                !_usbExclusiveActive.value &&
+                _currentSong.value != null &&
+                (_playState.value == PlayState.PLAYING ||
+                    _playState.value == PlayState.PREPARING ||
+                    ffmpegPlayer.state == FfmpegAudioPlayer.State.PLAYING ||
+                    ffmpegPlayer.state == FfmpegAudioPlayer.State.PREPARING)
         queueControlCoordinator.clearPreviousRestartBypass()
         AppLogger.w(
             TAG,
-            "MANUAL_SWITCH_START oldPos=$oldPos newSong=${song.title} start=0 reason=$reason"
+            "MANUAL_SWITCH_START oldPos=$oldPos newSong=${song.title} start=0 reason=$reason " +
+                "thread=${Thread.currentThread().name}"
         )
 
         var playInternalAfterSwitch = true
+        var deferUiCommitToRenderer = rendererOwnedCurrentAtRequest
         transportTransitioning = true
         try {
             cancelPendingRestoreSeek(reason)
@@ -5227,19 +6532,35 @@ class PlayerController private constructor(context: Context) {
             pendingSeekPosition = -1L
             pendingSeekPath = null
 
-            val manualShortFadeMs = configuredManualShortFadeMs()
-            if (_usbExclusiveActive.value && _playState.value == PlayState.PLAYING) {
+            val manualDurations = ManualTrackTransitionPolicy.durations(
+                mode = TransitionPreferences.manualTrackTransitionMode,
+                shortFadeMs = TransitionPreferences.shortManualFadeMs,
+                fullCrossfadeMs = TransitionPreferences.fullManualCrossfadeMs,
+            )
+            val manualTransitionMs = manualDurations.overlapMs
+            val manualSequentialFallbackMs = manualDurations.sequentialFallbackMs
+            PlayerSwitchTrace.mark(
+                "transport_transition_policy",
+                "reason=$reason preservePaused=$preservePausedState usb=${_usbExclusiveActive.value} overlapMs=$manualTransitionMs fallbackMs=$manualSequentialFallbackMs rendererOwned=$rendererOwnedCurrentAtRequest",
+            )
+            if (!preservePausedState && _usbExclusiveActive.value && _playState.value == PlayState.PLAYING) {
                 val softNext = canUseUsbSoftNextFor(song)
                 val preSwitchFadeMs = if (softNext) {
                     usbExclusiveManualTrackFadeMs().also { fadeMs ->
-                        fadeUsbExclusiveSessionTo(
-                            target = 0.0f,
+                        fadeUsbExclusiveTrackBoundary(
                             fadeMs = fadeMs,
                             reason = "same_profile_before_feeder:$reason",
                         )
                     }
                 } else {
                     0
+                }
+                // The feeder can commit and accept the first new-track PCM before this
+                // coroutine resumes from requestUsbSameProfileTrackSwitch(). Arm the matching
+                // incoming envelope now, not after acknowledgement, so the first real PCM after
+                // the native silence barrier can never escape at full scale.
+                if (softNext && !isUsbHardwareVolumeRouteActive()) {
+                    pendingManualTrackStartFadeMs = preSwitchFadeMs
                 }
                 val inlineResult = if (softNext) {
                     ffmpegPlayer.requestUsbSameProfileTrackSwitch(
@@ -5268,7 +6589,9 @@ class PlayerController private constructor(context: Context) {
                     // USB handle/interface/alt/event/submit threads and URB pool.
                     // The feeder owns the native PCM-generation cut.
                     val usbFadeMs = preSwitchFadeMs
-                    pendingManualTrackStartFadeMs = 0
+                    // pendingManualTrackStartFadeMs was armed before feeder acknowledgement;
+                    // onUsbPlaybackDataFlowing consumes it when the first new-track PCM enters
+                    // the native ring. Do not clear it here before that callback has a chance.
                     ffmpegPlayer.usbReuseEngineForNextStart = false
                     playInternalAfterSwitch = false
                     AppLogger.i(
@@ -5281,13 +6604,14 @@ class PlayerController private constructor(context: Context) {
                     // the serialized cold path.
                     val usbFadeMs = preSwitchFadeMs.takeIf { it > 0 }
                         ?: usbExclusiveManualTrackFadeMs().also { fadeMs ->
-                            fadeUsbExclusiveSessionTo(
-                                target = 0.0f,
+                            fadeUsbExclusiveTrackBoundary(
                                 fadeMs = fadeMs,
                                 reason = reason,
                             )
                         }
-                    pendingManualTrackStartFadeMs = usbFadeMs
+                    if (!isUsbHardwareVolumeRouteActive()) {
+                        pendingManualTrackStartFadeMs = usbFadeMs
+                    }
                     ffmpegPlayer.stopForManualTrackSwitch(reason)
                     ffmpegPlayer.usbReuseEngineForNextStart = false
                     applyUsbNoDataSafetyVolume("manual_switch_full_reinit:$reason")
@@ -5297,52 +6621,212 @@ class PlayerController private constructor(context: Context) {
                             "inlineResult=$inlineResult reason=$reason"
                     )
                 }
-            } else if (manualShortFadeMs > 0) {
-                // Normal output should not wait for the old track to fade all the way out
-                // before the next track begins.  First try the existing prepared-next
-                // decoder lane so the next song is played inside the fade window.  If the
-                // next file is not mix-compatible, fall back to an immediate cut with the
-                // new track fading in, instead of blocking the UI/audio handoff for the full
-                // fade-out duration.
+            } else if (!preservePausedState && manualTransitionMs > 0) {
+                // Normal output keeps manual switching non-blocking. Reference-style
+                // SHORT_FADE is a short two-slot crossfade, while CROSSFADE uses the same
+                // overlap renderer with the configured duration. Unsafe/incompatible pairs
+                // fall back to the serialized fade-out/reopen/fade-in envelope below.
                 val current = _currentSong.value
                 val pathOnlyCrossfadeIsSafe = current != null &&
                     current.path != song.path &&
                     current.cueOffsetMs == 0L && current.cueTrackIndex == 0 &&
                     song.cueOffsetMs == 0L && song.cueTrackIndex == 0
-                val inlineStarted = pathOnlyCrossfadeIsSafe && ffmpegPlayer.requestManualCrossfadeTo(
-                    nextPath = song.path,
-                    durationMs = manualShortFadeMs,
-                    reason = reason
+                // Library metadata is not the renderer geometry. The pending FFmpeg decoder is
+                // opened against the active output format, so a 44.1 kHz source followed by a
+                // 96 kHz source may still produce matching decoded PCM for this live renderer.
+                // Only the actual prepared decoder/native slot may accept or reject overlap.
+                val sourceMetadataGeometryMatches = current != null &&
+                    (current.sampleRate <= 0 || song.sampleRate <= 0 || current.sampleRate == song.sampleRate) &&
+                    (current.channelCount <= 0 || song.channelCount <= 0 || current.channelCount == song.channelCount) &&
+                    current.isDsdFormat == song.isDsdFormat
+                val manualMode = TransitionPreferences.manualTrackTransitionMode
+                val transitionDecision = ManualTrackTransitionPolicy.decide(
+                    mode = manualMode,
+                    pathOnlyCrossfadeIsSafe = pathOnlyCrossfadeIsSafe,
                 )
-                if (inlineStarted) {
-                    playInternalAfterSwitch = false
-                    AppLogger.i(TAG, "manual switch inline crossfade started: title=${song.title} fadeMs=$manualShortFadeMs reason=$reason")
+                val inlineEligible = transitionDecision.attemptOverlap
+                val inlineStarted = if (inlineEligible) {
+                    ffmpegPlayer.requestManualCrossfadeTo(
+                        nextPath = song.path,
+                        durationMs = manualTransitionMs,
+                        targetDurationMs = song.duration,
+                        reason = reason,
+                        shouldContinue = isStillLatestRequest,
+                    )
                 } else {
-                    ffmpegPlayer.armNextStartFadeIn(manualShortFadeMs, reason)
                     AppLogger.i(
                         TAG,
-                        "manual switch immediate cut + next fade-in: title=${song.title} " +
-                            "fadeMs=$manualShortFadeMs pathOnlySafe=$pathOnlyCrossfadeIsSafe reason=$reason"
+                        "MANUAL_CROSSFADE_DECISION result=FALLBACK reason=source_item_not_overlap_safe " +
+                            "target=${song.path.substringAfterLast('/')} mode=$manualMode " +
+                            "pathOnlySafe=$pathOnlyCrossfadeIsSafe " +
+                            "sourceMetadataGeometryMatches=$sourceMetadataGeometryMatches",
+                    )
+                    false
+                }
+
+                // A newer tap can arrive while FFmpeg is opening/probing the prepared-next
+                // decoder above. PlaybackEventQueue conflates pending PLAY events but cannot
+                // interrupt the event already executing.  Never let that obsolete request commit
+                // song/queue state or leave an active crossfade behind after the newer tap won.
+                if (!isStillLatestRequest()) {
+                    ffmpegPlayer.clearNextSong()
+                    AppLogger.w(
+                        TAG,
+                        "manual Android switch discarded after slow prepare: stale title=${song.title} " +
+                            "inlineStarted=$inlineStarted rate=${current?.sampleRate}->${song.sampleRate} " +
+                            "channels=${current?.channelCount}->${song.channelCount} reason=$reason"
+                    )
+                    return
+                }
+
+                if (inlineStarted) {
+                    playInternalAfterSwitch = false
+                    PlayerSwitchTrace.mark(
+                        "transport_crossfade_inline_active",
+                        "reason=$reason fadeMs=$manualTransitionMs deferUi=$deferUiCommitToRenderer",
+                    )
+                    // Reference publishes the logical track/cursor as soon as next/previous is
+                    // accepted. Only defer the UI when an already-running renderer owns the
+                    // handoff; an idle/paused cold-start queue has no live timeline to wait for.
+                    // Waiting for TRACK_STARTED in that case lets audio move while the title,
+                    // artwork and gesture owner remain on the old row.
+                    AppLogger.i(
+                        TAG,
+                        "manual switch inline crossfade ACTIVE; " +
+                            "uiCommit=${if (deferUiCommitToRenderer) "track_started" else "queue_cursor"} " +
+                            "title=${song.title} fadeMs=$manualTransitionMs reason=$reason",
+                    )
+                } else {
+                    // Both short and full manual crossfade modes reach this branch only when
+                    // the pair cannot be overlapped safely or the prepared-next/native path failed.
+                    // Keep exactly one decoder/output owner: fade the currently audible renderer
+                    // down first, then let playInternal() retire it and queue the latest target,
+                    // whose start fade is armed below. A newer tap cancels this wait through the
+                    // transport token so an obsolete switch cannot commit after the latest target.
+                    // PCM consumption completes the envelope on the renderer thread. Waiting for
+                    // it must never sleep the Compose/main thread: doing so froze artwork and
+                    // lyric animation for the entire fade duration before the real switch began.
+                    // The setting is the complete short transition duration, not the duration of
+                    // each half. Applying it once to OUT and again to IN doubled the perceived
+                    // wait before a manual switch. A natural EOF has no audible outgoing renderer,
+                    // so it keeps the complete duration for the incoming fade.
+                    val outgoingFadeMs = ((manualSequentialFallbackMs + 1) / 2).coerceAtLeast(1)
+                    val fadedOut = withContext(Dispatchers.IO) {
+                        ffmpegPlayer.fadeOutForTransitionBlocking(
+                            durationMs = outgoingFadeMs,
+                            reason = "$reason:manual_track_out",
+                            shouldContinue = isStillLatestRequest,
+                        )
+                    }
+                    PlayerSwitchTrace.mark(
+                        "transport_sequential_out_done",
+                        "reason=$reason fadedOut=$fadedOut outMs=$outgoingFadeMs",
+                    )
+                    if (!isStillLatestRequest()) {
+                        ffmpegPlayer.clearNextSong()
+                        AppLogger.w(
+                            TAG,
+                            "manual Android switch discarded during outgoing fade: " +
+                                "stale title=${song.title} fadedOut=$fadedOut reason=$reason"
+                        )
+                        return
+                    }
+                    val incomingFadeMs = if (fadedOut) {
+                        (manualSequentialFallbackMs - outgoingFadeMs).coerceAtLeast(1)
+                    } else {
+                        manualSequentialFallbackMs
+                    }
+                    ffmpegPlayer.armNextStartFadeIn(incomingFadeMs, "$reason:manual_track_in")
+                    AppLogger.i(
+                        TAG,
+                        "manual switch sequential fade-out/in: title=${song.title} " +
+                            "requestedMs=$manualTransitionMs fallbackMs=$manualSequentialFallbackMs " +
+                                "outMs=$outgoingFadeMs inMs=$incomingFadeMs " +
+                            "fadedOut=$fadedOut mode=$manualMode overlapEligible=$inlineEligible " +
+                            "pathOnlySafe=$pathOnlyCrossfadeIsSafe " +
+                            "sourceMetadataGeometryMatches=$sourceMetadataGeometryMatches " +
+                            "rate=${current?.sampleRate}->${song.sampleRate} " +
+                            "channels=${current?.channelCount}->${song.channelCount} reason=$reason"
                     )
                 }
+            }
+
+            // Re-check immediately before committing controller/UI identity.  This closes the
+            // small window between a successful prepared-next start and the state commit below.
+            // USB-exclusive has its own feeder-acknowledged handoff semantics and is intentionally
+            // left on that path; this guard is for shared Android output, including Android USB.
+            if (!_usbExclusiveActive.value && !isStillLatestRequest()) {
+                ffmpegPlayer.clearNextSong()
+                AppLogger.w(TAG, "manual Android switch dropped before state commit: stale title=${song.title} reason=$reason")
+                return
+            }
+
+            if (deferUiCommitToRenderer) {
+                // Freeze the exact target context only after the request has survived all stale
+                // generation checks. This one context owns the later TRACK_STARTED publication for
+                // both live two-slot handoffs and cold sequential reopen paths.
+                pendingRendererUiCommit = PendingRendererUiCommit(
+                    song = song,
+                    queue = queue.toList(),
+                    index = index,
+                    prepareFollowingAfterCommit = playInternalAfterSwitch,
+                )
+                PlayerSwitchTrace.mark(
+                    "transport_defer_ui_commit",
+                    "reason=$reason targetId=${song.id} index=$index playInternal=$playInternalAfterSwitch",
+                )
             }
 
             // Keep repeat/shuffle/original-queue flags while the manual switch is in flight.
             // Replacing the object with a fresh PlayQueue here silently cleared isShuffle and
             // made the following next/previous action observe a different queue state.
-            _queue.value = _queue.value.copy(songs = queue, currentIndex = index)
-            _currentSong.value = song
-            _position.value = 0L
-            _duration.value = song.duration
-            // The inline crossfade branch does not enter playInternal(), so persist
-            // the selected track here as well before a cold process death can restore old media.
-            persistSelectedSongForColdStart(song)
-            clearRequestedSongIfCommitted(song)
-            AppPreferences.Player.lastPosition = 0L
-            smForceTransition(if (playInternalAfterSwitch) PlayState.PREPARING else PlayState.PLAYING, "manual_switch_preparing")
+            if (!deferUiCommitToRenderer) {
+                pendingRendererUiCommit = null
+                _queue.value = _queue.value.copy(songs = queue, currentIndex = index)
+                clearPlaybackSourceOverrideIfOwnerChanged(song, "manual_switch")
+                _currentSong.value = song
+                _position.value = 0L
+                _duration.value = song.duration
+                PlayerSwitchTrace.mark(
+                    "transport_immediate_ui_commit",
+                    "reason=$reason targetId=${song.id} index=$index",
+                )
+                queueControlCoordinator.onManualTargetCommitted(song)
+                persistSelectedSongForColdStart(song)
+                clearRequestedSongIfCommitted(song)
+                AppPreferences.Player.lastPosition = 0L
+                if (preservePausedState) {
+                    // Next/previous inherits PAUSED. Keep the old decoder silent and publish the
+                    // selected queue row immediately; explicit Play will open this row instead of
+                    // accidentally resuming the retiring renderer.
+                    playInternalAfterSwitch = false
+                    pausedSelectionPendingStart = true
+                    stopProgressUpdate()
+                    smForceTransition(PlayState.PAUSED, "manual_switch_preserve_paused")
+                } else {
+                    pausedSelectionPendingStart = false
+                    smForceTransition(
+                        if (playInternalAfterSwitch) PlayState.PREPARING else PlayState.PLAYING,
+                        "manual_switch_preparing",
+                    )
+                }
+            } else {
+                // Reference-style ownership: keep the old logical current track until native
+                // confirms that the first pending PCM frames entered the render timeline.
+                smForceTransition(PlayState.PLAYING, "manual_switch_wait_track_started")
+            }
 
             if (playInternalAfterSwitch) {
-                playInternal(song, queue, index)
+                PlayerSwitchTrace.mark(
+                    "transport_play_internal_dispatch",
+                    "reason=$reason targetId=${song.id} deferUi=$deferUiCommitToRenderer",
+                )
+                playInternal(
+                    song = song,
+                    queue = queue,
+                    index = index,
+                    deferPublicCommitToRenderer = deferUiCommitToRenderer,
+                )
             }
         } finally {
             transportTransitioning = false
@@ -5353,14 +6837,54 @@ class PlayerController private constructor(context: Context) {
         song: AudioFile,
         queue: List<AudioFile>,
         index: Int,
-        reason: String
+        reason: String,
+        primeUiSelection: Boolean = true,
+        persistOutgoingPositionInWorker: Boolean = false,
     ) {
-        primeSongSelectionForUi(song)
-        scope.launch {
-            transportMutex.withLock {
-                playManualSwitchFromStartLocked(song, queue, index, reason)
-            }
-        }
+        // Queue gestures/buttons can arrive faster than a short outgoing fade completes. Share
+        // the transport generation with explicit play requests so an obsolete switch stops its
+        // fade and can never commit after the user's latest target.
+        val requestToken = latestPlayRequestToken.incrementAndGet()
+        PlayerSwitchTrace.mark(
+            "transport_event_submit",
+            "reason=$reason token=$requestToken targetId=${song.id} index=$index primeUi=$primeUiSelection persistOutgoing=$persistOutgoingPositionInWorker",
+        )
+        if (primeUiSelection) primeSongSelectionForUi(song)
+        // The public controller scope is Main.immediate because UI-facing StateFlows are also
+        // coordinated here. Launching manual transport on that scope from a button/gesture callback
+        // starts executing synchronously on the current Main stack until the first real suspension.
+        // Delaying the command by one or two vsyncs therefore only moved decoder/transition work to
+        // a later UI frame. Route it through the same serialized PLAY event queue as explicit play():
+        // PlaybackEventQueue consumes PLAY on Dispatchers.Default, conflates pending PLAY requests,
+        // and the shared request token still makes an already-running obsolete switch fail closed.
+        eventQueue.submit(
+            PlaybackEventQueue.PlaybackEvent.PlayEvent(
+                song = song,
+                queue = queue,
+                index = index,
+                handler = manualEvent@{ queuedSong, queuedQueue, queuedIndex ->
+                    if (requestToken != latestPlayRequestToken.get()) return@manualEvent
+                    PlayerSwitchTrace.mark(
+                        "transport_event_worker",
+                        "reason=$reason token=$requestToken targetId=${queuedSong.id} index=$queuedIndex thread=${Thread.currentThread().name}",
+                    )
+                    // Artwork gestures must keep all persistence/queue/controller work off the
+                    // pointer + ArtworkPager settle frame. The PlaybackEventQueue consumer is Default.
+                    if (persistOutgoingPositionInWorker) savePosition()
+                    transportMutex.withLock {
+                        if (requestToken != latestPlayRequestToken.get()) return@withLock
+                        playManualSwitchFromStartLocked(
+                            queuedSong,
+                            queuedQueue,
+                            queuedIndex,
+                            reason,
+                        ) {
+                            requestToken == latestPlayRequestToken.get()
+                        }
+                    }
+                },
+            )
+        )
     }
 
     fun next(): AudioFile? = queueControlCoordinator.next()
@@ -5368,26 +6892,77 @@ class PlayerController private constructor(context: Context) {
     fun previous(): AudioFile? =
         queueControlCoordinator.previous(restartCurrentAfterThreshold = true)
 
-    /** Artwork swipes always mean changing tracks; transport buttons keep restart-at-3s behavior. */
-    fun previousTrackFromArtworkGesture(): AudioFile? =
+    /** Non-artwork navigation that always moves to the previous queue item. */
+    fun previousTrackWithoutRestart(): AudioFile? =
         queueControlCoordinator.previous(restartCurrentAfterThreshold = false)
 
+    /** Artwork swipes never mutate requested-song/queue cursor state on the pointer frame. */
+    fun previousTrackFromArtworkGesture(): AudioFile? =
+        queueControlCoordinator.previousFromArtworkGesture()
+
+    fun nextTrackFromArtworkGesture(): AudioFile? =
+        queueControlCoordinator.nextFromArtworkGesture()
+
     fun selectExistingQueueIndex(index: Int, reason: String = "queue_index_selection"): AudioFile? =
-        queueControlCoordinator.selectExistingQueueIndex(index, reason)
+        queueControlCoordinator.selectVisibleQueueIndex(index, reason)
+
+    fun selectVisibleQueueIndex(index: Int, reason: String = "visible_queue_selection"): AudioFile? =
+        queueControlCoordinator.selectVisibleQueueIndex(index, reason)
 
     fun previewNextSong(): AudioFile? = queueControlCoordinator.previewNextSong()
 
+    /** Resolves neighbours from a caller-owned queue snapshot, not a later StateFlow emission. */
+    fun previewNextSong(queue: PlayQueue): AudioFile? = queueControlCoordinator.previewNextSong(queue)
+
     fun previewPreviousSong(): AudioFile? = queueControlCoordinator.previewPreviousSong()
 
-    fun toggleRepeatMode() = queueControlCoordinator.toggleRepeatMode()
+    /** Resolves neighbours from a caller-owned queue snapshot, not a later StateFlow emission. */
+    fun previewPreviousSong(queue: PlayQueue): AudioFile? =
+        queueControlCoordinator.previewPreviousSong(queue)
 
-    fun setRepeatMode(mode: RepeatMode) = queueControlCoordinator.setRepeatMode(mode)
+    /** Resolves a carousel lane without mutating the active queue or shuffle cursor. */
+    fun previewRelativeSong(queue: PlayQueue, offset: Int): AudioFile? =
+        queueControlCoordinator.previewRelativeSong(queue, offset)
 
-    fun toggleShuffle() = queueControlCoordinator.toggleShuffle()
+    /**
+     * Repeat/shuffle changes share the player command lane with PLAY. Reference applies these on
+     * its player-service handler so a mode change cannot race a renderer handoff or stale next
+     * decoder. Re-plan the next track after the mode has committed, while keeping the current
+     * song and timeline untouched.
+     */
+    private fun submitPlaybackModeCommand(reason: String, command: () -> Unit) {
+        if (isReleased) return
+        eventQueue.submit(
+            PlaybackEventQueue.PlaybackEvent.ModeEvent(reason) {
+                transportMutex.withLock {
+                    if (isReleased) return@withLock
+                    command()
+                    gaplessControlCoordinator.prepareNextSong()
+                    saveState()
+                }
+            },
+        )
+    }
 
-    fun cyclePlayMode() = queueControlCoordinator.cyclePlayMode()
+    fun toggleRepeatMode() = submitPlaybackModeCommand("toggle_repeat") {
+        queueControlCoordinator.toggleRepeatMode()
+    }
 
-    fun setPlayMode(mode: PlayMode) = queueControlCoordinator.setPlayMode(mode)
+    fun setRepeatMode(mode: RepeatMode) = submitPlaybackModeCommand("set_repeat:$mode") {
+        queueControlCoordinator.setRepeatMode(mode)
+    }
+
+    fun toggleShuffle() = submitPlaybackModeCommand("toggle_shuffle") {
+        queueControlCoordinator.toggleShuffle()
+    }
+
+    fun cyclePlayMode() = submitPlaybackModeCommand("cycle_play_mode") {
+        queueControlCoordinator.cyclePlayMode()
+    }
+
+    fun setPlayMode(mode: PlayMode) = submitPlaybackModeCommand("set_play_mode:$mode") {
+        queueControlCoordinator.setPlayMode(mode)
+    }
 
     fun setVolume(volume: Float) {
         if (isReleased) return
@@ -5404,24 +6979,54 @@ class PlayerController private constructor(context: Context) {
         applyComposedVolume()
     }
 
-    fun addToQueue(song: AudioFile) = queueControlCoordinator.addToPriorityQueue(song)
+    /** Queue mutations use the same serialized owner as Reference's queue DB commands. */
+    private fun submitQueueMutation(reason: String, mutation: () -> Unit) {
+        if (isReleased) return
+        eventQueue.submit(
+            PlaybackEventQueue.PlaybackEvent.GenericEvent("QUEUE_$reason") {
+                transportMutex.withLock {
+                    if (isReleased) return@withLock
+                    mutation()
+                    gaplessControlCoordinator.prepareNextSong()
+                    saveState()
+                }
+            },
+        )
+    }
+
+    fun addToQueue(song: AudioFile) = submitQueueMutation("ADD_PRIORITY") {
+        queueControlCoordinator.addToPriorityQueue(song)
+    }
 
     fun getPriorityQueue(): List<AudioFile> = queueControlCoordinator.priorityQueueSnapshot()
 
-    fun clearPriorityQueue() = queueControlCoordinator.clearPriorityQueue()
+    fun clearPriorityQueue() = submitQueueMutation("CLEAR_PRIORITY") {
+        queueControlCoordinator.clearPriorityQueue()
+    }
 
     fun adoptVisibleQueueSnapshot(songs: List<AudioFile>, currentIndex: Int) =
-        queueControlCoordinator.adoptVisibleQueueSnapshot(songs, currentIndex)
+        submitQueueMutation("ADOPT_SNAPSHOT") {
+            queueControlCoordinator.adoptVisibleQueueSnapshot(songs, currentIndex)
+        }
 
-    fun playNext(song: AudioFile) = queueControlCoordinator.playNext(song)
+    fun playNext(song: AudioFile) = submitQueueMutation("PLAY_NEXT") {
+        queueControlCoordinator.playNext(song)
+    }
 
-    fun removeFromQueue(index: Int) = queueControlCoordinator.removeFromQueue(index)
+    fun removeFromQueue(index: Int) = submitQueueMutation("REMOVE_INDEX") {
+        queueControlCoordinator.removeFromQueue(index)
+    }
 
-    fun removeSongsFromQueue(songs: Collection<AudioFile>) =
+    fun removeSongsFromQueue(songs: Collection<AudioFile>) = submitQueueMutation("REMOVE_SONGS") {
         queueControlCoordinator.removeSongsFromQueue(songs)
+    }
 
     fun startSleepTimer(minutes: Int) {
         sleepTimerController.startMinutes(minutes)
+    }
+
+    fun startCustomSleepTimer(durationMs: Long) {
+        sleepTimerController.startCustomDuration(durationMs)
     }
 
     fun startSleepTimerSongs(count: Int) {
@@ -5443,6 +7048,30 @@ class PlayerController private constructor(context: Context) {
     fun isSleepTimerActive(): Boolean = sleepTimerController.isActive()
 
     fun getSleepTimerMode(): Int = sleepTimerController.mode()
+
+    private fun requestSleepTimerPlayerExit() {
+        val exitAction: suspend () -> Unit = {
+            withContext(Dispatchers.Main.immediate) {
+                context.stopService(android.content.Intent(context, PlayerService::class.java))
+                context.sendBroadcast(
+                    android.content.Intent(ACTION_SLEEP_TIMER_EXIT_APP)
+                        .setPackage(context.packageName)
+                )
+            }
+        }
+        if (eventQueue.isRunning) {
+            // pause() itself is serialized through this queue. Appending the exit command after
+            // that PAUSE makes teardown deterministic even for USB-exclusive output: backend pause
+            // and resource handoff finish before the foreground service/task are removed.
+            eventQueue.submit(
+                PlaybackEventQueue.PlaybackEvent.GenericEvent("SLEEP_TIMER_EXIT") {
+                    exitAction()
+                }
+            )
+        } else {
+            scope.launch { exitAction() }
+        }
+    }
 
     /** 根据歌曲 ReplayGain 标签和用户设置，计算并应用增益因子。 */
     private fun applyReplayGain(song: AudioFile) {
@@ -5511,8 +7140,18 @@ class PlayerController private constructor(context: Context) {
     /**
      * 恢复上次播放的歌曲（但不自动播放）
      */
-    fun restoreLastSong(): AudioFile? =
-        restoreControlCoordinator.restoreLastSong()
+    fun restoreLastSong(): AudioFile? {
+        if (restoreSnapshotApplied.get()) return _currentSong.value
+        return synchronized(restoreSnapshotLock) {
+            if (restoreSnapshotApplied.get()) return@synchronized _currentSong.value
+            val restored = restoreControlCoordinator.restoreLastSong()
+            // currentSong may have been seeded by the service before the queue snapshot was
+            // hydrated. Still execute restoreControlCoordinator once so the player page gets the
+            // persisted multi-row queue instead of retaining a one-song seed.
+            restoreSnapshotApplied.set(true)
+            restored ?: _currentSong.value
+        }
+    }
 
     fun release() {
         Log.w(TAG, "=== PlayerController.release() CALLED ===")
@@ -5530,12 +7169,15 @@ class PlayerController private constructor(context: Context) {
         // saveState() reads requested-or-current identity, so a teardown during the serialized
         // play handoff cannot overwrite the newly selected item with the previous song.
         saveState()
-        uiSelectionControlCoordinator.clearRequestedSong()
+        clearPendingUiSelection()
         metadataEnrichmentCoordinator.cancel()
         duplicatePlayRequestGate.clear()
+        _playbackSourceOverride.value = null
         usbBackgroundPlaybackCoordinator.reset()
         stopProgressUpdate()
         androidAudioInterruptionController.release()
+        deviceControlRouteCoordinator.close()
+        deviceControlRuntime.manager.close()
         androidBluetoothOutputController.release()
         MusicSourcePlaybackController.uninstallBackend(musicSourcePlaybackBackend)
         musicSourcePlaybackBackend.close()
