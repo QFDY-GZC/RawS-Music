@@ -10,6 +10,11 @@ Open-source scope note:
 
 Third-party libraries and referenced components remain under their own original licenses.
 
+Forks and third-party builds are independently maintained unless explicitly
+confirmed by the original maintainer. Attribution identifies source provenance;
+it does not imply official affiliation or endorsement. Additional maintenance
+guidance is in FORK_POLICY.md and does not alter the Apache-2.0 license.
+
 Meteocons animated weather artwork
 Copyright (c) Bas Milius
 Licensed under the MIT License
